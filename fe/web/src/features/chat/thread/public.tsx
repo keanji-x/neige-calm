@@ -1775,7 +1775,7 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
  * callback so the kernel path stays a string.
  */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, disabled = false,
+  onSend, onStop, onNewConversation, disabled = false, focusOnMount = false,
 }: {
   onSend: (text: string) => void;
   /**
@@ -1815,6 +1815,41 @@ export function ChatComposer({
    *  `/` menu from existing at all. */
   onNewConversation?: () => void;
   disabled?: boolean;
+  /**
+   * Put the caret in the field as this composer mounts (#1211 S2).
+   *
+   * Read **once**, at mount, and never again — it seeds the same standing
+   * `wantsFieldFocus` request a send arms, so it inherits that machinery
+   * whole: the retry while the field refuses focus, the perch on the
+   * composer's own box rather than `<body>`, and giving up the moment the
+   * reader puts the focus somewhere themselves. A prop watched over time would
+   * be a second, subtly different focus policy.
+   *
+   * Mount is the right one-shot for this: the caller (`app/router`) renders
+   * this composer only while a conversation is open, so it mounts exactly when
+   * the drawer opens on a row.
+   *
+   * **The precondition that comes with it, spelled out because it is a real
+   * edge of this interface.** The flag has effect only for the mount it arrives
+   * on, and this component has no `key` on the router's path — it is reused
+   * across conversations. So a caller that raises the flag a second time while
+   * the same composer is still mounted gets nothing: the caret stays where it
+   * is. **One mount per intent is the caller's job.** The one production caller
+   * satisfies it by construction — the intent is stated by a create, so the
+   * wave (and therefore the drawer and this composer) is always new — which is
+   * why this is documented rather than defended in code; a component that
+   * watched the prop would be the second focus policy the note above rejects.
+   * Pinned by "ignores the flag being raised again on a composer that is
+   * already mounted" in `thread.browser.test.tsx`.
+   *
+   * **Where it is proved.** In `thread.browser.test.tsx`, for the reason the
+   * restore below gives: whether Astryx's editable answers
+   * `[contenteditable="true"]` in the commit this mounts in is a fact about a
+   * real engine, and the failure it decides between — caret in the field, or
+   * caret parked on the perch with a request that nothing on this path will
+   * rerun — looks identical in jsdom, which resolves the selector at once.
+   */
+  focusOnMount?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const stopShown = onStop != null;
@@ -1831,7 +1866,7 @@ export function ChatComposer({
 
   const rootRef = useRef<HTMLDivElement>(null);
   const [sendCount, setSendCount] = useState(0);
-  const wantsFieldFocus = useRef(false);
+  const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on — the perch or the field.
    *  `null` while no restore is in flight, and the whole of how the effect
    *  below tells "focus is still where we left it" from "the reader moved it". */

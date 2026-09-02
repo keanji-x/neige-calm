@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Drawer } from './public.tsx';
@@ -270,5 +271,90 @@ describe('Drawer', () => {
     view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
     expect(document.activeElement).toBe(opener);
     opener.remove(); pageTitle.remove();
+  });
+
+  /*
+   * ── The two ends of "unless something inside has already claimed it" ──────
+   *
+   * The open effect bows out when the focus is already inside the panel
+   * (#1211 S2). Its advertised case is the landing a just-created wave gets:
+   * `ChatComposer`'s `focusOnMount` runs in the same commit and asks for
+   * something more specific than "focus moves in". But the line also decides
+   * *who the opener was*, on a path nobody asked it to decide, and both halves
+   * are behaviour a reader can feel. Pinned here so a later reading of the
+   * guard cannot change them silently. Neither is a request to change them.
+   */
+  function drawerAt(isOpen: boolean, children: ReactNode) {
+    return <Drawer open={isOpen} title="Why the resolver drops a hop" onClose={vi.fn()}>{children}</Drawer>;
+  }
+
+  /** Content that takes the caret as it mounts — the shape `focusOnMount`
+   *  gives the composer, reduced to the one fact that matters here. */
+  function SelfFocusing() {
+    const ref = useRef<HTMLInputElement>(null);
+    useEffect(() => { ref.current?.focus(); }, []);
+    return <input ref={ref} aria-label="Message" />;
+  }
+
+  /*
+   * A guarded open records no opener at all, so the close falls back to the
+   * page title rather than to whatever happened to hold the focus outside.
+   *
+   * That is the right answer on the path this exists for — the drawer is newly
+   * mounted, so there is nothing to go back to — and it is stated here because
+   * "the drawer does not steal the caret" and "the drawer forgets where the
+   * caret came from" are two facts, and only the first one is advertised.
+   */
+  it('falls back to the page title after an open its content had already claimed', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+
+    const view = render(drawerAt(true, <SelfFocusing />));
+    expect(document.activeElement).toBe(screen.getByLabelText('Message'));
+
+    view.rerender(drawerAt(false, <SelfFocusing />));
+    expect(document.activeElement).toBe(pageTitle);
+    expect(document.activeElement).not.toBe(opener);
+    opener.remove(); pageTitle.remove();
+  });
+
+  /*
+   * And the second half: the guard also stops the drawer recording *itself* as
+   * its own opener.
+   *
+   * The commit that reaches it is a reopen during the retraction. `open` goes
+   * true and `closing` goes false together, the effect reruns, and the focus is
+   * still inside the panel because the restore could not place it — the shell
+   * hides the opener's column for the length of the animation, which is
+   * exactly the wait the restore was written for. Without the guard the panel
+   * itself becomes the restore target, and the next close aims the caret at an
+   * element that is on its way out of the DOM.
+   */
+  it('does not record itself as its own opener when it is reopened mid-retraction', () => {
+    const column = document.body.appendChild(document.createElement('div'));
+    const opener = column.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+
+    const view = render(drawerAt(true, <p>the transcript</p>));
+    const panel = screen.getByRole('complementary');
+    expect(document.activeElement).toBe(panel);
+
+    // The retraction, with the opener's column hidden the way `app/shell`
+    // hides it off `[data-nc-drawer]`: the restore declines and waits.
+    column.setAttribute('aria-hidden', 'true');
+    view.rerender(drawerAt(false, <p>the transcript</p>));
+    expect(document.activeElement).toBe(panel);
+
+    // Reopened before it finished retracting, with the caret still in here.
+    view.rerender(drawerAt(true, <p>the transcript</p>));
+    column.removeAttribute('aria-hidden');
+
+    view.rerender(drawerAt(false, <p>the transcript</p>));
+    expect(document.activeElement).toBe(opener);
+    column.remove(); pageTitle.remove();
   });
 });

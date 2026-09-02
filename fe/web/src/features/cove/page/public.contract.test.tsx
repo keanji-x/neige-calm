@@ -117,4 +117,25 @@ describe('rename', () => {
     await userEvent.type(screen.getByLabelText('Cove name'), '{Enter}');
     expect(onRenameCove).not.toHaveBeenCalled();
   });
+
+  /*
+   * #1211 — the cove side of the empty-commit split, and the reason the new
+   * semantics is an explicit prop rather than the primitive's default.
+   *
+   * The wave header passes `emptyCommit="clear"` because a wave has a second
+   * namer (the spec agent's `calm.wave.rename`, which only fires on an empty
+   * title). A cove has none: nothing but its owner will ever name it, so an
+   * empty commit stays a cancel and no request leaves.
+   *
+   * Red when `'clear'` leaks into `EditableTitle`'s default, which is exactly
+   * how a shared primitive would spread one page's new rule to the other.
+   */
+  it('never asks to clear a cove name — the empty commit stays a cancel', async () => {
+    const onRenameCove = vi.fn();
+    renderPage({ onRenameCove });
+    await userEvent.click(screen.getByRole('button', { name: 'Rename cove' }));
+    await userEvent.clear(screen.getByLabelText('Cove name'));
+    await userEvent.type(screen.getByLabelText('Cove name'), '{Enter}');
+    expect(onRenameCove).not.toHaveBeenCalled();
+  });
 });

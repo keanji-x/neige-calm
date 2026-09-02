@@ -2483,11 +2483,18 @@
   kind: invariant
   family: wave-rename
   statement: >
-    Committing an empty or whitespace-only wave title must be a NO-OP: exit edit mode, restore
-    focus, never call `onRenameWave`, and emit no `wave.updated` within 1.5s.
+    In the legacy web/ front-end, and there only: committing an empty or whitespace-only wave
+    title must be a NO-OP — exit edit mode, restore focus, never call `onRenameWave`, and emit no
+    `wave.updated` within 1.5s.
   why: >
     a11y-wave-cove-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
     empty or unchanged; without it a stray Enter blanks the wave title.
+    The scope narrowing is #1211 S2's, and the rewrite does the opposite on purpose: a wave there
+    has a second namer (the spec agent, whose rename only fires while the title is empty), so
+    clearing the name is a real request. INV-WAVENAME-013 states that, and the two do not
+    contradict each other — this row is about a front-end that has no such agent behind it. The
+    owner_slice below is where the *rewrite* would put this behaviour, not a claim that the
+    rewrite has it; `migration: pending` is what says it does not.
   source: web/e2e/a11y-wave-cove-ops.spec.ts:206-223
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:221
   owner_slice: features/wave/page
@@ -4891,8 +4898,8 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/cove/new-wave/public.tsx:148-159,304-310; fe/web/src/app/shell/public.tsx:174
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:160
+  source: fe/web/src/features/cove/new-wave/public.tsx:170-187,349-351; fe/web/src/app/shell/public.tsx:314-329
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:200
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4912,8 +4919,8 @@
     no-op when this cove already covers the path (same-cove arm), so a second wave in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-cove case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/shell/public.tsx:297-312
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:197
+  source: fe/web/src/app/shell/public.tsx:314-329
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:236
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4932,8 +4939,8 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:436-450
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:206-219
+  source: fe/web/src/features/cove/new-wave/public.tsx:444-457
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:236
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -4972,11 +4979,149 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
     by the shell and not by the form.
-  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:154-162
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:163
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:340-347
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:294
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+# ── #1211 S2 — a wave starts unnamed, and the first sentence is the intent ────
+# The legacy rows in this file describe a front-end whose create form *required*
+# a sentence and posted it as the title; they stay `pending` and are not
+# restated here. What follows is the rewrite's opposite, stated positively.
+# INV-WAVENAME-013 is deliberately the inverse of E2E-INV-RENAME-009 above.
+
+- id: CAP-WAVENAME-011
+  kind: capability
+  family: wave-rename
+  statement: >
+    The new-wave dialog must collect no task or title text — the template's own inputs, such as
+    issue development's Issue URL, are untouched — and its `NewWaveDraft` must carry no title
+    key — absence, not the empty string — so the create POST omits it and the kernel stores the
+    empty title that `calm.wave.rename` is allowed to fill in.
+  why: >
+    #1211 S1 made the title stop being the wave's intent, so a sentence collected here reaches
+    nothing; worse, any non-empty title makes every later spec-agent rename answer
+    `already_named`, which would leave S3 dead code. Absence rather than the empty string because
+    the two reach the same stored value but say different things about who decided the name, and
+    the point of the slice is that this client did not.
+  source: fe/web/src/features/cove/new-wave/public.tsx:170-187,329,343-349
+  authoritative_test: fe/web/src/features/cove/new-wave/public.test.tsx:177
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVENAME-012
+  kind: capability
+  family: wave-rename
+  statement: >
+    With the task field deleted, the dialog's opening focus must be named onto the Start from
+    trigger — `startFromRef`, forwarded to the trigger through `DropdownMenu`'s button ref.
+  why: >
+    #1161 fixed a dialog that opened on its header Close button, where the first space bar threw
+    the dialog away; the fix was an `initialFocusRef` aimed at the task input. Deleting that input
+    without re-aiming the ref restores the same defect by omission, which is why the prop is
+    required and why it was renamed rather than dropped.
+  source: fe/web/src/features/cove/new-wave/public.tsx:214-228,406-411
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:161
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: INV-WAVENAME-013
+  kind: invariant
+  family: wave-rename
+  statement: >
+    On the rewrite's wave page, committing an empty title is a request and not a cancel: the page
+    passes `emptyCommit` "clear" and a PATCH carrying the empty title leaves. The cove header
+    keeps the primitive's "cancel" default, and an already-blank title stays a no-op on both.
+  why: >
+    A wave has a second namer — the spec agent's `calm.wave.rename`, which succeeds only while the
+    title is empty (#1211 S3) — so clearing the name is how a reader hands naming back to it, and
+    swallowing the keystroke leaves "I cleared it, pressed Enter, and nothing happened". A cove has
+    no such agent, so the same gesture there must stay write-free: this is why the semantics is an
+    explicit per-caller prop and not the shared primitive's default. The already-blank case is
+    arithmetic, not policy — there is no state change to request.
+    The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
+  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/wave/page/public.tsx:293-300
+  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:372
+  owner_slice: ui/editable-title
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: INV-WAVENAME-014
+  kind: invariant
+  family: wave-rename
+  statement: >
+    `EditableTitle` must keep the displayed stand-in and the edited value in separate carriers:
+    `placeholder` is what read mode shows for a blank name, `value` is what the editor opens on.
+    The wave header therefore passes the raw title, never `waveDisplayTitle`'s fallback.
+  why: >
+    While one prop did both, the wave page fed it the display fallback, so opening the rename box
+    on an unnamed wave put "Untitled wave" in the box and the reader had to delete it before
+    typing. It could not be *stored* — resubmitting it hit the unchanged-value arm and wrote
+    nothing — so the defect is the text in the box, not a write, and a fix aimed at persistence
+    would have been aimed at nothing.
+  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/wave/page/public.tsx:293-300
+  authoritative_test: fe/web/src/features/wave/page/public.contract.test.tsx:154
+  owner_slice: ui/editable-title
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVENAME-015
+  kind: capability
+  family: wave-rename
+  statement: >
+    Creating a wave must land the reader in its spec conversation with the caret in the composer:
+    the shell marks the navigation it makes (`go({ openSpec: true })`), the wave route consumes
+    that mark the first time its body mounts — striking it off unconditionally, and opening the
+    spec card in the same pass when the detail in hand has one — and the composer takes focus
+    through `focusOnMount`. The mark belongs to that one history entry and to nothing else: no
+    other route may read or clear it, that first mount strikes it off whether or not anything was
+    opened, and an entry whose body never mounted keeps it — so
+    displaying that same entry again (a reload, the error box's Retry, or the Back button) arms it
+    again, while any fresh navigation to the wave is a new entry and carries no mark.
+  why: >
+    The wave arrives with no name and nothing said in it, so a shut drawer is a blank page with no
+    visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
+    card id — `POST /api/waves` answers with a Wave and the spec card's id only exists once the
+    detail has landed, and widening the create response to carry it would tie the create contract
+    to what a spec card looks like, which #1189 is still moving. It is carried by the navigation
+    rather than in a provider because a global slot has no owner: the create runs from the rail
+    with another wave still mounted, so that wave's route body can read and clear a request
+    addressed to a different one, while a body that clears only its own leaves the request
+    standing when the landing never happens (a failed detail read is enough) and springs the
+    drawer open on an unrelated visit later. Being per-entry is also what decides the returning
+    reader: the entry, not a span of attention, is the owner, so a mark that was never redeemed is
+    still on its entry when it is shown again — which is what makes a reload or a Retry after a
+    failed landing complete the create the reader asked for, and what makes Back to that same
+    entry do the same thing. The last is the price of the first, and both are pinned rather than
+    left to be discovered.
+  source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,109-121,191-217;
+    fe/web/src/app/router/public.tsx:1526,1942-1948; fe/web/src/features/chat/thread/public.tsx:1869
+  # One line per clause of the statement, because no single case covers it: 194 the landing and the
+  # caret, 250 that a fresh navigation carries no mark, 287 that returning by Back to the entry whose
+  # landing failed arms it again, 316 that redeeming is one-shot, 344 that the mark is struck off even
+  # when there was no card to open.
+  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:194,250,287,316,344
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
