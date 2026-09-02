@@ -75,8 +75,8 @@ jobs:
           set -euo pipefail
           paths=(
             crates/calm-server/src/harness
-            crates/calm-server/src/operation/spec_harness_start_adapter.rs
-            crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs
+            # Deliberately unquoted: a no-match literal fails the path check below.
+            crates/calm-server/src/operation/spec_harness_*.rs
           )
           for path in "${paths[@]}"; do
             [ -e "$path" ] || { echo "::error::required harness scan path does not exist: $path"; exit 1; }
@@ -94,6 +94,7 @@ jobs:
               ;;
             1) echo "OK: no raw runtimes UPDATE in harness paths" ;;
             *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
               printf '%s\n' "$output"
               echo "::error::raw UPDATE runtimes harness scan failed with exit $rc"
               exit 1
@@ -132,6 +133,7 @@ jobs:
               ;;
             1) echo "OK: no parallel operation-event entrance" ;;
             *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
               printf '%s\n' "$output"
               echo "::error::operation-event entrance scan failed with exit $rc"
               exit 1
@@ -162,6 +164,7 @@ jobs:
               ;;
             1) ;;
             *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
               printf '%s\n' "$output"
               echo "::error::card_mcp_token_lookup_by_hash handshake scan failed with exit $rc"
               exit 1
@@ -179,6 +182,7 @@ jobs:
               ;;
             1) ;;
             *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
               printf '%s\n' "$output"
               echo "::error::card_get/card_role_get transport scan failed with exit $rc"
               exit 1
@@ -219,6 +223,7 @@ jobs:
               ;;
             1) echo "OK: no raw_repo escape in production" ;;
             *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
               printf '%s\n' "$output"
               echo "::error::raw_repo production scan failed with exit $rc"
               exit 1

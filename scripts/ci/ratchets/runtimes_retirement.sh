@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# This gate intentionally keeps ripgrep's default semantics: hidden and ignored
+# paths are outside its scan boundary. CI's clean checkout makes that omission
+# negligible, while --no-ignore would sweep build artifacts and risk false positives.
+
 script_dir="${BASH_SOURCE[0]%/*}"
 [ "$script_dir" != "${BASH_SOURCE[0]}" ] || script_dir=.
 script_dir="$(cd "$script_dir" && pwd)"

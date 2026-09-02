@@ -11,6 +11,9 @@ set -euo pipefail
 # slip past every \b-anchored pattern. The 0055 drop-regression test
 # legitimately re-creates the table to prove the drop, so it is the
 # single scoped exclusion (alongside historical migrations).
+# This gate intentionally keeps ripgrep's default semantics: hidden and ignored
+# paths are outside its scan boundary. CI's clean checkout makes that omission
+# negligible, while --no-ignore would sweep build artifacts and risk false positives.
 
 script_dir="${BASH_SOURCE[0]%/*}"
 [ "$script_dir" != "${BASH_SOURCE[0]}" ] || script_dir=.
