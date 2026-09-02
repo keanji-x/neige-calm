@@ -391,4 +391,52 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
   });
+
+  /*
+   * The same chain on the SECOND summary — and this is the case that separates
+   * the two keys.
+   *
+   * Going empty → written, `['today-launchpad']` alone is enough: the detail
+   * query is `enabled`-gated on `report_has_noninitial_content`, so it mounts
+   * for the first time and fetches fresh whatever the cache says. Written →
+   * written has no such luck. The resolve's value does not change, the detail
+   * query is already mounted, and `['wave', id]` is the only key that can make
+   * it refetch — without it the reader presses "Rewrite", the agent rewrites,
+   * and the page keeps showing yesterday's paragraph.
+   */
+  it('redraws a report that was already written when it is rewritten', async () => {
+    let body = '# 概要\n\n上午合了一个 PR。\n';
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        if (request.path === '/api/today/summary') return Promise.resolve(ok({ wave_id: 'lp', card_id: 'conv-1' }));
+        if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(true));
+        if (request.path === '/api/coves') return Promise.resolve(ok(coves));
+        if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
+        if (request.path === '/api/waves/lp') {
+          return Promise.resolve(ok({ wave: launchpadWave, cards: [reportCard(body)], overlays: [] }));
+        }
+        return Promise.resolve(ok([]));
+      },
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+    render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+      <RouterProvider router={router} />
+    </ThemeProvider></QueryClientProvider>);
+
+    expect(await screen.findByText('上午合了一个 PR。')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: REWRITE }));
+    body = '# 概要\n\n晚上又合了两个。\n';
+    const edited = wireEventSchema.parse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-2',
+        summary_before: '', summary_after: 'today', body_before: '# 概要', body_after: '# 概要',
+      },
+    });
+    applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(edited).invalidate }]);
+    expect(await screen.findByText('晚上又合了两个。')).toBeTruthy();
+    expect(screen.queryByText('上午合了一个 PR。')).toBeNull();
+  });
 });
