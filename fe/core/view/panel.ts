@@ -239,17 +239,22 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
 }
 
 /**
- * The DOM marker attribute names — **read by the checker, and by nothing in
- * production yet.**
+ * The DOM marker attribute names — **read by the checker and by tests, and by
+ * nothing in production yet.**
  *
  * To be precise about the present: `checkProjection` (S1b-2) exists and reads
  * this table in full — every marker here has a selector in
  * `tools/projection/public.ts`, and `FIELD` below is its closed value domain.
  * What is still absent is production: the desktop painter (S1b-3) and the
- * mobile painter (S1b-4) are not written, and no `.tsx` or `.css` in the tree
- * spells any of these names by way of this table. The other reader is
- * `panel.test.ts`, which pins the table as a whole. Do not read this as "both
- * surfaces already depend on these".
+ * mobile painter (S1b-4) are not written, and no *production* `.tsx` or `.css`
+ * in the tree spells any of these names by way of this table.
+ *
+ * The readers today are exactly three modules, none of them production:
+ * `tools/projection/public.ts` (the checker's selectors and value domains),
+ * `panel.test.ts` (which pins the table as a whole), and the synthetic painters
+ * in `projection-contract.test.tsx` (a `.tsx`, which imports `MARKER` and
+ * `FIELD` to build the marked DOM the checker is run over). Do not read this as
+ * "both surfaces already depend on these".
  *
  * They are declared now, in the one platform-independent module both surfaces
  * will depend on, because a marker name is exactly the kind of fact that
@@ -266,8 +271,9 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
  * was renamed away, so the stylesheet, the page and this table no longer
  * disagree by name. They still agree only by coincidence of spelling —
  * `public.tsx` and `page.module.css` write the literal string rather than
- * reading `MARKER`, which is what the paragraph above means by "not by way of
- * this table".
+ * reading `MARKER` (so do the desktop tests that query `[data-nc-status]`),
+ * which is what "not by way of this table" means above. That coincidence is
+ * the gap S1b-3b closes.
  */
 export const MARKER = Object.freeze({
   /** Bijection anchor for a row module. Carries no text obligation. */
