@@ -1364,11 +1364,11 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     );
     // …and exactly one of them lost and went through the retry arm.
     //
-    // Corroboration, not the gate. A broken retry arm is caught by the STATUS
+    // Not the carrier for a broken retry arm: that is caught by the STATUS
     // assertion above, which fires on the loser's 500 before execution reaches
-    // here — measured: that mutation panics at the "not 500" assertion. This
-    // line would only fire on a shape neither mutation produces, such as the
-    // arm being entered twice.
+    // here — measured, that mutation panics at the "not 500" assertion. What
+    // this line does catch is the counting itself going wrong: dropping the
+    // `retries` increment fails here with "got 0 (attempts=2)", measured.
     assert_eq!(
         retries, 1,
         "expected exactly one loser to take the system-cove retry arm, got \
