@@ -1,6 +1,6 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r10 —— 已收敛**。七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
+> 状态：设计 **r11 —— 已收敛，含 PR1 实现期修订**（§5.1 的 `is_unique_constraint` 两处不对称、D7 的 O(1) 上限、INV-002 三态、§6 的 PR2 失效链）。原 r10：七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
 > review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|…|-r7].md`。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
@@ -237,7 +237,9 @@ descope 的直接后果。文档只有一份且每次 REWRITE，不增长；1000
 
 `fe-design.md` §8.1：用户打开这一页是要回答「有什么在等我？」，答案归位置和 `--warn` 像素，不归字号。状态条在前（三轮两通道一致推荐）——它高度 O(1)，不随内容增长把文档推出首屏；「文档是主角」由面积和视觉权重表达。
 
-- 状态条：`N waiting · N running` + 等待中的 compact 行。
+> **r11：「高度 O(1)」不是描述，是必须被实现强制的约束。** PR1 的第一版把全部 waiting wave 无上限地渲染在文档之前——100 条 blocked wave 就把报告推出首屏，而 O(1) 恰恰是本节把状态条放在文档**前面**的**承重理由**。理由被抽掉，结论就不成立。**裁决：waiting 行数写死上限（PR1 取 5），溢出走一个高度不增长的 `+M more waiting` 展开**；溢出的 wave 不得被丢弃——RUNNING / RECENT 都排除了已计入 waiting 的项，丢了就无处可达。上限本身要有断言，单行用例证不了这条性质。
+
+- 状态条：`N waiting · N running` + 等待中的 compact 行（**有上限**）。
 - 主体：`ReportDocument`。空态「还没有今日进度」+ 触发按钮。
 
   **空态判据是服务端的 `report_has_noninitial_content`，不是「report 为空」。** `readWaveReport` 对 canonical 初始 report 返回**非空**——`initial()` 的 body 含契约注释和四个 H1，字符串非空——而 `ReportDocument` 只在 `report === null` 时渲染空态。所以照 r4 的写法，空态永远不会出现，用户第一次打开看到的是四个空标题。判据用 §5.1 resolve 返回的 `report_has_noninitial_content`，它在服务端复用 `report_startup_read_required()` 的 canonical 判据；**不在 FE 镜像初始 body 文本**（那是 mirror code）。
@@ -273,12 +275,22 @@ GET wave detail                 → readWaveReport 自己按 kind 定位那张�
 
   **改它是行为变更，不是纯修辞**：从「500 直抛」变成「重试并成功」。因此必须配**真并发或故障注入**用例——`waves.rs` 已导出 `is_unique_constraint_for_test`，用手工构造的 `CalmError` 很容易只测到 helper 那一层而测不到路径。前者恰好在 system cove 首次并发 mint 的那个 race 上，正是 §7 要求验的路径。
 
+  > **r11（PR1 实现期修订）——两处不对称，设计原先假定它们同构，那是错的。**
+  >
+  > PR1 的评审用**逐点**变异证死了这一点：两处一起还原成索引名 → 并发用例 5/5 红；**只**还原 `waves.purpose` → 18 个用例 3/3 全绿。根因不是测试写少了，是**那个状态在 `ensure` 上不可达**：`write_in_tx` 是 `BEGIN IMMEDIATE`，写锁在事务**开始**时就拿到，所以 `SELECT … WHERE purpose='launchpad'` 与随后的 INSERT/UPDATE 共享同一次持锁，别的写者无法在中间提交。`coves.kind` 之所以**可达**，正因为 `cove_get_system()` 跑在事务**外面**。320 次并发探针从未进入该分支；把 in-tx SELECT 打掉（`AND 1=0`）后分支立即进入——所以那个「从未进入」不是空绿。
+  >
+  > **裁决：不加 fixtures 钩子。** 为了让不可达分支可达而在生产路径上开一道缝，买来的是一条钉住「生产产生不出来的状态」的假不变量（`feedback_vacuous_invariant_audit`），代价是代码更差。
+  >
+  > **但不可达 ≠ 不可测。** 这处修复的实质内容是一条关于外部世界的事实断言——*SQLite 对这个 partial unique index 报的是 `waves.purpose` 而不是 `idx_waves_one_launchpad`*——它与路由可达性无关，可以非空洞地钉住：用**真 sqlx 对真 migration** 造一次真实约束冲突，断言 `is_unique_constraint(err, "waves.purpose")` 为真（`coves.kind` 同样办）。不得手工构造 `CalmError`，不得走 `is_unique_constraint_for_test`。
+  >
+  > 所以两处的证明层**不同**，这一点必须写在明处：`coves.kind` 的**可达性**由并发用例钉住；`waves.purpose` 只有**字符串**被钉住，**可达性没有**。这是一个具名的已知缺口——它的存续价值是「有人把那条 SELECT 挪出事务、或出现第二个 `purpose='launchpad'` 写者时能兜住」，而「今天 `routes/today.rs` 是唯一写者」正是那种改动会悄悄破坏的前提。**别把它说成被并发用例覆盖了。**
+
 ### 5.2 不变量表
 
 | ID | 陈述（可证死的形式） | 反例（必须红） | 正例（必须绿） |
 |---|---|---|---|
 | INV-TODAYDOC-001 | 页面加载只走只读 resolve；`ensure` 只在显式动作上调用 | 加载路径触发 ensure | 加载只 resolve；404 → 空态 |
-| INV-TODAYDOC-002 | 动作路径上的失败浮出为错误，不静默降级；`spec_harness_dormant` 走一次 start 重提交后重试，仍失败则浮出 | 5xx 被吞成空态；**或** dormant 被静默吞掉／无限重试／走了会清空 transcript 的 `/spec/reset` | 5xx 浮出错误框；dormant → 重提交 start → 单次重试 → 成功或浮出 |
+| INV-TODAYDOC-002 | 动作路径上的失败浮出为错误，不静默降级；**读路径上 detail 的「在飞 / 5xx / 解码失败」三态各自成支**；`spec_harness_dormant` 走一次 start 重提交后重试，仍失败则浮出 | 5xx 被吞成空态**或吞成任何一句不描述该态的文案**；**或**「在飞」那一帧被当成解码失败；**或** dormant 被静默吞掉／无限重试／走了会清空 transcript 的 `/spec/reset` | 5xx → 带服务端原文的错误框 + 重试；在飞 → 不出文案；解码失败 → 只在这一格出「读不出」文案；dormant → 重提交 start → 单次重试 → 成功或浮出 |
 | INV-TODAYDOC-003 | 空态判据是服务端 `report_has_noninitial_content`；FE 不解析 report body 文本 | canonical 初始 report 下渲染出四个空标题而非空态；或 FE 出现按 body 文本判断的分支 | canonical initial payload（含 `doc_rev`/`blocks` 已被 CRDT 物化的那一格）→ 空态 + 按钮 |
 | ~~INV-TODAYDOC-004~~ | ~~`day_activity_allowed`~~ | 随 D4 第二层一并删除（§0b.4） | — |
 | ~~INV-TODAYDOC-005~~ | ~~返回体字段 allowlist~~ | 随 D4 第二层一并删除 | — |
@@ -307,10 +319,12 @@ PR1（纯 FE + 一个只读端点） ──> PR2
 
 | PR | 内容 | 交付 / 证死的风险 |
 |---|---|---|
-| **PR1**（~0.7k） | §5.1 窄只读 resolve 端点（`{wave_id, report_has_noninitial_content}`；中间态算 404；修**两处** `is_unique_constraint`）+ D2/D7 FE：主体渲染 launchpad 的 report、状态条、空态、日历保持现状 | Today 变成文档形态。**读路径风险**用 INV-001/002 证死（加载不得触发 ensure）；**空态风险**用 INV-003 证死（canonical 初始 report 必须渲染空态而不是四个空标题）。手写 REST 块即可验，不依赖 AI |
+| **PR1**（~0.7k） | §5.1 窄只读 resolve 端点（`{wave_id, report_has_noninitial_content}`；中间态算 404；修**两处** `is_unique_constraint`，但**两处证明层不同**，见 §5.1 的 r11 注）+ D2/D7 FE：主体渲染 launchpad 的 report、状态条（**waiting 行必须有上限**，见下）、空态、日历保持现状 | Today 变成文档形态。**读路径风险**用 INV-001/002 证死（加载不得触发 ensure；detail 的 in-flight / 5xx / 解码失败**三态各自成支**，不得合并成一句文案）；**空态风险**用 INV-003 证死（canonical 初始 report 必须渲染空态而不是四个空标题）。手写 REST 块即可验，不依赖 AI |
 | **PR2**（~0.6k） | D4 `workspace_activity_window`（event-first + allowlist + 半开区间 + 自反排除）+ D5 `POST /api/today/summary`（服务端空活动闸 + prompt 注入 + **按需先建、一律 spec input 的单一路径** + **裸常量 key**（digest 绝不掺，见 D5）+ 静态 bootstrap + dormant 走重提交 start） | **闸的风险**用 INV-007 证死（打这个端点、空窗口必须既不建会话也不发消息）；**边界风险**：INV-006 午夜用例；**有效性风险**用 INV-010 证死（首次 2 行、其后每次 1 行 `harness.user_message.enqueued`，三次共 4 行，**允许合并 turn**）|
 
 PR2 比 r4 小了约三分之一：删掉 MCP 工具那一层，连带 `day_activity_allowed`、截断纪律和两条不变量一起消失。
+
+> **PR2 必须一并解决的失效链（PR1 实现期发现，PR1 内不可达故不修）：** `['today-launchpad']` 不在任何失效路径上，而 `fe/core/events/invalidation-plan.ts` 的 `'wave.report_edited'` 失效的是 `['wave-files']/['wave-report']/['wave-backlinks']`，**不含 `['wave', id]`**——所以 Today 的文档本身也不随 report 编辑刷新。PR1 里没有任何动作能改这两个值（`ensure` 无生产调用方），所以是死状态；**PR2 落 `POST /api/today/summary` 的同时必须把两个 key 都挂上去**，否则「点了按钮页面不动」会是第一个 bug 报告。注：`PolicyMap` 是对 **event kind** 穷举，不是对 query key，所以不加新 Event kind 就没有 golden 会替你把这条报红——它只能靠这行字。
 
 ## 7. 风险
 
