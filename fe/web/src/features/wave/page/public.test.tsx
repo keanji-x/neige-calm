@@ -345,6 +345,35 @@ describe('WavePage card inventory', () => {
   });
 
   /*
+   * **The mobile Task row is still a landing** (#1234 S1b-4b). The case above
+   * looks like it covers this and does not: `mobile-layout` as an exact
+   * accessible name matches the *desktop* reveal button, whose name is the task
+   * key alone — the mobile row's name has always carried its meta lane too. So
+   * the click reaches the row this test scopes to, inside the mobile panel.
+   *
+   * Interactivity is the one thing the projection declines to look at (§6.3:
+   * Astryx generates the element the painter cannot reach), and `reveal-block`
+   * is the single action this surface supports — so if it stopped being wired,
+   * every projection assertion in `mobile-projection.test.tsx` would stay green.
+   */
+  it('reveals the block when a mobile Task row is tapped', async () => {
+    const onOpenTask = vi.fn();
+    const { container } = renderPage({
+      tasks: [{
+        blockId: 'task-1', key: 'mobile-layout', state: 'ready', declaration: null,
+        status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+      }],
+      panel: 'tasks',
+      onOpenTask,
+    });
+    const row = container.querySelector('[data-nc-mobile-panel] [data-nc-row="task-1"]');
+    expect(row, 'the mobile task row must be on the page').not.toBeNull();
+    await userEvent.click(within(row as HTMLElement).getByRole('button'));
+    expect(onOpenTask).toHaveBeenCalledWith('task-1');
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+  });
+
+  /*
    * ── Δ2: the mobile module sequence has a carrier (#1234 S1b-4b) ───────────
    *
    * **What these two cases lock, and why they are not the menu restated.** On
