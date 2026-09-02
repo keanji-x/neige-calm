@@ -498,15 +498,22 @@ describe('WavePage card inventory', () => {
 
   it('invokes onDeleteCard with the wire id of the row it sits on', async () => {
     const onDeleteCard = vi.fn();
+    const onOpenCard = vi.fn();
     renderPage({
       cards: [card({ id: 'k1', title: 'Build log' }), card({ id: 'k2', title: 'Notes' })],
       onDeleteCard,
+      onOpenCard,
     });
     await userEvent.click(screen.getByRole('button', { name: 'Delete card Notes' }));
     expect(onDeleteCard).toHaveBeenCalledWith('k2');
-    // The row button itself must not have fired: the delete is a sibling, and a
-    // click that also opened the card would be one gesture doing two things.
     expect(onDeleteCard).toHaveBeenCalledTimes(1);
+    // The row button itself must not have fired: the delete is a *sibling* of it
+    // rather than a child, precisely so one gesture cannot do two things. The
+    // call count above cannot see that — it only counts deletes — so
+    // `onOpenCard` is supplied for this one assertion. Without it in the props
+    // there is no callback for a nested-interaction regression to reach, and
+    // the claim would be about something the page never had.
+    expect(onOpenCard).not.toHaveBeenCalled();
   });
 
   it('withholds the delete on a kernel-owned card even when onDeleteCard is supplied', () => {
