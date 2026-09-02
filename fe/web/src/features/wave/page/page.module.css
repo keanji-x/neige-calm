@@ -1047,43 +1047,14 @@
       display: none;
     }
 
-    .mobileCardFacts {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      border-radius: var(--radius-md);
-      background: var(--surface-card);
-    }
-
-    .mobileCardFacts > div {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: var(--space-6);
-      min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));
+    /* The mobile Cards row's quiet rank: the kind and `kernel-owned`, each its
+       own element because each is its own field carrier (#1234). They sit in
+       `MobileListItem`'s meta lane, which supplies the type scale; this only
+       keeps the two words apart. */
+    .mobileRowMeta {
+      display: inline-flex;
       align-items: center;
-      padding-inline: var(--space-7);
-    }
-
-    .mobileCardFacts > div + div {
-      border-block-start: 1px solid var(--hairline);
-    }
-
-    .mobileCardFacts dt,
-    .mobileCardFacts dd {
-      min-inline-size: 0;
-      overflow: hidden;
-      font-size: var(--text-xs);
-      line-height: var(--leading-tight);
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-
-    .mobileCardFacts dt {
-      color: var(--text-3);
-    }
-
-    .mobileCardFacts dd {
-      color: var(--text);
+      gap: var(--space-2);
     }
 
     .mobileConversationList {
