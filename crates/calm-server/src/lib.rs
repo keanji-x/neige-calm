@@ -131,9 +131,10 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
 /// errors pass through untouched on the first attempt.
 ///
 /// Composes with `begin_immediate_tx`'s internal bounded retry (7
-/// attempts, 10-250ms backoff, 5s busy_timeout per attempt): worst-case
-/// error surfacing at boot under sustained writer starvation is minutes —
-/// bounded and accepted (#930 review note).
+/// attempts, 10-250ms backoff,
+/// [`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`] busy timeout per attempt):
+/// worst-case error surfacing at boot under sustained writer starvation is
+/// minutes — bounded and accepted (#930 review note).
 async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
 where
     E: SqliteBusyClass + std::fmt::Display,

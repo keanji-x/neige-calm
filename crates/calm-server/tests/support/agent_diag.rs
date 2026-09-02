@@ -28,7 +28,8 @@ const SNIP_CHARS: usize = 2000;
 
 /// Cap per best-effort DB dump section: if the failure being diagnosed is
 /// pool exhaustion, an uncapped `fetch_all` stalls for sqlx's full
-/// `acquire_timeout` (~30s) per query, serially, before the dump prints.
+/// `acquire_timeout` (`calm_truth::db::sqlite::SQLITE_ACQUIRE_TIMEOUT_MS`) per
+/// query, serially, before the dump prints.
 const DB_SECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Runs one DB dump query under [`DB_SECTION_TIMEOUT`]; `None` means the

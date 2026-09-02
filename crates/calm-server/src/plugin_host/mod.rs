@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 pub use auth::{PluginToken, hash_token, verify_token};
 pub use cli_query::{CLI_QUERY_BRINGUP_BUDGET, CliQueryRuntime};
 pub use connector::{ConnectorClient, SecretsError, read_secrets};
@@ -48,6 +49,7 @@ use crate::db::RouteRepo;
 use crate::event::{Event, EventBus, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::ActorId;
+use crate::model::Plugin;
 use crate::state::WriteContext;
 
 use callbacks::{CallbackCtx, SubscriptionRecord};
@@ -349,6 +351,35 @@ struct CrashWindow {
     started: Instant,
 }
 
+/// The plugin-row read that starts boot autospawn, isolated from the
+/// ~100-method [`RouteRepo`] behind a port narrow enough to wedge in a test.
+///
+/// Production delegates straight to the host repo, whose sqlx-sqlite carrier
+/// waits through an async channel and therefore keeps yielding to Tokio. The
+/// port exists because a fake implementing all of `RouteRepo` would require
+/// hundreds of irrelevant forwarding methods, while SQLite cannot express a
+/// read that never returns.
+///
+/// Implementors must preserve that cooperative behavior: the surrounding
+/// timeout can preempt only at await points. An implementation that blocks the
+/// executor thread (for example through `block_in_place` or synchronous FFI) is
+/// not protected by the boot fence and can still hang boot.
+#[async_trait]
+pub trait PluginListDb: Send + Sync {
+    async fn plugins_list_all(&self) -> Result<Vec<Plugin>, crate::error::CalmError>;
+}
+
+struct RepoPluginListDb {
+    repo: Arc<dyn RouteRepo>,
+}
+
+#[async_trait]
+impl PluginListDb for RepoPluginListDb {
+    async fn plugins_list_all(&self) -> Result<Vec<Plugin>, crate::error::CalmError> {
+        self.repo.plugins_list_all().await.map_err(Into::into)
+    }
+}
+
 pub struct PluginHost {
     registry: Arc<PluginRegistry>,
     /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` —
@@ -357,6 +388,12 @@ pub struct PluginHost {
     /// `card_*` direct, `overlay_upsert`) are unreachable so a future
     /// contributor can't quietly bypass the audit log inside the host.
     pub(crate) repo: Arc<dyn RouteRepo>,
+    /// Narrow read port used only by boot autospawn's initial enumeration.
+    plugin_list_db: Arc<dyn PluginListDb>,
+    /// #1238 — wall-clock fence for the initial plugin enumeration. A field so
+    /// the integration test can exercise the real timeout without waiting out
+    /// [`PLUGIN_LIST_WALL`]. See [`Self::with_plugin_list_wall`].
+    plugin_list_wall: Duration,
     /// Resolved per-plugin mutable-state root from `Config::plugins_data_dir_resolved`.
     pub plugins_data_dir: PathBuf,
     /// Resolved plugin install root from `Config::plugins_dir_resolved` — used
@@ -595,6 +632,26 @@ pub const fn widened_connector_budget(supplied: Duration, widest_bringup: Durati
 /// bound exists to remove.
 const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 
+/// #1238 — wall-clock fence on boot autospawn's initial plugin enumeration.
+///
+/// Its 40 s composition covers calm-truth's pool-acquisition budget (including
+/// the three fresh-connection `after_connect` pragmas,
+/// [`calm_truth::db::sqlite::SQLITE_ACQUIRE_TIMEOUT_MS`]), the SELECT's SQLite
+/// busy-handler budget ([`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`]), and
+/// scheduling margin. The fence must be strictly greater than the sum of both
+/// bounded waits: if it fires while the database is still inside its own
+/// healthy bounded wait, every plugin is silently skipped and no process-local
+/// retry exists. Prefer waiting longer over declaring that blackout early.
+///
+/// The cost is up to 40 s more before the HTTP listener binds in the worst
+/// case. That wait remains bounded, which is the guarantee this issue trades
+/// for; waiting indefinitely would still keep the listener from binding.
+///
+/// `pub` and pinned by `the_app_autospawn_wall_is_the_documented_one`: the
+/// behavioral test overrides it through [`PluginHost::with_plugin_list_wall`]
+/// so it can prove the fence without waiting out the production allowance.
+pub const PLUGIN_LIST_WALL: Duration = Duration::from_secs(40);
+
 /// #1196 S1 review P1-6 — wall-clock fence on ONE `app` plugin's boot autospawn
 /// iteration, the local-child mirror of the connector phase fence.
 ///
@@ -623,35 +680,31 @@ const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 /// this literal would be invisible to CI.
 pub const APP_AUTOSPAWN_WALL: Duration = Duration::from_secs(30);
 
-/// The wall-clock ceiling on boot autospawn's **loop** — from the first
-/// iteration's start to the last iteration's end — for a repo with
+/// The closed-form wall-clock ceiling on all of boot autospawn, for a repo with
 /// `app_plugins` enabled `app` plugins.
 ///
-/// **What this does NOT bound, stated so the number is not read as more than it
-/// is.** [`PluginHost::autospawn_enabled_within`] opens with
-/// `self.repo.plugins_list_all().await`, before any fence exists, and that await
-/// is **unbounded**: a wedged event store makes boot stop there and never reach
-/// a single iteration, so no ceiling in this module — this one or
-/// [`MAX_CONNECTOR_AUTOSPAWN_WALL`], which has always had the same prelude
-/// outside it — fires at all. That is a real residual, registered here rather
-/// than argued away; closing it means a fence around the listing read, which is
-/// a different decision from fencing the loop and is not part of #1196 S1. The
-/// widening read that follows (`registry.get` per row) is in-memory and
-/// await-free, so the listing call is the only unbounded step in the prelude.
+/// It composes exactly one [`PLUGIN_LIST_WALL`], one
+/// [`APP_AUTOSPAWN_WALL`] per enabled app, and the single connector-phase
+/// ceiling. If enumeration times out, no plugin id is known and the loop is
+/// skipped; the list fence is then the only component consumed. The in-memory,
+/// await-free registry scan that computes connector widening adds no separate
+/// wall-clock term.
 ///
 /// The `app` half is `N ×` on purpose and is not a defect being papered over:
 /// app bring-up is a local fork/exec, the plugins are serial, and there is no
 /// cross-plugin budget for them the way there is for connectors. What matters is
-/// that the total is a closed-form expression of two constants instead of
+/// that the total is a closed-form expression of the fenced phases instead of
 /// "connectors are bounded and apps are argued about", which is what it was
 /// before #1196 S1 review P1-6.
 ///
 /// One expression for the same reason [`connector_phase_ceiling`] is one: the
 /// documented number and the enforced number must not be two arithmetics.
-/// Asserted against both constants by `the_app_autospawn_wall_is_the_documented_one`.
+/// Asserted against its constituent constants by
+/// `the_app_autospawn_wall_is_the_documented_one`.
 pub const fn boot_autospawn_ceiling(app_plugins: u32) -> Duration {
     Duration::from_millis(
-        APP_AUTOSPAWN_WALL.as_millis() as u64 * app_plugins as u64
+        PLUGIN_LIST_WALL.as_millis() as u64
+            + APP_AUTOSPAWN_WALL.as_millis() as u64 * app_plugins as u64
             + MAX_CONNECTOR_AUTOSPAWN_WALL.as_millis() as u64,
     )
 }
@@ -659,9 +712,10 @@ pub const fn boot_autospawn_ceiling(app_plugins: u32) -> Duration {
 /// The wall-clock ceiling on the connector phase of boot, given the loop
 /// budget it runs with — spawn, reconcile and every emission inside it.
 ///
-/// Scoped to the loop, exactly like [`boot_autospawn_ceiling`]: the
-/// `plugins_list_all` read that precedes every iteration is outside it and
-/// unbounded. See that function's doc for the registered residual.
+/// This remains scoped to the connector loop. The `plugins_list_all` read that
+/// precedes it is fenced separately by [`PLUGIN_LIST_WALL`], but that prelude
+/// belongs only to the full [`boot_autospawn_ceiling`] composition and is not a
+/// connector-phase cost.
 ///
 /// One expression, so the number that is *documented* and the number that is
 /// *enforced* cannot drift: [`MAX_CONNECTOR_AUTOSPAWN_WALL`] is this function
@@ -677,16 +731,17 @@ pub const fn connector_phase_ceiling(loop_budget: Duration) -> Duration {
 }
 
 /// The largest wall-clock the connector phase of boot can consume, for **any**
-/// set of manifests that load.
+/// set of manifests that load. This is deliberately only the loop ceiling: it
+/// excludes the separately fenced plugin enumeration and every app iteration;
+/// [`boot_autospawn_ceiling`] is the full boot composition.
 ///
 /// `autospawn_enabled` starts from [`CONNECTOR_AUTOSPAWN_BUDGET`] and widens it
 /// to the widest per-connector cap plus slack (see there); that widening is
 /// capped by [`MAX_CONNECTOR_BRINGUP_BUDGET`], which manifest-parse-time
 /// validation makes structural. This is the composition of the two, and it is
-/// what "boot latency is an invariant" means numerically. With today's
-/// constants: `(2 × 15 s + 500 ms) + 500 ms` of widened loop budget, `+ 500 ms`
-/// of reconcile tail = **31.5 s** — computed here, never retyped, and asserted
-/// against the real loop by `the_connector_phase_ceiling_is_the_documented_one`.
+/// what a structural connector-loop bound means. The exact value is computed
+/// here rather than duplicated in prose, and asserted against the real loop by
+/// `the_connector_phase_ceiling_is_the_documented_one`.
 pub const MAX_CONNECTOR_AUTOSPAWN_WALL: Duration = connector_phase_ceiling(
     widened_connector_budget(CONNECTOR_AUTOSPAWN_BUDGET, MAX_CONNECTOR_BRINGUP_BUDGET),
 );
@@ -857,9 +912,14 @@ impl PluginHost {
         let events_arc = Arc::new(events.clone());
         let lifecycle_db: Arc<dyn lifecycle::LifecycleDb> =
             Arc::new(lifecycle::RepoLifecycleDb::new(Arc::clone(&repo)));
+        let plugin_list_db: Arc<dyn PluginListDb> = Arc::new(RepoPluginListDb {
+            repo: Arc::clone(&repo),
+        });
         Self {
             registry,
             repo,
+            plugin_list_db,
+            plugin_list_wall: PLUGIN_LIST_WALL,
             plugins_dir,
             plugins_data_dir,
             plugins_disabled,
@@ -886,6 +946,37 @@ impl PluginHost {
     #[must_use]
     pub fn with_lifecycle_db(mut self, db: Arc<dyn lifecycle::LifecycleDb>) -> Self {
         self.lifecycle_db = db;
+        self
+    }
+
+    /// Post-construction override of the narrow plugin-list read port.
+    ///
+    /// Production never calls this. It lets the boot-bound acceptance test
+    /// supply a repo read that genuinely never returns without implementing
+    /// the rest of [`RouteRepo`]. This port overrides enumeration only; all
+    /// subsequent reads and writes still use `self.repo`. A fixture that returns
+    /// a plugin row absent from that repo therefore creates a split state that
+    /// production cannot reach; no current test does that.
+    #[must_use]
+    pub fn with_plugin_list_db(mut self, db: Arc<dyn PluginListDb>) -> Self {
+        self.plugin_list_db = db;
+        self
+    }
+
+    /// #1238 — post-construction override of [`PLUGIN_LIST_WALL`].
+    ///
+    /// The property under test is that boot terminates when the list read never
+    /// returns. Waiting out the production allowance would make that gate too
+    /// slow, so the integration fixture uses a short wall against the real
+    /// [`Self::autospawn_enabled_within`] path.
+    ///
+    /// Residual: this builder is public and unconditional, so a production
+    /// caller could lengthen the effective boot wall. The constant-pin test
+    /// verifies [`PLUGIN_LIST_WALL`], not a host's overridden field; production
+    /// currently does not call this builder.
+    #[must_use]
+    pub fn with_plugin_list_wall(mut self, wall: Duration) -> Self {
+        self.plugin_list_wall = wall;
         self
     }
 
@@ -1209,6 +1300,8 @@ impl PluginHost {
     /// Auto-spawn every enabled plugin known to the repo. Called from
     /// `AppState::new` after the host is constructed. Per-plugin failures are
     /// logged + swallowed: one broken plugin should not block boot.
+    /// The two enumeration `warn!` message strings below are documentation, not
+    /// a test-pinned contract: merging them into one string is invisible to CI.
     ///
     /// **Connector bring-up stays inline and stays serial**, but the connector
     /// portion as a whole is bounded by
@@ -1236,15 +1329,38 @@ impl PluginHost {
     /// test, and a test that only asserts "under 30 s" cannot tell the loop
     /// bound from the per-connector one.
     pub async fn autospawn_enabled_within(self: &Arc<Self>, connector_budget: Duration) {
-        // REGISTERED UNBOUNDED POINT. This await precedes every fence in this
-        // function, so neither `boot_autospawn_ceiling` nor
-        // `MAX_CONNECTOR_AUTOSPAWN_WALL` covers it: a wedged store stops boot
-        // here without a single iteration running. Both ceilings' docs say so
-        // explicitly; do not restate either of them as "boot's total".
-        let rows = match self.repo.plugins_list_all().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "plugin autospawn: list_all failed");
+        // #1238 — the prelude fence. `AppState::new` awaits this method before
+        // the HTTP listener binds, so enumeration needs its own wall; neither
+        // per-app fences nor the connector-loop fence can start until plugin
+        // rows exist to iterate.
+        let rows = match tokio::time::timeout(
+            self.plugin_list_wall,
+            self.plugin_list_db.plugins_list_all(),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    reason = "plugin enumeration failed",
+                    "plugin autospawn skipped: plugin enumeration failed"
+                );
+                return;
+            }
+            Err(_elapsed) => {
+                // There is no per-plugin terminal to record: until enumeration
+                // succeeds we know no plugin id, so `mark_unavailable_under`
+                // cannot be called. Nor may this arm await an event-store write:
+                // the same wedged repo may be what exhausted the fence. The
+                // process-local warning is therefore the only existing id-less,
+                // await-free observable endpoint, matching the read-error arm
+                // above while keeping its reason distinct from a timeout.
+                tracing::warn!(
+                    wall_ms = self.plugin_list_wall.as_millis(),
+                    reason = "plugin enumeration timed out",
+                    "plugin autospawn skipped: plugin enumeration timed out"
+                );
                 return;
             }
         };

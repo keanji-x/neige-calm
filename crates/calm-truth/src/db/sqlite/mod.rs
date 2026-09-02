@@ -26,6 +26,7 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteTransactionManager,
 };
 use std::str::FromStr;
+use std::time::Duration;
 
 use super::Repo;
 use crate::card_role_cache::CardRoleCache;
@@ -33,6 +34,17 @@ use crate::error::{CalmError, Result};
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
 use calm_types::model::CoveFolder;
+
+/// Per-connection SQLite busy-handler budget installed by [`SqlxRepo::open`].
+pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+
+/// Pool-acquisition budget installed by [`SqlxRepo::open`].
+///
+/// This deliberately equals sqlx 0.8.6's 30 s default, so making it explicit
+/// changes no behavior today; owning the value lets our composition gates pin
+/// it and prevents a future sqlx default change from silently invalidating
+/// those bounds.
+pub const SQLITE_ACQUIRE_TIMEOUT_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
 // Sub-trait impls — thin pool-wrapping wrappers around the `_tx` helpers,
@@ -164,8 +176,9 @@ pub struct SqlxRepo {
     /// shared-cache database (`file:sqlx-in-memory-{seqno}?cache=shared`,
     /// seqno fixed per parsed `SqliteConnectOptions`); the cache — i.e.
     /// the entire database — lives only while at least one connection
-    /// holds it. Every POOL connection churns under the default
-    /// `SqlitePoolOptions`: the reaper closes connections idle > 600 s,
+    /// holds it. The `SqlitePoolOptions` fields `idle_timeout`,
+    /// `max_lifetime`, and `min_connections` retain their defaults, so every
+    /// POOL connection churns: the reaper closes connections idle > 600 s,
     /// `max_lifetime` (1800 s) hits the same-age connections together,
     /// and error paths `close_hard` — including the #920 `after_release`
     /// hook's fail-closed branch. If the pool's LAST connection closed,
@@ -225,13 +238,16 @@ impl SqlxRepo {
         opts = opts.log_statements(tracing::log::LevelFilter::Debug);
 
         let pool = SqlitePoolOptions::new()
+            .acquire_timeout(Duration::from_millis(SQLITE_ACQUIRE_TIMEOUT_MS))
             // Belt-and-braces: also re-issue the pragmas on every fresh
             // connection in case connect options are silently dropped for
             // some URL forms (e.g. memory).
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
-                    conn.execute("PRAGMA busy_timeout = 5000;").await?;
+                    let busy_timeout_pragma =
+                        format!("PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};");
+                    conn.execute(busy_timeout_pragma.as_str()).await?;
                     conn.execute("PRAGMA journal_mode = WAL;").await?;
                     Ok(())
                 })
