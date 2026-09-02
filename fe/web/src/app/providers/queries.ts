@@ -859,29 +859,26 @@ export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: U
     queryKey: queryKeys.plugins(),
     queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
     retry: false,
-    /* Bounded on both ends: it only runs while a row is in motion, and it
-       gives up after `PLUGIN_POLL_LIMIT` refreshes. A spawn that has not
-       resolved in that window is not going to be resolved by asking again —
-       leaving the poll on would spin for as long as the pane stayed open. */
-    refetchInterval: (query: {
-      state: { data?: PluginListItem[]; dataUpdateCount: number; errorUpdateCount: number };
-    }) => {
-      /* Both counters: a failing refetch leaves the last good data in place —
-         still `spawning` — and never advances `dataUpdateCount`, so counting
-         successes alone let a broken endpoint be polled forever. */
-      if (query.state.dataUpdateCount + query.state.errorUpdateCount > PLUGIN_POLL_LIMIT) return false as const;
-      return (query.state.data ?? []).some((plugin) =>
+    /*
+     * Polls **only while a row is in motion**, and only while this pane holds
+     * the query — leaving Settings drops the observer and the interval with it.
+     * That visibility is the bound.
+     *
+     * A counted cap was tried and was worse: `dataUpdateCount` also counts the
+     * invalidation every enable/disable fires, it lives on the cached query
+     * rather than on this visit, and it never resets — so a handful of toggles
+     * exhausted the budget and left the poll permanently off, which is the one
+     * failure mode this exists to prevent.
+     */
+    refetchInterval: (query: { state: { data?: PluginListItem[] } }) =>
+      (query.state.data ?? []).some((plugin) =>
         (PLUGIN_TRANSIENT_STATES as readonly string[]).includes(plugin.state))
         ? PLUGIN_POLL_MS
-        : false as const;
-    },
+        : false as const,
   };
 }
 
-const PLUGIN_POLL_MS = 1500;
-/* ~30s of asking. Past that the row keeps whatever the kernel last said, which
-   is the honest answer: something is wrong with that plugin, not with the poll. */
-const PLUGIN_POLL_LIMIT = 20;
+const PLUGIN_POLL_MS = 2000;
 
 export type PluginMutations = Readonly<{
   /** The plugins a lifecycle write is in flight for. */

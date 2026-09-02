@@ -261,9 +261,9 @@ const PROXY_LABEL_OF: Readonly<Record<ProxyField, string>> = Object.freeze({
  */
 type RowStatus =
   | Readonly<{ phase: 'idle' }>
-  | Readonly<{ phase: 'saving' }>
-  | Readonly<{ phase: 'saved'; at: number }>
-  | Readonly<{ phase: 'failed'; message: string }>;
+  | Readonly<{ phase: 'saving'; value: string }>
+  | Readonly<{ phase: 'saved'; at: number; value: string }>
+  | Readonly<{ phase: 'failed'; message: string; value: string }>;
 
 const IDLE: RowStatus = Object.freeze({ phase: 'idle' });
 
@@ -315,7 +315,13 @@ export function NetworkPane({
   if (loaded && (seed === null || seed.http !== incoming.http || seed.https !== incoming.https)) {
     const previous = seed;
     setSeed(incoming);
-    sent.current = { http: null, https: null };
+    /* Only where the bag *confirms* what we sent. Clearing both entries on any
+       new bag dropped the reference for a field whose write was still in
+       flight — after which the next blur, or the close cleanup, sent the same
+       value again. */
+    for (const field of PROXY_FIELDS) {
+      if (sent.current[field] === incoming[field]) sent.current[field] = null;
+    }
     setDraft((current) => ({
       http: previous === null || current.http === previous.http ? incoming.http : current.http,
       https: previous === null || current.https === previous.https ? incoming.https : current.https,
@@ -352,11 +358,16 @@ export function NetworkPane({
       if (sequence.current[field] !== ticket) return;
       setStatus((current) => ({ ...current, [field]: next }));
     };
-    setStatus((current) => ({ ...current, [field]: { phase: 'saving' } }));
+    setStatus((current) => ({ ...current, [field]: { phase: 'saving', value } }));
     void Promise.resolve(onSave({ [PROXY_KEY_OF[field]]: value === '' ? null : value }))
-      .then(() => { settle({ phase: 'saved', at: Date.now() }); })
+      .then(() => { settle({ phase: 'saved', at: Date.now(), value }); })
       .catch((error: unknown) => {
-        settle({ phase: 'failed', message: error instanceof Error ? error.message : 'Save failed.' });
+        /* The reference goes back to the server's bag: `sent` records what the
+           server was told and *took*. Leaving a failed value in it made the
+           obvious retry — refocus, Enter — a no-op, so a failed save could not
+           be retried at all and the row went quiet on the next keystroke. */
+        sent.current[field] = null;
+        settle({ phase: 'failed', message: error instanceof Error ? error.message : 'Save failed.', value });
       });
   };
 
@@ -412,6 +423,13 @@ export function NetworkPane({
    */
   const statusFor = (field: ProxyField) => {
     const row = status[field];
+    if (row.phase === 'idle') return undefined;
+    /* A verdict describes **the value it was for**. Once the reader has moved
+       the field on, neither the tick nor the error is about what is on screen:
+       a response that settled while they were typing the next value used to
+       paint a tick — and announce "Saved." — beside a value that was never
+       sent. */
+    if (row.value !== draft[field]) return undefined;
     if (row.phase === 'failed') return { type: 'error' as const, message: row.message };
     if (row.phase === 'saved') return { type: 'success' as const };
     return undefined;
@@ -425,7 +443,7 @@ export function NetworkPane({
       control={(
         <>
           <AstryxVisuallyHidden role="status">
-            {status[field].phase === 'saved' ? 'Saved.' : ''}
+            {statusFor(field)?.type === 'success' ? 'Saved.' : ''}
           </AstryxVisuallyHidden>
           <AstryxTextInput
             label={PROXY_LABEL_OF[field]}
@@ -433,16 +451,7 @@ export function NetworkPane({
             value={draft[field]}
             placeholder="http://127.0.0.1:10809"
             status={statusFor(field)}
-            onChange={(value) => {
-              setDraft({ ...draft, [field]: value });
-              /* Typing withdraws this row's verdict. Without it, a commit that
-                 lands while the reader is already typing the next value paints
-                 a tick — and announces "Saved." — beside a value that was
-                 never sent. */
-              setStatus((current) => (current[field].phase === 'idle' || current[field].phase === 'saving'
-                ? current
-                : { ...current, [field]: IDLE }));
-            }}
+            onChange={(value) => setDraft({ ...draft, [field]: value })}
             onBlur={() => commit(field, draft[field])}
             onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field]); }}
             width={CONTROL_WIDTH}

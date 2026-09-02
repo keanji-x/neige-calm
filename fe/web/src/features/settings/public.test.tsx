@@ -266,6 +266,83 @@ describe('Settings network commits, per row', () => {
     await act(async () => { flights[0]?.resolve(); flights[1]?.resolve(); await Promise.resolve(); });
   });
 
+  it('lets the reader retry a commit that failed', async () => {
+    const onSave = vi.fn()
+      .mockImplementationOnce(() => Promise.reject(new Error('unreachable')))
+      .mockImplementationOnce(() => Promise.resolve());
+    render(<NetworkPane {...props({ onSave })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.type(field, 'http://a:1');
+    await act(async () => { await userEvent.tab(); });
+    expect(field.closest('li')?.textContent).toContain('unreachable');
+
+    // The obvious retry: focus it again and press Enter. `sent` records what
+    // the server *took*, so a failed value must not sit in it and swallow this.
+    await act(async () => { await userEvent.type(field, '{Enter}'); });
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
+  });
+
+  it('does not attach a verdict to a value the reader has since changed', async () => {
+    const flight = deferred();
+    const onSave = vi.fn(() => flight.promise);
+    render(<NetworkPane {...props({ onSave })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.type(field, 'http://a:1');
+    await userEvent.tab();                       // commit A, still out
+    await userEvent.type(field, '-more');        // the reader moves on
+    await act(async () => { flight.resolve(); await Promise.resolve(); });
+
+    /* A settled at the same moment, and a tick beside `-more` would say the
+       value on screen is the one the server took. It is not. */
+    expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('');
+    expect(field.closest('li')?.querySelector('svg')).toBeNull();
+  });
+
+  it('sends a value the reader restores after an *earlier* write has re-seeded it', async () => {
+    const flights: Deferred[] = [];
+    const onSave = vi.fn(() => { const d = deferred(); flights.push(d); return d.promise; });
+    const view = render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'A' } })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'B');
+    await userEvent.tab();                        // commit B
+    await userEvent.clear(field);
+    await userEvent.type(field, 'C');
+    await userEvent.tab();                        // commit C, still out
+    await act(async () => { flights[0]?.resolve(); await Promise.resolve(); });
+    // B's bag comes back and re-seeds the row while C is still in flight.
+    view.rerender(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'B' } })} />);
+    await userEvent.clear(field);
+    await userEvent.type(field, 'B');
+    await userEvent.tab();
+
+    /*
+     * The reader's last word is B, and C is still on its way. Clearing the
+     * whole `sent` record on any re-seed made this look unchanged — B equals
+     * the bag — so nothing was sent and C landed as the final value.
+     */
+    expect(onSave).toHaveBeenCalledTimes(3);
+    expect(onSave).toHaveBeenLastCalledWith({ [HTTP_PROXY_KEY]: 'B' });
+    await act(async () => { flights[1]?.resolve(); await Promise.resolve(); });
+  });
+
+  it('does not resend an in-flight value when the other field re-seeds', async () => {
+    const flight = deferred();
+    const onSave = vi.fn(() => flight.promise);
+    const view = render(<NetworkPane {...props({ onSave, settings: {} })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://a:1');
+    await userEvent.tab();                       // HTTP in flight
+    // A bag arrives that changes only HTTPS — someone else's write.
+    view.rerender(<NetworkPane {...props({ onSave, settings: { [HTTPS_PROXY_KEY]: 'http://b:2' } })} />);
+    await userEvent.click(screen.getByLabelText('HTTP proxy'));
+    await userEvent.tab();
+    expect(onSave).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it('withdraws a row verdict as soon as the reader edits it again', async () => {
     const onSave = vi.fn(() => Promise.resolve());
     render(<NetworkPane {...props({ onSave })} />);
