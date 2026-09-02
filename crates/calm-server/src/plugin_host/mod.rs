@@ -545,7 +545,7 @@ impl LifecycleGuard {
 /// `mcp_http.bringup_timeout_ms` configures ONE request, not the whole spawn.
 const MCP_HTTP_ROUND_TRIPS: u32 = 2;
 
-/// Headroom on top of `MCP_HTTP_ROUND_TRIPS × request_timeout_ms` for the work
+/// Headroom on top of `MCP_HTTP_ROUND_TRIPS × bringup_timeout_ms` for the work
 /// that sits outside ureq's own clock — chiefly `spawn_blocking` queue delay on
 /// a busy boot, plus tokio scheduling jitter around the two `.await`s.
 ///
@@ -553,7 +553,63 @@ const MCP_HTTP_ROUND_TRIPS: u32 = 2;
 /// does not scale with how long the operator is willing to wait for one
 /// request. Keeping it small also keeps the bound meaningful for the short
 /// timeouts tests configure.
+///
+/// **Scope: exactly ONE connector's bring-up.** It appears in
+/// [`connector_bringup_budget`], in the ceiling that constant implies
+/// ([`MAX_CONNECTOR_BRINGUP_BUDGET`]), and in the timeout message that explains
+/// the arithmetic to an operator. Raising it makes each individual connector
+/// wait longer before it is declared `Unavailable`; it does NOT move the
+/// per-connector-vs-loop ordering, which is
+/// [`CONNECTOR_LOOP_WIDENING_MARGIN`]'s job.
+///
+/// Until #1194 residual 3 these were one constant serving both purposes — the
+/// "one knob carrying two constraints" shape that produced three rounds of
+/// "adjust the arithmetic, watch the defect reappear one level up" in this very
+/// module. They happen to be equal today; that is a coincidence of the two
+/// sizing arguments, not a relationship, and nothing may assume it.
 const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
+
+/// The margin [`widened_connector_budget`] adds on top of the widest
+/// per-connector bring-up cap when it raises the loop budget.
+///
+/// It buys ONE property, and it is an ordering property, not a latency one:
+/// **the per-connector bound must be the one that fires first.** If the loop
+/// budget were widened to exactly `widest`, a single connector running out its
+/// own cap would race the loop budget, and whichever lost would decide the
+/// operator-facing reason — "connector bring-up timed out after N ms" (true and
+/// actionable) versus "budget exhausted before this connector's turn" (which
+/// blames earlier connectors that need not exist). That is the boot-vs-enable
+/// disagreement described on [`CONNECTOR_AUTOSPAWN_BUDGET`], one level in.
+///
+/// A FIXED amount, not a multiplier, for a different reason than
+/// [`CONNECTOR_BRINGUP_SLACK`]'s: what it must exceed is the loop's own
+/// per-iteration overhead between arming the two timers, which is scheduling
+/// work of a size unrelated to any configured timeout. A multiplier would also
+/// scale straight into [`MAX_CONNECTOR_AUTOSPAWN_WALL`] — boot latency — for no
+/// gain.
+///
+/// **What changing it moves.** The first version of this paragraph said
+/// "[`MAX_CONNECTOR_AUTOSPAWN_WALL`] and nothing else", which is wrong in the
+/// direction that matters: this constant is not documentation-only, it is
+/// evaluated at RUNTIME. The full list, `grep`ed rather than recalled:
+///
+/// * [`widened_connector_budget`]'s result — which
+///   [`PluginHost::autospawn_enabled_within`] adopts as the loop budget it
+///   actually arms, and then feeds to [`connector_phase_ceiling`] for the fence
+///   it actually enforces. This is a behaviour change on every boot, not an
+///   arithmetic identity;
+/// * [`MAX_CONNECTOR_AUTOSPAWN_WALL`] (31.5 s today), which is that expression
+///   evaluated at the manifest-validated maximum;
+/// * [`boot_autospawn_ceiling`], which sums `MAX_CONNECTOR_AUTOSPAWN_WALL` into
+///   the whole-boot bound (71.5 s / 101.5 s / … today).
+///
+/// Three test sites move with it, and all three are literal-valued, so raising
+/// this constant fails them rather than silently absorbing the change:
+/// `the_connector_phase_ceiling_is_the_documented_one` and
+/// `a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling` in
+/// `tests/cases/connector_host.rs`, and `the_app_autospawn_wall_is_the_documented_one`
+/// in `tests/cases/plugin_lifecycle_lock.rs`.
+pub const CONNECTOR_LOOP_WIDENING_MARGIN: Duration = Duration::from_millis(500);
 
 /// Total wall-clock the *connector* portion of [`PluginHost::autospawn_enabled`]
 /// may consume, across ALL connectors.
@@ -575,8 +631,8 @@ const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
 /// same connector up against its own cap. Boot and enable disagreed about the
 /// same manifest. [`PluginHost::autospawn_enabled_within`] therefore widens this
 /// value to [`connector_bringup_budget`]'s largest value over the enabled
-/// connectors (plus [`CONNECTOR_BRINGUP_SLACK`], so the per-connector bound is
-/// always the one that fires first).
+/// connectors (plus [`CONNECTOR_LOOP_WIDENING_MARGIN`], so the per-connector
+/// bound is always the one that fires first).
 ///
 /// **And that widening is itself bounded, which is what makes boot latency an
 /// invariant rather than a hope.** It was not always: while one manifest field
@@ -587,7 +643,11 @@ const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
 /// ([`manifest::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`]), so
 /// [`MAX_CONNECTOR_BRINGUP_BUDGET`] caps `widest` for EVERY manifest that can
 /// load, and the widened loop budget can never exceed
-/// `max(30 s, MAX_CONNECTOR_BRINGUP_BUDGET + slack)`.
+/// `max(30 s, MAX_CONNECTOR_BRINGUP_BUDGET + CONNECTOR_LOOP_WIDENING_MARGIN)`.
+/// (Naming the constant is not pedantry: since #1194 residual 3 there are TWO
+/// 500 ms margins in this module and "slack" no longer identifies either. The
+/// widening term is the LOOP one; [`CONNECTOR_BRINGUP_SLACK`] is already inside
+/// `MAX_CONNECTOR_BRINGUP_BUDGET`.)
 pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
 
 /// The loop budget [`PluginHost::autospawn_enabled_within`] actually adopts,
@@ -599,7 +659,8 @@ pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
 /// function rather than an inline `max` in the loop because the widening is half
 /// of the boot bound and a test that wants to state the bound must be able to
 /// compute it from the same expression production evaluates — restating
-/// `max(supplied, widest + slack)` in a test is a second arithmetic, and a
+/// `max(supplied, widest + CONNECTOR_LOOP_WIDENING_MARGIN)` in a test is a
+/// second arithmetic, and a
 /// second arithmetic is exactly how `a_slow_event_store_cannot_hold_boot_past_
 /// the_phase_ceiling` came to assert a 1.5 s ceiling against a loop that was
 /// really running to 1.9 s.
@@ -610,7 +671,7 @@ pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
 /// helper unpinned by that constant's test.
 pub const fn widened_connector_budget(supplied: Duration, widest_bringup: Duration) -> Duration {
     let widened = Duration::from_millis(
-        widest_bringup.as_millis() as u64 + CONNECTOR_BRINGUP_SLACK.as_millis() as u64,
+        widest_bringup.as_millis() as u64 + CONNECTOR_LOOP_WIDENING_MARGIN.as_millis() as u64,
     );
     // `Ord::max` is not const; compare the raw nanos and return the *original*
     // `supplied` so no precision is lost on the floor side.
@@ -736,7 +797,9 @@ pub const fn connector_phase_ceiling(loop_budget: Duration) -> Duration {
 /// [`boot_autospawn_ceiling`] is the full boot composition.
 ///
 /// `autospawn_enabled` starts from [`CONNECTOR_AUTOSPAWN_BUDGET`] and widens it
-/// to the widest per-connector cap plus slack (see there); that widening is
+/// to the widest per-connector cap plus [`CONNECTOR_LOOP_WIDENING_MARGIN`] (see
+/// there; it is NOT [`CONNECTOR_BRINGUP_SLACK`], which is already folded into
+/// the per-connector cap this widens over); that widening is
 /// capped by [`MAX_CONNECTOR_BRINGUP_BUDGET`], which manifest-parse-time
 /// validation makes structural. This is the composition of the two, and it is
 /// what a structural connector-loop bound means. The exact value is computed
@@ -1369,9 +1432,12 @@ impl PluginHost {
         // the LOOP bound at boot and comes up fine through `POST /enable` —
         // two different answers for one manifest, with a reason that blames
         // earlier connectors that need not exist. See
-        // [`CONNECTOR_AUTOSPAWN_BUDGET`]. The extra slack keeps the
-        // per-connector bound the one that fires first, so the operator-facing
-        // reason names the connector's own timeout rather than the budget.
+        // [`CONNECTOR_AUTOSPAWN_BUDGET`]. The extra
+        // [`CONNECTOR_LOOP_WIDENING_MARGIN`] — the LOOP margin, not the
+        // per-connector [`CONNECTOR_BRINGUP_SLACK`] already folded into the cap
+        // being widened over — keeps the per-connector bound the one that fires
+        // first, so the operator-facing reason names the connector's own
+        // timeout rather than the budget.
         //
         // This widening is bounded: `connector_bringup_budget` cannot exceed
         // `MAX_CONNECTOR_BRINGUP_BUDGET`, because the field it reads has a
@@ -2045,7 +2111,9 @@ impl PluginHost {
         // therefore condemned a healthy-but-slow upstream — or one that merely
         // stalls on `initialize`, which is explicitly best-effort — to
         // `Unavailable`. The outer bound is a MULTIPLE of the per-request one
-        // plus slack for what sits outside ureq's own clock (DNS, TLS, and
+        // plus [`CONNECTOR_BRINGUP_SLACK`] — the PER-CONNECTOR margin, the one
+        // this expression owns — for what sits outside ureq's own clock (DNS,
+        // TLS, and
         // `spawn_blocking` queue delay), so it stays a real cap on a black-holed
         // host without redefining what the operator configured.
         //

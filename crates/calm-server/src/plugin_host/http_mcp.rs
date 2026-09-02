@@ -41,7 +41,9 @@
 //! ureq's own clock. There are two bounds above this one:
 //!
 //! * `PluginHost::spawn_mcp_http` wraps ONE connector's bring-up in a
-//!   `tokio::time::timeout` of `2 × bringup_timeout_ms + slack` — a multiple,
+//!   `tokio::time::timeout` of `2 × bringup_timeout_ms + CONNECTOR_BRINGUP_SLACK`
+//!   (that constant lives in `plugin_host::mod`, and it is NOT the separate
+//!   500 ms margin the connector-phase ceiling carries) — a multiple,
 //!   because the configured value is per-REQUEST and this path makes two
 //!   requests. Since `bringup_timeout_ms` has a validated ceiling, this
 //!   product has one too;
@@ -104,8 +106,83 @@
 //! That rule is the number **grammar** (`-1234567`, `1.234567`, `1E5`,
 //! `1234e567` are all of them), delegated to serde_json rather than re-derived
 //! from characters — see [`is_number_shaped`].
-//! Constraining the credential removes the case; there is nothing left to
-//! classify as residual.
+//! Constraining the credential removes *that* case: a number-shaped credential
+//! is no longer representable, so the JSON-number hole is closed structurally.
+//! The same move closes a second one, and this one is the sharper of the two: a
+//! credential that **shares any text with the redaction marker** can be re-formed
+//! out of its own redaction, because one `str::replace` pass never rescans what
+//! it wrote. `redacted>yy` scrubbed for the credential `redacted>y` yields
+//! `<redacted>y` — a "redacted" string that contains the credential verbatim, on
+//! its way to `ExposedTool` and the wave transcript. There are exactly four ways
+//! a window can overlap the marker, they are derived rather than listed, and all
+//! four are refused at this layer; see [`overlaps_redaction_marker`]. That is
+//! what lets [`scrub_with`] be a single pass and still state idempotence as a
+//! theorem.
+//!
+//! **Nothing above is a completeness claim, and this header must not be read as
+//! one** (#1194 residual 2 — the residual is exactly that this list *reads*
+//! exhaustive and is not). [`HttpMcpClient::new`] registers **at most two
+//! literals**, both matched byte-exactly by [`str::replace`]: the raw
+//! credential, and the uppercase-hex percent-encoding [`percent_encode`]
+//! produces — which is the spelling this client itself puts on the wire. A
+//! credential with no reserved characters encodes to itself, so the dedupe
+//! leaves a single literal.
+//!
+//! **This is a net over observed shapes, not containment.** The shapes below
+//! walk straight through it, and the list of them is not exhaustive either:
+//!
+//! * **percent-encoding in any other hex case** — `%2f` for `%2F`, and every
+//!   mixed spelling such as `sk-a%2Fb%2bc%3Dd`. The case of each `%XX` triplet
+//!   is chosen INDEPENDENTLY by whichever hop last re-encoded the string, so an
+//!   n-triplet credential can arrive in 2ⁿ spellings and the one literal
+//!   registered here is one of them;
+//! * **any other encoding of the same bytes** — base64 (`c2stYWJj`), URL-safe
+//!   base64, hex, HTML entities, double percent-encoding. The set of alphabets
+//!   an upstream may choose is not ours to bound;
+//! * **the credential split across two JSON strings** — `["sk-ab", "cd"]`, or a
+//!   key holding one half and its value the other. No single string contains
+//!   the literal, so no single `replace` matches, yet a reader of the rendered
+//!   document reassembles it for free;
+//! * **any non-literal re-derivation** — a hash the operator can reverse from a
+//!   short key, a checksum, the credential embedded in an upstream-built URL
+//!   with different escaping than [`percent_encode`] produces.
+//!
+//! One gap of a different kind — manufactured HERE rather than chosen by the
+//! upstream — used to sit in this list and is now CLOSED, recorded because the
+//! list above must not be read as "everything we know about", and because two
+//! earlier rounds of this file stated its status wrongly. `str::replace` does not
+//! rescan what it wrote, so a credential overlapping the marker's own text was
+//! re-formed by its own redaction (`redacted>y` + upstream `redacted>yy` →
+//! `<redacted>y`). It is closed by refusal at the constructor rather than by
+//! iterating the scrub to a fixpoint: [`overlaps_redaction_marker`] derives the
+//! four ways a window can overlap the marker and refuses all four, and
+//! [`scrub_with`] carries the resulting idempotence proof. It is NOT closed by
+//! anything on the encoding axis, so it does not shrink the list above.
+//!
+//! **A residual that is accepted rather than closed** (#1194 residual 1): two
+//! sibling object keys that scrub to the same marker collapse into one entry.
+//! That is data loss, not disclosure, it needs a pathological upstream to
+//! trigger, and the disambiguating-suffix alternative was implemented and
+//! withdrawn on defects it produced. The reasoning is on the rekey branch in
+//! [`scrub_value`], which is where a reader who hits the behaviour will land.
+//!
+//! **Why the gaps are not closed by adding literals or a smarter matcher.**
+//! Enumeration does not converge (2ⁿ hex spellings, an unbounded set of
+//! alphabets). A matcher does converge for the hex case specifically — and one
+//! was written and then REVERTED, on measurement: comparing every `%XX` triplet
+//! case-insensitively means a hand-rolled scan instead of `str::replace`'s
+//! two-way search, and its cost is paid on the CLEAN path, per `tools/call`,
+//! whether or not the body contains anything resembling the credential. Measured
+//! on this box with a 257-byte credential and a 4 MiB response body:
+//! `client.scrub` took **991 ms** with the per-triplet matcher against **9.8 ms**
+//! with `str::replace` — a scan that grows with (body × credential length)
+//! against one that is linear in the body. Buying one of 2ⁿ spellings for two
+//! orders of magnitude on every healthy call is not a trade this module makes.
+//!
+//! What actually closes the class is not on this axis at all: it is not putting
+//! the credential where an upstream can echo it (`api_key_in: header`, the main
+//! proposal on #1194). With the key in a header there is no percent-encoded
+//! form to miss, and most of this machinery deletes itself.
 //!
 //! The raw-text scrub survives in exactly one place: the non-2xx arm, where the
 //! body is an arbitrary error page with nothing to parse. There the
@@ -186,7 +263,8 @@ pub const CONNECT_TIMEOUT_FLOOR: Duration = Duration::from_secs(10);
 pub struct HttpCredential(String);
 
 impl HttpCredential {
-    /// The four rules, each tied to a concrete failure of the redaction layer:
+    /// The five rules, each tied to a concrete failure of the redaction layer
+    /// and each with an `if` of its own below, in this order:
     ///
     /// * **non-empty** — an empty value registers `""` as a scrub pattern, and
     ///   `"".replace("", "<redacted>")` inserts the marker at EVERY character
@@ -204,7 +282,13 @@ impl HttpCredential {
     ///   result and the wave transcript unredacted. Making numbers scrubbable is
     ///   not an option (it would rewrite unrelated values and change the
     ///   payload's type); making the credential un-number-like is;
-    /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant.
+    /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant;
+    /// * **shares no text with the redaction marker** — see
+    ///   [`overlaps_redaction_marker`], which enumerates the four (and only
+    ///   four) ways a credential can be re-formed out of its own redaction.
+    ///   Such a credential leaks: one scrub pass hands back a string that
+    ///   contains it verbatim, and that string is what reaches `ExposedTool`
+    ///   and the wave transcript.
     ///
     /// The error text never quotes the credential — only the single offending
     /// character class — because this string is operator-facing and lands in
@@ -245,6 +329,23 @@ impl HttpCredential {
                 "is shorter than {MIN_CREDENTIAL_LEN} characters, which would make \
                  redaction match unrelated upstream text"
             ));
+        }
+        if overlaps_redaction_marker(raw) {
+            // The marker itself is deliberately NOT spelled in this message:
+            // several credentials this rule refuses are substrings of it, so
+            // quoting it would quote the credential — the one thing an
+            // operator-facing string on this path may never do. For the same
+            // reason it does not say WHICH of the four overlap cases fired.
+            return Err("overlaps the marker string this module rewrites \
+                 credentials to — it ends where that marker begins, begins \
+                 where it ends, contains it, or is a piece of it. Scrubbing is \
+                 a single left-to-right pass that never rescans what it wrote, \
+                 so an upstream can steer it into re-forming exactly this \
+                 credential out of the marker's own text: the scrubbed string \
+                 would then carry the credential verbatim into tool catalogs \
+                 and wave transcripts. Choose a credential that shares no text \
+                 with that marker."
+                .to_string());
         }
         Ok(Self(raw.to_string()))
     }
@@ -287,6 +388,109 @@ fn is_number_shaped(raw: &str) -> bool {
         || serde_json::from_str::<serde::de::IgnoredAny>(raw).is_ok()
 }
 
+/// Can a single [`scrub_with`] pass **re-form `raw` out of its own redaction**?
+///
+/// This is the guard that makes one-pass scrubbing sound, and it is derived,
+/// not enumerated. [`str::replace`] never rescans what it wrote, so the output
+/// of one pass is `A₀ · M · A₁ · M · … · Aₙ` — upstream text `Aᵢ` with the
+/// marker `M` = [`REDACTED`] spliced in at the places a form was removed. The
+/// `Aᵢ` are attacker-chosen; `M` is not.
+///
+/// Ask when the credential `raw` can occur in that output. Every occurrence is
+/// a contiguous window `X = raw`. A window lying wholly inside some `Aᵢ` is
+/// impossible for the form that pass replaced — `replace` removed all of them
+/// from exactly that text. So any surviving occurrence **must intersect an
+/// inserted `M`**, and a contiguous window intersecting a contiguous marker
+/// leaves exactly four positional relationships:
+///
+/// 1. `X` starts inside `M` and ends past it ⇒ `X` BEGINS with a nonempty
+///    suffix of `M` — [`head_is_marker_suffix`];
+/// 2. `X` starts before `M` and ends inside it ⇒ `X` ENDS with a nonempty
+///    prefix of `M` — [`tail_is_marker_prefix`];
+/// 3. `X` starts before `M` and ends past it ⇒ `M ⊆ X` — `raw.contains(M)`;
+/// 4. `X` lies wholly inside `M` ⇒ `X ⊆ M` — [`is_marker_family_substring`],
+///    which is the same case widened to the `#<n>`-suffixed family for the
+///    historical reason recorded on it.
+///
+/// The four are exhaustive by construction (the window either contains `M`'s
+/// start, `M`'s end, both, or neither-but-overlapping), so refusing all four at
+/// the constructor is what lets [`scrub_with`] state idempotence as a theorem
+/// rather than a hope. See that function for the corollary.
+///
+/// Each case is upstream-triggerable with one response, and each is a LEAK, not
+/// a hang: with the credential `redacted>y` (case 1) the body `redacted>yy`
+/// scrubs to `<redacted>y`, whose text contains the credential verbatim — and
+/// that string is what reaches `ExposedTool` and the wave transcript. Round 3
+/// of #1194 refused only case 4 and stated cases 1–3 as an open residual; this
+/// is that residual closed.
+fn overlaps_redaction_marker(raw: &str) -> bool {
+    is_marker_family_substring(raw)
+        || tail_is_marker_prefix(raw)
+        || head_is_marker_suffix(raw)
+        || raw.contains(REDACTED)
+}
+
+/// Case 4 — `raw` is a substring of some name in the marker family
+///
+/// > `M = {REDACTED} ∪ {REDACTED + "#" + <nonempty decimal digits>}`
+///
+/// The `#<n>` half is wider than the derivation above needs (only `REDACTED`
+/// itself is ever spliced in today), and it is kept deliberately: those names
+/// were minted by the disambiguating-suffix rekey pass that #1194 round 4
+/// withdrew, and re-introducing that pass — the one thing that would make them
+/// reachable again — must not silently re-open a credential class. Refusing a
+/// handful of extra 8-plus-character strings costs an operator nothing.
+///
+/// **The decision procedure.** Write `P = REDACTED + "#"`. `REDACTED` is a
+/// prefix of `P`, so substrings of `REDACTED` are already substrings of `P` and
+/// the first half of the family needs no case of its own. `P` contains no
+/// digit, so for any `m = P·D` a substring `x` of `m` is exactly one of:
+///
+/// 1. wholly inside `P` — i.e. `P.contains(x)`;
+/// 2. wholly inside `D` — i.e. `x` is all digits, and since `D` ranges over
+///    every nonempty digit string, any such `x` qualifies;
+/// 3. straddling the join — `x = s·t` with `s` a nonempty suffix of `P` and `t`
+///    a nonempty prefix of `D`. Because `P` holds no digit and `D` holds
+///    nothing else, that split is forced to fall exactly at `x`'s maximal
+///    trailing digit run.
+///
+/// So: strip the maximal trailing digit run; no digits ⇒ case 1; no head ⇒
+/// case 2; otherwise ⇒ case 3, which is `P.ends_with(head)`. Case 2 is already
+/// unreachable behind [`is_number_shaped`] (an all-digit credential is refused
+/// as number-shaped first) and is kept only so this function answers the
+/// question its name asks, independently of its caller's ordering.
+fn is_marker_family_substring(raw: &str) -> bool {
+    let family = format!("{REDACTED}#");
+    let head = raw.trim_end_matches(|c: char| c.is_ascii_digit());
+    let digits = &raw[head.len()..];
+    if digits.is_empty() {
+        family.contains(raw)
+    } else if head.is_empty() {
+        true
+    } else {
+        family.ends_with(head)
+    }
+}
+
+/// Case 2 — `raw` ends with a nonempty prefix of [`REDACTED`], so an upstream
+/// can place the rest of `raw` immediately before a splice point and have the
+/// marker's own opening text complete it (`abcde<re` + a redaction starting
+/// `<re…`).
+///
+/// `REDACTED` is ASCII, so byte slicing it at any index is a char boundary.
+fn tail_is_marker_prefix(raw: &str) -> bool {
+    (1..=REDACTED.len()).any(|k| raw.ends_with(&REDACTED[..k]))
+}
+
+/// Case 1 — `raw` begins with a nonempty suffix of [`REDACTED`], so an upstream
+/// can place the rest of `raw` immediately after a splice point and have the
+/// marker's own closing text start it (`>y-abcdef` after a redaction ending
+/// `…>`). This is the case that admitted `redacted>y`, the credential round 3
+/// accepted and round 4 measured a real leak from.
+fn head_is_marker_suffix(raw: &str) -> bool {
+    (1..=REDACTED.len()).any(|k| raw.starts_with(&REDACTED[REDACTED.len() - k..]))
+}
+
 /// Redacting, so a credential cannot reach a log line through a `{:?}` on a
 /// struct that happens to hold one.
 impl std::fmt::Debug for HttpCredential {
@@ -314,7 +518,10 @@ pub struct HttpMcpClient {
     header_auth: Option<(String, String)>,
     /// Host only, for the per-call audit line required by risk R2.
     log_target: String,
-    /// Every literal form the secret takes on the wire (raw + percent-encoded).
+    /// The literals the secret is known to take on the wire: the raw
+    /// credential, and the uppercase-hex percent-encoding this client puts in
+    /// its own query string. **Not an exhaustive list of the shapes an upstream
+    /// can echo** — see the module header for the ones that walk through.
     /// [`Self::scrub`] strips these from any string that could reach a log
     /// line, an `Event::PluginState.last_error`, an HTTP body, or a wave
     /// transcript. This is the belt to the "never format a `ureq::Error`"
@@ -397,21 +604,48 @@ impl HttpMcpClient {
                 // key into an unexpected slot.
                 None => {}
             }
-            // Both literal forms, longest first, so scrubbing the encoded form
-            // is not pre-empted by a shorter raw substring match.
+            // AT MOST TWO literals — the raw credential and the spelling this
+            // client itself puts in the query string — and exactly one when the
+            // credential has no reserved character, because then
+            // `percent_encode` is the identity and the dedupe below collapses
+            // them. **This list is NOT exhaustive**, deliberately and with the
+            // gaps named: see the module header, including why the
+            // case-insensitive percent matcher that briefly lived here was
+            // reverted on measurement (991 ms vs 9.8 ms on a clean 4 MiB body).
             //
-            // The `is_empty` filters are the braces to `HttpCredential`'s belt:
-            // an empty pattern turns `scrub` into a memory amplifier (see
-            // `scrub_with`), and this is the last place that could register
-            // one. `percent_encode("")` is also `""`, hence both guards.
-            let encoded = percent_encode(key);
-            if !key.is_empty() {
-                secret_forms.push(key.to_string());
+            // Longest first, so scrubbing the encoded form is not pre-empted by
+            // a shorter raw substring match. The encoded form is never shorter
+            // than the raw one (`percent_encode` either copies a byte or expands
+            // it to three), so this sort puts the encoded form first whenever the
+            // two differ.
+            //
+            // Round 5 argued this ordering is decorative on the grounds that the
+            // raw form can never occur INSIDE the encoded one — `R ≠ E` implies
+            // `R` holds a reserved character, and a reserved character is not in
+            // `E`. That argument is wrong for exactly one character: `%` is
+            // reserved, and `percent_encode` emits `%` itself. Witness:
+            // `R = "abcde%25"` (a credential `HttpCredential::parse` accepts)
+            // encodes to `E = "abcde%2525"`, of which `R` is a PREFIX. On a body
+            // echoing `E` back, raw-first would yield `<redacted>25` — the
+            // encoded literal chewed in half, with the tail no longer matching
+            // any registered form. Longest-first yields `<redacted>`. So keep
+            // the sort; it is load-bearing for real inputs, not for the theorem
+            // on `scrub_with` (which quantifies over the whole form list and
+            // does not depend on the order).
+            //
+            // The dedupe + `is_empty` filter are the braces to
+            // `HttpCredential`'s belt. Empty: an empty pattern turns `scrub`
+            // into a memory amplifier (see `scrub_with`), and this is the last
+            // place that could register one — `percent_encode("")` is `""` too,
+            // so the filter has to cover the encoded form as well. Duplicate: a
+            // repeated pattern is wasted work whose second pass would scan the
+            // already-substituted text.
+            for form in [key.to_string(), percent_encode(key)] {
+                if !form.is_empty() && !secret_forms.contains(&form) {
+                    secret_forms.push(form);
+                }
             }
-            if encoded != key && !encoded.is_empty() {
-                secret_forms.push(encoded);
-            }
-            secret_forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
+            secret_forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
         }
 
         let bringup_timeout = Duration::from_millis(block.bringup_timeout_ms());
@@ -717,6 +951,10 @@ fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, R
 /// `{"<our-api-key>": "…"}`, and a `tools/list` entry's `inputSchema`
 /// properties are object keys that reach `ExposedTool` and, from there, the
 /// agent-visible tool catalog.
+///
+/// Rekeying is NOT entry-count preserving, deliberately — see the comment on
+/// the rekey branch for the accepted behaviour and why the alternative was
+/// withdrawn.
 fn scrub_value(forms: &[String], v: &mut Value) {
     if forms.is_empty() {
         return;
@@ -733,16 +971,77 @@ fn scrub_value(forms: &[String], v: &mut Value) {
             }
         }
         Value::Object(map) => {
+            // `contains` is not a second matcher beside `scrub_with`'s: it is
+            // the exact predicate `str::replace` decides on (and the one
+            // `scrub_with` itself uses to skip the allocation), so a key cannot
+            // be judged "needs rekeying" by one rule and rewritten by another.
             let rekey = map
                 .keys()
                 .any(|k| forms.iter().any(|f| k.contains(f.as_str())));
             if rekey {
+                // #1194 residual 1, and the accepted behaviour is the LOSSY
+                // one: two sibling keys that scrub to the same marker collapse
+                // into a single entry, and the surviving value is whichever the
+                // `collect()` below inserts last (`BTreeMap` order — the
+                // `preserve_order` feature is off).
+                //
+                // **What that costs, precisely.** It is DATA LOSS, not a leak:
+                // every colliding key rendered to the same marker by
+                // construction, so the reader learns nothing about the
+                // credential from the collapse, and no value is disclosed that
+                // redaction was supposed to hide. What is lost is one entry of
+                // an upstream document.
+                //
+                // **What it takes to trigger.** The upstream must echo the SAME
+                // credential back in two different spellings AS SIBLING KEYS of
+                // one object — e.g. the raw form and the percent-encoded form
+                // this client puts on the wire, the only two literals
+                // `HttpMcpClient::new` registers. A server that answers a
+                // `tools/list` by reflecting our query string into its own
+                // schema keys, twice, in two encodings, is already pathological;
+                // #1194 says so in as many words and offers "a comment or a
+                // dedupe suffix" as alternative acceptance criteria. This is the
+                // comment.
+                //
+                // **Why not the dedupe suffix.** It was implemented on this
+                // branch and withdrawn, on defects the implementation actually
+                // produced rather than imagined ones:
+                //
+                // * a minted name can BE the credential. `<redacted>#2` passes
+                //   every rule in `HttpCredential::parse` as it stood, so an
+                //   operator holding that key would have the redactor emit the
+                //   secret verbatim — after redaction — into `ExposedTool` and
+                //   the wave transcript. Turning "data loss" into a leak is a
+                //   strictly worse trade than the loss;
+                // * guarding that by re-scrubbing each candidate name and
+                //   accepting only a fixpoint does not terminate. The scrubber
+                //   was not idempotent for credentials overlapping the marker's
+                //   own text, so every candidate for a base could fail the
+                //   self-check forever — measured at 9 min 17 s of 100% CPU on
+                //   a tokio worker, uncancellable, from ONE upstream response;
+                // * bounding that by a probe budget then made a redaction pass
+                //   able to refuse a whole healthy response, on arithmetic that
+                //   itself needed a proof.
+                //
+                // The marker-overlap guard in `HttpCredential::parse` has since
+                // made `scrub_with` idempotent for every credential this client
+                // can hold, so the second bullet no longer bites — but the first
+                // one is untouched by that, and the whole apparatus buys back
+                // one entry of a pathological document. Both directions of this
+                // trade have been paid for once; do not re-open it without a
+                // real upstream that needs the entry.
                 let taken = std::mem::take(map);
                 *map = taken
                     .into_iter()
                     .map(|(k, v)| (scrub_with(forms, k), v))
                     .collect();
             }
+            // Children are walked whether or not this map was rekeyed. Moving
+            // this into an `else` is a LEAK, not a refactor:
+            // `{"<credential>": "see key <credential> in the docs"}` would come
+            // back with the key redacted and the value verbatim. It survived a
+            // 139-case suite once; `a_rekeyed_object_still_scrubs_its_children`
+            // is what kills it now.
             for (_, child) in map.iter_mut() {
                 scrub_value(forms, child);
             }
@@ -765,19 +1064,71 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// Replace every literal in `forms` with `<redacted>`.
+/// The marker every recognised form of the credential is rewritten to.
+const REDACTED: &str = "<redacted>";
+
+/// Replace every occurrence of every registered literal with [`REDACTED`].
 ///
 /// Free function (not a method) so the blocking closure in
 /// [`HttpMcpClient::request`] can scrub before truncating without capturing
 /// `&self`.
 ///
-/// **Empty forms are impossible by construction** — [`HttpMcpClient::new`]
+/// **Empty patterns are impossible by construction** — [`HttpMcpClient::new`]
 /// refuses to register one, and [`HttpCredential::parse`] refuses an empty
-/// credential upstream of that. Both halves matter: `"".replace("", "<redacted>")` inserts
-/// the marker at every character boundary, so a 4 MiB upstream error body would
-/// expand ~11× and then be cloned into the status entry, the broadcast event,
-/// and the HTTP error body. The `debug_assert` keeps the invariant honest if a
-/// future caller builds `secret_forms` some other way.
+/// credential upstream of that. Both halves matter: `"".replace("", "<redacted>")`
+/// inserts the marker at every character boundary, so a 4 MiB upstream error body
+/// would expand ~11x and then be cloned into the status entry, the broadcast
+/// event, and the HTTP error body. The `debug_assert` keeps the invariant honest
+/// if a future caller builds `secret_forms` some other way.
+///
+/// **This is one pass per pattern, and one pass is enough — but only because
+/// the constructor makes it enough.** `str::replace` scans left to right and
+/// never rescans what it wrote, so a substitution CAN in principle manufacture
+/// a match the pass has already walked past: with the credential `redacted>y`,
+/// `"hit redacted>yy end"` comes back as `"hit <redacted>y end"` — the
+/// credential, re-formed out of the marker's own text. Two successive revisions
+/// of this comment got the resulting property wrong in opposite directions
+/// (round 2 claimed "substitution does not manufacture a new match", disproved
+/// with `"hit redacted%3E end"` for the credential `redacted>`; round 3 then
+/// declared the class simply open). Round 4 closed it at the constructor, so
+/// the property is restated here from scratch rather than inherited:
+///
+/// > **For every form list [`HttpMcpClient::new`] can build, the output of one
+/// > `scrub_with` pass contains no registered form.** Hence
+/// > `scrub_with(f, scrub_with(f, x)) == scrub_with(f, x)`.
+///
+/// Two forms can be registered, and only ONE of them is a value
+/// [`HttpCredential::parse`] ever inspected: the raw credential. The other is
+/// the percent-encoding, which is derived after the check. So establish it
+/// first, before the induction leans on it. Either the encoding equals the raw
+/// credential (no reserved characters — and then the dedupe in `new` collapses
+/// the two), or it contains a `%` triplet, and in every case [`percent_encode`]
+/// emits `<` and `>` as `%3C`/`%3E`. A form with no `<` and no `>` cannot begin
+/// with a suffix of `<redacted>` (all of which end in `>`), cannot end with a
+/// prefix of it (all of which begin with `<`), and cannot contain it; the one
+/// marker-family substring free of both characters is `redacted`-shaped text,
+/// which the encoding of a credential can only be if the credential already is
+/// that text — refused. **Both** registered forms therefore satisfy all four
+/// refusals, which is what the induction below quantifies over.
+///
+/// Proof, by induction over the forms in order. After the pass for form `Fₖ`,
+/// the string is carried-over text with the marker `M` spliced in. No
+/// occurrence of `Fₖ` can lie wholly inside carried text — `replace`'s scan is
+/// exhaustive left to right, so a full occurrence at a position it did not
+/// consume is a contradiction — therefore any surviving occurrence intersects
+/// an inserted `M`, which forces one of the four relationships enumerated on
+/// [`overlaps_redaction_marker`], all four of which are refused for BOTH
+/// registered forms (for the raw credential by [`HttpCredential::parse`]; for
+/// the percent-encoding by the paragraph above). Earlier forms `F₁…Fₖ₋₁` were
+/// already absent from this pass's input by the induction hypothesis, and a
+/// substring of a string that lacks `Fᵢ` still lacks it, so the only new
+/// occurrences they could gain are ones intersecting the `M`s this pass
+/// inserted — refused by the same four cases, on the same two grounds.
+///
+/// The scope of the theorem is exactly "form lists `new` builds". This is a free
+/// function taking an arbitrary `&[String]`, and tests pass hand-built lists
+/// that do NOT satisfy the precondition; for those, idempotence is not claimed
+/// and nothing in production depends on it.
 fn scrub_with(forms: &[String], s: String) -> String {
     let mut out = s;
     for form in forms {
@@ -785,8 +1136,10 @@ fn scrub_with(forms: &[String], s: String) -> String {
         if form.is_empty() {
             continue;
         }
+        // `contains` first: `replace` would allocate a fresh `String` even when
+        // nothing matches, and the clean path is every healthy response body.
         if out.contains(form.as_str()) {
-            out = out.replace(form.as_str(), "<redacted>");
+            out = out.replace(form.as_str(), REDACTED);
         }
     }
     out
@@ -843,9 +1196,20 @@ fn log_target(url: &str) -> String {
     format!("{scheme}://{authority}")
 }
 
-/// Minimal percent-encoding for query-string values. We only need the
-/// characters that would break a query parameter; `url` is not a dependency of
-/// this crate and pulling one for eight bytes of logic is not worth it.
+/// Minimal percent-encoding for query-string values, uppercase hex — the form
+/// that goes on the wire. We only need the characters that would break a query
+/// parameter; `url` is not a dependency of this crate and pulling one for eight
+/// bytes of logic is not worth it.
+///
+/// **Uppercase hex is a wire fact, not a matching rule.** This is the spelling
+/// the client sends, so it is the one an upstream echoing our query string
+/// verbatim will quote back — and it is the only encoded spelling registered as
+/// a scrub literal. Other hex cases (`%2f`, and mixed per-triplet spellings a
+/// re-encoding hop may produce) are NOT covered; two attempts to cover them —
+/// a second lowercase literal, then a per-triplet case-insensitive matcher —
+/// were both reverted, the first as non-convergent enumeration and the second
+/// on measured clean-path cost. The module header carries the numbers and the
+/// full gap list.
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.as_bytes() {
@@ -880,6 +1244,12 @@ fn read_capped(resp: ureq::Response) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scrub patterns for the tests that drive `parse_scrubbed` / `scrub_value`
+    /// with a hand-picked credential rather than through `HttpMcpClient::new`.
+    fn exact_forms(keys: &[&str]) -> Vec<String> {
+        keys.iter().map(|k| (*k).to_string()).collect()
+    }
 
     /// Shorthand for a credential the HTTP path will accept.
     fn cred(raw: &str) -> HttpCredential {
@@ -1267,7 +1637,7 @@ mod tests {
     #[test]
     fn a_json_shaped_credential_does_not_corrupt_an_innocent_response() {
         let key = r#"":"#;
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body =
             r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"t","description":"d"}]}}"#;
 
@@ -1293,7 +1663,7 @@ mod tests {
     #[test]
     fn a_backslash_credential_does_not_corrupt_an_escaped_response() {
         let key = r"abc\defgh";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         // The upstream describes a Windows path: `C:\dir` — `C:\\dir` on the
         // wire. Nothing here is the credential.
         let body = r#"{"result":{"tools":[{"name":"t","description":"C:\\dir"}]}}"#;
@@ -1317,7 +1687,7 @@ mod tests {
     #[test]
     fn a_control_character_credential_echoed_by_the_upstream_is_still_redacted() {
         let key = "line1\nline2xx";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body = serde_json::json!({
             "result": {
                 "tools": [{ "name": "t", "description": format!("rejected key {key}") }],
@@ -1355,7 +1725,7 @@ mod tests {
     #[test]
     fn object_keys_are_scrubbed_as_well_as_values() {
         let key = "sk-keyed-8213";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body = format!(r#"{{"result":{{"props":{{"{key}":1,"safe":2}}}}}}"#);
         let parsed = parse_scrubbed(&forms, &body, "tools/list").expect("must parse");
         let props = parsed
@@ -1368,11 +1738,242 @@ mod tests {
         assert_eq!(props.get("safe"), Some(&serde_json::json!(2)));
     }
 
+    /// #1194 residual 1 — the ACCEPTED behaviour, pinned so it cannot drift
+    /// silently in either direction.
+    ///
+    /// Two sibling keys that scrub to the same marker collapse into ONE entry.
+    /// The issue offers "a comment or a dedupe suffix" as acceptance criteria;
+    /// round 4 took the comment — it is on the rekey branch in `scrub_value`,
+    /// with the defects the suffix machine actually produced — and this test is
+    /// what keeps that comment describing the code.
+    ///
+    /// The load-bearing assertions are the SECURITY ones: no surviving key
+    /// holds either credential form, and a key that never held it is untouched.
+    /// The collapse itself is data loss, not disclosure. The entry count is
+    /// asserted exactly rather than as `<= 3` on purpose: if disambiguation is
+    /// ever reintroduced, this must go red and be re-read, not pass silently
+    /// under a changed contract.
+    ///
+    /// The form list is the PRODUCTION one — built by `HttpMcpClient::new` from
+    /// a credential `HttpCredential::parse` accepts — not a hand-rolled `vec!`:
+    /// a fixture that mints its own literals could keep asserting the collapse
+    /// after the constructor stopped producing the pair that causes it.
+    #[test]
+    fn two_keys_redacting_to_the_same_marker_collapse_into_one_entry() {
+        let key = "sk-a/b+c-8213";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let forms = client.secret_forms.clone();
+        let encoded = percent_encode(key);
+        assert_ne!(encoded, key, "fixture needs two distinct literals");
+        assert_eq!(
+            forms,
+            vec![encoded.clone(), key.to_string()],
+            "the constructor must register both spellings, longest first"
+        );
+
+        let mut obj = serde_json::Map::new();
+        obj.insert(key.to_string(), serde_json::json!(1));
+        obj.insert(encoded.clone(), serde_json::json!(2));
+        obj.insert("safe".to_string(), serde_json::json!(3));
+        let mut v = Value::Object(obj);
+        assert_eq!(v.as_object().unwrap().len(), 3, "fixture must start with 3");
+
+        scrub_value(&forms, &mut v);
+        let obj = v.as_object().unwrap();
+
+        // Neither credential form survives in any key — the property the pass
+        // exists for, and the one the collapse does not touch.
+        for k in obj.keys() {
+            assert!(!k.contains(key), "raw key survived: {v}");
+            assert!(!k.contains(&encoded), "encoded key survived: {v}");
+        }
+        assert_eq!(
+            obj.get("safe"),
+            Some(&serde_json::json!(3)),
+            "a key that never held the credential must be untouched: {v}"
+        );
+        // The accepted loss: three entries in, two out, one of the two
+        // credential-keyed values gone. WHICH one survives is `BTreeMap`
+        // ordering and is deliberately not asserted — it is not a property this
+        // module promises anybody.
+        assert_eq!(
+            obj.len(),
+            2,
+            "residual 1 says these two collapse; if they no longer do, the \
+             rekey branch's comment is stale: {v}"
+        );
+        assert!(obj.contains_key("<redacted>"), "{v}");
+    }
+
+    /// #1194 channel-A A1 — an object whose KEY was rekeyed must still have its
+    /// children walked.
+    ///
+    /// Moving the `for (_, child) in map.iter_mut()` recursion inside the `else`
+    /// of the rekey branch survives the whole 139-case suite, and it is a LEAK:
+    /// `{"<credential>": "see key <credential> in the docs"}` comes back with
+    /// the key redacted and the string value verbatim — into the `ExposedTool`
+    /// description an agent reads and into the wave transcript.
+    ///
+    /// Three shapes, because "the children" is not one thing: a scalar string
+    /// beside the rekeyed entry, a nested object one level down, and an object
+    /// inside an array. All three hang off the SAME rekeyed map, so all three
+    /// are lost by that one mutation.
+    #[test]
+    fn a_rekeyed_object_still_scrubs_its_children() {
+        let key = "sk-both-8213";
+        let forms = exact_forms(&[key]);
+        let body = serde_json::json!({
+            "result": {
+                // The rekey trigger and a sibling string value in one object.
+                key: 1,
+                "hint": format!("see key {key} in the docs"),
+                "nested": { "description": format!("pass {key} as the token") },
+                "tools": [
+                    { "name": "t", "description": format!("auth={key}") },
+                ],
+            }
+        })
+        .to_string();
+
+        let parsed = parse_scrubbed(&forms, &body, "tools/list").expect("must parse");
+        let rendered = parsed.to_string();
+        assert!(
+            !rendered.contains(key),
+            "the credential survived in a child of a rekeyed object: {rendered}"
+        );
+        // Each shape named individually, so a partial regression is legible.
+        assert_eq!(
+            parsed.pointer("/result/hint"),
+            Some(&Value::String("see key <redacted> in the docs".into())),
+            "sibling string value: {parsed}"
+        );
+        assert_eq!(
+            parsed.pointer("/result/nested/description"),
+            Some(&Value::String("pass <redacted> as the token".into())),
+            "nested object: {parsed}"
+        );
+        assert_eq!(
+            parsed.pointer("/result/tools/0/description"),
+            Some(&Value::String("auth=<redacted>".into())),
+            "object inside an array: {parsed}"
+        );
+    }
+
+    /// #1194 residual 2, in the shape the residual actually asked for: pin what
+    /// IS registered, so the module header's honesty about what is not can be
+    /// read against something.
+    ///
+    /// Exactly two literals — the raw credential and the uppercase-hex
+    /// percent-encoding this client sends — longest first. There is deliberately
+    /// no assertion here about `%2f` or mixed-case triplets: they are NOT
+    /// covered, that gap is documented in the module header rather than
+    /// enshrined in a test that asserts a leak exists.
+    #[test]
+    fn registration_is_the_raw_form_and_the_uppercase_encoding_longest_first() {
+        // Reserved characters in three classes — `/`, `+`, `=` — so the encoded
+        // form is visibly a different string.
+        let key = "sk-a/b+c=d";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+
+        let upper = percent_encode(key);
+        assert_eq!(upper, "sk-a%2Fb%2Bc%3Dd", "encoder shape changed");
+        assert_eq!(
+            client.secret_forms,
+            vec![upper.clone(), key.to_string()],
+            "two literals, longest first"
+        );
+
+        // Both spellings really are scrubbed…
+        for spelling in [key, upper.as_str()] {
+            let msg = client.scrub(format!("upstream echoed ?api_key={spelling} back"));
+            assert!(!msg.contains(spelling), "{spelling}: {msg}");
+            assert!(msg.contains("<redacted>"), "{spelling}: {msg}");
+        }
+
+        // …and matching is byte-exact: a value differing only in ASCII case
+        // from the credential is a DIFFERENT credential and must not be
+        // rewritten.
+        let other = "SK-A/B+C=D";
+        assert_eq!(
+            client.scrub(format!("boom {other}")),
+            format!("boom {other}"),
+            "the raw form must not fold case"
+        );
+    }
+
+    /// #1194 channel-A N4 — the "encoded but hex-letter-free" input class.
+    ///
+    /// A credential whose reserved characters encode to letter-free triplets
+    /// (`!` is `%21`) has an encoded form that is distinct from the raw one yet
+    /// identical in every hex case. It is registered and matched like any other
+    /// encoded form; the case is kept because that middle state is a real input
+    /// class and two successive rounds of this residual tripped over it.
+    #[test]
+    fn an_encoded_form_with_no_hex_letter_still_matches() {
+        let key = "sk-abc!d!";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+
+        let encoded = percent_encode(key);
+        assert_eq!(
+            encoded, "sk-abc%21d%21",
+            "fixture needs letter-free triplets"
+        );
+        // The point of the fixture: every hex digit here is a DIGIT, so this
+        // spelling is the same in either hex case — the one encoded form that
+        // needs no case rule to be matched.
+        assert!(
+            encoded
+                .split('%')
+                .skip(1)
+                .all(|t| t.as_bytes()[..2].iter().all(u8::is_ascii_digit)),
+            "fixture must have letter-free triplets: {encoded}"
+        );
+        assert_ne!(encoded, key, "…but still distinct from the raw form");
+        assert_eq!(client.secret_forms.len(), 2, "{:?}", client.secret_forms);
+
+        let msg = client.scrub(format!("?api_key={encoded}"));
+        assert!(!msg.contains(&encoded), "{msg}");
+        assert!(msg.contains("<redacted>"), "{msg}");
+    }
+
+    /// A credential with no reserved characters encodes to itself: the dedupe
+    /// must leave exactly ONE pattern, not two copies whose second pass would
+    /// re-scan the already-substituted text.
+    #[test]
+    fn an_unreserved_credential_registers_exactly_one_form() {
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
+        assert_eq!(client.secret_forms, vec!["abcdefgh".to_string()]);
+    }
+
     /// Deeply nested strings are reached, and a no-key client is a no-op.
     #[test]
     fn nesting_is_traversed_and_no_key_means_no_walk() {
         let key = "sk-nested-8213";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body = format!(r#"{{"result":{{"a":[{{"b":[["{key}"]]}}]}}}}"#);
         let parsed = parse_scrubbed(&forms, &body, "x").unwrap();
         assert_eq!(
@@ -1382,6 +1983,233 @@ mod tests {
 
         let untouched = parse_scrubbed(&[], &body, "x").unwrap();
         assert!(untouched.to_string().contains(key));
+    }
+
+    /// #1194 round 4 — a credential that OVERLAPS the redaction marker is
+    /// refused, in each of the four ways a window can overlap it.
+    ///
+    /// Every refused value is a LEAK, not a style rule: one scrub pass hands
+    /// back a string that contains the credential verbatim, and that string is
+    /// what reaches `ExposedTool` and the wave transcript. Round 3 refused only
+    /// the substring case (on a different argument — it hung the withdrawn rekey
+    /// pass) and recorded the rest as an open residual, with `redacted>y` +
+    /// upstream `redacted>yy` as the witness. Two entries below are round 3's
+    /// verdicts inverted: `sk-<redacted>-x` and `<redacted>#2x` were ACCEPTED
+    /// then and are refused now, because they contain the marker outright.
+    ///
+    /// Every case clears `MIN_CREDENTIAL_LEN` and every other rule, so a refusal
+    /// here can only be the marker rule — which is asserted, not assumed.
+    #[test]
+    fn a_credential_that_overlaps_the_marker_is_refused() {
+        let refused = [
+            // Case 4 — the credential is a piece of the marker family.
+            ("redacted", "the marker's body"),
+            ("<redacte", "a prefix of the marker"),
+            ("edacted>", "a suffix of the marker"),
+            ("<redacted>", "the marker itself"),
+            ("redacted>", "an interior slice reaching the end"),
+            ("edacted>#", "reaching into the `#` of a suffixed name"),
+            ("<redacted>#2", "a whole suffixed name"),
+            ("acted>#12", "straddling the `#` into a two-digit suffix"),
+            // Case 1 — the credential BEGINS with a suffix of the marker, so an
+            // upstream supplies its tail immediately after a splice point.
+            ("redacted>y", "round 3's accepted leak, reproduced below"),
+            (">y-abcdef", "one marker character is enough"),
+            ("d>abcdefg", "two"),
+            // Case 2 — the credential ENDS with a prefix of the marker, so an
+            // upstream supplies its head immediately before a splice point.
+            ("abcdef-<", "one marker character is enough"),
+            ("abcde<re", "three"),
+            // Case 3 — the credential contains the whole marker.
+            ("sk-<redacted>-x", "round 3 accepted this one"),
+            ("<redacted>#2x", "and this one"),
+        ];
+        let mut wrong: Vec<String> = Vec::new();
+        for (bad, why) in refused {
+            assert!(
+                bad.len() >= MIN_CREDENTIAL_LEN,
+                "{why}: fixture must clear the length floor, else this case \
+                 proves nothing about the marker rule"
+            );
+            match HttpCredential::parse(bad) {
+                Ok(_) => wrong.push(format!("{bad:?} ({why}): ACCEPTED")),
+                Err(e) if !e.contains("overlaps the marker") => {
+                    wrong.push(format!("{bad:?} ({why}): refused by another rule: {e}"));
+                }
+                Err(e) => {
+                    // Operator-facing. Several of these values are substrings of
+                    // the marker, so the message may quote neither them nor it.
+                    assert!(!e.contains(bad), "{why}: the refusal quotes it: {e}");
+                    assert!(
+                        !e.contains(REDACTED),
+                        "{why}: the refusal spells the marker, which for the \
+                         substring cases is quoting the credential: {e}"
+                    );
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "these credentials overlap the marker and are still registrable, so \
+             one upstream response can re-form them out of their own \
+             redaction:\n  {}",
+            wrong.join("\n  ")
+        );
+
+        // Stated positively, so the rule cannot pass by refusing everything.
+        // These are real API-key shapes and shapes that merely RESEMBLE the
+        // marker without sharing an edge with it.
+        for (good, why) in [
+            ("redactedX", "shares a prefix, shares no edge"),
+            ("my-redacted-key", "the marker's body inside a longer key"),
+            ("sk-live-abcdefgh", "an ordinary key"),
+            ("a/b+c=d&e", "punctuation an API key really uses"),
+        ] {
+            assert!(
+                HttpCredential::parse(good).is_ok(),
+                "{why}: {good:?} must still be accepted — this rule refuses text \
+                 shared with the marker, not everything that resembles it"
+            );
+        }
+    }
+
+    /// Each of the four clauses has a witness NO other clause catches.
+    ///
+    /// This is the mutation surface, made explicit: short-circuit any single
+    /// clause of `overlaps_redaction_marker` to `false` and exactly one group
+    /// below goes red. A lump assertion (`overlaps(x)` for a pile of values)
+    /// would let three clauses cover for a deleted fourth.
+    #[test]
+    fn each_marker_overlap_clause_has_a_witness_no_other_clause_catches() {
+        // Case 4 — a piece of the marker family, and nothing else.
+        let only_family = "redacted";
+        assert!(is_marker_family_substring(only_family));
+        assert!(!tail_is_marker_prefix(only_family));
+        assert!(!head_is_marker_suffix(only_family));
+        assert!(!only_family.contains(REDACTED));
+
+        // Case 2 — the tail is a prefix of the marker, and nothing else.
+        let only_tail = "abcde<re";
+        assert!(tail_is_marker_prefix(only_tail));
+        assert!(!is_marker_family_substring(only_tail));
+        assert!(!head_is_marker_suffix(only_tail));
+        assert!(!only_tail.contains(REDACTED));
+
+        // Case 1 — the head is a suffix of the marker, and nothing else.
+        let only_head = ">y-abcdef";
+        assert!(head_is_marker_suffix(only_head));
+        assert!(!is_marker_family_substring(only_head));
+        assert!(!tail_is_marker_prefix(only_head));
+        assert!(!only_head.contains(REDACTED));
+
+        // Case 3 — contains the marker, and nothing else.
+        let only_contains = "sk-<redacted>-x";
+        assert!(only_contains.contains(REDACTED));
+        assert!(!is_marker_family_substring(only_contains));
+        assert!(!tail_is_marker_prefix(only_contains));
+        assert!(!head_is_marker_suffix(only_contains));
+
+        // All four reach the guard.
+        for w in [only_family, only_tail, only_head, only_contains] {
+            assert!(overlaps_redaction_marker(w), "{w:?}");
+        }
+        // …and a credential sharing no text with the marker does not.
+        assert!(!overlaps_redaction_marker("sk-live-abcdefgh"));
+    }
+
+    /// The family predicate's own boundary, stated on the function rather than
+    /// through `parse`, so the digit-run reasoning is pinned where it is
+    /// derived. (Through `parse` these near misses are useless: `<redacted>x`
+    /// is not a family substring but IS caught by the contains clause.)
+    #[test]
+    fn the_marker_family_predicate_splits_at_the_trailing_digit_run() {
+        // Case 1 — wholly inside `<redacted>#`.
+        assert!(is_marker_family_substring("<redacted>#"));
+        assert!(is_marker_family_substring("d>"));
+        // Case 2 — all digits (also refused earlier, as number-shaped).
+        assert!(is_marker_family_substring("12"));
+        // Case 3 — head is a suffix of `<redacted>#`, tail is digits.
+        assert!(is_marker_family_substring("<redacted>#987"));
+        assert!(is_marker_family_substring(">#4"));
+        // …and the near misses on each case.
+        assert!(
+            !is_marker_family_substring("<redacted>x"),
+            "not a substring: the marker is not followed by `x`"
+        );
+        assert!(
+            !is_marker_family_substring("<redacted#2"),
+            "a fragment with a character removed is not a fragment"
+        );
+        assert!(
+            !is_marker_family_substring("redacted>2"),
+            "the digit must sit behind the `#`, not against `>`"
+        );
+        assert!(!is_marker_family_substring("sk-abc-8213"));
+    }
+
+    /// The idempotence theorem on [`scrub_with`], pinned at the boundary the
+    /// guard now draws.
+    ///
+    /// One `str::replace` pass never rescans what it wrote, so "one pass is
+    /// enough" is a property of the CREDENTIAL, not of the scrubber. This test
+    /// stands on both sides of the line: the shape the guard refuses really does
+    /// re-form itself in one pass (so the rule is not decoration), and its
+    /// nearest legal neighbour — same length, one character off the marker's
+    /// edge — comes out clean and stays clean under a second pass.
+    #[test]
+    fn one_scrub_pass_is_enough_exactly_because_the_guard_refuses_the_overlap() {
+        // The refused side. `exact_forms` is hand-built on purpose: production
+        // can no longer assemble this list, which is the point.
+        let leaky = "redacted>y";
+        assert!(
+            HttpCredential::parse(leaky).is_err(),
+            "this credential is what round 3 accepted; it must be refused now"
+        );
+        let once = scrub_with(&exact_forms(&[leaky]), "hit redacted>yy end".to_string());
+        assert!(
+            once.contains(leaky),
+            "the premise of the whole rule: one pass really does re-form this \
+             credential out of the marker's own text: {once}"
+        );
+
+        // The legal neighbour, driven through the production constructor so the
+        // registered form list is the real one.
+        let good = "redactedZy";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(good)));
+        let body = format!("hit {good}y end");
+        let scrubbed = client.scrub(body);
+        assert!(
+            !scrubbed.contains(good),
+            "one pass left the credential in the output: {scrubbed}"
+        );
+        assert_eq!(
+            client.scrub(scrubbed.clone()),
+            scrubbed,
+            "a second pass changed the string, so the scrubber is not idempotent"
+        );
+
+        // The same, for a credential whose percent-encoded form is a second
+        // registered literal: the encoding can carry no `<` or `>`, so it cannot
+        // overlap the marker either, and two forms do not reopen the class.
+        let two_form = "sk-a/b+c=d";
+        let client = HttpMcpClient::new("c", &block, Some(&cred(two_form)));
+        assert_eq!(client.secret_forms.len(), 2);
+        for spelling in [two_form.to_string(), percent_encode(two_form)] {
+            let out = client.scrub(format!("upstream echoed ?api_key={spelling}!"));
+            for form in &client.secret_forms {
+                assert!(
+                    !out.contains(form.as_str()),
+                    "{spelling}: a registered form survived one pass: {out}"
+                );
+            }
+            assert_eq!(client.scrub(out.clone()), out, "{spelling}: not idempotent");
+        }
     }
 
     /// No key configured ⇒ nothing to scrub, and no accidental blanket

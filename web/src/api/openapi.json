@@ -2813,6 +2813,45 @@
         }
       }
     },
+    "/api/today/launchpad": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
+        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad wave* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad wave with no `wave-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The wave and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
+        "operationId": "resolve_today_launchpad",
+        "responses": {
+          "200": {
+            "description": "The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TodayLaunchpadResolved"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/today/launchpad/ensure": {
       "post": {
         "tags": [
@@ -6602,6 +6641,23 @@
           },
           "terminal_id": {
             "type": "string"
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TodayLaunchpadResolved": {
+        "type": "object",
+        "description": "#1253 §5.1 — what the Today **page load** reads.\n\nA deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it\ndoes not grow into it: `ensure`'s shape is the bootstrap's, this one is the\nreader's, and the two answer different questions.\n\nThere is no `report_card_id` here on purpose. The wave detail already\nreturns the wave's cards and the frontend locates the report by\n`kind == \"wave-report\"` (`fe/core/domain/report.ts::readWaveReport`), so\nsuch a field would have no consumer.",
+        "required": [
+          "wave_id",
+          "report_has_noninitial_content"
+        ],
+        "properties": {
+          "report_has_noninitial_content": {
+            "type": "boolean",
+            "description": "Whether this report's `summary`/`body` differ **right now** from the\ncanonical freshly-minted pair.\n\nIt is NOT \"has anyone ever written it\": no history is consulted, so\nnone can be reported, and restoring the text to the canonical pair\nturns this back to `false`. Do not build a \"the summary has run\" marker\non it — see the first bullet below.\n\nIt is computed server-side by\n[`WaveReportPayload::report_startup_read_required`], the kernel's one\ncanonical \"has this been written\" predicate. It is deliberately NOT\nnamed `report_started`, and the difference is not cosmetic (design D7):\n\n* **It is a statement about the report's CURRENT content, not about its\n  history.** The name says exactly that, and the name is the contract:\n  it is `has_noninitial_content`, not `has_ever_been_written`. Restoring\n  `summary` and `body` byte-for-byte to the canonical initial pair\n  flips it back to `false`, whatever happened in between — no history is\n  consulted, so none can be reported.\n* It therefore also answers \"has *anyone* written it\", not \"has today's\n  summary run\": a user hand-editing the document flips it exactly as a\n  summary agent would, and a stale document still reads as content.\n  Anything that really needs \"did the summary run\" needs a durable\n  marker or event, not this.\n* It compares `summary + body` only; `doc_rev` and `blocks` are\n  deliberately ignored, so a canonical placeholder that CRDT has\n  already materialised still reads `false` — and so does a report whose\n  text was reverted to canonical while those two stayed non-zero.\n\nThe frontend must not re-derive this by looking at the report body:\n`readWaveReport` returns non-null for the canonical initial report\n(its body carries the maintenance-contract comment and four H1s), so a\nnull-check there renders four empty headings instead of an empty state."
           },
           "wave_id": {
             "type": "string"

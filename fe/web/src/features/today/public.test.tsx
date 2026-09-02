@@ -132,7 +132,12 @@ describe('Today agenda', () => {
       id: 'y', title: 'Tomorrow only',
       createdAt: NOW + DAY - 3_600_000, terminalAt: NOW + DAY + 3_600_000,
     });
-    const agenda = () => screen.getByRole('complementary').textContent ?? '';
+    /* The agenda, not the whole panel: since #1253 the card also carries the
+       RUNNING and RECENT modules, so `complementary` no longer means "the
+       calendar". The agenda's rows are exactly the ones Today asks for with
+       `variant: 'panel'`, which the stand-in at the top of this file marks. */
+    const agenda = () => [...document.querySelectorAll('[data-nc-role="row"][data-nc-state="selected"]')]
+      .map((row) => row.textContent ?? '').join('');
     render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave(), tomorrowOnly]} coves={[cove()]} nowMs={NOW} />);
     expect(agenda()).not.toContain('Tomorrow only');
 

@@ -5,13 +5,24 @@ type JsonObject = Record<string, unknown>;
 
 const METHODS = new Set(['delete', 'get', 'head', 'options', 'patch', 'post', 'put', 'trace']);
 const PATH_ITEM_FIELDS = new Set([...METHODS, 'summary', 'description', 'servers', 'parameters']);
+/*
+ * Response schemas that have no `wire.ts` counterpart, and cannot have one.
+ *
+ * `npm run gen:api` exports ts-rs bindings from **calm-types only**
+ * (`cargo test -p calm-types export_bindings_`), so a DTO declared in
+ * calm-server's own route module is structurally out of reach of that
+ * generator — every entry below is one of those, and the frontend types it
+ * with a hand-written zod schema in `core/domain/**` instead. Adding a name
+ * here is only legitimate for that reason; a type that calm-types could export
+ * belongs in the generator, not in this list.
+ */
 const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ErrorBody', 'GetSpecRunResponse', 'GitDiffResponse', 'GitStatusResponse',
   'InterruptSpecCardResponse', 'ListdirResponse', 'PluginDetail', 'PluginListItem',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetSpecCardResponse', 'SendSpecInputResponse', 'SettingsBag', 'Terminal',
-  'ThreadCardResolution', 'TodayLaunchpad', 'VersionInfo', 'ViewCatalogEntry',
-  'WaveBacklinksResponse', 'WaveDetail', 'WaveFsContent', 'WaveFsEntry',
+  'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadResolved', 'VersionInfo',
+  'ViewCatalogEntry', 'WaveBacklinksResponse', 'WaveDetail', 'WaveFsContent', 'WaveFsEntry',
   'WaveReportReadResponse', 'WaveTemplate',
 ]);
 

@@ -757,6 +757,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/today/launchpad": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * #1253 §5.1 — the read-only resolve the Today page load uses.
+         * @description **This handler must never reach the harness.** `ensure_today_launchpad`
+         *     materializes a workspace and then submits `spec-harness-start` and
+         *     `.wait()`s on it; putting that on the page-load path would make the whole
+         *     Today route fail hard whenever codex is unavailable, which is strictly
+         *     worse than the Today page this replaces (it needed nothing to render). So
+         *     this endpoint reads two rows and returns. It does not call `ensure`, does
+         *     not materialize a workspace, and submits no operation — `ensure` hangs off
+         *     an explicit user action only (INV-TODAYDOC-001).
+         *
+         *     **Routine absence is data; anomalous absence is an error.** That is the
+         *     whole rule, and the two branches here are the two sides of it.
+         *
+         *     *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+         *     `200` with a `null` body — not a 404. It was a 404 for one revision, on the
+         *     grounds that 404 is "cheap and fail-closed". That reasoning did not survive
+         *     contact with the fact that this is the **landing route**: every session on
+         *     a fresh workspace hit it, and the browser reports every 404 on its console
+         *     error stream, so an expected state was being transported as an error. CI
+         *     found it — two Playwright specs assert zero console errors and both load
+         *     Today; one CI run logged the 404 thirty times, because the query refetches.
+         *     The alternative was allowlisting a 404 in those specs, which buys a
+         *     permanent hole in a "no console errors" gate for a transient condition:
+         *     once #1253 PR2's trigger lands, first use mints a launchpad and the
+         *     exemption outlives its reason.
+         *
+         *     *A launchpad wave with no `wave-report` card* stays a `404`, and that is
+         *     the same rule rather than an exception to it. The wave and its report card
+         *     are created in **one transaction** (`today_launchpad_ensure_tx`), and the
+         *     adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
+         *     commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
+         *     The state is unreachable, so it produces no console noise in practice — and
+         *     if it ever does occur, an error is the correct signal.
+         *
+         *     Deliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence
+         *     idiom. That 404 is **control flow**: its consumer bootstraps on it, so the
+         *     status means "go create one" (INV-TODAYTERM-006 pins that chain). This one
+         *     would mean "render the empty state" — pure data, no action — so borrowing
+         *     the shape would discard the meaning.
+         */
+        get: operations["resolve_today_launchpad"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/today/launchpad/ensure": {
         parameters: {
             query?: never;
@@ -2096,6 +2153,57 @@ export interface components {
             spec_card_id: string;
             terminal_card_id: string;
             terminal_id: string;
+            wave_id: string;
+        };
+        /**
+         * @description #1253 §5.1 — what the Today **page load** reads.
+         *
+         *     A deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it
+         *     does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
+         *     reader's, and the two answer different questions.
+         *
+         *     There is no `report_card_id` here on purpose. The wave detail already
+         *     returns the wave's cards and the frontend locates the report by
+         *     `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+         *     such a field would have no consumer.
+         */
+        TodayLaunchpadResolved: {
+            /**
+             * @description Whether this report's `summary`/`body` differ **right now** from the
+             *     canonical freshly-minted pair.
+             *
+             *     It is NOT "has anyone ever written it": no history is consulted, so
+             *     none can be reported, and restoring the text to the canonical pair
+             *     turns this back to `false`. Do not build a "the summary has run" marker
+             *     on it — see the first bullet below.
+             *
+             *     It is computed server-side by
+             *     [`WaveReportPayload::report_startup_read_required`], the kernel's one
+             *     canonical "has this been written" predicate. It is deliberately NOT
+             *     named `report_started`, and the difference is not cosmetic (design D7):
+             *
+             *     * **It is a statement about the report's CURRENT content, not about its
+             *       history.** The name says exactly that, and the name is the contract:
+             *       it is `has_noninitial_content`, not `has_ever_been_written`. Restoring
+             *       `summary` and `body` byte-for-byte to the canonical initial pair
+             *       flips it back to `false`, whatever happened in between — no history is
+             *       consulted, so none can be reported.
+             *     * It therefore also answers "has *anyone* written it", not "has today's
+             *       summary run": a user hand-editing the document flips it exactly as a
+             *       summary agent would, and a stale document still reads as content.
+             *       Anything that really needs "did the summary run" needs a durable
+             *       marker or event, not this.
+             *     * It compares `summary + body` only; `doc_rev` and `blocks` are
+             *       deliberately ignored, so a canonical placeholder that CRDT has
+             *       already materialised still reads `false` — and so does a report whose
+             *       text was reverted to canonical while those two stayed non-zero.
+             *
+             *     The frontend must not re-derive this by looking at the report body:
+             *     `readWaveReport` returns non-null for the canonical initial report
+             *     (its body carries the maintenance-contract comment and four H1s), so a
+             *     null-check there renders four empty headings instead of an empty state.
+             */
+            report_has_noninitial_content: boolean;
             wave_id: string;
         };
         /**
@@ -5041,6 +5149,35 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    resolve_today_launchpad: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": null | components["schemas"]["TodayLaunchpadResolved"];
+                };
+            };
+            /** @description The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
