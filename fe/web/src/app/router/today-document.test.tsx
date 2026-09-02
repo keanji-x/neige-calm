@@ -76,6 +76,18 @@ function renderToday({ resolve, body }: Case) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  /*
+   * The launchpad's wave detail is seeded, not awaited.
+   *
+   * Without it there is a frame in which the resolve has answered but the
+   * detail has not, and in that frame the document region is legitimately
+   * blank — so "the empty state is showing and no section headings are
+   * rendered" is satisfied by a state that says nothing about the predicate.
+   * A mutation that deleted the `report_has_noninitial_content` check passed
+   * against exactly that frame. Seeding removes the frame: at the first render
+   * where the resolve is in hand, so is the report.
+   */
+  client.setQueryData(['wave', 'lp'], { wave: launchpadWave, cards: [reportCard(body)], overlays: [] });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>

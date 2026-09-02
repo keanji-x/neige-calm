@@ -1669,11 +1669,17 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       launchpadDocument={
         <ReportDocument
           report={launchpadReport}
+          /* Deliberately NOT Today's empty-state copy. Reaching this branch
+             means the server said the report HAS been written and this build
+             could not read the payload it sent — a different fact, and one
+             that must not be spelled like an empty day. (Sharing the wording
+             also made an INV-TODAYDOC-003 test pass on the frame before the
+             wave detail landed, which is how it was found.) */
           empty={<ReportEmpty
-            lead="Nothing written today yet."
+            lead="Today's report could not be read."
             hints={[
-              'This is the launchpad wave\'s report — the day\'s summary is written into it.',
-              'It is a current snapshot, rewritten each time, not a running log.',
+              'The server says it has been written, so this is a decoding problem, not an empty day.',
+              'The report\'s payload is probably newer than this build.',
             ]}
           />}
         />
