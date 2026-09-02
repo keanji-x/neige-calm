@@ -115,11 +115,25 @@ const unreadable: PanelRow = {
   actions: [{ kind: 'reveal-block', blockId: 'block-4', label: null, hint: 'Show delta-doc in the report' }],
 };
 
+/** Declared but not ready, and never dispatched: **the one row that carries a
+ *  declaration badge and a kind at once**, which is what makes "each is its own
+ *  leaf carrier" a claim with a witness rather than a rule about a shape no
+ *  fixture reaches. Its readiness word survives D8 — the word stands down for a
+ *  run, and there is none. */
+const notReady: PanelRow = {
+  id: 'block-5',
+  title: 'epsilon-fix',
+  kind: 'codex',
+  badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
+  status: null,
+  actions: [{ kind: 'reveal-block', blockId: 'block-5', label: null, hint: 'Show epsilon-fix in the report' }],
+};
+
 const tasksModule: RowModuleView = {
   key: 'tasks',
   title: 'Tasks',
   empty: 'No tasks declared yet.',
-  rows: [ready, dispatched, withdrawn, unreadable],
+  rows: [ready, dispatched, withdrawn, unreadable, notReady],
 };
 const emptyTasks: RowModuleView = { ...tasksModule, rows: [] };
 
@@ -214,9 +228,11 @@ describe('what the painted Tasks module puts on screen', () => {
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
     const container = paint(tasksModule);
     const struck = Array.from(container.querySelectorAll('[data-nc-badge="declaration"]'));
-    expect(struck.map((element) => element.textContent)).toEqual(['Withdrawn', 'Unreadable']);
+    expect(struck.map((element) => element.textContent))
+      .toEqual(['Withdrawn', 'Unreadable', 'Not ready']);
     expect(struck[0].className).toContain('mobileRowStruck');
     expect(struck[1].className).not.toContain('mobileRowStruck');
+    expect(struck[2].className).not.toContain('mobileRowStruck');
   });
 
   /* The row root is the action host, and the two markers share it. This is the
@@ -241,16 +257,27 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(row?.hasAttribute('aria-label')).toBe(false);
   });
 
-  /* D8, from the other side: the words this surface used to write for itself.
-     `Ready` is gone because `ready` carries no declaration at all, and the
-     dispatched row prints its status instead of `Not ready`. */
-  it('prints the derivation’s words and none of its own', () => {
-    const text = paint(tasksModule).textContent ?? '';
+  /*
+   * D8, from the other side, and **scoped to the two rows it is about**: a
+   * `ready` row carries no declaration at all (so the word this surface used to
+   * print for it is simply gone), and a dispatched row's readiness word stood
+   * down for the run. Asserting it over the whole module would be wrong rather
+   * than merely weak: `notReady` legitimately prints its word, because nothing
+   * has run.
+   */
+  it('prints no readiness word for a ready row or a dispatched one', () => {
+    const text = paint({ ...tasksModule, rows: [ready, dispatched] }).textContent ?? '';
     expect(text).not.toContain('Ready');
     expect(text).not.toContain('Not ready');
     expect(text).toContain('failed');
+  });
+
+  /* And the words the derivation *does* produce all arrive. */
+  it('prints every declaration the derivation kept', () => {
+    const text = paint(tasksModule).textContent ?? '';
     expect(text).toContain('Withdrawn');
     expect(text).toContain('Unreadable');
+    expect(text).toContain('Not ready');
   });
 
   /* The status carriers the projection reads, spelled out: the attribute holds

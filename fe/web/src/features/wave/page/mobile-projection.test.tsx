@@ -127,6 +127,16 @@ const TASKS: readonly ReportTaskRow[] = [
     blockId: 'block-4', key: 'delta-doc', state: 'unreadable', declaration: 'Unreadable',
     status: null, statusDetail: null, kind: null, workerCardId: null,
   },
+  /* Declared, not ready, never dispatched: **the one row carrying a declaration
+     badge and a kind at once**. Without it "each field is its own leaf carrier"
+     has no witness on this module — every other row has at most one of the two,
+     so a painter that wrapped them together would have nothing to wrap. Its
+     readiness word survives D8: the word stands down for a run, and there is
+     none. */
+  {
+    blockId: 'block-5', key: 'epsilon-fix', state: 'not-ready', declaration: 'Not ready',
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+  },
 ];
 
 const tasksModule = (tasks: readonly ReportTaskRow[]): readonly RowModuleView[] =>
@@ -234,12 +244,25 @@ describe('Tasks fixture shape guard', () => {
     expect(painter().action['open-card'].supported).toBe(false);
   });
 
-  /* D8, read off the derivation rather than off the DOM: neither word this
-     surface used to write for itself survives the trip. */
-  it('produces neither Ready nor Not ready for these rows', () => {
+  /* A row that carries a badge **and** a kind, so "each field is its own leaf
+     carrier" has a witness here rather than being a rule about a shape the
+     fixture never reaches. */
+  it('exercises a row carrying a declaration and a kind at once', () => {
+    expect(TASK_ROWS.some((row) => row.badges.length > 0 && row.kind !== null)).toBe(true);
+  });
+
+  /* D8, read off the derivation rather than off the DOM, and stated exactly:
+     the ready row gets no word at all, and the dispatched row's word stood down
+     for its run. `Not ready` is not absent from the module — the undispatched
+     row keeps it — so a blanket "these words never appear" would be false. */
+  it('drops the readiness word for a ready row and for a dispatched one', () => {
     const words = TASK_ROWS.flatMap((row) => row.badges.map((badge) => badge.text));
     expect(words).not.toContain('Ready');
-    expect(words).not.toContain('Not ready');
+    const byId = new Map(TASK_ROWS.map((row) => [row.id, row]));
+    expect(byId.get('block-1')!.badges).toEqual([]);
+    expect(byId.get('block-2')!.badges).toEqual([]);
+    expect(byId.get('block-2')!.status).not.toBeNull();
+    expect(byId.get('block-5')!.badges.map((badge) => badge.text)).toEqual(['Not ready']);
   });
 });
 
@@ -344,15 +367,19 @@ describe('the rendered mobile Tasks page projects its view model faithfully', ()
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
     const { container } = renderPage({ tasks: TASKS, panel: 'tasks' });
     const badges = Array.from(mobilePanel(container).querySelectorAll('[data-nc-badge]'));
-    expect(badges.map((badge) => badge.textContent)).toEqual(['Withdrawn', 'Unreadable']);
+    expect(badges.map((badge) => badge.textContent))
+      .toEqual(['Withdrawn', 'Unreadable', 'Not ready']);
     expect(badges[0].className).toContain('mobileRowStruck');
     expect(badges[1].className).not.toContain('mobileRowStruck');
+    expect(badges[2].className).not.toContain('mobileRowStruck');
   });
 
-  /* D8 on the real page: the two words this branch used to write for itself are
-     gone, and what replaced the second one is the run. */
+  /* D8 on the real page, over the two rows it is about: the ready row prints no
+     readiness word and the dispatched one shows its run instead. Scoped, because
+     the undispatched row on the same page keeps its word — the rule is "a run
+     supersedes the word", not "the word is gone". */
   it('shows the run instead of the readiness word it used to invent', () => {
-    const { container } = renderPage({ tasks: TASKS, panel: 'tasks' });
+    const { container } = renderPage({ tasks: TASKS.slice(0, 2), panel: 'tasks' });
     const text = mobilePanel(container).textContent ?? '';
     expect(text).not.toContain('Ready');
     expect(text).not.toContain('Not ready');
