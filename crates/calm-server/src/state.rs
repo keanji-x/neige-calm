@@ -261,6 +261,7 @@ impl BootState {
         AppState {
             repo: route_repo,
             events: self.events,
+            system_cove_mint: Arc::new(crate::routes::today::SystemCoveMintCounters::default()),
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -303,6 +304,11 @@ pub struct AppState {
     /// must funnel them through `db::write_with_event_typed`.
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
+    /// #1253 — per-server observation of the one race in `routes::today` that
+    /// is reachable. See [`crate::routes::today::SystemCoveMintCounters`] for
+    /// why it lives on the state rather than in a `static`, and why it is not
+    /// gated behind `fixtures`.
+    pub system_cove_mint: Arc<crate::routes::today::SystemCoveMintCounters>,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,

@@ -136,7 +136,7 @@ struct EnsureTxResult {
 /// literal instead is caught by
 /// `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`,
 /// because that case now asserts the retry arm was actually entered
-/// ([`SYSTEM_COVE_MINT_RETRIES`]) rather than only that the outcome looked
+/// ([`SystemCoveMintCounters`]) rather than only that the outcome looked
 /// right. Both mutations were run; both go red.
 const SYSTEM_COVE_UNIQUE: &str = "coves.kind";
 
@@ -162,29 +162,41 @@ const SYSTEM_COVE_UNIQUE: &str = "coves.kind";
 /// replacing the guard.
 const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
 
-/// How many `ensure` calls found no system cove and therefore tried to mint one.
+/// Per-server observation of the system-cove mint race.
 ///
-/// Test observability for the one race in this module that is reachable, and
-/// **deliberately not `#[cfg(feature = "fixtures")]`**: a case about scheduling
-/// must run the same instructions production runs, and a counter that exists
-/// only in the test build makes the tested binary a different binary. The cost
-/// is one relaxed atomic add on a path taken at most once per process lifetime.
+/// **Why it exists.** Without it the concurrency case asserted only its
+/// *outcome* — both requests succeeded, one cove, one launchpad — and every one
+/// of those assertions is equally true when the race never happens, because
+/// then only one request mints and the retry arm is never needed. `attempts`
+/// lets the case assert the race *occurred*, which is what makes the outcome
+/// assertions mean anything.
 ///
-/// Read as a delta around the request pair, and only sound because nextest runs
-/// each test in its own process; a threaded `cargo test` would let sibling
-/// cases in this module pollute it.
-#[doc(hidden)]
-pub static SYSTEM_COVE_MINT_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
-
-/// How many of those mints lost the race and took the retry arm.
+/// **Why it is not `#[cfg(feature = "fixtures")]`.** A case about scheduling
+/// has to execute the instructions production executes; a counter compiled only
+/// into the test build makes the tested binary a different binary from the
+/// shipped one, which is exactly what a timing test cannot afford. The cost is
+/// two relaxed atomic adds on a path taken at most once per server.
 ///
-/// This is the number the concurrency case asserts on. Without it that case
-/// asserted only its *outcome* — both requests succeeded, one cove, one
-/// launchpad — and every one of those assertions holds when the race never
-/// happens at all, which is exactly how its `sqlite::memory:` ancestor passed
-/// 10/10 while testing nothing.
-#[doc(hidden)]
-pub static SYSTEM_COVE_MINT_RETRIES: AtomicU64 = AtomicU64::new(0);
+/// **Why it hangs off [`AppState`] and not a `static`.** A process-global is
+/// shared by every `AppState` in the process, and ~30 sibling cases in
+/// `tests/cases/today_launchpad.rs` drive the same `ensure` helper. Under
+/// nextest (process per test) that is invisible; under a plain
+/// `cargo test --test domain_api_suite` they run as threads in one process and
+/// the counters read other cases' requests. Reproduced with a process-global
+/// here, the failure is a confident false RED reading "the race did not happen:
+/// 19 of the 2 requests found no system cove". Per-instance scoping removes the
+/// sharing rather than documenting it.
+///
+/// [`AppState`]: crate::state::AppState
+#[derive(Debug, Default)]
+pub struct SystemCoveMintCounters {
+    /// Requests that found no system cove and therefore tried to mint one.
+    /// Two of these means both requests read `None` before either wrote — i.e.
+    /// the race actually happened.
+    pub attempts: AtomicU64,
+    /// Mints that lost the race and took the retry arm.
+    pub retries: AtomicU64,
+}
 
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     let CalmError::Db(sqlx::Error::Database(error)) = error else {
@@ -512,7 +524,9 @@ pub(crate) async fn ensure_today_launchpad(
         // The read said "no system cove". Counted before the mint so that a
         // test can tell "both requests raced" from "the second one simply read
         // the first one's row".
-        SYSTEM_COVE_MINT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        app.system_cove_mint
+            .attempts
+            .fetch_add(1, Ordering::Relaxed);
         let route = RouteState::from_ref(&app);
         let minted = write_with_event_typed(
             app.repo.as_ref(),
@@ -545,7 +559,7 @@ pub(crate) async fn ensure_today_launchpad(
             // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
             // drives exactly that.
             Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => {
-                SYSTEM_COVE_MINT_RETRIES.fetch_add(1, Ordering::Relaxed);
+                app.system_cove_mint.retries.fetch_add(1, Ordering::Relaxed);
                 app.repo
                     .cove_get_system()
                     .await?

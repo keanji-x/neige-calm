@@ -7,7 +7,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::db::RepoRead;
-use calm_server::routes::today::{SYSTEM_COVE_MINT_ATTEMPTS, SYSTEM_COVE_MINT_RETRIES};
+use calm_server::routes::today::SystemCoveMintCounters;
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
@@ -30,6 +30,10 @@ use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
+    /// #1253 — this server's own mint counters. Per instance, so a sibling
+    /// case in the same binary cannot move them (which a process-global let
+    /// happen under a threaded `cargo test`).
+    system_cove_mint: Arc<SystemCoveMintCounters>,
     /// #1147 S2 — the managed workspace root this boot was pinned to.
     workspace_root: PathBuf,
     _tmp: TempDir,
@@ -86,6 +90,7 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     // #1147 S2 — keep every managed workspace this test mints inside the
     // sandbox, and make the root's location assertable.
     .with_workspace_root(tmp.path().join(root_name));
+    let system_cove_mint = Arc::clone(&state.system_cove_mint);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -94,6 +99,7 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     Boot {
         app,
         repo,
+        system_cove_mint,
         workspace_root: tmp.path().join(root_name),
         _tmp: tmp,
     }
@@ -1276,8 +1282,6 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     // `after_connect`'s `PRAGMA journal_mode = WAL` takes effect and readers do
     // not block — which makes the race *possible*, not *certain*, which is why
     // the counters are asserted rather than assumed.
-    let attempts_before = SYSTEM_COVE_MINT_ATTEMPTS.load(Ordering::Relaxed);
-    let retries_before = SYSTEM_COVE_MINT_RETRIES.load(Ordering::Relaxed);
     let tmp = TempDir::new().unwrap();
     let database = tmp.path().join("calm.db");
     let repo = Arc::new(
@@ -1293,8 +1297,10 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
             "a concurrent first ensure must retry the system-cove race, not 500: {status} {body}"
         );
     }
-    let attempts = SYSTEM_COVE_MINT_ATTEMPTS.load(Ordering::Relaxed) - attempts_before;
-    let retries = SYSTEM_COVE_MINT_RETRIES.load(Ordering::Relaxed) - retries_before;
+    // Absolute, not a delta: these counters belong to THIS server instance and
+    // nothing else touched it.
+    let attempts = b.system_cove_mint.attempts.load(Ordering::Relaxed);
+    let retries = b.system_cove_mint.retries.load(Ordering::Relaxed);
     // Both requests read "no system cove" before either wrote — i.e. the race
     // this case exists for actually occurred. Without this the assertions below
     // are satisfied by a run in which the second request simply read the first
