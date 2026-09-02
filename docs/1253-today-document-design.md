@@ -1,6 +1,6 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r11 —— 已收敛，含 PR1 实现期修订**（§5.1 的 `is_unique_constraint` 两处不对称、D7 的 O(1) 上限、INV-002 三态、§6 的 PR2 失效链）。原 r10：七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
+> 状态：设计 **r12 —— 含 PR1 实现期 + CI 期裁决**（r12：常规缺席改 200+null，见 §5.1）。r11（§5.1 的 `is_unique_constraint` 两处不对称、D7 的 O(1) 上限、INV-002 三态、§6 的 PR2 失效链）。原 r10：七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
 > review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|…|-r7].md`。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
@@ -273,7 +273,19 @@ GET wave detail                 → readWaveReport 自己按 kind 定位那张�
 
 - 页面加载**只 resolve**，404 是正常空态。
 - **不给 `TodayLaunchpad` 加 `report_card_id`**：wave detail 已返回 cards，`readWaveReport` 自己按 `kind === 'wave-report'` 定位，那个字段没有消费者。新增的是**窄只读 DTO**，它带的 `report_has_noninitial_content` 才是 FE 真正缺的东西（D7）。所以 D1 的「不新建端点」精确表述为：**不新增写/CRDT 端点，只新增一个只读 resolve 和一个触发动作**。
-- 「wave 存在但无 report 卡」**裁决为 404**（走空态）。但要说清理由：这不是在防一个真实可达的中间态——`today_launchpad_ensure_tx` 在**同一个事务**里建 wave 和 report 卡，adopt-legacy 那支在提交前也还没有 `purpose='launchpad'`，所以按 purpose 查的 resolve 根本看不见它。**404 是因为它便宜且 fail-closed，不是因为那个状态会发生**；别把不可达状态写成裁决理由，那又会变成一条删掉也不会红的假不变量。
+> **r12（CI 期裁决）——「没有 launchpad」改为 200 + 可空载荷，404 只留给「有 wave 但无 report 卡」。**
+>
+> 原文写着「404 = 还没有 → 空态，**不是错误**」。全栈 e2e 证明浏览器不同意：任何 404 都进控制台错误流，于是 `fe/e2e/routes-reachable.spec.ts` 的「零控制台错误」断言变红，`cove-crud` 也一起红——两条都只是因为**加载了 Today**。这是两条评审通道在本地都不可能发现的一类事实（playwright/docker 那三项本地从未跑过）。
+>
+> **原则：常规缺席是数据，异常缺席才是错误。**
+>
+> 不采纳「404-as-data 是本仓库既有惯例」这条反方（`GET /api/cards/{id}/terminal`、INV-TODAYTERM-006）：**那个 404 是控制流**——消费者据此 bootstrap，含义是「去建一个」；本端点的含义是「渲染空态」，纯数据、无动作。复用惯例会复用形状而丢掉含义。
+>
+> 决定性的是：这是**着陆路由**上一个**预期且常规**的状态，每个新工作区的每次会话都触发，一次 CI 运行里出现 30 次（查询重取）。而两种放行方案都是拿**永久的洞**换**临时的**状态（PR2 的触发一落地，首次使用就会铸出 launchpad）：文本键放行会豁免那两个 spec 里的**全部** 404，含本 PR 正在改的 Today 路由未来的回归；URL 键放行要在 5 个 spec 文件里逐字复制同一个 helper。
+>
+> 附带收益：FE 的 `queries.ts` 本来就在把 404 翻译成 `null`，所以这是**去掉**一层翻译而非新增概念；INV-002 因此收紧为**「null 是数据，任何失败都是错误」**，不再有状态码特例。
+
+- 「wave 存在但无 report 卡」**裁决为 404**（走空态）——**r12 后这是 404 的唯一用途**。但要说清理由：这不是在防一个真实可达的中间态——`today_launchpad_ensure_tx` 在**同一个事务**里建 wave 和 report 卡，adopt-legacy 那支在提交前也还没有 `purpose='launchpad'`，所以按 purpose 查的 resolve 根本看不见它。**404 是因为它便宜且 fail-closed，不是因为那个状态会发生**；别把不可达状态写成裁决理由，那又会变成一条删掉也不会红的假不变量。
 - `ensure` 只挂在显式动作上；它的任何失败必须浮出为错误，不得静默重试或降级成空态（与 INV-TODAYTERM-001 同理：静默会把「读失败」变成「悄悄铸了第二份」）。
 - 顺手修 `is_unique_constraint`：它在 `today.rs` 里被按**索引名**调用了**两处**——`idx_coves_one_system` 与 `idx_waves_one_launchpad`——而 SQLite 报的是 `coves.kind` / `waves.purpose`（两个索引都是 partial，实跑确认错误串不含索引名）。**所以那两个 `Err(...)` 分支现在都是死代码。**
 
@@ -294,7 +306,7 @@ GET wave detail                 → readWaveReport 自己按 kind 定位那张�
 | ID | 陈述（可证死的形式） | 反例（必须红） | 正例（必须绿） |
 |---|---|---|---|
 | INV-TODAYDOC-001 | 页面加载只走只读 resolve；`ensure` 只在显式动作上调用 | 加载路径触发 ensure | 加载只 resolve；404 → 空态 |
-| INV-TODAYDOC-002 | 动作路径上的失败浮出为错误，不静默降级；**读路径上 detail 的「在飞 / 5xx / 解码失败」三态各自成支**；`spec_harness_dormant` 走一次 start 重提交后重试，仍失败则浮出 | 5xx 被吞成空态**或吞成任何一句不描述该态的文案**；**或**「在飞」那一帧被当成解码失败；**或** dormant 被静默吞掉／无限重试／走了会清空 transcript 的 `/spec/reset` | 5xx → 带服务端原文的错误框 + 重试；在飞 → 不出文案；解码失败 → 只在这一格出「读不出」文案；dormant → 重提交 start → 单次重试 → 成功或浮出 |
+| INV-TODAYDOC-002 | **null 是数据，任何失败都是错误**（r12：不再有状态码特例）；动作路径上的失败浮出为错误，不静默降级；**读路径上 detail 的「在飞 / 5xx / 解码失败」三态各自成支**；`spec_harness_dormant` 走一次 start 重提交后重试，仍失败则浮出 | 5xx 被吞成空态**或吞成任何一句不描述该态的文案**；**或**「在飞」那一帧被当成解码失败；**或** dormant 被静默吞掉／无限重试／走了会清空 transcript 的 `/spec/reset` | 5xx → 带服务端原文的错误框 + 重试；在飞 → 不出文案；解码失败 → 只在这一格出「读不出」文案；dormant → 重提交 start → 单次重试 → 成功或浮出 |
 | INV-TODAYDOC-003 | 空态判据是服务端 `report_has_noninitial_content`；FE 不解析 report body 文本 | canonical 初始 report 下渲染出四个空标题而非空态；或 FE 出现按 body 文本判断的分支 | canonical initial payload（含 `doc_rev`/`blocks` 已被 CRDT 物化的那一格）→ 空态 + 按钮 |
 | ~~INV-TODAYDOC-004~~ | ~~`day_activity_allowed`~~ | 随 D4 第二层一并删除（§0b.4） | — |
 | ~~INV-TODAYDOC-005~~ | ~~返回体字段 allowlist~~ | 随 D4 第二层一并删除 | — |
