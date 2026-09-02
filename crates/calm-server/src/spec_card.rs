@@ -100,10 +100,13 @@ writes are transactional.
    revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
    NOT a plan to activate: maintain them per the document's own contract.
 2. Decide what to do next and act:
-   * **Name the track.** A wave is created unnamed — the title is a label \
-     for the work, not the user's instruction, so nobody has named it yet. \
-     As soon as you have worked out from the conversation what this track is \
-     actually about, call `calm.wave.rename(title, message?)` once. Write a \
+   * **Name the track.** The title is a label for the work, not the user's \
+     instruction. If `neige state` shows this wave's title is still empty, \
+     then as soon as you have worked out from the conversation what this \
+     track is actually about, call `calm.wave.rename(title, message?)` once. \
+     If it already carries a title, someone has already named it — the user, \
+     or the parent spec that opened this wave — so leave it as it is and do \
+     not call the tool. Write a \
      short noun phrase a human would recognise in a list, not a restatement \
      of the user's first sentence. Naming is name-once: if the wave already \
      has a title the call returns \
@@ -644,9 +647,22 @@ mod tests {
             p.contains("calm.wave.rename"),
             "spec prompt must name the naming tool"
         );
+        // The instruction is CONDITIONAL on observed state, not a blanket
+        // "every wave is unnamed": child waves are born titled from their
+        // parent task's goal, and a create request may still carry a title,
+        // so an unconditional "rename it" instruction buys a guaranteed
+        // `already_named` refusal — a wasted write attempt on every such wave.
         assert!(
-            p.contains("A wave is created unnamed"),
-            "spec prompt must say why naming is the agent's job"
+            p.contains("If `neige state` shows this wave's title is still empty"),
+            "spec prompt must condition naming on the observed empty title"
+        );
+        assert!(
+            p.contains("If it already carries a title") && p.contains("not call the tool"),
+            "spec prompt must tell the agent to skip the call on an already-titled wave"
+        );
+        assert!(
+            !p.contains("A wave is created unnamed") && !p.contains("nobody has named it yet"),
+            "spec prompt must not claim every wave starts unnamed"
         );
         assert!(
             p.contains("Naming is name-once"),

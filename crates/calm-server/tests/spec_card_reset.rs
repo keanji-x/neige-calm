@@ -2519,9 +2519,9 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
 // intent: `routes::waves::start_spec_harness` (the `spec-harness-start`
 // payload's `goal`), the spec card's `payload.prompt` at create, and
 // `/api/cards/{id}/spec/reset` for the `Spec` profile. #1211 moves the intent
-// out of the title — the wave is created unnamed and the spec agent names it
-// once the conversation has established what the work is — so all three must
-// stop seeding.
+// out of the title — a wave created without one starts unnamed and the spec
+// agent names it once the conversation has established what the work is — so
+// all three must stop seeding.
 //
 // These tests assert on the persisted `spec-harness-start` payload rather than
 // only on the live queue: the payload row is what the route decided, and it

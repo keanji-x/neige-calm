@@ -4,9 +4,17 @@
 //!
 //! Before #1211 the single new-wave input box was both the wave's title and
 //! the statement of what the wave should do, and the kernel turned the title
-//! back into the agent's opening goal. S1 deleted that seeding: a wave now
-//! comes into the world unnamed, and the name is something the spec agent
-//! works out from the conversation. This tool is the write port for that.
+//! back into the agent's opening goal. S1 deleted that seeding: a create
+//! request may now omit the title, and such a wave comes into the world
+//! unnamed with its name something the spec agent works out from the
+//! conversation. This tool is the write port for that.
+//!
+//! Not every wave arrives that way, and the difference matters to callers.
+//! A create request may still carry a non-empty `title` (S1 made it optional,
+//! not forbidden), the user may name a blank wave from the UI before the agent
+//! gets there, and a child wave is born titled from its parent task's goal
+//! (`operation/child_wave_adapter.rs`). So "unnamed" is a state to observe,
+//! never a state to assume — see the name-once gate below.
 //!
 //! ## Name-once
 //!
@@ -89,10 +97,11 @@ where
 fn wave_rename_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_WAVE_RENAME.into(),
-        description: "Spec-only: give this wave its name. A wave is created \
-             unnamed — the title is not the user's instruction, it is a label \
-             for the work — so once you have worked out from the conversation \
-             what this track is actually about, name it here. Write a short \
+        description: "Spec-only: give this wave its name. The title is not the \
+             user's instruction, it is a label for the work. If this wave's \
+             title is still empty, name it here once you have worked out from \
+             the conversation what this track is actually about; if it already \
+             has one, leave it alone and do not call this tool. Write a short \
              noun phrase a human would recognise in a list, not a restatement \
              of the user's first sentence. \
              Name-once: this succeeds only while the wave is still unnamed. If \
