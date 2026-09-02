@@ -490,7 +490,11 @@ describe('WavePage card inventory', () => {
    * not bought here.
    *
    * The cast is only how an out-of-union runtime value is handed to a typed
-   * prop — the kind of value a stale URL's `?panel=` produces.
+   * prop. The value is constructed *here*, by the test: the URL cannot produce
+   * it, because every production path into this prop runs through
+   * `asMobilePanel`, which folds anything outside the union to `null`. What it
+   * stands in for is a caller outside the type system — an unchecked dispatch
+   * site, or a `MobilePanelKind` member this file has not been taught.
    */
   it('routes an unrecognised panel value into the row-module lookup, not Conversations', () => {
     const unknown = 'no-such-module' as NonNullable<WavePageProps['panel']>;
