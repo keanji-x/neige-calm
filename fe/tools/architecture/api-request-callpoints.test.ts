@@ -41,8 +41,14 @@ describe('web api request callpoints', () => {
     /* Three calls, two files. `app/providers/queries.ts` holds two of them:
        `runOperation`, and #1253's Today launchpad resolve, which needs the
        failure rather than an exception so it can turn a 404 into data while
-       every other failure stays an error. Every call is arity 3 — the
-       `unauthorized` channel is never dropped, which is what this pins. */
+       every other failure stays an error.
+
+       What the arities pin is that the third argument is always written out,
+       NOT that a channel is always supplied: `session-gate` passes `undefined`
+       on purpose, because the unauthenticated probe must not notify. Arity 3
+       everywhere makes that omission a visible decision at the call site
+       rather than something a caller can drift into by leaving the argument
+       off. */
     expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3, 3, 3]);
   });
 
