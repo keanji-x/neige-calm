@@ -130,14 +130,20 @@ struct EnsureTxResult {
 /// The `constraint` argument for the system-cove race, and the ONLY place that
 /// string is written.
 ///
-/// **What binds it, precisely.** Reverting *this constant* to an index name is
-/// caught by `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`,
-/// which asserts against the constant. Reverting the *call site* to an inline
-/// literal instead is caught by
-/// `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`,
-/// because that case now asserts the retry arm was actually entered
-/// ([`SystemCoveMintCounters`]) rather than only that the outcome looked
-/// right. Both mutations were run; both go red.
+/// **What binds it, precisely** — two different mutations, two different
+/// carriers, both measured:
+///
+/// * Reverting *this constant* to an index name →
+///   `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`
+///   goes red, because it asserts against the constant.
+/// * Reverting the *call site* to an inline index literal →
+///   `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
+///   goes red **at its HTTP status assertion**, which fires on the losing
+///   request's 500. NOT at its `retries == 1` assertion, which that mutation
+///   never reaches. What [`SystemCoveMintCounters`] contributes there is not
+///   the failing assertion but its *validity*: `attempts == 2` proves the race
+///   happened at all, without which the status assertion is satisfied by a run
+///   in which nothing was ever retried.
 const SYSTEM_COVE_UNIQUE: &str = "coves.kind";
 
 /// The `constraint` argument for the launchpad-wave race.
@@ -753,17 +759,23 @@ mod tests {
     /// `CalmError`, and deliberately not `waves::is_unique_constraint_for_test`
     /// — a test that reaches for a test-only export is testing the export.
     ///
-    /// **It asserts against [`SYSTEM_COVE_UNIQUE`] and [`LAUNCHPAD_UNIQUE`],
-    /// not against string literals**, and that is what makes it a test of the
-    /// call sites rather than of the helper. The first version of this test
-    /// used literals; reverting the launchpad call site to the index name left
-    /// it green, which is the same defect in a new costume — the assertion has
-    /// to read the value production passes, not restate the value production
-    /// ought to pass.
+    /// **What it binds, and what it does not.** It asserts against
+    /// [`SYSTEM_COVE_UNIQUE`] and [`LAUNCHPAD_UNIQUE`] rather than string
+    /// literals, so it is a test of **those two constants**: reverting either
+    /// to an index name turns it red, where the first version of this test
+    /// (which restated the literals) stayed green.
     ///
-    /// The negative half is the other load-bearing half: asserting only that
-    /// the constants match would stay green if SQLite ever started naming the
-    /// index too, so both index names are asserted NOT to match.
+    /// It is **not** a test of the call sites, and claiming it was is itself a
+    /// review finding. A call site that passes an inline literal instead of its
+    /// constant leaves this test green — measured: that mutation on the
+    /// launchpad arm passes here and fails only
+    /// `cargo clippy --lib -- -D warnings`, on `dead_code`. What binds each
+    /// call site is written on the constant it uses: the concurrency case for
+    /// [`SYSTEM_COVE_UNIQUE`], clippy alone for [`LAUNCHPAD_UNIQUE`].
+    ///
+    /// The negative half is load-bearing too: asserting only that the constants
+    /// match would stay green if SQLite ever started naming the index as well,
+    /// so both index names are asserted NOT to match.
     #[tokio::test]
     async fn sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -785,10 +797,11 @@ mod tests {
             message.contains("UNIQUE constraint failed: coves.kind"),
             "unexpected message: {message}"
         );
-        // `SYSTEM_COVE_UNIQUE`, not a literal: this is the exact value the
-        // retry arm passes, so reverting that arm reverts this assertion's
-        // input too. A literal here would pin the helper and leave the call
-        // site free to go back to matching nothing.
+        // `SYSTEM_COVE_UNIQUE`, not a literal, so this assertion follows the
+        // constant the retry arm reads: revert the CONSTANT and this goes red,
+        // where a literal here would pin only the helper. It does NOT follow
+        // the call site — swapping the arm to an inline literal leaves this
+        // green (the docstring above says what catches that instead).
         assert!(
             is_unique_constraint(&error, SYSTEM_COVE_UNIQUE),
             "the system-cove retry arm's constraint must match a real \

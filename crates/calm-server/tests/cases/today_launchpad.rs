@@ -1258,38 +1258,28 @@ async fn an_unreadable_report_payload_reads_as_having_content() {
 /// never the defect — the call sites were.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_first_ensure_retries_the_system_cove_race() {
-    // ── This case asserts the MECHANISM, not the outcome. ──
+    // ── This case asserts the MECHANISM, not just the outcome. ──
     //
     // Its previous form checked only that both requests succeeded and that the
-    // singletons held — and every one of those assertions is *also* true when
-    // the race never happens, because then only one request ever mints and the
-    // retry arm is never needed. That is not a hypothetical: the
-    // `sqlite::memory:` ancestor of this case passed 10/10 against a
-    // deliberately broken retry arm, and even on disk nothing orders the two
-    // requests (request A can reuse a warm pool connection and finish the whole
-    // `ensure` while B is still establishing one, after which B reads `Some`).
-    // Green-today was never the property worth having; red-on-regression is.
+    // singletons held. Every one of those is *also* true when the race never
+    // happens: then only one request mints, the retry arm is never needed, and
+    // a broken arm is never touched. Nothing orders the two requests — A can
+    // reuse a warm pool connection and finish the whole `ensure` while B is
+    // still establishing one, after which B reads `Some` — so "green" on its
+    // own carried no information about whether anything had been exercised.
     //
-    // So the counters below are the assertion, and the status/singleton checks
-    // are kept only as corroboration.
+    // `attempts == 2` is what fixes that: it says both requests read "no system
+    // cove" before either wrote, i.e. the race occurred, which is what turns
+    // the status assertion below from vacuous into a gate.
     //
-    // On disk rather than `sqlite::memory:` because sqlite has no WAL for
-    // in-memory databases: the shared-cache memory DB every other case here
-    // uses falls back to a journal mode where a writer takes an exclusive lock
-    // and READERS BLOCK, so the losers' `cove_get_system()` waits behind the
-    // winner's whole transaction and returns `Some`. Instrumented, that form
-    // showed one mint attempt per round across six concurrent requests. On disk
-    // `after_connect`'s `PRAGMA journal_mode = WAL` takes effect and readers do
-    // not block — which makes the race *possible*, not *certain*, which is why
-    // the counters are asserted rather than assumed.
-    let tmp = TempDir::new().unwrap();
-    let database = tmp.path().join("calm.db");
-    let repo = Arc::new(
-        SqlxRepo::open(&format!("sqlite://{}?mode=rwc", database.display()))
-            .await
-            .unwrap(),
-    );
-    let b = boot_with(tmp, repo, "workspaces").await;
+    // `sqlite::memory:` like every sibling case here, measured on this exact
+    // two-request shape: 8/8 green unmutated with `attempts == 2` holding, and
+    // 8/8 red with the retry arm broken. An earlier revision used an on-disk
+    // WAL database on the theory that in-memory sqlite suppresses the race;
+    // that reading came from a different shape (six barrier-released requests)
+    // and did not survive being re-measured against this one, so the special
+    // case is deleted rather than re-justified.
+    let b = boot().await;
     let (first, second) = tokio::join!(ensure(b.app.clone()), ensure(b.app.clone()));
     for (status, body) in [&first, &second] {
         assert!(
@@ -1302,18 +1292,22 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     let attempts = b.system_cove_mint.attempts.load(Ordering::Relaxed);
     let retries = b.system_cove_mint.retries.load(Ordering::Relaxed);
     // Both requests read "no system cove" before either wrote — i.e. the race
-    // this case exists for actually occurred. Without this the assertions below
-    // are satisfied by a run in which the second request simply read the first
-    // one's committed row.
+    // this case exists for actually occurred. Without this, every assertion
+    // below is satisfied by a run in which the second request simply read the
+    // first one's committed row and no retry was ever needed.
     assert_eq!(
         attempts, 2,
         "the race did not happen: {attempts} of the 2 requests found no system \
          cove, so nothing exercised the retry arm and the assertions below \
          prove nothing"
     );
-    // …and exactly one of them lost and went through the retry arm. This is
-    // the assertion that reverting the call site to an index-name literal makes
-    // red; the outcome assertions below all stay green under that mutation.
+    // …and exactly one of them lost and went through the retry arm.
+    //
+    // Corroboration, not the gate. A broken retry arm is caught by the STATUS
+    // assertion above, which fires on the loser's 500 before execution reaches
+    // here — measured: that mutation panics at the "not 500" assertion. This
+    // line would only fire on a shape neither mutation produces, such as the
+    // arm being entered twice.
     assert_eq!(
         retries, 1,
         "expected exactly one loser to take the system-cove retry arm, got \
