@@ -404,9 +404,16 @@ async fn overlay_post_cannot_mark_an_existing_wave_as_template() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={err}");
 
-    // The wave is untouched: no overlay landed, so it stays visible and
-    // dispatchable. This is the half that matters — a 403 that still wrote
-    // the row would be worse than no gate at all.
+    // The wave is untouched: no template row landed, and it stays visible.
+    // This is the half that matters — a 403 that still wrote the row would
+    // be worse than no gate at all.
+    //
+    // Scoped deliberately: this asserts the row is absent and the wave is
+    // still listed, NOT that the scheduler still dispatches it. Dispatch
+    // admission is exercised against a real scheduler in
+    // `scheduler::inv_1110_001_template_wave_does_not_dispatch`; claiming it
+    // here off a list-visibility check would be asserting more than the test
+    // runs.
     // Scoped to `kind == template`: the kernel writes its own `layout` row
     // under the same `view` namespace when it builds the wave, so an
     // "empty overlay list" assertion here would be asserting something
