@@ -16,15 +16,15 @@
 //! # What the policy table in this module's tests is, and is not
 //!
 //! The table asserted by the tests below is the **declared intent** for each
-//! origin: it is written from the design ruling and from a reading of today's
-//! call sites, and it locks nothing but that declaration. Nothing in it was
-//! observed from a running system, and no test here proves that `policy_for`
-//! reproduces what production does today.
+//! origin, and it locks nothing but that declaration. Every line of it comes
+//! from the design ruling and from a reading of today's call sites; not one
+//! line comes from observing a running system. No test in this module compares
+//! `policy_for`'s output against what production computes.
 //!
-//! The behavioural-equivalence proof happens in **S1 step 2**, when
-//! `policy_for`'s output is compared against the quadruples the existing
-//! production call sites actually pass. Until that comparison exists and is
-//! green, treat this area as *unproven*.
+//! That comparison is **S1 step 2**'s job: it puts `policy_for`'s output next
+//! to the quadruples the existing production call sites actually pass. Until
+//! it exists and is green, whether this module agrees with production is an
+//! open question.
 //!
 //! # Why attribution is two shapes, not `Option<EditAuthor>`
 //!
@@ -32,15 +32,20 @@
 //! **deliberately derives no `EditAuthor`**. It used to (`User` with no
 //! `X-Calm-Actor` header, `Spec` otherwise), and handing that author to
 //! `routes::waves::fork_guard::guard_forked_blocks` made the guard a no-op for
-//! the browser fork — the most common fork there is. `fork_guard` locks the
-//! same rule from the other side: the exemption "cannot be reintroduced
-//! without re-plumbing it through `prepare_fork_report`".
+//! the browser fork — in that module's words, "the only case that mattered",
+//! because a browser fork sends no header. `fork_guard` locks the same rule
+//! from the other side: the author "is no longer threaded into the fork guard
+//! at all, so that gate cannot be reintroduced without re-plumbing it through
+//! `prepare_fork_report`".
 //!
 //! An `Option<EditAuthor>` would reopen exactly that hole, because "no author"
 //! and "some author" would be the same type and a future caller could pass
-//! either. [`WriteAttribution`] is therefore two shapes:
-//! `guard_task_declarations` takes only [`WriteAttribution::Authored`], and
-//! [`WriteAttribution::Structural`] goes down the fork belt *by type*.
+//! either. [`WriteAttribution`] is therefore two shapes, and only
+//! [`WriteAttribution::Authored`] carries an `EditAuthor` at all. So when step 2
+//! wires this up, the `author: EditAuthor` argument of
+//! `wave_report_edit_guard::guard_task_declarations` can only be supplied from
+//! that shape, and [`WriteAttribution::Structural`] has nothing to supply it
+//! with — the fork belt is entered *by type*, not by a runtime test.
 //!
 //! # Why there is no `Plugin` origin
 //!
@@ -75,12 +80,15 @@
 //!
 //! # Why there are no guard/CAS booleans here
 //!
-//! The three report guards are unconditional control flow inside
-//! `wave_report::apply_report_op` today. Modelling them as booleans would
+//! The three report guards — `guard_non_prose_stomp` in the `Replace` arm,
+//! `validate_body_fences` in the `Replace` and `WriteMarkdown` arms, and
+//! `guard_task_declarations` after the match on every op that got that far —
+//! are plain control flow inside `wave_report::apply_report_op` today, with no
+//! parameter that can switch any of them off. Modelling them as booleans would
 //! reduce "turn a guard off" to writing `false` — and an exemption that can be
 //! expressed will eventually be used. Per-origin differences in CAS input
-//! belong on the *constructor signatures* of step 2 (the fork constructor
-//! simply has no `expected_rev` parameter), not in a runtime flag.
+//! belong on the *constructor signatures* of step 2 (its fork constructor will
+//! simply have no `expected_rev` parameter), not in a runtime flag.
 
 use calm_types::event::EditAuthor;
 use calm_types::ids::{ActorId, CardId, WaveId};
@@ -114,17 +122,34 @@ use crate::error::CalmError;
 /// job, because only the caller holds the request context the error names.
 ///
 /// The wave this carries is the **wave being written**, as resolved for the
-/// call — `mcp_server::tools::wave_report::resolve_report_for_caller` reads it
-/// from the bound spec card's `wave_id`. It is *not* interchangeable with the
-/// wave that identity resolution attaches to the principal
-/// (`card_identity_get_by_session`, `transport.rs`), even though both read the
-/// same column today and are therefore equal. `decide_recorder` compares the
-/// card's own wave against the write target
-/// (`card_wave != wave`, `calm-truth/src/decision_gate.rs`), so the two are
-/// opposite sides of one comparison. When step 2 threads this through, it must
-/// keep supplying the recorder probe's target wave from *this* field and let
-/// the principal's wave come from identity resolution; collapsing them into a
-/// single value would make that comparison compare a value with itself.
+/// call: `mcp_server::tools::wave_report::resolve_report_for_caller` looks up
+/// the caller's *own* card by `identity.card_id` and takes that card's
+/// `wave_id`. It is not always a spec card — `calm.report.write_markdown` and
+/// the block tools admit `CardRole::Assistant` too
+/// (`require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])` in
+/// `mcp_server/tools/wave_report_blocks.rs`), and for such a call the wave
+/// comes from the Assistant card. That resolved wave is what
+/// `decision_sink::CardDecisionSink::commit_report_op` puts in the recorder
+/// probe's `wave_id` field.
+///
+/// It is a *different input* from the wave identity resolution attaches to the
+/// principal (`ToolCallIdentity::to_principal` copies `identity.wave_id`, which
+/// `card_identity_get_by_session` filled from `cards WHERE session_id = ?`),
+/// even though both end up reading the `cards.wave_id` column today and are
+/// therefore equal. The gate reads only one of the two: `decide_recorder`
+/// destructures `Principal::Agent { session_id, .. }` and never touches
+/// `principal.wave_id`. Its other side is a fresh in-transaction read —
+/// `worker_sessions` row → `session.card_id` → `read_card_wave` — compared
+/// against the target wave it was passed as an argument (`card_wave != wave`,
+/// `calm-truth/src/decision_gate.rs`).
+///
+/// So the reason step 2 must keep feeding the probe's target wave from *this*
+/// field is not that collapsing the two would make the gate compare a value
+/// with itself; it would not, because the gate's other side is that fresh read
+/// either way. The reason is that this field is the side that says *which wave
+/// the write claims to land on*. Feed the principal's identity wave instead and
+/// both sides of the comparison become session-derived, so the check stops
+/// saying anything about the write's target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentOrigin {
     pub card_id: CardId,
@@ -153,9 +178,20 @@ pub struct AgentOrigin {
 /// for the legacy `ai:codex` header — every other header value falls through
 /// its documented defensive default to `User`. The second shape cannot complete
 /// a fork either: the empty card id is rejected as
-/// `RoleViolation::EmptyAiCardId` when the wave-create events emit
-/// (`calm-truth/src/role_gate.rs`), so under `ai:codex` the route 403s rather
-/// than reaching a report copy.
+/// `RoleViolation::EmptyAiCardId` when the wave-create events are gated
+/// (`calm-truth/src/role_gate.rs`), so under `ai:codex` the route 403s and the
+/// wave is never created.
+///
+/// Note *where* that refusal lands, because it is later than it looks. The gate
+/// runs on the batch the write closure returned
+/// (`write_with_actor_events`, `calm-truth/src/db/sqlite/events.rs`), and the
+/// fork's report copy — `routes::waves::persist_fork_report_and_project_tasks_tx`
+/// — sits inside that closure. Under `ai:codex` the copy therefore **does
+/// execute**, and the whole transaction is then rolled back. The conclusion
+/// holds (a non-`User` initiator cannot complete a fork and leaves nothing
+/// behind), but anyone adding a side effect to the copy stage that is not
+/// covered by the transaction — a file write, an outbound request, a metric —
+/// must know that this path reaches their code.
 ///
 /// A constructor over the whole `ActorId` enum would enforce nothing its name
 /// claims, and the origin it feeds is the one that matters most: `Fork` is the
@@ -212,6 +248,13 @@ pub enum WriteOrigin {
     /// initiator is a real input of the fork's `CardAdded` attribution, so a
     /// later widening of the admitted set lands as one edit in
     /// `TrustedInitiator::new` and needs no change in [`policy_for`].
+    ///
+    /// Whoever makes that edit owes a second one: restore a pass-through test.
+    /// While the admitted set has one element, the `initiator.actor().clone()`
+    /// in [`policy_for`] has no behavioural coverage at all — replacing it with
+    /// a hardcoded `ActorId::User` keeps every test in this crate green. As
+    /// soon as a second initiator shape is admitted that mutation becomes
+    /// detectable, and the test that detects it has to exist.
     Fork(TrustedInitiator),
 }
 
@@ -221,7 +264,8 @@ pub enum WriteOrigin {
 /// `Option<EditAuthor>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteAttribution {
-    /// The write has an author, and `guard_task_declarations` applies.
+    /// The write has an author. This is the only shape that can supply the
+    /// `author` argument of `guard_task_declarations`; see the module docs.
     Authored(EditAuthor),
     /// The write is a structural copy with no author. Fork only.
     Structural,
@@ -229,15 +273,19 @@ pub enum WriteAttribution {
 
 /// Whether the recorder gate is consulted for this write.
 ///
-/// Shaped to today's observed variation and no wider. Across every production
-/// call site of `persist_report_with_shadow`, the `recorder_shadow` argument
-/// takes exactly two values:
+/// Shaped to the variation today's call sites carry, and no wider. Across every
+/// production path that reaches `persist_report_with_shadow`, the
+/// `recorder_shadow` argument takes exactly two values:
 ///
 /// * `Some(CardDecisionSinkRecorderShadowProbe { principal, wave_id })` — the
 ///   one agent funnel, `decision_sink::CardDecisionSink::commit_report_op`;
-/// * `None` — every REST-user site (`routes::wave_report_blocks::commit`,
-///   `routes::wave_templates`, `routes::waves::update_wave_report`) and the
-///   kernel template-seeding sites.
+/// * `None` — `routes::wave_report_blocks::commit` and
+///   `routes::wave_templates::update_wave_template`, which call it directly,
+///   plus `routes::waves::update_wave_report` and the two kernel
+///   template-seeding sites (`seed_template_wave`,
+///   `restamp_template_report_if_placeholder`), which go through the
+///   `wave_report::persist_report` wrapper — and that wrapper hardcodes `None`
+///   with no parameter to vary it.
 ///
 /// So this enum has two variants, not three.
 ///
@@ -483,22 +531,68 @@ mod tests {
     // `TrustedInitiator` admitting only `ActorId::User`, "carries the initiator
     // through" and "hardcodes `ActorId::User`" have the same output on every
     // constructible input, so such a test would assert nothing beyond the
-    // `fork by user` row of the table above. See the `WriteOrigin::Fork` docs.
+    // `fork by user` row of the table above. Whoever widens the admitted set
+    // must add it back — that is the point at which the mutation becomes
+    // detectable. See the `WriteOrigin::Fork` docs.
+
+    /// Bump this alongside a new arm in [`actor_variant_label`].
+    const ACTOR_ID_NON_USER_VARIANTS: usize = 9;
+
+    /// A label per `ActorId` variant. The `match` has **no `_` arm**: adding a
+    /// variant to `ActorId` fails to compile here, which is what brings the
+    /// author to [`every_non_user_actor`] below.
+    fn actor_variant_label(actor: &ActorId) -> &'static str {
+        match actor {
+            ActorId::User => "User",
+            ActorId::Kernel => "Kernel",
+            ActorId::KernelDispatcher => "KernelDispatcher",
+            ActorId::Plugin(_) => "Plugin",
+            ActorId::AiSpec(_) => "AiSpec",
+            ActorId::AiCodex(_) => "AiCodex",
+            ActorId::AiClaude(_) => "AiClaude",
+            ActorId::AiSpecSession(_) => "AiSpecSession",
+            ActorId::AiCodexSession(_) => "AiCodexSession",
+            ActorId::AiClaudeSession(_) => "AiClaudeSession",
+        }
+    }
+
+    /// One value for every non-`User` `ActorId` variant — the enumeration is
+    /// the point, so it is checked rather than assumed: the labels the samples
+    /// produce must be [`ACTOR_ID_NON_USER_VARIANTS`] distinct ones.
+    fn every_non_user_actor() -> Vec<ActorId> {
+        let samples = vec![
+            ActorId::Kernel,
+            // The actor `operation::child_wave_adapter` uses when it creates a
+            // wave — the most plausible future non-`User` fork initiator.
+            ActorId::KernelDispatcher,
+            ActorId::Plugin("git-forge".to_string()),
+            ActorId::AiSpec(CardId::from("c_2".to_string())),
+            ActorId::AiCodex(CardId::from("c_2".to_string())),
+            ActorId::AiClaude(CardId::from("c_2".to_string())),
+            ActorId::AiSpecSession(WorkerSessionId::from("sess_fork".to_string())),
+            ActorId::AiCodexSession(WorkerSessionId::from("sess_fork".to_string())),
+            ActorId::AiClaudeSession(WorkerSessionId::from("sess_fork".to_string())),
+        ];
+        let mut labels: Vec<&'static str> = samples.iter().map(actor_variant_label).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            ACTOR_ID_NON_USER_VARIANTS,
+            "one sample per non-`User` `ActorId` variant is required; got {labels:?}"
+        );
+        samples
+    }
 
     /// `TrustedInitiator` is the fork's author-guard bypass in type form, so it
     /// admits only the initiator shape the fork route can actually produce.
-    /// The refused shapes below are the ones a future caller would most
-    /// plausibly reach for.
+    /// The refused set is *every* non-`User` variant of `ActorId`, plus the
+    /// empty-card-id `AiCodex` that `Actor::to_actor_id` emits for the legacy
+    /// `ai:codex` header — the one non-`User` shape the fork route can hand in.
     #[test]
     fn a_trusted_initiator_refuses_every_shape_the_fork_route_cannot_produce() {
-        let refused = [
-            ActorId::AiCodex(CardId::from("c_2".to_string())),
-            ActorId::AiCodex(CardId::from(String::new())),
-            ActorId::AiClaudeSession(WorkerSessionId::from("sess_fork".to_string())),
-            ActorId::AiSpecSession(WorkerSessionId::from("sess_fork".to_string())),
-            ActorId::Kernel,
-            ActorId::Plugin("git-forge".to_string()),
-        ];
+        let mut refused = every_non_user_actor();
+        refused.push(ActorId::AiCodex(CardId::from(String::new())));
         for actor in refused {
             let error = TrustedInitiator::new(actor.clone())
                 .err()
@@ -517,7 +611,9 @@ mod tests {
     }
 
     /// Structural attribution must not be reachable for anything but a fork:
-    /// it is the shape that skips `guard_task_declarations`.
+    /// it is the shape that carries no `EditAuthor`, so once step 2 wires this
+    /// up it is the one that reaches the write without `guard_task_declarations`
+    /// having an author to judge.
     #[test]
     fn structural_attribution_belongs_to_the_fork_origin_alone() {
         let origins = [
