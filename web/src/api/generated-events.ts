@@ -368,7 +368,14 @@ export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, a
  * Rust readers must use `workspace.path`; this field only preserves the
  * existing wire shape.
  */
-cwd: string, workflow_id: string | null, 
+cwd: string, 
+/**
+ * Template this wave was created from.
+ *
+ * The `serde(alias)` below is a deserialization-only compatibility read
+ * for pre-#1209 event-log rows; serialization emits only this name.
+ */
+template_id: string | null, 
 /**
  * Owning plugin copied from the bound workflow. Immutable after creation.
  */
@@ -378,9 +385,11 @@ plugin_scope: string | null,
  */
 purpose: string | null, 
 /**
- * Workflow input is validated at creation and otherwise remains opaque.
+ * Template input is validated at creation and otherwise remains opaque.
+ *
+ * Carries the same deserialization-only alias as `template_id`.
  */
-workflow_input: unknown, 
+template_input: unknown, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -565,7 +574,14 @@ export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: 
  * Rust readers must use `workspace.path`; this field only preserves the
  * existing wire shape.
  */
-cwd: string, workflow_id: string | null, 
+cwd: string, 
+/**
+ * Template this wave was created from.
+ *
+ * The `serde(alias)` below is a deserialization-only compatibility read
+ * for pre-#1209 event-log rows; serialization emits only this name.
+ */
+template_id: string | null, 
 /**
  * Owning plugin copied from the bound workflow. Immutable after creation.
  */
@@ -575,9 +591,11 @@ plugin_scope: string | null,
  */
 purpose: string | null, 
 /**
- * Workflow input is validated at creation and otherwise remains opaque.
+ * Template input is validated at creation and otherwise remains opaque.
+ *
+ * Carries the same deserialization-only alias as `template_id`.
  */
-workflow_input: unknown, 
+template_input: unknown, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),

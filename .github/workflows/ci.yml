@@ -301,6 +301,12 @@ jobs:
           fi
           echo "OK: none of the accessor/derive shapes this ratchet knows about are present (this is drift detection, not a completeness proof)"
 
+      - name: web compat version lockstep gate (#1209 PR-2)
+        run: ./scripts/gate-web-compat-version-lockstep.sh
+
+      - name: template rename residual gate (#1209 PR-2, acceptance B10)
+        run: ./scripts/gate-1209-template-rename-residual.sh
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 

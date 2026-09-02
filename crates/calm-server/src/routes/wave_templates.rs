@@ -13,7 +13,7 @@
 //! * `input_schema` — the **owning plugin's** manifest `input_schema`, reached
 //!   through the same [`resolve_trusted_workflow`] the create path uses. Absent
 //!   when no running trusted plugin declares that id, which is exactly the set
-//!   of templates that would be rejected for carrying `workflow_input`.
+//!   of templates that would be rejected for carrying `template_input`.
 //! * `tasks` — the template's own `task` blocks, projected to `key` + `goal`.
 //!   The picker shows them so "what does this template give me" is answered
 //!   with the template's own content instead of a prose description nobody
@@ -34,15 +34,12 @@
 //!
 //! ## The vocabulary seam, closed (#1209)
 //!
-//! One concept (template), one field (`workflow_id`). This endpoint lists it,
-//! `POST /api/waves` admits by it, and **the admission test is only "is it in
-//! the roster"** — there is no second path in. A plugin's manifest
-//! `workflows[]` array declares *which roster keys this plugin claims*; that is
-//! not a second spelling of the concept but a documented adapter boundary (see
-//! the field docs on `plugin_host::manifest::Manifest::workflows`).
-//!
-//! (#1209 PR-2 renames the wire field to `template_id`. The seam is already
-//! gone as of PR-1; what is left is spelling.)
+//! One concept (template), one field (`template_id`). This endpoint lists it,
+//! `POST /api/waves` admits by it, and there is no second spelling. The
+//! `workflows[]` array in a plugin manifest is a file written by *the other
+//! side*; it declares which template keys this plugin claims. That is not a
+//! seam but a documented adapter boundary (see the field docs on
+//! `plugin_host::manifest::Manifest::workflows`).
 //!
 //! The shape returned here did not change when the concepts merged.
 //!
@@ -164,18 +161,18 @@ pub fn router() -> Router<AppState> {
 /// One selectable starting point for a new wave.
 ///
 /// "Blank" is not in this list and never will be: it is the *absence* of a
-/// template (`POST /api/waves` with no `workflow_id`), so the client renders it
+/// template (`POST /api/waves` with no `template_id`), so the client renders it
 /// as its own default option rather than the server minting a pseudo-row for
 /// something that has no key, no title source, and no report to fork.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WaveTemplate {
-    /// Template key. Passed back verbatim as `workflow_id` on
+    /// Template key. Passed back verbatim as `template_id` on
     /// `POST /api/waves` — see the seam note on this module.
     pub id: String,
     pub title: String,
-    /// JSON Schema for `workflow_input`, from the manifest of the running
+    /// JSON Schema for `template_input`, from the manifest of the running
     /// trusted plugin bound to `id`. Absent means the template takes no input;
-    /// sending `workflow_input` for it is a 400 on create.
+    /// sending `template_input` for it is a 400 on create.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
     /// The tasks this template pre-sets, in plan order.

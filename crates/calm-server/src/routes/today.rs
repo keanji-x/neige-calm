@@ -146,10 +146,10 @@ async fn today_launchpad_ensure_tx(
         // second writer of a column that design D1 demotes to a projection of
         // `workspace.path`. It now writes everything *except* the workspace
         // and hands the workspace to the single writer below, in the same tx.
-        sqlx::query("UPDATE waves SET purpose='launchpad', workflow_id=NULL, plugin_scope=NULL, workflow_input=NULL, updated_at=?2 WHERE id=?1")
+        sqlx::query("UPDATE waves SET purpose='launchpad', template_id=NULL, plugin_scope=NULL, template_input=NULL, updated_at=?2 WHERE id=?1")
             .bind(wave.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
         wave.purpose = Some("launchpad".into());
-        wave.workflow_id = None; wave.plugin_scope = None; wave.workflow_input = None;
+        wave.template_id = None; wave.plugin_scope = None; wave.template_input = None;
         (wave, false, true)
     } else {
         let id = new_id(); let now = now_ms();
@@ -159,12 +159,12 @@ async fn today_launchpad_ensure_tx(
         // migration 0018's `DEFAULT ''` for the remainder of this tx) and is
         // written together with the workspace columns by the single workspace
         // writer below, shared by all three branches.
-        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,workflow_id,purpose,workflow_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
+        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,template_id,purpose,template_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
             .bind(&id).bind(cove_id).bind(sort).bind(now).execute(&mut **tx).await?;
         s.write.cove_cache().insert(WaveId::from(id.clone()), cove_id.to_string().into());
         (Wave { id:id.into(), cove_id:cove_id.to_string().into(), title:"Today".into(), sort,
             archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd_wire_alias:String::new(),
-            workflow_id:None, plugin_scope:None, purpose:Some("launchpad".into()), workflow_input:None,
+            template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
             terminal_at:None, workspace: WaveWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };
 

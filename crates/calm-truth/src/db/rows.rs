@@ -84,15 +84,15 @@ impl From<CoveFolderRow> for CoveFolder {
 /// production on whichever route happened to keep the stale list — the
 /// `waves` replay of the `CardRow` incident. One const kills the class.
 /// Use [`WAVE_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
-pub const WAVE_SELECT_COLUMNS: &str = "id, cove_id, title, sort, archived_at, pinned_at, lifecycle, workflow_id, \
-     plugin_scope, purpose, workflow_input, terminal_at, workspace_kind, workspace_path, \
+pub const WAVE_SELECT_COLUMNS: &str = "id, cove_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
+     plugin_scope, purpose, template_input, terminal_at, workspace_kind, workspace_path, \
      workspace_frozen_at, created_at, updated_at";
 
 /// [`WAVE_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
 /// `#[sqlx(flatten)]` / `FromRow` still resolve the *unqualified* names, so the
 /// two lists must stay in lockstep — `wave_select_columns_lists_agree` pins that.
 pub const WAVE_SELECT_COLUMNS_W: &str = "w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
-     w.workflow_id, w.plugin_scope, w.purpose, w.workflow_input, w.terminal_at, \
+     w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
      w.workspace_kind, w.workspace_path, w.workspace_frozen_at, w.created_at, w.updated_at";
 
 /// Row mirror of [`Wave`].
@@ -108,14 +108,14 @@ pub struct WaveRow {
     pub pinned_at: Option<i64>,
     #[sqlx(try_from = "String")]
     pub lifecycle: WaveLifecycle,
-    pub workflow_id: Option<String>,
+    pub template_id: Option<String>,
     pub plugin_scope: Option<String>,
     pub purpose: Option<String>,
     /// Nullable JSON TEXT column (migration 0061); decodes through the same
     /// `#[sqlx(json)]` machinery as `CardRow.payload`, `nullable` so a NULL
     /// column lands as `None` instead of a decode error.
     #[sqlx(json(nullable))]
-    pub workflow_input: Option<serde_json::Value>,
+    pub template_input: Option<serde_json::Value>,
     pub terminal_at: Option<i64>,
     /// #1147 S1 — migration 0077. The three columns behind [`WaveWorkspace`].
     /// `workspace_path` is the only stored copy of the path; the old `cwd`
@@ -141,10 +141,10 @@ impl From<WaveRow> for Wave {
             // The one place the wire alias is computed. There is no other
             // source for it: the column it used to mirror no longer exists.
             cwd_wire_alias: r.workspace_path.clone(),
-            workflow_id: r.workflow_id,
+            template_id: r.template_id,
             plugin_scope: r.plugin_scope,
             purpose: r.purpose,
-            workflow_input: r.workflow_input,
+            template_input: r.template_input,
             terminal_at: r.terminal_at,
             workspace: WaveWorkspace {
                 kind: r.workspace_kind,

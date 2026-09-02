@@ -37,12 +37,12 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         repo.as_ref(),
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "workspace leases".into(),
             sort: None,
             cwd: repo_root.path().display().to_string(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

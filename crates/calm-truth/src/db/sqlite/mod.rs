@@ -520,13 +520,16 @@ mod worker_flow_cursor_tests;
 mod session_record_activity_tests;
 
 #[cfg(test)]
-mod wave_workflow_input_tests;
+mod wave_template_input_tests;
 
 #[cfg(test)]
 mod wave_plugin_scope_migration_tests;
 
 #[cfg(test)]
 mod wave_workspace_migration_tests;
+
+#[cfg(test)]
+mod wave_template_rename_migration_tests;
 
 #[cfg(test)]
 mod pool_tx_repair_tests;

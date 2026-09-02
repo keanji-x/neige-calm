@@ -255,9 +255,9 @@ mod tests {
             title: title.into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

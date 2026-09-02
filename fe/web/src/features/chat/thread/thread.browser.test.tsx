@@ -38,7 +38,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
 
 import { ChatComposer, ChatThread } from './public.tsx';
-import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import type {
+  Conversation, ConversationActivity, ConversationTurn, TranscriptEntry,
+} from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 import { useState } from '../../../ui/state/public.ts';
@@ -598,7 +600,7 @@ const DRAWER_BLOCK_INSETS = 20 + 28;
  * and bounded by the seam, so that case no longer exists.
  */
 function RailPane({ turns, paneHeight = 400, panelSpan = 396 }: {
-  turns: readonly ConversationTurn[];
+  turns: readonly TranscriptEntry[];
   paneHeight?: number;
   panelSpan?: number;
 }) {
@@ -3029,6 +3031,143 @@ describe('the reply’s type, through Astryx’s markdown', () => {
 
     expect(heading.fontFamily).toBe(probe({ fontFamily: 'var(--font-serif)' }).fontFamily);
     expect(heading.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-display)' }).fontFamily);
+  });
+});
+
+/*
+ * ── How many rows an activity line costs, which only an engine can say ─────
+ *
+ * `.activityDetail` needs a row of its own, and two attempts to get one out of
+ * `flex-wrap` both misfired. A flex line **fills and wraps before it shrinks**,
+ * and `.activityTarget` is `overflow: hidden`, which zeroes its automatic
+ * minimum size — so under `nowrap` a 64-character command shrinks and
+ * ellipsizes beside `Ran`, and under `wrap` the same command (11px mono, ~420px,
+ * in a 364px column) takes a row of its own and shoves `Failed` and the duration
+ * onto another. Unconditional wrap turned every long `done` line into two;
+ * confining it to lines with a detail turned every failed line into *four*.
+ * The structure carries it now: a `nowrap` `.activityRow` plus the detail block.
+ *
+ * jsdom computes no layout, so every one of these variants produces identical
+ * DOM and identical `textContent` there; `public.test.tsx` cannot see this and
+ * could not be made to. It is a claim about rows on a page, which means it is a
+ * claim only a rendering engine can be asked about, and this is the file that
+ * asks.
+ *
+ * The pair brackets the behaviour rather than pinning one side of it, and both
+ * cases count rows rather than comparing heights to a threshold — "the failed
+ * line is taller than one row" is the assertion the four-row layout walked
+ * straight through. A test that only said "the failed line takes two rows" is
+ * still green under a stylesheet that never wraps at all and loses the detail
+ * row; a test that only said "the done line takes one" is green under the same.
+ * Both together admit exactly one implementation.
+ */
+describe('the activity line’s row count, as the engine lays it out', () => {
+  /** A real command as the domain hands it over: `clip()` cuts at
+   *  `ACTIVITY_TARGET_MAX` and marks the cut, so 64 characters is exactly the
+   *  widest noun that can reach this component — the worst case, and a common
+   *  one, since every `cargo`/`npm` invocation with flags is longer than that. */
+  const LONG_TARGET = 'cargo clippy --workspace --all-targets --all-features -- -D war…';
+
+  function activity(overrides: Partial<ConversationActivity>): ConversationActivity {
+    return {
+      id: 'a1', author: 'activity', verb: 'Ran', target: LONG_TARGET, state: 'done',
+      durationMs: null, detail: null, atMs: 0, ...overrides,
+    };
+  }
+
+  /** The activity paragraphs on the page, in order. `[data-nc-state]` is the
+   *  component's own hook and a static selector; the spans inside it carry only
+   *  hashed module classes, so they are reached positionally. */
+  const lines = () => [...document.querySelectorAll<HTMLElement>('p[data-nc-state]')];
+
+  /* The first row is the line's first child; the verb and the noun are the
+     first two children of *it*. Positional because the spans below the
+     paragraph carry only hashed module classes, which
+     `architecture/no-class-dom-query` forbids reaching for. */
+  const rowOf = (line: HTMLElement) => line.children[0] as HTMLElement;
+  const verbOf = (line: HTMLElement) => rowOf(line).children[0] as HTMLElement;
+  const nounOf = (line: HTMLElement) => rowOf(line).children[1] as HTMLElement;
+
+  /** Two boxes are on the same row when their vertical extents overlap — not
+   *  when their tops are equal. These spans are set in different families and
+   *  aligned on their *baselines*, so on one row their box tops legitimately
+   *  differ by about a pixel. What cannot happen on one row is one box starting
+   *  at or below where the other ends. */
+  const sameRow = (a: HTMLElement, b: HTMLElement) => {
+    const [x, y] = [a.getBoundingClientRect(), b.getBoundingClientRect()];
+    return x.top < y.bottom && y.top < x.bottom;
+  };
+
+  it('keeps a long done line on one row, ellipsized beside the verb', async () => {
+    await page.viewport(1400, 900);
+    expect(LONG_TARGET).toHaveLength(64);
+    render(<RailPane turns={[activity({}), activity({ id: 'a2', target: 'ls' })]} />);
+    await frame();
+
+    const [long, short] = lines();
+    /* Same height as a line whose noun is two characters: the long one did not
+       gain a row. Compared against a rendered sibling rather than a literal,
+       so the case survives a change to the caption's leading. */
+    expect(long.getBoundingClientRect().height)
+      .toBe(short.getBoundingClientRect().height);
+    /* And the noun is on the verb's own row — the shape `nowrap` produces. */
+    expect(sameRow(nounOf(long), verbOf(long))).toBe(true);
+    /* It is ellipsized rather than merely fitting, which is the other half of
+       "shrink, don't wrap": the box is narrower than the text inside it. */
+    expect(nounOf(long).clientWidth).toBeLessThan(nounOf(long).scrollWidth);
+  });
+
+  /* The worst failed line the component can be handed: the 64-character noun,
+     plus both of the things gated to be rare — a duration over the floor, and a
+     reason. Everything that competes for the first row is present at once,
+     which is the only configuration under which the row count can go wrong. */
+  it('lays a failed line out as exactly two rows, whatever else is on it', async () => {
+    await page.viewport(1400, 900);
+    render(<RailPane turns={[
+      activity({ state: 'failed', durationMs: 8_400, detail: 'error: no test specified' }),
+      activity({ id: 'a2', target: 'ls' }),
+    ]}
+    />);
+    await frame();
+
+    const [failed, done] = lines();
+    const row = rowOf(failed);
+    /* Verb, noun, `Failed`, duration — and nothing else, so the four checked
+       below are the whole of the first row rather than four of a longer list. */
+    const items = [...row.children] as HTMLElement[];
+    expect(items.map((item) => item.textContent))
+      .toEqual(['Ran', LONG_TARGET, 'Failed', '8.4s']);
+
+    /* (1) All four share one row. Asserted against the verb pairwise: overlap
+       is not transitive, so "each overlaps the first" is the claim that
+       actually rules out any of them having dropped. */
+    for (const item of items.slice(1)) expect(sameRow(item, verbOf(failed))).toBe(true);
+
+    /* (2) The reason is a row *below* all four — below the row box itself, so
+       nothing on it can be beside the reason. */
+    const detail = failed.children[1] as HTMLElement;
+    expect(detail.textContent).toBe('error: no test specified');
+    expect(detail.getBoundingClientRect().top)
+      .toBeGreaterThanOrEqual(row.getBoundingClientRect().bottom);
+
+    /* (3) And the paragraph is those two rows and no more. Written as an
+       equality against the two children's own heights rather than as "taller
+       than one row": the four-row layout this case exists for is taller than
+       one row too, and that is precisely how it survived the last round. The
+       first row's height is checked against a plain `done` line so that (1)'s
+       overlaps cannot be satisfied by a row that has itself grown. */
+    const box = failed.getBoundingClientRect();
+    expect(box.height).toBeCloseTo(
+      row.getBoundingClientRect().height + detail.getBoundingClientRect().height, 1,
+    );
+    expect(row.getBoundingClientRect().height)
+      .toBeCloseTo(done.getBoundingClientRect().height, 1);
+
+    /* (4) And the noun is still ellipsized rather than fitting, which is the
+       property `nowrap` was protecting and the property a wrapping line loses:
+       on a failed line, with `Failed` and `8.4s` also on the row, the command
+       has less room than on a `done` line, not more. */
+    expect(nounOf(failed).clientWidth).toBeLessThan(nounOf(failed).scrollWidth);
   });
 });
 

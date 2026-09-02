@@ -163,12 +163,12 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "reset route auth".into(),
             sort: None,
             cwd: "/tmp/spec-card-reset".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -233,12 +233,12 @@ async fn boot_shared() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "shared reset goal".into(),
             sort: None,
             cwd: "/tmp/spec-card-reset-shared".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1800,9 +1800,9 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
             title: "child".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

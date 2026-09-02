@@ -194,9 +194,9 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(body).not.toHaveProperty('attach_folder');
     expect(sent.some((request) => request.path.startsWith('/api/fs/listdir'))).toBe(false);
     // #1209 — Blank is the default, and Blank means the key is not on the wire
-    // at all. `workflow_id: null` or `''` is a 400 from the kernel.
-    expect(body).not.toHaveProperty('workflow_id');
-    expect(body).not.toHaveProperty('workflow_input');
+    // at all. `template_id: null` or `''` is a 400 from the kernel.
+    expect(body).not.toHaveProperty('template_id');
+    expect(body).not.toHaveProperty('template_input');
   });
 
   /*
@@ -228,8 +228,8 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     });
     expect(sent.some((request) => request.path === '/api/fs/listdir')).toBe(true);
     // Attaching a folder is orthogonal to #1209's template choice: staying on
-    // Blank must still keep `workflow_id` off the wire.
-    expect(body).not.toHaveProperty('workflow_id');
+    // Blank must still keep `template_id` off the wire.
+    expect(body).not.toHaveProperty('template_id');
   });
 
   /*
@@ -255,7 +255,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(createdWaveBodies(sent)[0]).toMatchObject({
       cove_id: 'c1',
       title: 'Read it',
-      workflow_id: 'small-change',
+      template_id: 'small-change',
       cwd: '/srv/app',
       attach_folder: true,
     });
@@ -309,8 +309,8 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(createdWaveBodies(sent)[0]).toMatchObject({
       cove_id: 'c2',
       title: 'Fix the thing',
-      workflow_id: 'issue-development',
-      workflow_input: {
+      template_id: 'issue-development',
+      template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',
         issue_number: 1209,
@@ -319,7 +319,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     });
   });
 
-  it('sends an unbound template as an id with no workflow_input', async () => {
+  it('sends an unbound template as an id with no template_input', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
@@ -329,8 +329,8 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ title: 'Tiny fix', workflow_id: 'small-change' });
-    expect(body).not.toHaveProperty('workflow_input');
+    expect(body).toMatchObject({ title: 'Tiny fix', template_id: 'small-change' });
+    expect(body).not.toHaveProperty('template_input');
   });
 
   /*
