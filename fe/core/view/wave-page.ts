@@ -84,9 +84,9 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, WavePageView } from 
  * status at all. **S1b-3b deleted the page's copy** and **S1b-4b closed the
  * other surface**: both painters word a task's status from here, so this is now
  * the only authority on either surface. Neither surface *prints* this string —
- * the desktop's status dot is a graphic and the mobile row prints
- * `status.token`, the bare word the stylesheet colours off. What the phrase
- * reaches on mobile is the status carrier's `title` and, since S1b-4b's
+ * the desktop's status dot is a graphic with no text, and the mobile row's
+ * status carrier prints `status.token`, the bare word. What the phrase reaches
+ * on mobile is that carrier's `title` and, since S1b-4b's
  * accessible-description channel, the text the row's `aria-describedby` names;
  * on the desktop it is the dot's `title` and the `Status: ${phrase}` accessible
  * name. `mobile-projection.test.tsx` carries a source scan holding that the

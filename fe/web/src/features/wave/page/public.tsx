@@ -546,8 +546,9 @@ export function WavePage({
                 * arrives here already painted. The shape it replaced dispatched
                 * on `'cards'` and `'tasks'` and let everything else fall into
                 * the Conversations page, which `tsc` had no reason to complain
-                * about — `public.test.tsx`'s "every derived row module drills
-                * into its own painted module page" is what holds this now.
+                * about — `public.test.tsx`'s "sends a panel kind it does not
+                * special-case to the painter, not to Conversations" is what
+                * holds this now.
                 *
                 * What each of the two branches used to do by hand is the drift
                 * the whole issue is about. Cards: an untitled card printed its

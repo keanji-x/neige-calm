@@ -220,7 +220,7 @@ export function MobileListItem({
    *
    * The tier's usual cost is a forced synchronous layout; nothing here reads
    * geometry or computed style, so that particular cost is absent — the work
-   * still blocks paint, but it is a `querySelectorAll` and one attribute write.
+   * still blocks paint, but it is a `querySelectorAll` and an attribute write.
    * And the app has no SSR path (a single `createRoot`, no `hydrateRoot`), so
    * there is no server render to warn.
    */

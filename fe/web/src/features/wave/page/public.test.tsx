@@ -468,12 +468,12 @@ describe('WavePage card inventory', () => {
    * ── The drill-down dispatch has no default arm (#1234 S1b-4b review) ──────
    *
    * **The case above cannot see this.** It walks the modules the derivation has
-   * *today*, and both of them are named by a branch of their own, so it stays
-   * green whether the renderer dispatches per key or sends everything it does
-   * not recognise to the painter. The defect it misses is a `MobilePanelKind`
-   * that is neither `outline` nor `conversations` and has no branch: with a
+   * *today*, and a per-key dispatch names each of those explicitly, so that case
+   * is green under either shape of renderer — one that special-cases `cards` and
+   * `tasks`, and one that special-cases nothing but `outline` and
+   * `conversations`. The defect it misses lives outside today's two keys: with a
    * trailing `else` for Conversations — which is what this file's renderer used
-   * to have — a row module the derivation gains, and the painter already
+   * to have — a row module the derivation *gains*, and the painter already
    * supports, opens the Conversations page from a menu entry labelled with the
    * module's title. `tsc` has nothing to say about it: the `else` is total.
    *
