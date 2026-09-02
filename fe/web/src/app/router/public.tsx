@@ -983,8 +983,19 @@ function useConversationPanel(
      collapses them onto one operation — so the guard a ref would add is one the
      idempotency key already provides. */
   const [creating, setCreating] = useState(false);
+  /*
+   * The conversation whose composer this route was asked to put the caret in
+   * — a just-created wave's spec row (#1211 S2), and nothing else.
+   *
+   * It has to be held here rather than read off the registry at render time,
+   * because the request is cleared in the same commit that opens the row. Read
+   * once, at the composer's mount, and dropped when the drawer closes so that
+   * re-opening the same row by hand is an ordinary open.
+   */
+  const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
 
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
+  useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
   const scope: SpecConversationScope | null = source.kind === 'card'
     ? source.scope
     : source.kind === 'rows' && openRowId !== null ? source.scopeOf(openRowId) : null;
@@ -1078,14 +1089,20 @@ function useConversationPanel(
   useEffect(() => {
     const requestedOpenId = registry.requestedOpenId;
     if (requestedOpenId === null) return;
+    /* Captured here and not read at render time: the request is cleared in the
+       same commit that opens the row, so by the time the composer mounts the
+       registry no longer remembers what was asked for. */
+    const focusComposer = registry.requestedOpenFocusesComposer;
     if (rows !== null) {
       if (!rows.some((row) => row.id === requestedOpenId)) return;
       moveDrawerTo({ kind: 'open-row', id: requestedOpenId });
+      if (focusComposer) setComposerFocusFor(requestedOpenId);
       registry.clearOpenRequest();
       return;
     }
     if (scope === null || requestedOpenId !== scope.cardId) return;
     moveDrawerTo({ kind: 'open-row', id: scope.cardId });
+    if (focusComposer) setComposerFocusFor(scope.cardId);
     registry.clearOpenRequest();
   }, [registry, rows, scope]);
 
@@ -1500,6 +1517,13 @@ function useConversationPanel(
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
             <ChatComposer
+              /* Read at mount only, which is what makes it one-shot: the
+                 composer mounts when the drawer opens on a row, and the flag
+                 is dropped when it closes (the effect beside
+                 `composerFocusFor`). #1211 S2 — a wave created from the `+`
+                 lands with its spec conversation open and the caret in it,
+                 because the reader's first sentence is the wave's intent. */
+              focusOnMount={composerFocusFor === open.id}
               disabled={store.sending}
               onSend={(text) => store.send(open.id, text)}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
@@ -1896,6 +1920,34 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   // one decision, and two hand-written copies would drift apart silently.
   const specCard = cards.find((card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload));
   const registry = useConversationRegistry();
+  /*
+   * ── Redeeming "open the spec conversation of the wave I just created" ────
+   *
+   * The shell states that intent by **wave** id (`app/conversations`), because
+   * `POST /api/waves` answers with a `Wave` and the spec card's id only exists
+   * once the detail has landed — here. This is where the wave's spec card is
+   * already known, so this is where the intent becomes an ordinary
+   * `requestOpen`, and the panel's own consumer takes it from there.
+   *
+   * One-shot, and cleared on both arms:
+   *
+   *  - a different wave means the reader navigated elsewhere before the intent
+   *    was redeemed, and it is stale. (`WaveRoute` renders this component only
+   *    for the wave in the URL, so "different" really is a different page.)
+   *  - this wave with no spec card means there is nothing to open, and keeping
+   *    the request would spring the drawer open on some later visit.
+   *
+   * `focusComposer` is what makes the landing complete: the wave is unnamed
+   * and empty, and the reader's first sentence *is* the intent, so the caret
+   * has to be where they can type it.
+   */
+  useEffect(() => {
+    const requested = registry.requestedSpecWaveId;
+    if (requested === null) return;
+    registry.clearSpecOpenRequest();
+    if (requested !== wave.id || specCard === undefined) return;
+    registry.requestOpen(specCard.id, { focusComposer: true });
+  }, [registry, specCard, wave.id]);
   /*
    * The wave's assistant conversations (#1189). Its own endpoint, its own list;
    * the spec card is deliberately not in it — the server's list predicate is
@@ -2371,10 +2423,19 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
         arrivalAnchorId={arrivalAnchorId}
+        /*
+          #1211 S2 — "Nothing written here yet." described a missing artefact,
+          and it read as an omission the reader had made. It is not one: a wave
+          now starts with no name and no words in it *by design*, and the true
+          state of this page on arrival is "this wave has not taken shape yet
+          — say the first thing". The lead says that, and the first hint names
+          the one action that changes it, which is the conversation already
+          open beside it.
+        */
         empty={<ReportEmpty
-          lead="Nothing written here yet."
+          lead="This wave has not taken shape yet."
           hints={[
-            'The agent writes this report as it works — start a conversation and it fills in.',
+            'Say what you want in the conversation — the agent works it out with you and writes it up here.',
             'It stays with the wave, so it is here the next time you open it.',
           ]}
         />}
