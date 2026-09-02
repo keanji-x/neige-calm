@@ -145,7 +145,16 @@ export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: rea
 
 export type NewWaveBody = Readonly<{
   cove_id: string;
-  title: string;
+  /**
+   * Issue #1211 — optional. The title is no longer the wave's intent: omit it
+   * and the kernel stores the **empty string** — it has no default name of its
+   * own; `UNTITLED_WAVE_LABEL` below is this layer's display fallback for a
+   * blank title. What this field decides is only what THIS request stores;
+   * who names the wave afterwards is not its business — the spec agent via
+   * `calm.wave.rename` is the usual namer, but the user can name it first.
+   * Present values (including `""`) are accepted verbatim.
+   */
+  title?: string;
   /**
    * Issue #1131 — optional. The new FE omits it; the kernel then stores
    * `$HOME` and does not insert a `cove_folders` row. Present values
@@ -214,6 +223,39 @@ export type WaveTemplate = z.infer<typeof waveTemplateSchema>;
 
 export function waveTemplatesOperation(): ApiOperation<WaveTemplate[]> {
   return { method: 'GET', path: '/api/wave-templates', responseSchema: z.array(waveTemplateSchema) };
+}
+
+/**
+ * A template edit (#1230) — a **diff**, not a task list.
+ *
+ * The client states two facts about a task, `key` and `goal`, and nothing else;
+ * the server owns every other field of a task block. Review round 2 measured
+ * what happens when the client may send blocks: `released_by_user: true` and
+ * `spawn: "sub-wave"` were accepted and stored, and omitting a tombstone
+ * erased it. Under this shape none of that is expressible.
+ *
+ * There is no per-template read: `waveTemplatesOperation` already returns
+ * `id` / `title` / `tasks[{key, goal}]` for every template, which is exactly
+ * what the editor needs. A second endpoint would be a second authority for the
+ * same facts, and an N+1 read whose failure modes have to be reasoned about
+ * separately from the list's.
+ */
+export type WaveTemplateGoalEdit = Readonly<{ key: string; goal: string }>;
+
+export function putWaveTemplateOperation(
+  id: string,
+  body: Readonly<{
+    title: string;
+    edits: readonly WaveTemplateGoalEdit[];
+    appends: readonly WaveTemplateGoalEdit[];
+  }>,
+): ApiOperation<WaveTemplate> {
+  return {
+    method: 'PUT',
+    path: `/api/wave-templates/${encodeURIComponent(id)}`,
+    body,
+    responseSchema: waveTemplateSchema,
+  };
 }
 
 export type WavePatchBody = Readonly<{

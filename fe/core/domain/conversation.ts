@@ -6,7 +6,7 @@ import type {
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_VERDICT_TOOL, WAVE_TOOL_PREFIX,
+  TASK_VERDICT_TOOL, WAVE_RENAME_TOOL, WAVE_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
@@ -697,9 +697,18 @@ function toolShape(tool: string): ActivityShape {
   if (tool === PLAN_LIST_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };
   }
-  // `cat`, `ls`, `state`, `log`, `diff` — the wave's tree and history, all of
-  // them looks. One phrase covers them because which one it was is a detail of
-  // how the agent went looking, not of what happened.
+  // #1211 S3 — the one `calm.wave.*` tool that changes the wave rather than
+  // looking at it. It has to be tested before the prefix fallback below, and it
+  // is why that fallback is no longer "everything under the prefix is a look".
+  if (tool === WAVE_RENAME_TOOL) {
+    return { running: 'Naming the wave', done: 'Named the wave', target: null };
+  }
+  // `cat`, `ls`, `state`, `log`, `diff` — the wave's tree and history. These
+  // are looks; one phrase covers them because which one it was is a detail of
+  // how the agent went looking, not of what happened. The prefix as a whole no
+  // longer implies "read" (see `calm.wave.rename` above), so any new
+  // `calm.wave.*` WRITE needs its own branch ahead of this one rather than
+  // falling in here.
   if (tool.startsWith(WAVE_TOOL_PREFIX)) {
     return { running: 'Reading the wave', done: 'Read the wave', target: null };
   }

@@ -2906,6 +2906,77 @@
         }
       }
     },
+    "/api/wave-templates/{id}": {
+      "put": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "update_wave_template",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Template key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaveTemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The template as stored after the edit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid title, unknown key, or duplicate append",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown template key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves": {
       "get": {
         "tags": [
@@ -5052,7 +5123,6 @@
         "type": "object",
         "required": [
           "cove_id",
-          "title",
           "theme"
         ],
         "properties": {
@@ -5091,7 +5161,8 @@
             "$ref": "#/components/schemas/RequestTheme"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe wave's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled wave` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec\nagent then names the wave via `calm.wave.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
           },
           "workflow_id": {
             "type": [
@@ -7525,12 +7596,29 @@
             "items": {
               "$ref": "#/components/schemas/WaveTemplateTask"
             },
-            "description": "The tasks this template pre-sets, in plan order. Always present and\nnever empty for a real template — a template *is* its task list — so the\nclient can show it without a \"no tasks\" branch that could never render."
+            "description": "The tasks this template pre-sets, in plan order.\n\nAlways present; **not** always non-empty. That was true while this came\nfrom the constants, but the projection drops tombstones, so retiring\nevery task of a template (through the ordinary report block DELETE)\nleaves this empty. A client must render that state rather than assume it\naway."
           },
           "title": {
             "type": "string"
           }
         }
+      },
+      "WaveTemplateGoalEdit": {
+        "type": "object",
+        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.\n\n`deny_unknown_fields` is the load-bearing part, not decoration. The whole\nsafety argument for this endpoint is \"privileged task vocabulary has nowhere\nto go in the request\"; without this attribute serde would quietly ignore\nextra keys, the guarantee would rest on nobody ever adding a\n`#[serde(flatten)]` here, and\n`privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing\nwhile the property it names had stopped holding.",
+        "required": [
+          "key",
+          "goal"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "WaveTemplateTask": {
         "type": "object",
@@ -7549,6 +7637,34 @@
             "description": "The task block's `key` in the seeded report."
           }
         }
+      },
+      "WaveTemplateUpdate": {
+        "type": "object",
+        "description": "A template edit from Settings — a **diff**, never a task list.\n\n## Why the client cannot send task payloads (#1230 review round 2)\n\nThe first two cuts took the whole task list back. Both leaked, in ways that\nwere fixed one at a time and kept reappearing in a new shape:\n\n* a client that simply **omitted** a task erased it. For a live task the\n  guard refused the write, but for a **tombstone** it did not —\n  `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`\n  — so omitting a tombstone silently reversed a #1179-governed deletion, and\n  re-appending the key resurrected it.\n* a client could put privileged vocabulary into a payload the server then\n  stored verbatim. Measured, not argued: `released_by_user: true` and\n  `spawn: \"sub-wave\"` were both accepted and persisted.\n\nBoth are the same root cause — the editor was a second author of task\nblocks on a document whose invariants assume one — and neither is fixable by\nadding checks, because the check list has to anticipate every field the task\nvocabulary will ever grow.\n\nSo the write side no longer accepts blocks at all. It accepts *what changed*:\na title, goals for keys that already exist, and tasks to append. The server\nreads the stored payloads, edits them in place and constructs appended ones\nitself. Omission is not expressible, privileged fields are not expressible,\nand a rename is not expressible — all three are structurally impossible\nrather than rejected.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "appends": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateGoalEdit"
+            },
+            "description": "Tasks to add, in the order they should appear after the existing ones."
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateGoalEdit"
+            },
+            "description": "New goals for tasks that already exist, keyed by the task's `key`.\nA key the template does not declare is a 400, not a silent create."
+          },
+          "title": {
+            "type": "string",
+            "description": "The new title. Trimmed; must not be empty — a template with a blank\ntitle is unpickable in the New wave dialog, which lists templates by\ntitle and nothing else."
+          }
+        },
+        "additionalProperties": false
       },
       "WaveWorkspace": {
         "type": "object",

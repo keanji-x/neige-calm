@@ -195,6 +195,17 @@ async fn wait_at_wave_delete_teardown_hook(wave_id: &str) {
 pub struct CreateWaveRequest {
     #[schema(value_type = String)]
     pub cove_id: crate::ids::CoveId,
+    /// Issue #1211 — on this user-driven create path the title is no longer
+    /// the wave's intent, so the client may omit it entirely. Omitting it
+    /// stores the **empty string** — there is no server-side default; the
+    /// `Untitled wave` a user sees in a list is the frontend's display
+    /// fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec
+    /// agent then names the wave via `calm.wave.rename`, which only succeeds
+    /// while the stored title is still blank. The type
+    /// stays `String`: the empty string has always been a legal title and the
+    /// server applies no non-empty validation.
+    #[serde(default)]
+    #[schema(required = false)]
     pub title: String,
     pub sort: Option<f64>,
     /// Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
@@ -441,7 +452,7 @@ static WORKFLOW_TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 /// Lazy get-or-create of the three system-cove template waves. Called from
 /// matching `POST /api/waves`, not from `AppState::new`, so ordinary boots
 /// and tests that never bind a template key stay unchanged.
-async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
+pub(crate) async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
     let _guard = WORKFLOW_TEMPLATE_SEED_LOCK.lock().await;
     let system_cove = ensure_system_cove(s).await?;
     for template in &WORKFLOW_TEMPLATES {
@@ -482,7 +493,7 @@ async fn ensure_system_cove(s: &RouteState) -> Result<crate::model::Cove> {
     }
 }
 
-async fn lookup_workflow_template_wave(
+pub(crate) async fn lookup_workflow_template_wave(
     s: &RouteState,
     template_key: &str,
 ) -> Result<Option<String>> {
@@ -1444,7 +1455,6 @@ async fn create_wave_structure(
                         .await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
-                let goal = wave.title.trim().to_string();
 
                 let fork_snapshot = if let Some(source_wave_id) = fork_report_from.as_deref() {
                     let source_id = WaveId::from(source_wave_id.to_string());
@@ -1489,7 +1499,15 @@ async fn create_wave_structure(
                         wave_id: wave_id.clone(),
                         kind: "codex".into(),
                         sort: None,
-                        payload: spec_harness_card_payload((!goal.is_empty()).then_some(goal)),
+                        // #1211 S1: on this user-driven create path the wave
+                        // title is no longer the wave's intent, so create
+                        // seeds no `prompt` here. The parameter stays because
+                        // child waves still pass the task goal their parent
+                        // spec declared (`operation/child_wave_adapter.rs`) —
+                        // that is machine-written intent, not a title a human
+                        // typed, and it is what seeds the child's harness when
+                        // the child wave starts.
+                        payload: spec_harness_card_payload(None),
                     },
                     CardRole::Spec,
                     false,
@@ -1683,7 +1701,13 @@ async fn start_spec_harness(
     spec_card_id: String,
     report_card_id: String,
 ) -> Result<()> {
-    let goal = wave.title.trim().to_string();
+    // #1211 S1: no goal is seeded on this user-driven create path. An omitted
+    // title is stored as the empty string (`Untitled wave` is only what the
+    // frontend shows for a blank one) and the spec agent names the wave once
+    // it knows what the work is, so there is nothing here that could stand in
+    // for the user's intent. Child waves do NOT come through here — they start their
+    // harness with the parent spec's declared task goal
+    // (`scheduler/mod.rs`, `operation/child_wave_adapter.rs`).
     let request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
@@ -1691,7 +1715,7 @@ async fn start_spec_harness(
         report_card_id: Some(report_card_id),
         sort: None,
         cwd: wave.workspace.path.clone(),
-        goal: (!goal.is_empty()).then_some(goal),
+        goal: None,
         reset_harness_items: false,
         force_new_thread: false,
         profile: Default::default(),

@@ -805,6 +805,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_wave_template"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -1345,7 +1361,18 @@ export interface components {
             /** Format: double */
             sort?: number | null;
             theme: components["schemas"]["RequestTheme"];
-            title: string;
+            /**
+             * @description Issue #1211 — on this user-driven create path the title is no longer
+             *     the wave's intent, so the client may omit it entirely. Omitting it
+             *     stores the **empty string** — there is no server-side default; the
+             *     `Untitled wave` a user sees in a list is the frontend's display
+             *     fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec
+             *     agent then names the wave via `calm.wave.rename`, which only succeeds
+             *     while the stored title is still blank. The type
+             *     stays `String`: the empty string has always been a legal title and the
+             *     server applies no non-empty validation.
+             */
+            title?: string;
             workflow_id?: string | null;
             workflow_input?: Record<string, never> | null;
         };
@@ -2526,12 +2553,32 @@ export interface components {
              */
             input_schema?: unknown;
             /**
-             * @description The tasks this template pre-sets, in plan order. Always present and
-             *     never empty for a real template — a template *is* its task list — so the
-             *     client can show it without a "no tasks" branch that could never render.
+             * @description The tasks this template pre-sets, in plan order.
+             *
+             *     Always present; **not** always non-empty. That was true while this came
+             *     from the constants, but the projection drops tombstones, so retiring
+             *     every task of a template (through the ordinary report block DELETE)
+             *     leaves this empty. A client must render that state rather than assume it
+             *     away.
              */
             tasks: components["schemas"]["WaveTemplateTask"][];
             title: string;
+        };
+        /**
+         * @description One `(key, goal)` pair — the only two facts the editor may state about a
+         *     task. Everything else about a task block is the server's.
+         *
+         *     `deny_unknown_fields` is the load-bearing part, not decoration. The whole
+         *     safety argument for this endpoint is "privileged task vocabulary has nowhere
+         *     to go in the request"; without this attribute serde would quietly ignore
+         *     extra keys, the guarantee would rest on nobody ever adding a
+         *     `#[serde(flatten)]` here, and
+         *     `privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing
+         *     while the property it names had stopped holding.
+         */
+        WaveTemplateGoalEdit: {
+            goal: string;
+            key: string;
         };
         /**
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
@@ -2546,6 +2593,50 @@ export interface components {
             goal: string;
             /** @description The task block's `key` in the seeded report. */
             key: string;
+        };
+        /**
+         * @description A template edit from Settings — a **diff**, never a task list.
+         *
+         *     ## Why the client cannot send task payloads (#1230 review round 2)
+         *
+         *     The first two cuts took the whole task list back. Both leaked, in ways that
+         *     were fixed one at a time and kept reappearing in a new shape:
+         *
+         *     * a client that simply **omitted** a task erased it. For a live task the
+         *       guard refused the write, but for a **tombstone** it did not —
+         *       `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`
+         *       — so omitting a tombstone silently reversed a #1179-governed deletion, and
+         *       re-appending the key resurrected it.
+         *     * a client could put privileged vocabulary into a payload the server then
+         *       stored verbatim. Measured, not argued: `released_by_user: true` and
+         *       `spawn: "sub-wave"` were both accepted and persisted.
+         *
+         *     Both are the same root cause — the editor was a second author of task
+         *     blocks on a document whose invariants assume one — and neither is fixable by
+         *     adding checks, because the check list has to anticipate every field the task
+         *     vocabulary will ever grow.
+         *
+         *     So the write side no longer accepts blocks at all. It accepts *what changed*:
+         *     a title, goals for keys that already exist, and tasks to append. The server
+         *     reads the stored payloads, edits them in place and constructs appended ones
+         *     itself. Omission is not expressible, privileged fields are not expressible,
+         *     and a rename is not expressible — all three are structurally impossible
+         *     rather than rejected.
+         */
+        WaveTemplateUpdate: {
+            /** @description Tasks to add, in the order they should appear after the existing ones. */
+            appends?: components["schemas"]["WaveTemplateGoalEdit"][];
+            /**
+             * @description New goals for tasks that already exist, keyed by the task's `key`.
+             *     A key the template does not declare is a 400, not a silent create.
+             */
+            edits?: components["schemas"]["WaveTemplateGoalEdit"][];
+            /**
+             * @description The new title. Trimmed; must not be empty — a template with a blank
+             *     title is unpickable in the New wave dialog, which lists templates by
+             *     title and nothing else.
+             */
+            title: string;
         };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
@@ -4966,6 +5057,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_wave_template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Template key */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WaveTemplateUpdate"];
+            };
+        };
+        responses: {
+            /** @description The template as stored after the edit */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplate"];
+                };
+            };
+            /** @description Invalid title, unknown key, or duplicate append */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown template key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */
