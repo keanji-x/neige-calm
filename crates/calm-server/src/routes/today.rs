@@ -465,6 +465,12 @@ pub(crate) async fn ensure_today_launchpad(
             // The COLUMN form, not `idx_coves_one_system`: see
             // `is_unique_constraint`. Until #1253 PR1 this arm never matched,
             // so the loser of the first-concurrent-mint race got a 500.
+            //
+            // Unlike the launchpad arm below, this one is genuinely reachable:
+            // `cove_get_system()` runs OUTSIDE any transaction, so two cold
+            // page loads can both read `None` and both reach the mint.
+            // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
+            // drives that race through the route.
             Err(e) if is_unique_constraint(&e, "coves.kind") => {
                 app.repo
                     .cove_get_system()
@@ -491,6 +497,38 @@ pub(crate) async fn ensure_today_launchpad(
         Ok(v) => v,
         // The COLUMN form, not `idx_waves_one_launchpad`: see
         // `is_unique_constraint`.
+        //
+        // —— This arm is UNREACHABLE today, and that is worth stating plainly.
+        //
+        // 1. Why. `write_in_tx` opens the transaction with **BEGIN IMMEDIATE**
+        //    (`calm-truth`'s `events.rs`), which takes the writer lock at
+        //    transaction start. `today_launchpad_ensure_tx`'s
+        //    `SELECT ... WHERE purpose='launchpad'` and the `INSERT`/`UPDATE`
+        //    that follows it therefore sit inside ONE writer-lock hold: no
+        //    other writer can commit between them, so the SELECT cannot miss a
+        //    row that the INSERT then collides with. A concurrency probe
+        //    confirmed it — 320 concurrent `ensure`s against a pre-seeded
+        //    system cove never entered this arm, while forcing the SELECT to
+        //    miss did enter it. Contrast the `coves.kind` arm above, which IS
+        //    reachable precisely because its `cove_get_system()` read happens
+        //    OUTSIDE any transaction.
+        // 2. Why keep it. It is fail-safe against two ordinary refactors:
+        //    moving that SELECT out of the transaction (or to a deferred one),
+        //    and a **second writer of `purpose='launchpad'` appearing**. As of
+        //    #1253, `routes/today.rs` is the sole writer of that value in the
+        //    whole repository — the two statements in
+        //    `today_launchpad_ensure_tx` — and that is exactly the fact a
+        //    future change would silently invalidate.
+        // 3. What is and is not covered. The *string* is pinned, by
+        //    `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`,
+        //    which provokes a real violation of this index on a real database.
+        //    The *reachability* is not pinned by anything, and the
+        //    system-cove concurrency case
+        //    (`today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`)
+        //    does NOT cover this arm — it exercises the `coves.kind` one. This
+        //    is a known, named gap; do not close it by asserting that test
+        //    covers both, and do not add a fixtures-gated seam whose only
+        //    purpose is to make an unreachable state reachable.
         Err(e) if is_unique_constraint(&e, "waves.purpose") => {
             // A concurrent inserter won the partial unique index; retry selects it.
             let route = RouteState::from_ref(&app);
@@ -606,5 +644,95 @@ pub(crate) async fn ensure_today_launchpad(
         _ => Err(CalmError::Internal(format!(
             "launchpad exists but harness start failed: {op}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+
+    /// #1253 PR1 — how SQLite words a violation of the two partial unique
+    /// indexes this module races on.
+    ///
+    /// **This is a claim about SQLite, not about this crate**, which is why it
+    /// is worth a test even though one of the two arms it protects is
+    /// unreachable (see `ensure_today_launchpad`): the message wording is the
+    /// entire content of the fix, it comes from outside this repository, and it
+    /// can change under us. It runs the real migrations on a real database and
+    /// provokes real violations; `is_unique_constraint` is then called
+    /// **directly**, as the module's own private function. No hand-built
+    /// `CalmError`, and deliberately not `waves::is_unique_constraint_for_test`
+    /// — a test that reaches for a test-only export is testing the export.
+    ///
+    /// The negative half is the load-bearing half: asserting only that
+    /// `"coves.kind"` matches would stay green if the call sites still passed
+    /// index names, because it never asks what the pre-#1253 code asked.
+    #[tokio::test]
+    async fn sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let pool = repo.pool();
+
+        // —— coves(kind) WHERE kind = 'system' (migration 0009) ——
+        let insert_system_cove = |id: &'static str| {
+            sqlx::query(
+                "INSERT INTO coves(id,name,color,sort,kind,created_at,updated_at) \
+                 VALUES(?1,'System','#abc',1,'system',1,1)",
+            )
+            .bind(id)
+            .execute(pool)
+        };
+        insert_system_cove("cove-winner").await.unwrap();
+        let error: CalmError = insert_system_cove("cove-loser").await.unwrap_err().into();
+        let message = error.to_string();
+        assert!(
+            message.contains("UNIQUE constraint failed: coves.kind"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            is_unique_constraint(&error, "coves.kind"),
+            "the column form must match: {message}"
+        );
+        assert!(
+            !is_unique_constraint(&error, "idx_coves_one_system"),
+            "the index name must NOT match — matching it is what made the \
+             system-cove retry arm dead code before #1253: {message}"
+        );
+
+        // —— waves(purpose) WHERE purpose = 'launchpad' (migration 0064) ——
+        let insert_launchpad = |id: &'static str| {
+            sqlx::query(
+                "INSERT INTO waves(id,cove_id,title,sort,lifecycle,purpose,created_at,updated_at) \
+                 VALUES(?1,'cove-winner','Today',1,'draft','launchpad',1,1)",
+            )
+            .bind(id)
+            .execute(pool)
+        };
+        insert_launchpad("wave-winner").await.unwrap();
+        let error: CalmError = insert_launchpad("wave-loser").await.unwrap_err().into();
+        let message = error.to_string();
+        assert!(
+            message.contains("UNIQUE constraint failed: waves.purpose"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            is_unique_constraint(&error, "waves.purpose"),
+            "the column form must match: {message}"
+        );
+        assert!(
+            !is_unique_constraint(&error, "idx_waves_one_launchpad"),
+            "the index name must NOT match — see the note on the launchpad \
+             retry arm in `ensure_today_launchpad`: {message}"
+        );
+
+        // Both indexes are PARTIAL, and that is the whole reason the index name
+        // never appears: sqlite names the index only for a unique index over
+        // *expressions*. A non-partial index on a plain column words it the
+        // same way, so the fix is about partiality only incidentally — pin the
+        // observed behaviour rather than the folklore.
+        assert!(
+            !message.contains("idx_"),
+            "no index name appears anywhere in the message: {message}"
+        );
     }
 }
