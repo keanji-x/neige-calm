@@ -4979,7 +4979,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
     by the shell and not by the form.
-  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:338-346
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:340-347
   authoritative_test: fe/web/src/app/shell/public.test.tsx:294
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5007,7 +5007,7 @@
     `already_named`, which would leave S3 dead code. Absence rather than the empty string because
     the two reach the same stored value but say different things about who decided the name, and
     the point of the slice is that this client did not.
-  source: fe/web/src/features/cove/new-wave/public.tsx:169-186,348-350
+  source: fe/web/src/features/cove/new-wave/public.tsx:169-186,328,342-348
   authoritative_test: fe/web/src/features/cove/new-wave/public.test.tsx:177
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5052,7 +5052,7 @@
     arithmetic, not policy — there is no state change to request.
     The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
   source: fe/web/src/ui/editable-title/public.tsx:34-52,100-113; fe/web/src/features/wave/page/public.tsx:293-300
-  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:194
+  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:372
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -5089,8 +5089,10 @@
     Creating a wave must land the reader in its spec conversation with the caret in the composer:
     the shell marks the navigation it makes (`go({ openSpec: true })`), the wave route redeems
     that mark against its own spec card, and the composer takes focus through `focusOnMount`. The
-    mark belongs to that one history entry — redeeming disarms it, and no other route may read or
-    clear it.
+    mark belongs to that one history entry and to nothing else: no other route may read or clear
+    it, redeeming strikes it off, and an entry whose landing never happened keeps it — so
+    displaying that same entry again (a reload, the error box's Retry, or the Back button) arms it
+    again, while any fresh navigation to the wave is a new entry and carries no mark.
   why: >
     The wave arrives with no name and nothing said in it, so a shut drawer is a blank page with no
     visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
@@ -5101,9 +5103,15 @@
     with another wave still mounted, so that wave's route body can read and clear a request
     addressed to a different one, while a body that clears only its own leaves the request
     standing when the landing never happens (a failed detail read is enough) and springs the
-    drawer open on an unrelated visit later.
-  source: fe/web/src/app/router/navigation.ts:46-55,95-179; fe/web/src/app/router/public.tsx:1926-1932
-  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:137
+    drawer open on an unrelated visit later. Being per-entry is also what decides the returning
+    reader: the entry, not a span of attention, is the owner, so a mark that was never redeemed is
+    still on its entry when it is shown again — which is what makes a reload or a Retry after a
+    failed landing complete the create the reader asked for, and what makes Back to that same
+    entry do the same thing. The last is the price of the first, and both are pinned rather than
+    left to be discovered.
+  source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,98-110,174-200;
+    fe/web/src/app/router/public.tsx:1510,1926-1932; fe/web/src/features/chat/thread/public.tsx:1800
+  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:194
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
