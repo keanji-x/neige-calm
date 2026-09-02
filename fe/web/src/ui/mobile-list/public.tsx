@@ -24,10 +24,12 @@ import styles from './mobile-list.module.css';
  * tooltip (`RowAction.hint`, forwarded as the `<li>`'s `title` attribute); and
  * `accessibleDescription` is text a screen-reader user gets *on top of* the
  * name. None substitutes for another — WCAG 2.5.3 is why the tooltip may not
- * become the name — and the description is the only one of the three that is not
- * an ordinary prop on the root element, because the element it has to reach is a
- * control Astryx generates and hands no props to. See `MobileListItem`'s
- * docstrings for each.
+ * become the name. The three do not land the same way either: the visible
+ * `title` is handed to Astryx as its `label` and is rendered into a span inside
+ * the `<li>`, the tooltip rides a rest prop onto the `<li>` itself, and the
+ * description is the only one that has to be written **imperatively**, because
+ * the element it must reach is a control Astryx generates and hands no props to.
+ * See `MobileListItem`'s docstrings for each.
  *
  * **Opt-in, and that is load-bearing.** `app/shell`'s cove and page lists and
  * this page's Outline / Conversations pages render through these same
@@ -167,8 +169,9 @@ export function MobileListItem({
    * a row that is not interactive. `public.test.tsx` asserts the attribute is on
    * the **button** rather than the `<li>`, so the day Astryx moves that control
    * this goes red instead of going quiet — and the effect below counts the
-   * controls rather than taking the first, so the day Astryx generates *two* it
-   * throws instead of describing one of them.
+   * direct-child controls rather than taking the first, so the day Astryx
+   * generates *two* it says so in development instead of quietly describing one
+   * of them.
    *
    * Absent unless passed: neither the span nor the attribute exists otherwise.
    */
@@ -207,15 +210,19 @@ export function MobileListItem({
    *
    * The carrier span is rendered declaratively, so it is in the DOM the moment
    * the commit lands; the IDREF that points at it is written from here. A
-   * passive `useEffect` runs *after* that commit — and under concurrent
-   * rendering it can be deferred further — so between the two there is a paint
-   * in which the two halves disagree: a row that just gained a description has
-   * the span but no `aria-describedby`, and a row that just lost one has an
-   * attribute still naming a span React already removed. A layout effect runs
-   * inside the commit, before the browser paints, so the pair is never
-   * observable apart. Nothing here reads layout, so the usual cost argument
-   * against the tier does not apply; and the app has no SSR path (a single
-   * `createRoot`, no `hydrateRoot`), so there is no server render to warn.
+   * passive `useEffect` is not guaranteed to run before the browser paints — it
+   * is scheduled after the commit, and under concurrent rendering it can be
+   * deferred further — so a **paintable window may open** in which the two
+   * halves disagree: a row that just gained a description has the span but no
+   * `aria-describedby`, and a row that just lost one has an attribute still
+   * naming a span React already removed. A layout effect runs inside the commit,
+   * synchronously before paint, so the pair is never left observable apart.
+   *
+   * The tier's usual cost is a forced synchronous layout; nothing here reads
+   * geometry or computed style, so that particular cost is absent — the work
+   * still blocks paint, but it is a `querySelectorAll` and one attribute write.
+   * And the app has no SSR path (a single `createRoot`, no `hydrateRoot`), so
+   * there is no server render to warn.
    */
   useLayoutEffect(() => {
     if (accessibleDescription === undefined) return undefined;
@@ -227,8 +234,8 @@ export function MobileListItem({
      * reader through. A non-interactive row has none, and the container is the
      * honest fallback rather than a silently dropped description.
      *
-     * **The count is checked, and `querySelector` was not enough.** Taking the
-     * first match is safe only while there is exactly one; the day Astryx's
+     * **A count is checked, and `querySelector` alone was not enough.** Taking
+     * the first match is safe only while there is exactly one; the day Astryx's
      * `Item` renders a second direct-child control — a trailing action button
      * beside the invisible one, say — the first match still gets described, the
      * second focusable control gets nothing, and *every existing assertion here
@@ -237,25 +244,55 @@ export function MobileListItem({
      * selector then finds none and the description lands on the `<li>` while a
      * button is focusable); the multiplicity change is the one they cannot see.
      *
-     * So the expected count is asserted, in both directions, and a surprise
-     * throws rather than degrading: an interactive row must generate exactly one
-     * direct-child control, and an inert row exactly none. Failing loud is the
-     * right side here because the alternative is an accessibility hole that is
-     * invisible from the DOM — nothing about a described first button says that
-     * a second one was skipped. This can only fire on an Astryx upgrade that
-     * changed the markup, which is precisely when someone must look.
+     * **What this count covers, and only this.** It is a development diagnostic
+     * over one narrow shape: a row that was *given* an `accessibleDescription`,
+     * counted as **direct-child `button` / `a` of the `<li>`**, at the instant
+     * this effect runs. It is not an accessibility audit of the row, and four
+     * things are outside it by construction:
+     *
+     *  - a row with no `accessibleDescription` at all — the effect returns above
+     *    and counts nothing;
+     *  - a second control **nested** inside a wrapper Astryx renders (a
+     *    `startContent` node is wrapped in a `<span>`, and an extra action moved
+     *    into an existing end-content wrapper would be invisible here);
+     *  - a direct-child `input` / `select` / `textarea` / `[tabindex]` — the
+     *    selector names two tag names, not "focusable";
+     *  - a control that appears *after* this effect has run while the deps
+     *    (`accessibleDescription`, `descriptionId`, `interactive`) are unchanged.
+     *
+     * So a green run here means "the one shape this checks still holds", not
+     * "the row has exactly one focusable host".
+     *
+     * **Loud in development, degrading in production.** The count firing is an
+     * accessibility hole that is invisible from the DOM — nothing about a
+     * described first button says a second one was skipped — so development and
+     * CI throw, which is where an Astryx upgrade is looked at. Production does
+     * not: this component renders inside the wave route, the app configures no
+     * `errorComponent`, and a throw from a layout effect is caught by the
+     * router's global `CatchBoundary`, which replaces the whole match — shell
+     * and navigation included — with a bare error page. Trading the entire
+     * surface for an alarm about a dependency pinned at `0.1.3` is the wrong
+     * side of that call, so production logs and falls back to the selection this
+     * guard replaced: the first control if there is one, the `<li>` otherwise.
      */
     const controls = root.querySelectorAll(':scope > button, :scope > a');
     const expected = interactive ? 1 : 0;
     if (controls.length !== expected) {
-      throw new Error(
+      const message =
         `MobileListItem: ${interactive ? 'an interactive' : 'a non-interactive'} row expects `
         + `${expected} control as a direct child of its <li>, but the list primitive rendered `
-        + `${controls.length}. The row's accessible description has no single host to attach `
-        + 'to; this component has to be updated for the new markup.',
-      );
+        + `${controls.length}. This counts only direct-child <button>/<a> on a row that was `
+        + 'given an accessibleDescription, so it says nothing about controls nested deeper, '
+        + 'about other focusable elements, or about ones that appear later; the row\'s '
+        + 'accessible description has no single host to attach to. This component has to be '
+        + 'updated for the new markup.';
+      if (import.meta.env.DEV) throw new Error(message);
+      console.error(message);
     }
-    const host = interactive ? controls[0] : root;
+    /* Identical to `interactive ? controls[0] : root` whenever the count above
+       held — an inert row has no control — and the degraded choice when it did
+       not. */
+    const host = controls[0] ?? root;
     host.setAttribute('aria-describedby', descriptionId);
     return () => { host.removeAttribute('aria-describedby'); };
   }, [accessibleDescription, descriptionId, interactive]);

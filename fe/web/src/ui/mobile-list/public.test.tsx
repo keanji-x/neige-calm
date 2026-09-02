@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-4a — the five projection marker channels this primitive opened, the
-// tooltip channel beside them, and `onSelect` becoming optional.
+// #1234 S1b-4a / S1b-4b — the projection marker channels this primitive opened,
+// the two wording channels beside them (the pointer tooltip, and the row's
+// accessible description since S1b-4b), and `onSelect` becoming optional.
 //
 // Every channel gets two assertions and needs both: that the marker lands on the
 // **right element** (a `data-nc-row` on the title span instead of the `<li>`
@@ -263,6 +264,72 @@ describe('MobileListItem accessible description', () => {
   it('refuses to fall back to the li when an inert row holds a control', () => {
     const rerenderWithOne = withExtraControl({});
     expect(rerenderWithOne).toThrow(/a non-interactive row expects 0 control .* rendered 1/s);
+  });
+
+  /*
+   * #1234 S1b-4b review — **and in production it degrades instead.**
+   *
+   * The two cases above run with `import.meta.env.DEV` true, which is the tier
+   * the throw is for: an Astryx upgrade that changed the markup is looked at in
+   * development and in CI. Production is a different trade. This component
+   * renders inside the `/wave/$waveId` route; neither the route nor the router
+   * configures an `errorComponent`, so a throw out of a layout effect is caught
+   * by the global `CatchBoundary` above `Matches` and replaces the entire match
+   * — app shell and navigation with it — with a bare error page. Losing the
+   * whole surface is a worse outcome than an under-described row, so the
+   * production build logs and falls back to the selection this guard replaced.
+   *
+   * **What is asserted is the fallback, not merely the absence of a throw.** A
+   * production branch that swallowed the mismatch *and* dropped the description
+   * would satisfy "it did not throw" and deliver nothing; so the description is
+   * followed from the host that is left, and it must be the old choice — the
+   * first direct-child control, the `<li>` when there is none.
+   */
+  describe('outside development', () => {
+    const describedTextOn = (host: Element | null | undefined): string | null => {
+      const id = host?.getAttribute('aria-describedby') ?? null;
+      if (id === null) return null;
+      return host!.ownerDocument.getElementById(id)?.textContent ?? null;
+    };
+
+    afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+    it('logs and describes the first control when an interactive row holds two', () => {
+      vi.stubEnv('DEV', false);
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { container, rerender } = render(
+        row({ onSelect: vi.fn(), accessibleDescription: 'first' }),
+      );
+      const first = container.querySelector('button')!;
+      container.querySelector('li')!.append(document.createElement('button'));
+      rerender(row({ onSelect: vi.fn(), accessibleDescription: 'second' }));
+
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0][0]))
+        .toMatch(/an interactive row expects 1 control .* rendered 2/s);
+      /* The old selection, still doing its job: the row a reader focuses is
+         described, and the appended control — which is not a row of Astryx's —
+         is not. */
+      expect(describedTextOn(first)).toBe('second');
+      expect(container.querySelectorAll('[aria-describedby]').length).toBe(1);
+    });
+
+    it('logs and keeps the li described when an inert row holds a control', () => {
+      vi.stubEnv('DEV', false);
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { container, rerender } = render(row({ accessibleDescription: 'first' }));
+      const injected = document.createElement('button');
+      container.querySelector('li')!.append(injected);
+      rerender(row({ accessibleDescription: 'second' }));
+
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0][0]))
+        .toMatch(/a non-interactive row expects 0 control .* rendered 1/s);
+      /* `controls[0] ?? root` — the injected control is the only one there is,
+         so the fallback lands on it rather than dropping the description. */
+      expect(describedTextOn(injected)).toBe('second');
+      expect(container.querySelectorAll('[aria-describedby]').length).toBe(1);
+    });
   });
 });
 
