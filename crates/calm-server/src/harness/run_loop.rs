@@ -962,6 +962,97 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 )
                 .await?;
         }
+        // `turn/plan/updated` — codex's own TODO checklist for the running
+        // turn (`{ threadId, turnId, explanation, plan: [{ step, status }] }`,
+        // status spelled `pending` | `inProgress` | `completed` on the wire).
+        // Each notification carries the *whole* checklist and supersedes the
+        // previous one for that turn; we kept dropping it into the catch-all
+        // below, so the shape has never been observable from real data. This
+        // arm only persists it (#1255) — no UI reads it yet, deliberately:
+        // how often codex revises a plan inside one turn decides the UI shape,
+        // and only stored rows can answer that.
+        Notification::Other { method, params } if method == "turn/plan/updated" => {
+            // Structurally required, not defensive: `harness_items.thread_id`
+            // is NOT NULL, so there is no row to write without one.
+            //
+            // What this branch actually catches is narrow: a *malformed* plan,
+            // one carrying no `threadId` at all (upstream marks it required)
+            // while the harness has no thread either. It is NOT the early-turn
+            // case. A plan that does carry a `threadId` while `inner.thread_id`
+            // is still `None` never reaches this arm — `on_notification` opens
+            // by comparing `notif.thread_id()` (which for `Other` reads
+            // `params.threadId`) against `inner.thread_id` and returns at the
+            // top of this function. That prologue is the real silent-loss path
+            // for an early plan, and it logs nothing at all. #1255 leaves it
+            // alone on purpose: it is the shared prologue for every
+            // notification type, so instrumenting it is its own change. If plan
+            // loss ever needs to be observable, that is where to look.
+            let Some(thread_id) = inner.thread_id.read().await.clone() else {
+                tracing::warn!(
+                    runtime_id = %inner.runtime_id,
+                    card_id = %inner.card_id,
+                    method,
+                    "spec harness dropping turn/plan/updated: the frame carries no threadId \
+                     and no thread is known yet"
+                );
+                return persist_snapshot(inner).await;
+            };
+            // `turnId` is top-level on a plan; `item_turn_id` already falls
+            // back to it — and, unlike `other_turn_id`, it also accepts the
+            // snake_case `turn_id` spelling, which is why it is the one used
+            // here (pinned by `turn_plan_updated_persists_rows_without_events`).
+            let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
+            let params_json = serde_json::to_string(&params)?;
+            inner
+                .repo
+                .harness_item_insert(
+                    &inner.runtime_id,
+                    inner.card_id.as_str(),
+                    inner.wave_id.as_str(),
+                    &thread_id,
+                    turn_id.as_deref(),
+                    // No `item_uuid`, and no `item_type`: a plan is not an item.
+                    // It has no id and no item type, and writing either would
+                    // state something untrue about the row. (It has no rendering
+                    // consequence either way — `harnessItemToActivity` needs an
+                    // `item/*` method *and* an `item` object in `params`, and a
+                    // plan frame has neither.)
+                    None,
+                    None,
+                    &method,
+                    &params_json,
+                )
+                .await?;
+            // Deliberately NO `Event::HarnessItemAdded` for a plan row (#1255),
+            // and the absence is the contract, not an oversight:
+            //
+            // - Nothing reads plan rows. No UI renders them, so there is nothing
+            //   to invalidate. `harness.item.added` invalidates
+            //   `['harness-items', cardId]` (fe/core/events/invalidation-plan.ts),
+            //   which refetches a 300-row page — per plan frame, for data nobody
+            //   renders.
+            // - It is not free on the truth side either: `HarnessItemAdded` is
+            //   *not* in the skip list in `calm-truth/src/wave_vcs/commit.rs`,
+            //   and `wave_vcs/delta.rs` maps it to `add_card_runtime_paths`, so
+            //   every plan frame would append a wave-vcs commit re-rendering
+            //   `cards/<id>/.payload.json` + `runtime.json`.
+            // - Skipping it is not a truth-spine violation: `harness_items` is
+            //   out-of-domain storage written directly, not event-sourced, so a
+            //   row without an event is a legal state here.
+            //
+            // The UI slice MUST revisit this and choose knowingly between
+            // (a) emitting `HarnessItemAdded` per plan update at the cost above,
+            // and (b) letting plan rows ride the refresh that real item rows
+            // already trigger.
+            //
+            // It will also need a way to *read* these rows: the transcript feed
+            // (`GET /api/cards/:id/harness/items`) now narrows to `item/*` in
+            // SQL, because its `limit` is the page budget of a reader that
+            // renders only those. Give plans a read path of their own; do not
+            // widen that query back to unfiltered
+            // (`RepoRead::harness_item_list_transcript_by_card` says the same
+            // where the filter lives).
+        }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
     persist_snapshot(inner).await

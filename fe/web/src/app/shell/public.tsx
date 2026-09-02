@@ -45,6 +45,7 @@ import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
 import { MobileCoves } from './mobile-coves.tsx';
 import { MobilePages } from './mobile-pages.tsx';
+import { SettingsOverlay } from './settings-overlay.tsx';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
@@ -52,6 +53,8 @@ export type AppShellProps = Readonly<{
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
+  /** Settings › Plugins, from the rail's account menu. */
+  onOpenPlugins: () => void;
   onSignOut: () => void;
   /** Pinned by tests so `pinned_at` assertions are stable. */
   nowMs?: number;
@@ -115,7 +118,9 @@ export function useOpenMobileSection(): OpenMobileSection {
 type CoveSelection = Readonly<{ coveId: string | null; motion: 'none' | 'forward' | 'back' }>;
 const NO_COVE_SELECTED: CoveSelection = Object.freeze({ coveId: null, motion: 'none' });
 
-export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
+export function AppShell({
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
+}: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
   const coveMutations = useCoveMutations(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
@@ -422,6 +427,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
               await waveMutations.remove(waveId, coveId, signal);
             }}
             onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
+            onOpenPlugins={() => { closeMobileSection(); onOpenPlugins(); }}
             onSignOut={() => { closeMobileSection(); onSignOut(); }}
             userLabel={userLabel}
           />}
@@ -477,6 +483,11 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           </button>
         ))}
       </nav>
+      {/* Owned here for the same reason the New wave dialog is: it has to stay
+          mounted while the reader navigates *inside* it (General → Plugins is a
+          route change), and the shell is the nearest thing above `<Outlet />`
+          that survives one. See `settings-overlay.tsx`. */}
+      <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
         initialFocusRef={newWaveStartFromRef}>
         {newWaveCoveId !== null && (

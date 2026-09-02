@@ -37,7 +37,6 @@ function listProps(overrides: Partial<TemplateListProps> = {}): TemplateListProp
     templates: [SMALL_CHANGE],
     loadError: null,
     onRetryLoad: vi.fn(),
-    onOpenSettings: vi.fn(),
     onEdit: vi.fn(),
     ...overrides,
   };
@@ -58,12 +57,16 @@ function editorProps(overrides: Partial<TemplateEditorProps> = {}): TemplateEdit
 }
 
 describe('Template list', () => {
-  it('names each Edit button after its template', async () => {
+  it('drills in from the row itself, which is named after its template', async () => {
     const onEdit = vi.fn();
     render(<TemplateListPage {...listProps({ onEdit })} />);
-    // Three buttons all called "Edit" is a list a screen reader cannot use.
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Small change' }));
+    // The row is the affordance: one target, named after the template it
+    // opens. The previous shape put an "Edit" button inside each row — two
+    // targets for one intent, and three buttons all called "Edit" is a list a
+    // screen reader cannot navigate.
+    await userEvent.click(screen.getByRole('button', { name: /Small change/ }));
     expect(onEdit).toHaveBeenCalledWith('small-change');
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
   });
 
   it('summarises a template by its task count, not by listing every task', () => {
@@ -96,12 +99,6 @@ describe('Template list', () => {
     expect(onRetryLoad).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves for Settings through the breadcrumb callback', async () => {
-    const onOpenSettings = vi.fn();
-    render(<TemplateListPage {...listProps({ onOpenSettings })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    expect(onOpenSettings).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe('Template editor', () => {

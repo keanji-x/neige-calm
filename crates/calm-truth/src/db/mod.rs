@@ -406,7 +406,43 @@ pub trait RepoRead: Send + Sync + 'static {
         blocks: &[calm_types::wave_report::ReportBlock],
     ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
+    /// Page **every** `harness_items` row for a card, whatever its `method`.
+    ///
+    /// This is the raw storage read. The transcript feed must NOT use it — see
+    /// [`harness_item_list_transcript_by_card`](Self::harness_item_list_transcript_by_card)
+    /// for why.
     async fn harness_item_list_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>>;
+
+    /// Page only the rows a transcript can render: `item/started` and
+    /// `item/completed`.
+    ///
+    /// Same paging contract as [`harness_item_list_by_card`](Self::harness_item_list_by_card)
+    /// (`after_id` exclusive, `limit` rows, always returned ascending), and the
+    /// filter is deliberately in the SQL rather than applied to the result:
+    /// `limit` has to be a budget of *renderable* rows. `#1255` made this load
+    /// bearing by writing codex's per-turn `turn/plan/updated` checklist into
+    /// the same table — with an unfiltered query, every stored plan row eats
+    /// one of the frontend's 300 page slots (`HARNESS_ITEMS_PAGE_LIMIT`) and
+    /// pushes a real transcript row behind "Load earlier". Filtering after the
+    /// fetch would not fix it and would break the cursor besides: the caller
+    /// treats a short page as "no more rows".
+    ///
+    /// The frontend keeps its own allowlist (`isTranscriptMethod` in
+    /// `fe/core/domain/conversation.ts`); that stays as a second line of
+    /// defence, not as the only one.
+    ///
+    /// **For the UI slice that will render plans:** read those rows through an
+    /// explicit path of their own — a dedicated method, or a caller-supplied
+    /// method filter. Do **not** widen this query back to unfiltered to get at
+    /// them; that silently restores the page-budget regression above for every
+    /// transcript reader.
+    async fn harness_item_list_transcript_by_card(
         &self,
         card_id: &str,
         after_id: i64,

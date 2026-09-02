@@ -64,7 +64,7 @@ describe('compact navigation interaction contracts', () => {
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
     })));
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-    render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />);
+    render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} />);
     const pages = screen.getByRole('button', { name: 'Pages' });
     expect(pages.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(pages);

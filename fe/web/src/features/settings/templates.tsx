@@ -33,11 +33,13 @@
 // untouched, because the server stores exactly what it is given.
 
 import type { WaveTemplate, WaveTemplateGoalEdit } from '../../../../core/domain/wave.ts';
-import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { SettingRow, SettingsList, SettingsPane } from './public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Heading } from '@astryxdesign/core/Heading';
+import { FormLayout } from '@astryxdesign/core/FormLayout';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
@@ -64,63 +66,51 @@ export type TemplateListProps = Readonly<{
   templates: readonly WaveTemplate[] | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
-  onOpenSettings: () => void;
   onEdit: (templateId: string) => void;
 }>;
 
+/*
+ * No page header on either surface: the Settings nav column already names this
+ * group, and a title repeating the row the reader just clicked is the second
+ * copy of one fact. The editor keeps a back control because it is a level
+ * *below* the list, which the nav column cannot express.
+ */
 export function TemplateListPage({
-  templates, loadError, onRetryLoad, onOpenSettings, onEdit,
+  templates, loadError, onRetryLoad, onEdit,
 }: TemplateListProps) {
   return (
-    <div className={styles.page}>
-      <PageHeader
-        breadcrumb={<Breadcrumb ancestor="Settings" onNavigate={onOpenSettings} />}
-        title={<PageTitle>Templates</PageTitle>}
-      />
-      <VStack className={styles.form} gap={4} align="stretch">
-        <Text as="p" color="secondary">
-          What a new wave starts from. Editing a template changes every wave created
-          from it afterwards; waves already created keep the plan they were forked with.
-        </Text>
-        {loadError !== null && (
-          <VStack gap={2} align="start">
-            <Banner status="error" title={loadError} role="alert" />
-            <Button type="button" variant="secondary" label="Retry" onClick={onRetryLoad} />
-          </VStack>
+    <SettingsPane
+      title="Templates"
+      lede="What a new wave starts from. Editing one changes every wave created from it afterwards; waves already created keep the plan they were forked with."
+    >
+      {loadError !== null && (
+        <VStack gap={2} align="start">
+          <Banner status="error" title={loadError} role="alert" />
+          <Button type="button" variant="secondary" label="Retry" onClick={onRetryLoad} />
+        </VStack>
+      )}
+      {templates === undefined
+        ? loadError === null && <Text as="p" color="secondary">Loading templates…</Text>
+        : (
+          <SettingsList>
+            {templates.map((template) => (
+              <SettingRow
+                key={template.id}
+                title={template.title}
+                /* The count, not the task list: the list is what the next
+                   screen is for, and repeating it here was what made the old
+                   inline version unreadable. */
+                description={template.tasks.length === 1 ? '1 task' : `${template.tasks.length} tasks`}
+                /* A drill-in row: the row is the target and the chevron says
+                   so. There is no Edit button — a row plus a button inside it
+                   is two targets for one intent, and three buttons all called
+                   "Edit" was a list a screen reader could not navigate. */
+                onOpen={() => onEdit(template.id)}
+              />
+            ))}
+          </SettingsList>
         )}
-        {templates === undefined
-          ? loadError === null && <Text as="p" color="secondary">Loading templates…</Text>
-          : (
-            <ul className={styles.templateList}>
-              {templates.map((template) => (
-                <li key={template.id} className={styles.templateRow}>
-                  <HStack gap={3} align="center" justify="between">
-                    <VStack gap={0} align="start">
-                      <Text as="span">{template.title}</Text>
-                      {/* The count, not the task list: the list is what the
-                          next screen is for, and repeating it here was what
-                          made the old inline version unreadable. */}
-                      <Text as="span" color="secondary">
-                        {template.tasks.length === 1 ? '1 task' : `${template.tasks.length} tasks`}
-                      </Text>
-                    </VStack>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      label="Edit"
-                      // The accessible name has to say *which* template; three
-                      // buttons all named "Edit" is a list a screen reader
-                      // cannot navigate.
-                      aria-label={`Edit ${template.title}`}
-                      onClick={() => onEdit(template.id)}
-                    />
-                  </HStack>
-                </li>
-              ))}
-            </ul>
-          )}
-      </VStack>
-    </div>
+    </SettingsPane>
   );
 }
 
@@ -202,12 +192,24 @@ export function TemplateEditorPage({
   const submittable = dirty && !blankTitle && !blankGoal;
 
   return (
-    <div className={styles.page}>
-      <PageHeader
-        breadcrumb={<Breadcrumb ancestor="Templates" onNavigate={onOpenTemplates} />}
-        title={<PageTitle>{template?.title ?? 'Template'}</PageTitle>}
-      />
+    <div className={styles.paneBody}>
       <VStack className={styles.form} gap={4} align="stretch">
+        {/* The way back out of a second level: a quiet `‹ Templates` above the
+            title, which is where a screen that stacks puts it. It was a filled
+            secondary button beside the title, which read as an action on the
+            template rather than the way back to the list. */}
+        <VStack gap={2} align="start">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            label="Templates"
+            aria-label="Back to templates"
+            icon={<Icon name="chevron-left" size="sm" />}
+            onClick={onOpenTemplates}
+          />
+          <Heading level={3}>{template?.title ?? 'Template'}</Heading>
+        </VStack>
         {loadError !== null && (
           <VStack gap={2} align="start">
             <Banner status="error" title={loadError} role="alert" />
@@ -218,52 +220,60 @@ export function TemplateEditorPage({
           ? loadError === null && <Text as="p" color="secondary">Loading template…</Text>
           : (
             <>
-              <TextInput
-                label="Title"
-                value={draft.title}
-                width="100%"
-                status={blankTitle
-                  ? { type: 'error', message: 'A template needs a title — the New wave dialog lists templates by it.' }
-                  : undefined}
-                onChange={(value: string) => edit({ ...draft, title: value })}
-              />
+              {/* Same row grammar as Settings › General: the label sits in the
+                  left column beside its input (astryx's stated settings
+                  layout), so stepping into this second level does not change
+                  what a row looks like. */}
+              <FormLayout direction="horizontal-labels">
+                <TextInput
+                  label="Title"
+                  value={draft.title}
+                  width="100%"
+                  status={blankTitle
+                    ? { type: 'error', message: 'A template needs a title — the New wave dialog lists templates by it.' }
+                    : undefined}
+                  onChange={(value: string) => edit({ ...draft, title: value })}
+                />
+              </FormLayout>
 
-              <Heading level={2}>Tasks</Heading>
+              <Heading level={3}>Tasks</Heading>
               {/* Stated, not discovered by failing — see this file's header. */}
               <Text as="p" color="secondary">
                 A task&rsquo;s key is fixed once the template exists, and a task cannot be
                 removed. You can reword any task and add new ones.
               </Text>
 
-              {draft.tasks.map((task, index) => (
-                <TextInput
-                  key={task.key}
-                  label={task.key}
-                  value={task.goal}
-                  width="100%"
-                  status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
-                  onChange={(value: string) => edit({
-                    ...draft,
-                    tasks: draft.tasks.map((entry, position) =>
-                      position === index ? { ...entry, goal: value } : entry),
-                  })}
-                />
-              ))}
+              <FormLayout direction="horizontal-labels">
+                {draft.tasks.map((task, index) => (
+                  <TextInput
+                    key={task.key}
+                    label={task.key}
+                    value={task.goal}
+                    width="100%"
+                    status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
+                    onChange={(value: string) => edit({
+                      ...draft,
+                      tasks: draft.tasks.map((entry, position) =>
+                        position === index ? { ...entry, goal: value } : entry),
+                    })}
+                  />
+                ))}
 
-              {draft.appends.map((task, index) => (
-                <TextInput
-                  key={`new-${task.key}`}
-                  label={`${task.key} (new)`}
-                  value={task.goal}
-                  width="100%"
-                  status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
-                  onChange={(value: string) => edit({
-                    ...draft,
-                    appends: draft.appends.map((entry, position) =>
-                      position === index ? { ...entry, goal: value } : entry),
-                  })}
-                />
-              ))}
+                {draft.appends.map((task, index) => (
+                  <TextInput
+                    key={`new-${task.key}`}
+                    label={`${task.key} (new)`}
+                    value={task.goal}
+                    width="100%"
+                    status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
+                    onChange={(value: string) => edit({
+                      ...draft,
+                      appends: draft.appends.map((entry, position) =>
+                        position === index ? { ...entry, goal: value } : entry),
+                    })}
+                  />
+                ))}
+              </FormLayout>
 
               <NewTaskRow
                 existingKeys={[...draft.tasks, ...draft.appends].map((task) => task.key)}
@@ -363,19 +373,23 @@ function NewTaskRow({ existingKeys, onAdd }: {
   return (
     <VStack gap={2} align="stretch" className={styles.newTask}>
       <Heading level={3}>Add a task</Heading>
-      <TextInput
-        label="Key"
-        value={key}
-        width="100%"
-        status={status}
-        onChange={(value: string) => setKey(value)}
-      />
-      <TextInput
-        label="Goal"
-        value={goal}
-        width="100%"
-        onChange={(value: string) => setGoal(value)}
-      />
+      {/* Same two columns as the rows above it, so the row you are adding
+          looks like the rows you are adding it to. */}
+      <FormLayout direction="horizontal-labels">
+        <TextInput
+          label="Key"
+          value={key}
+          width="100%"
+          status={status}
+          onChange={(value: string) => setKey(value)}
+        />
+        <TextInput
+          label="Goal"
+          value={goal}
+          width="100%"
+          onChange={(value: string) => setGoal(value)}
+        />
+      </FormLayout>
       <HStack gap={2}>
         <Button
           type="button"
