@@ -230,8 +230,23 @@ export function Drawer({ open, title, mobileBackLabel, onClose, children, footer
   // opener brought back into view.
   useEffect(() => {
     if (open) {
-      previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-      panelRef.current?.focus({ preventScroll: true });
+      const active = document.activeElement as HTMLElement | null;
+      const panel = panelRef.current;
+      /*
+       * Unless something inside has already claimed it.
+       *
+       * A drawer whose content asked for the caret in the same commit that
+       * opened it — `ChatComposer`'s `focusOnMount`, the landing a
+       * just-created wave gets (#1211 S2) — has made a *more specific* request
+       * than "focus moves in", and children's effects run before this one. So
+       * this would not be moving focus in; it would be pulling it back out of
+       * the one control the reader was put in front of. It would also record
+       * an opener that lives inside this drawer, which the close-restore below
+       * would then aim at an element that is on its way out of the DOM.
+       */
+      if (panel !== null && active !== null && panel.contains(active)) return;
+      previouslyFocusedRef.current = active;
+      panel?.focus({ preventScroll: true });
       return;
     }
     /*

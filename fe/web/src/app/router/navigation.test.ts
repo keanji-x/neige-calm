@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cardIdFromLocation, cardIdFromSearchString, fromFromLocation, fromFromSearchString,
-  hasPanelPushedMarker, panelFromLocation, panelFromSearchString, pathFor,
+  hasPanelPushedMarker, hasSpecOpenMarker, panelFromLocation, panelFromSearchString, pathFor,
   renderedMobilePanel, sameWaveSearch, validateWaveSearch,
 } from './navigation.ts';
 
@@ -145,6 +145,24 @@ describe('hasPanelPushedMarker', () => {
     expect(hasPanelPushedMarker({})).toBe(false);
     expect(hasPanelPushedMarker(null)).toBe(false);
     expect(hasPanelPushedMarker(undefined)).toBe(false);
+  });
+});
+
+/*
+ * The same six cells as its neighbour, for the same reason: history state is
+ * whatever a previous version of this app, or a hand-edited session entry, left
+ * behind, so the marker is read as an exact `true` and never as truthiness. A
+ * `'true'` string arming the spec drawer would open a conversation and take the
+ * caret on an ordinary visit (#1211 S2).
+ */
+describe('hasSpecOpenMarker', () => {
+  it('accepts only the exact marker', () => {
+    expect(hasSpecOpenMarker({ ncOpenSpec: true })).toBe(true);
+    expect(hasSpecOpenMarker({ ncOpenSpec: false })).toBe(false);
+    expect(hasSpecOpenMarker({ ncOpenSpec: 'true' })).toBe(false);
+    expect(hasSpecOpenMarker({})).toBe(false);
+    expect(hasSpecOpenMarker(null)).toBe(false);
+    expect(hasSpecOpenMarker(undefined)).toBe(false);
   });
 });
 

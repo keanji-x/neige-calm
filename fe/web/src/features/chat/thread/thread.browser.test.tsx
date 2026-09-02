@@ -452,6 +452,111 @@ describe('sending, with the disabled prop the router actually passes', () => {
 });
 
 /*
+ * ── `focusOnMount`, in an engine that renders Astryx for real (#1211 S2) ───
+ *
+ * The landing a just-created wave gets: the drawer opens on the spec
+ * conversation and the caret has to be *in the message field*, because the
+ * reader's first sentence is the wave's intent.
+ *
+ * This is the same machinery the send-restore above uses, and it is here for
+ * the same reason that one is: the effect finds the field with
+ * `[contenteditable="true"], textarea`, and whether Astryx's editable carries
+ * that attribute in the commit the composer mounts in is a question about
+ * Astryx and about a real DOM. jsdom resolves the selector immediately and so
+ * cannot tell "the caret reached the field" from "the caret is parked on the
+ * composer's box with the request still standing" — and on that second
+ * outcome the request never clears, because the effect's `[sendCount,
+ * disabled]` deps do not move on this path. The reader would be left one Tab
+ * away from the only control the page exists for, and the drawer no longer
+ * pulls focus back to itself either (`ui/drawer`'s guard).
+ *
+ * The assertions are identities against the field, not "somewhere inside the
+ * composer": the perch *is* inside the composer, and it is the failure.
+ *
+ * ── What this tier does *not* cover, and who does ──────────────────────────
+ *
+ * These cases render `ChatComposer` directly, so they prove the engine half
+ * only: given the flag, the caret reaches Astryx's real editable. They say
+ * nothing about the app reaching this component with the flag raised — drop
+ * `focusOnMount` in `app/router/public.tsx`, or move the composer out of the
+ * drawer's `footer`, and every case here stays green. The wiring half is
+ * `app/router/wave-untitled.test.tsx` ("opens the spec conversation with the
+ * caret in the composer"), which drives the real router and the real create
+ * and cannot see the engine question. **Neither tier alone proves the
+ * landing**; that is why both exist and why each names the other.
+ *
+ * Also unlike the send-restore block above, these render no `disabled` prop —
+ * "a configuration the app never builds", by that block's own words. It is
+ * sound here for a reason that does not carry over: at mount the composer is
+ * never in flight, so `disabled` is false on the commit these measure, and the
+ * timing the restore fixture reproduces has not started. A case that needed the
+ * flag to survive a disabled window would have to use `Sending`.
+ */
+describe('the caret a just-created wave lands with', () => {
+  it('lands in the message field itself, not on the composer’s perch', async () => {
+    await page.viewport(1400, 900);
+    render(
+      <div style={{ inlineSize: 396 }}>
+        <ChatComposer focusOnMount onSend={vi.fn()} onNewConversation={vi.fn()} />
+      </div>,
+    );
+
+    expect(document.activeElement).toBe(field());
+    expect(document.activeElement).not.toBe(composer());
+  });
+
+  /*
+   * The documented edge of the interface, pinned rather than defended: the flag
+   * is read once, at mount, and this component carries no `key` on the router's
+   * path. So raising it again on a composer that is already standing does
+   * nothing, and a caller that wants a second landing has to produce a second
+   * mount. Production satisfies that by construction — the intent is stated by
+   * a create, so the wave, the drawer and this composer are all new — and the
+   * `focusOnMount` note in `thread/public.tsx` says so; this is the assertion
+   * behind that sentence.
+   *
+   * Red when the prop starts being watched over time, which would be the second
+   * focus policy that note rejects — the giving-up rule below would then be
+   * overridden by a rerender the reader did not cause.
+   */
+  it('ignores the flag being raised again on a composer that is already mounted', async () => {
+    await page.viewport(1400, 900);
+    const composerWith = (armed: boolean) => (
+      <div style={{ inlineSize: 396 }}>
+        <ChatComposer focusOnMount={armed} onSend={vi.fn()} />
+        <button type="button" data-testid="elsewhere">Elsewhere</button>
+      </div>
+    );
+    const { rerender } = render(composerWith(false));
+
+    elsewhere().focus();
+    expect(document.activeElement).toBe(elsewhere());
+
+    await act(async () => { rerender(composerWith(true)); await Promise.resolve(); });
+
+    expect(document.activeElement).toBe(elsewhere());
+  });
+
+  /*
+   * And through the seam it actually arrives by: the composer is the drawer's
+   * `footer`, and the drawer's own open effect runs *after* it. Wired this way
+   * because the two focus policies meet here and nowhere else — a drawer that
+   * still pulled focus to its container would leave the caret on the panel,
+   * with this composer's request standing and nothing left to rerun it.
+   */
+  it('keeps the caret in the field when the drawer opens around it', async () => {
+    await page.viewport(1400, 900);
+    render(
+      <Drawer open title="Spec chat" onClose={() => undefined} footer={<ChatComposer focusOnMount onSend={vi.fn()} />}>
+        <p>the transcript</p>
+      </Drawer>,
+    );
+
+    expect(document.activeElement).toBe(field());
+  });
+});
+
+/*
  * ── The exchange rail, against a real scrollport ──────────────────────────
  *
  * Three of the rail's claims are invisible to the web-dom tier and to any
