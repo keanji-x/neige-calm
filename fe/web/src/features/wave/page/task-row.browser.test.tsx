@@ -91,7 +91,7 @@ function renderRow(onOpenCard: () => void, onOpenTask: () => void) {
     </div>,
   );
   const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
-  const dot = row.querySelector<HTMLElement>('[data-nc-task-status]')!;
+  const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
   const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
   const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
   return { row, dot, kind, reveal };
@@ -226,7 +226,7 @@ describe('a TASKS row, laid out', () => {
     const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
     /* Premise: there really is no dot, and the lane is still reserved. */
-    expect(row.querySelector('[data-nc-task-status]')).toBeNull();
+    expect(row.querySelector('[data-nc-status]')).toBeNull();
     const rowBox = row.getBoundingClientRect();
     const kindBox = kind.getBoundingClientRect();
     const lane = rowBox.right - kindBox.right;
@@ -329,8 +329,8 @@ function renderMarks(): Map<string, HTMLElement> {
      a per-status selector string would be a dynamic query, which this repo
      forbids because it fails open when the value stops matching. */
   const dots = new Map(
-    [...document.querySelectorAll<HTMLElement>('[data-nc-task-status]')]
-      .map((dot) => [dot.dataset.ncTaskStatus ?? '', dot] as const),
+    [...document.querySelectorAll<HTMLElement>('[data-nc-status]')]
+      .map((dot) => [dot.dataset.ncStatus ?? '', dot] as const),
   );
   /* Premise: all four really rendered. A missing one would make every loop
      below run over three elements and still pass. */
@@ -508,7 +508,7 @@ describe('the TASKS status mark', () => {
     const key = row.querySelector<HTMLElement>('button[title^="Show "]')!
       .firstElementChild as HTMLElement;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
-    const dot = row.querySelector<HTMLElement>('[data-nc-task-status]')!;
+    const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
 
     /* Premise: the key really is clipped to an ellipsis here. */
     expect(key.scrollWidth).toBeGreaterThan(key.clientWidth);
@@ -708,7 +708,7 @@ describe('the TASKS status mark', () => {
    * `selectorText` contained the dot's class, inside *some* reduced-motion
    * media block, with `animationName: 'none'` — and found one, while the rule
    * was inert. A media query adds no specificity, so a bare `.taskDot` (0,1,0)
-   * lost outright to the pulse's `.taskDot[data-nc-task-status="running"]`
+   * lost outright to the pulse's `.taskDot[data-nc-status="running"]`
    * (0,2,0), and under emulated `reduce` the effective `animation-name` was
    * still `task-dot-pulse`. That test would have stayed green with the rule
    * deleted, or moved into any unrelated selector.
@@ -823,7 +823,7 @@ describe('hovering the TASKS status', () => {
       </div>,
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
-    const dot = row.querySelector<HTMLElement>('[data-nc-task-status]')!;
+    const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
     const mark = dot.getBoundingClientRect();
     const phrase = 'failed — wave 9a4c is not a git repository';
 
@@ -880,7 +880,7 @@ describe('hovering the TASKS status', () => {
       </div>,
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
-    const dot = row.querySelector<HTMLElement>('[data-nc-task-status]')!;
+    const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
     const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
     const mark = dot.getBoundingClientRect();
@@ -933,7 +933,7 @@ describe('hovering the TASKS status', () => {
       </div>,
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
-    const dot = row.querySelector<HTMLElement>('[data-nc-task-status]')!;
+    const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
     const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
 
     expect(dot.getAttribute('aria-label'))

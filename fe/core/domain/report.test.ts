@@ -906,7 +906,7 @@ describe('deriveReportTasks', () => {
   /*
    * `''` is not a status either, and it is the one empty string that would have
    * got through: it is not `null`, so it silences the declaration word, opens
-   * the `statusDetail` gate, and renders as `data-nc-task-status=""` — a dot
+   * the `statusDetail` gate, and renders as `data-nc-status=""` — a dot
    * matching no form, and an accessible name reading `Status:  — boom`, a
    * kernel reason with no state attached. Today's `TaskStatus` serialises to a
    * fixed lowercase word, so this hardens the wire type (`z.string().nullish()`)
