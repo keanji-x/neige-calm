@@ -1856,8 +1856,10 @@ fn prepare_fork_report(
             // exit. The prose `UpsertBlock` arm, which this note used to
             // record as an open *op-layer* gap, is covered since #1269 by a
             // *different* and stricter check: `wave_report_guard::
-            // validate_prose_block_content`, which forbids any fence in
-            // prose. `ReportDoc::upsert_block` itself fence-checks only
+            // validate_prose_block_content`, which forbids any
+            // `neige-block` fence in prose (other fences — a ```rust code
+            // block, say — still land).
+            // `ReportDoc::upsert_block` itself fence-checks only
             // non-prose content (`if kind != KIND_PROSE`), which is why the
             // prose case has to be checked in the op arm. To be exact about
             // what that gap ever was: it was reachable only by calling

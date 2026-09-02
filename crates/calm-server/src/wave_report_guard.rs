@@ -21,11 +21,15 @@
 //!   `neige-block` fence at all, well-formed or not.
 //!
 //!   This is **defence in depth at the op layer, not a user-reachable
-//!   hole being closed**. Both surfaces that mint a prose block have
-//!   called `check_prose_markdown` on their own argument since well
-//!   before #1269 — `mcp_server::tools::wave_report_blocks` since #971
-//!   and `routes::wave_report_blocks` since #990 — so no user-reachable
-//!   path ever accepted a fenced prose block. What #1269 changes is that
+//!   hole being closed**. The two surfaces that can send a prose
+//!   `UpsertBlock` have called `check_prose_markdown` on their own
+//!   argument since well before #1269 —
+//!   `mcp_server::tools::wave_report_blocks` since #971 and
+//!   `routes::wave_report_blocks` since #990 — and they are the only
+//!   production builders of a prose `UpsertBlock`
+//!   (`wave_report_edit_guard::normalize_report_op`, the third builder,
+//!   emits `kind: "task"`), so no user request reached this arm carrying
+//!   a fenced prose block. What #1269 changes is that
 //!   the op layer no longer *depends* on those two surfaces getting it
 //!   right: a direct `apply_report_op` call (a future surface, a test
 //!   fixture, an in-process caller) used to land the fence verbatim, and
