@@ -190,7 +190,8 @@ describe('query invalidation adapter', () => {
         [queryKeys.specRun('card-1'), queryKeys.coveConversationsPrefix(), queryKeys.waveConversations('wave-1')],
       ],
       [
-        base, 'harness.transcript.cleared',
+        { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
+        'harness.transcript.cleared',
         [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')],
       ],
       [

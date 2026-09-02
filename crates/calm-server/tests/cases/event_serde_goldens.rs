@@ -441,6 +441,9 @@ golden_test!(
         runtime_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
         wave_id: WaveId::from("wave-01"),
+        cleared_item_count: Some(12),
+        cleared_params_bytes: Some(3_400),
+        card_age_ms_at_clear: Some(86_400_000),
     }
 );
 

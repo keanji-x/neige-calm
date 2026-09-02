@@ -660,15 +660,21 @@ fn try_fold_pending_tail(
                 wave_id,
                 body_sha256,
                 body,
+                author,
             },
             Observation::ReportEdited {
                 wave_id: new_wave_id,
                 body_sha256: new_body_sha256,
                 body: new_body,
+                author: new_author,
             },
         ) if wave_id == new_wave_id => {
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
+            // The fold keeps the NEWEST edit's state, attribution included:
+            // the spec is told to treat the surviving body as ground truth,
+            // so it must be told who actually wrote that body (#1252 F2).
+            *author = *new_author;
             true
         }
         // #615 F3: preserve both adjacent user intents under backpressure

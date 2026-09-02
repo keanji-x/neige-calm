@@ -127,6 +127,25 @@ async fn post_empty(app: axum::Router, uri: String) -> (StatusCode, Value) {
 #[tokio::test]
 async fn reset_spec_card_clears_persisted_harness_items() {
     let boot = boot().await;
+    // #1252 S0 R1/F4 — backdate the spec card so `card_age_ms_at_clear` has a
+    // value only `created_at` can produce. Without this the card is
+    // milliseconds old and the age assertion passes just as well when the
+    // production expression reads `updated_at` — which the reset transaction
+    // itself rewrites, so in production the field would read ~0 on every
+    // reset forever while the test stayed green.
+    const BACKDATE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+    let backdated_created_at = boot.spec_card.created_at - BACKDATE_MS;
+    sqlx::query("UPDATE cards SET created_at = ?1 WHERE id = ?2")
+        .bind(backdated_created_at)
+        .bind(boot.spec_card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    // #1252 S0-2: the reset hard-deletes these rows, so the emitted event is
+    // the only surviving record of what was destroyed. Keep the seeded
+    // payloads so the expected byte total is computed from the same strings
+    // the production measurement sees.
+    let mut seeded_params: Vec<String> = Vec::new();
     for index in 1..=3 {
         let item_uuid = format!("item-before-reset-{index}");
         let params = json!({
@@ -137,6 +156,7 @@ async fn reset_spec_card_clears_persisted_harness_items() {
             }
         })
         .to_string();
+        seeded_params.push(params.clone());
         boot.repo
             .harness_item_insert(
                 "runtime-before-reset",
@@ -184,6 +204,12 @@ async fn reset_spec_card_clears_persisted_harness_items() {
         .unwrap()
         .expect("new active runtime");
     let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
+    let expected_item_count = seeded_params.len() as i64;
+    let expected_params_bytes: i64 = seeded_params.iter().map(|p| p.len() as i64).sum();
+    assert!(
+        expected_params_bytes > 0,
+        "fixture must seed non-empty params, else the size assertion is vacuous"
+    );
     assert!(
         events.iter().any(|(_id, _version, scope, event)| {
             matches!(
@@ -194,15 +220,28 @@ async fn reset_spec_card_clears_persisted_harness_items() {
                         runtime_id,
                         card_id,
                         wave_id,
+                        cleared_item_count,
+                        cleared_params_bytes,
+                        card_age_ms_at_clear: cleared_age,
                     },
                 ) if runtime_id == &active.id
                     && card_id == &boot.spec_card.id
                     && wave_id == &boot.spec_card.wave_id
                     && card == &boot.spec_card.id
                     && wave == &boot.spec_card.wave_id
+                    && *cleared_item_count == Some(expected_item_count)
+                    && *cleared_params_bytes == Some(expected_params_bytes)
+                    // The card was backdated a week; the age must reflect
+                    // that, not the age of a row the reset tx just touched.
+                    && cleared_age.is_some_and(|age| {
+                        (BACKDATE_MS..BACKDATE_MS + 600_000).contains(&age)
+                    })
             )
         }),
-        "reset must emit durable harness.transcript.cleared for {}: {events:?}",
+        "reset must emit durable harness.transcript.cleared carrying \
+         item_count={expected_item_count} params_bytes={expected_params_bytes} \
+         age_ms in [{BACKDATE_MS}, {}) for {}: {events:?}",
+        BACKDATE_MS + 600_000,
         boot.spec_card.id
     );
     if let Some(handle) = boot.state.harness.remove(&active.id) {
