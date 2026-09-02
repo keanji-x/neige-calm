@@ -389,6 +389,16 @@ export const harnessTranscriptClearedSchema = z.object({
     runtime_id: z.string(),
     card_id: z.string(),
     wave_id: z.string(),
+    // #1252 S0-2 — the reset hard-deletes the transcript, so these are the
+    // only surviving record of its size and the card's age at reset.
+    // #1252 R1/F1 — nullable, and null is NOT the same as 0: rows written
+    // before the telemetry existed carry no measurement at all, and the
+    // Rust side keeps them replayable rather than dropping them from WS
+    // replay. The keys are always present on the wire (serde emits
+    // `null` for `None`), so these stay required-but-nullable.
+    cleared_item_count: z.number().nullable(),
+    cleared_params_bytes: z.number().nullable(),
+    card_age_ms_at_clear: z.number().nullable(),
   }),
 });
 

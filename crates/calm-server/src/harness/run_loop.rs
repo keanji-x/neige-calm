@@ -16,6 +16,7 @@ use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
+use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -78,6 +79,11 @@ pub(super) struct Inner {
     issued_turn_head: Mutex<Option<wave_vcs::CommitHash>>,
     last_report_body_sha256: Mutex<Option<String>>,
     last_seen_head: Mutex<Option<wave_vcs::CommitHash>>,
+    /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
+    /// Latest-wins: every frame replaces this whole value (modulo the sticky
+    /// window in [`TokenUsage::sticky_merge`]), and it rides the runtime
+    /// snapshot out to `worker_sessions.handle_state` on the next persist.
+    token_usage: Mutex<Option<TokenUsage>>,
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
     shutdown: broadcast::Sender<()>,
@@ -442,6 +448,13 @@ fn inner_from_params(
         issued_turn_head: Mutex::new(snapshot.issued_turn_head),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
+        // Round-trips through the snapshot so the reading survives a reboot
+        // and the lazy-recovery respawn in `ensure_live_spec_harness`. Without
+        // this line the value would be written to disk and then silently
+        // dropped on the way back in — codex only re-pushes it on the next
+        // model response, so a resumed-but-idle thread would read as having no
+        // context usage at all.
+        token_usage: Mutex::new(snapshot.token_usage),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
         shutdown,
@@ -647,15 +660,21 @@ fn try_fold_pending_tail(
                 wave_id,
                 body_sha256,
                 body,
+                author,
             },
             Observation::ReportEdited {
                 wave_id: new_wave_id,
                 body_sha256: new_body_sha256,
                 body: new_body,
+                author: new_author,
             },
         ) if wave_id == new_wave_id => {
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
+            // The fold keeps the NEWEST edit's state, attribution included:
+            // the spec is told to treat the surviving body as ground truth,
+            // so it must be told who actually wrote that body (#1252 F2).
+            *author = *new_author;
             true
         }
         // #615 F3: preserve both adjacent user intents under backpressure
@@ -1052,6 +1071,98 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             // widen that query back to unfiltered
             // (`RepoRead::harness_item_list_transcript_by_card` says the same
             // where the filter lives).
+        }
+        // `thread/tokenUsage/updated` — how full the model's context is
+        // (#1255 S3). Pushed after every upstream response; wire shape and the
+        // `total` vs `last` trap are documented in `harness/token_usage.rs`,
+        // which is where the parse and the arithmetic live. The one-line
+        // version, because it is the mistake this arm exists to prevent:
+        // `tokenUsage.total` is a LIFETIME sum over every response in the
+        // thread and routinely exceeds the window; `tokenUsage.last` is the
+        // occupancy proxy.
+        //
+        // Storage is the runtime snapshot, not `harness_items`. The reading is
+        // latest-wins — one value per runtime, superseded on every response —
+        // which is exactly what `worker_sessions.handle_state` already is:
+        // rewritten in place by `persist_snapshot_inner`, no event, no wave-vcs
+        // commit. Appending a row per response instead would need either its
+        // own `Event` (a wave-vcs commit plus a 300-row transcript refetch, per
+        // model response) or no event at all, in which case nothing would ever
+        // invalidate and no reader would see it. S2 appended to `harness_items`
+        // because it was gathering evidence for a UI it could not yet design;
+        // that reason does not transfer to a value whose whole content is
+        // "the current number".
+        //
+        // CROSS-THREAD GATE. `SpecHarness::run` subscribes to the daemon's
+        // *global* notification broadcast, so every harness on this box sees
+        // every `thread/tokenUsage/updated` frame from every thread. The only
+        // thing keeping card A's meter from showing card B's context is
+        // `on_notification`'s prologue — `notif.thread_id() != current_thread`
+        // — and its failure mode is a plausible-looking wrong number, never an
+        // error. `token_usage_from_a_foreign_thread_is_ignored` in
+        // `tests/cases/spec_harness_token_usage.rs` is the test that holds it.
+        //
+        // One lenient edge, recorded because it is real and NOT worth building
+        // machinery for: `other_thread_id` returns `None` for a frame with no
+        // `threadId`, so a frame lacking the key compares equal to a harness
+        // whose `inner.thread_id` is still `None` (pre-`thread/started`) and
+        // would be ingested by an unrelated harness. `threadId` is REQUIRED in
+        // the generated schema (see `harness/token_usage.rs` for the command
+        // that prints it), so reaching this needs upstream protocol drift.
+        // Note it; do not guard it.
+        //
+        // Note the deliberate absence of a `persist_snapshot` call in this arm:
+        // the terminal `persist_snapshot(inner)` below runs for every
+        // notification and serialises the whole snapshot, this field included.
+        // Calling it here as well would write the same row twice per frame.
+        Notification::Other { method, params } if method == "thread/tokenUsage/updated" => {
+            match TokenUsage::from_params(&params, crate::model::now_ms()) {
+                Some(incoming) => {
+                    let mut slot = inner.token_usage.lock().await;
+                    let merged = incoming.sticky_merge(slot.as_ref());
+                    // Logged at ingest rather than inside `TokenUsage::percent`
+                    // on purpose. `percent` is called once per `GET /spec/run`,
+                    // i.e. once per client poll, so warning there would emit
+                    // the same line forever for one bad frame. Here it fires
+                    // once per frame that is actually anomalous, and the frame
+                    // is still in hand to log against.
+                    //
+                    // This is not a formality: it is the alarm for our
+                    // occupancy proxy being wrong, and it is calibrated. In
+                    // 181_344 real usage frames on this box, `last` exceeded
+                    // the window in 4 (0.002%, one session) — so this line
+                    // firing is genuinely news, not noise. `percent` withholds
+                    // the percentage in that case (it does NOT clamp to 100% —
+                    // see its docs); this line is how anyone finds out.
+                    if merged.exceeds_window() {
+                        tracing::warn!(
+                            target: "spec.harness.token_usage",
+                            runtime_id = %inner.runtime_id,
+                            card_id = %inner.card_id,
+                            used_tokens = merged.used_tokens,
+                            context_window = ?merged.context_window,
+                            "spec harness context usage exceeds the model context window; \
+                             reporting the raw count with no percentage. The occupancy proxy \
+                             (tokenUsage.last.totalTokens) may be wrong across compaction"
+                        );
+                    }
+                    *slot = Some(merged);
+                }
+                // `last.totalTokens` is the only required part of the frame,
+                // and a frame without a usable one — absent, non-integer, or
+                // negative — yields no reading at all. Storing a zero would
+                // claim an empty context, which is a stronger and possibly
+                // false statement than "unknown"; the previous reading is left
+                // in place instead. See `TokenUsage::from_params`.
+                None => tracing::warn!(
+                    target: "spec.harness.token_usage",
+                    runtime_id = %inner.runtime_id,
+                    card_id = %inner.card_id,
+                    method,
+                    "spec harness dropping thread/tokenUsage/updated: no usable \
+                     (non-negative integer) tokenUsage.last.totalTokens in the frame"
+                ),
+            }
         }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
@@ -1770,6 +1881,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let issued_turn_head = inner.issued_turn_head.lock().await.clone();
     let last_report_body_sha256 = inner.last_report_body_sha256.lock().await.clone();
     let last_seen_head = inner.last_seen_head.lock().await.clone();
+    let token_usage = inner.token_usage.lock().await.clone();
     let mut snapshot = HarnessSnapshot::from_state(
         &state,
         push_watermark,
@@ -1781,6 +1893,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     );
     snapshot.last_seen_head = last_seen_head;
     snapshot.issued_turn_head = issued_turn_head;
+    snapshot.token_usage = token_usage;
     snapshot
 }
 

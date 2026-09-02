@@ -234,6 +234,9 @@ describe('spec harness transcript lifecycle events', () => {
         runtime_id: 'runtime_2',
         card_id: 'card_spec_1',
         wave_id: 'wave_1',
+        cleared_item_count: 12,
+        cleared_params_bytes: 3400,
+        card_age_ms_at_clear: 86400000,
       },
     });
     expect(parsed.ev).toBe('harness.transcript.cleared');
@@ -241,6 +244,9 @@ describe('spec harness transcript lifecycle events', () => {
       expect(parsed.data.runtime_id).toBe('runtime_2');
       expect(parsed.data.card_id).toBe('card_spec_1');
       expect(parsed.data.wave_id).toBe('wave_1');
+      expect(parsed.data.cleared_item_count).toBe(12);
+      expect(parsed.data.cleared_params_bytes).toBe(3400);
+      expect(parsed.data.card_age_ms_at_clear).toBe(86400000);
     }
   });
 
@@ -250,6 +256,48 @@ describe('spec harness transcript lifecycle events', () => {
       data: {
         card_id: 'card_spec_1',
         wave_id: 'wave_1',
+        cleared_item_count: 12,
+        cleared_params_bytes: 3400,
+        card_age_ms_at_clear: 86400000,
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // #1252 R1/F1 — the Rust field is `Option<i64>` so pre-#1252 event rows
+  // still replay instead of being dropped from WS replay; serde writes
+  // `None` as an explicit `null`, so the keys stay required and `null` is
+  // the "never measured" value (distinct from a measured 0).
+  it('parses harness.transcript.cleared with unmeasured (null) telemetry', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        runtime_id: 'runtime_2',
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+        cleared_item_count: null,
+        cleared_params_bytes: null,
+        card_age_ms_at_clear: null,
+      },
+    });
+    expect(parsed.ev).toBe('harness.transcript.cleared');
+    if (parsed.ev === 'harness.transcript.cleared') {
+      expect(parsed.data.cleared_item_count).toBeNull();
+      expect(parsed.data.cleared_params_bytes).toBeNull();
+      expect(parsed.data.card_age_ms_at_clear).toBeNull();
+    }
+  });
+
+  it('rejects harness.transcript.cleared with non-numeric telemetry', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        runtime_id: 'runtime_2',
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+        cleared_item_count: '12',
+        cleared_params_bytes: 3400,
+        card_age_ms_at_clear: 86400000,
       },
     });
     expect(result.success).toBe(false);

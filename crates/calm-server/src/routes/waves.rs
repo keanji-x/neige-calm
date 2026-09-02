@@ -1843,6 +1843,35 @@ fn prepare_fork_report(
                     ),
                 }
             }
+            // #1252 S0b — this arm `continue`s past the `validate_payload`
+            // call at the bottom of the loop, so before #1252 a prose block
+            // carrying a malformed ```neige-block fence forked through
+            // verbatim and landed as prose in the target wave.
+            //
+            // What `validate_body_fences` actually covers today (#1252 R1/F3
+            // corrects an earlier "every other write end" claim here, which
+            // was false): its only production call sites are the two
+            // whole-body writes — `wave_report::apply_report_op`'s
+            // `ReportDocOp::Replace` and `::WriteMarkdown` arms. The
+            // `UpsertBlock` arm does NOT call it, and `ReportDoc::
+            // upsert_block` fence-checks only non-prose content
+            // (`if kind != KIND_PROSE`), so `calm.report.blocks.upsert` with
+            // `kind: "prose"` and a malformed fence is still accepted. That
+            // entrance is a known, still-open gap tracked under #1252;
+            // closing it is a separate behaviour change with its own blast
+            // radius and is deliberately not done here. Closing the fork
+            // exit is still worth it on its own: fork is the path that
+            // copies such a block into a *new* wave.
+            //
+            // Deliberately only the fence check: running `validate_payload`
+            // on prose blocks is a separate behaviour change too.
+            if let Some(markdown) = block.payload.get("markdown").and_then(|v| v.as_str()) {
+                crate::wave_report_guard::validate_body_fences(markdown).map_err(|error| {
+                    CalmError::BadRequest(format!(
+                        "wave create: invalid forked report block {block_id}: {error}"
+                    ))
+                })?;
+            }
             continue;
         }
 
@@ -3495,6 +3524,54 @@ mod tests {
             .err()
             .expect("invalid copied task must abort fork");
         assert!(error.to_string().contains("invalid forked report block"));
+    }
+
+    /// #1252 S0b — the `KIND_PROSE` arm `continue`s past the loop's
+    /// `validate_payload`, so the fence check has to happen inside that arm.
+    /// A malformed ```` ```neige-block ```` fence in prose is refused by
+    /// `wave_report_guard::validate_body_fences` at both whole-body write
+    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`); forking is a write
+    /// end too. (Prose `UpsertBlock` remains an open entrance — see the
+    /// #1252 R1/F3 note on the production arm.)
+    #[test]
+    fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
+        let prose = ReportBlock {
+            id: "b_0002".into(),
+            kind: "prose".into(),
+            rev: 1,
+            payload: json!({"markdown": "# A\n```neige-block app\nnot json\n```\n"}),
+        };
+        let error = prepare_fork_report("summary".into(), vec![prose], "source", "target")
+            .err()
+            .expect("malformed prose fence must abort the fork");
+        assert!(
+            matches!(&error, crate::error::CalmError::BadRequest(_)),
+            "must be a 400, got: {error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("invalid forked report block b_0002"),
+            "error must name the offending block: {rendered}"
+        );
+        assert!(
+            rendered.contains("neige-block"),
+            "error must name the malformed fence: {rendered}"
+        );
+    }
+
+    /// The scope fence for the check above: a prose block whose fences are
+    /// well formed still forks. Without this, "reject the fork" would pass
+    /// just as well as the real rule.
+    #[test]
+    fn fork_keeps_prose_blocks_with_well_formed_fences() {
+        let prose = ReportBlock {
+            id: "b_0003".into(),
+            kind: "prose".into(),
+            rev: 1,
+            payload: json!({"markdown": "# A\n\nplain prose, no fence\n"}),
+        };
+        prepare_fork_report("summary".into(), vec![prose], "source", "target")
+            .expect("well-formed prose must fork");
     }
 
     #[tokio::test]
