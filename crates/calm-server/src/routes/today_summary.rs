@@ -54,6 +54,7 @@ use crate::model::now_ms;
 use crate::operation::spec_harness_start_adapter::{
     HarnessProfile, SpecHarnessStartOperationPayload,
 };
+use crate::per_card_lock::lock_card;
 use crate::routes::cards::{SendSpecInputRequest, run_spec_card_operation, send_spec_input};
 use crate::routes::conversations_shared::user_message_already_enqueued;
 use crate::routes::today::ensure_today_launchpad;
@@ -141,20 +142,53 @@ fn synthetic_actor() -> Actor {
     Actor(Actor::DEFAULT.to_string())
 }
 
-/// The first message the summary conversation is ever sent — **static, forever**.
+/// The standing instruction the summary conversation is opened with.
 ///
-/// "Ever" is enforced, not hoped for: the handler sends this text whenever the
-/// derived card has no `harness.user_message.enqueued` row yet, whether the
-/// card was minted by this request or left behind empty by an earlier one. A
-/// card-only branch predicate made the sentence false for both of the states
-/// review found (`Stuck` compensation, and a create whose own first send
-/// failed) — in each the bootstrap was skipped forever.
+/// **Not "the first message ever sent", and the claim was wrong when it said
+/// so.** What the code does is narrower and is stated exactly:
 ///
-/// Not a formality. `POST /api/waves/{id}/conversations` binds this text into
-/// the operation payload as a SHA-256 (arm (e)), so a date, a timestamp or the
-/// activity counts in here would make every later retry under the same key a
-/// 409. It is one of the three variables D5 has to eliminate to keep the
-/// deterministic key safe; the other two are the actor above and `cwd`.
+/// > this text is sent when the derived card has **no
+/// > `harness.user_message.enqueued` row at all**, and never again once any
+/// > such row exists.
+///
+/// So a user who types into this conversation before the first trigger
+/// suppresses it **permanently** — the card is `deletable: false` and the
+/// evidence row is permanent, so the suppression never lifts. That is a
+/// deliberate ruling, and the reason it is acceptable is the only reason this
+/// text exists at all.
+///
+/// **What the bootstrap is for.** `UserMessage` is hard-fire, so if it reaches
+/// an issuable drain before the summary does, the agent takes a turn holding
+/// only it. An agent told "write the report" would write one with no material;
+/// told to stand by, it spends a harmless empty turn. The hazard is therefore
+/// *specifically* "the agent's first turn happens with no material". If any
+/// other message already preceded the summary, that turn has already happened
+/// with something else in hand, and this text has nothing left to protect.
+///
+/// **Why not a bootstrap-aware predicate.** Researched rather than assumed, and
+/// none of the three candidates beats the kind-level read:
+///
+/// * `harness.user_message.enqueued` carries `char_count` and no text
+///   (`calm-types/src/event.rs`), so matching a length is a collision, not a
+///   predicate.
+/// * `harness_items` does hold the bytes, but it is written when **codex echoes
+///   the turn back**, not when the message is enqueued. Two triggers before
+///   that echo lands would both read "not delivered" and both send — turning a
+///   rare suppressed bootstrap into a routine duplicated one, which is the
+///   failure the per-card claim below exists to prevent. It is also erased by
+///   `/spec/reset` and by legacy-Today adoption.
+/// * A new marker means either a write-only flag — which
+///   `conversations_shared::user_message_already_enqueued`'s own docs reject as
+///   "wrong in one direction either way" — or adding a text digest to a shared
+///   event kind used by two other endpoints, which is an event-version bump
+///   plus frontend schema and goldens, and is outside this slice.
+///
+/// **What the text must still be: static, byte-for-byte, forever.**
+/// `POST /api/waves/{id}/conversations` binds it into the operation payload as
+/// a SHA-256 (arm (e)), so a date, a timestamp or the activity counts in here
+/// would make every later retry under the same key a 409. It is one of the
+/// three variables D5 has to eliminate to keep the deterministic key safe; the
+/// other two are the actor above and `cwd`.
 ///
 /// **What is true about `cwd`, stated narrowly.** Once the derived card exists,
 /// the create arm is not entered again, so a workspace re-point after that
@@ -164,14 +198,7 @@ fn synthetic_actor() -> Actor {
 /// only for `Phase::Failed`), so a re-point followed by a press resubmits the
 /// same key with a different hash and 409s permanently. That window is narrow,
 /// fail-closed and already named in D5's residual-window paragraph; what it is
-/// not is impossible, and the earlier wording here said it was.
-///
-/// **Why it says "stand by".** A first press can run a bootstrap-only turn:
-/// `UserMessage` is hard-fire, so if this message reaches an issuable drain
-/// before the summary does, the agent takes a turn with only this in hand. An
-/// agent told to write the report would then write one with no material. Told
-/// to wait, it spends a harmless empty turn instead. Same purpose as
-/// INV-TODAYDOC-007, one layer in.
+/// not is impossible, and an earlier wording here said it was.
 pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-progress writer. \
      Stand by and do nothing yet: do not read or touch the wave report until a \
      later message tells you the day's activity. When that message arrives, \
@@ -200,6 +227,14 @@ pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-p
 /// [`AppState`]: crate::state::AppState
 pub type TodaySummaryCreateRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
 
+/// A rendezvous the **first-message** race can be created at.
+///
+/// Separate from [`TodaySummaryCreateRendezvous`] because it guards a different
+/// window at a different point in the handler, and a single barrier serving
+/// both would be waited on twice by one request in the create case and hang.
+/// `None` in production, same as its sibling.
+pub type TodaySummaryBootstrapRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
+
 /// Per-server observation of the create arm.
 ///
 /// **`attempts` is what makes the race deterministic rather than hoped for**,
@@ -225,14 +260,19 @@ pub struct TodaySummaryCreateCounters {
     pub attempts: AtomicU64,
     /// Creates that lost the key race and took D5's 409 fallback.
     pub conflicts: AtomicU64,
+    /// Requests that reached the bootstrap decision point. Two of these means
+    /// both were about to read the transcript — i.e. the race that needs the
+    /// first-message claim actually happened.
+    pub bootstrap_arrivals: AtomicU64,
 }
 
 impl TodaySummaryCreateCounters {
     /// Reads for tests; production never looks.
-    pub fn snapshot(&self) -> (u64, u64) {
+    pub fn snapshot(&self) -> (u64, u64, u64) {
         (
             self.attempts.load(Ordering::Relaxed),
             self.conflicts.load(Ordering::Relaxed),
+            self.bootstrap_arrivals.load(Ordering::Relaxed),
         )
     }
 }
@@ -448,17 +488,71 @@ pub(crate) async fn write_today_summary(
     }
 
     // Whatever route got us here, the standing instruction has to reach the
-    // agent before the day's numbers do. On the ordinary path this read is a
-    // single indexed row and the answer is "yes, the create just sent it".
-    if !user_message_already_enqueued(&w, &wave_id, &derived.card_id).await? {
-        send_summary(
-            &s,
-            &w,
-            &cs,
-            &derived.card_id,
-            TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
-        )
-        .await?;
+    // agent before the day's numbers do — *if nothing has spoken to this card
+    // yet at all*. The predicate is "has any user message ever been enqueued",
+    // not "was the bootstrap delivered", and
+    // [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] says why that is the right question
+    // rather than a cheap proxy: the hazard is a first turn taken with no
+    // material, and any earlier message has already spent it.
+    //
+    // **Two limits of the evidence, both inherited and neither hidden.**
+    // `send_spec_input` enqueues the observation and *then* writes the
+    // `harness.user_message.enqueued` row (`routes/cards.rs`), so a send whose
+    // audit write fails leaves the agent holding the message with no row, and
+    // the next trigger sends it again. And the row is written per enqueue, not
+    // per delivery, so it says "queued", not "the model saw it" — the run loop
+    // can still drop an observation on a full queue. Both are properties of
+    // shared production code this slice does not touch; what would be wrong is
+    // claiming an exactly-once guarantee on top of them, so: at-least-once,
+    // deduplicated by a permanent row in the ordinary case.
+    //
+    // **Under the per-card first-message claim, and that is not optional.**
+    // This is the same read-then-send `create_wave_conversation` and
+    // `create_cove_conversation` perform, and all three need the same claim for
+    // the same reason: two concurrent requests both read "no user message yet"
+    // and both send, so the agent gets the same standing instruction twice.
+    // Moving this step out of `create_wave_conversation` and into here moved it
+    // out from under that lock; measured, two concurrent triggers against a
+    // card with an empty transcript delivered two bootstraps.
+    //
+    // The window is open **only** in the empty-transcript state, which makes it
+    // worse rather than better: an ordinary double-click on a first trigger is
+    // serialized by the create arm's own idempotency, while the state this
+    // recovery exists for is persistent — the card is `deletable: false` and
+    // never goes away.
+    //
+    // Lock order, which this path must not be the one to break:
+    // `conversation_first_message_locks` → `spec_recovery_locks` is the only
+    // permitted nesting (see the field's docs), and it is what happens here —
+    // `send_summary` → `send_spec_input` → `ensure_live_spec_harness` takes the
+    // recovery lock on a registry miss. The dormant restart nested inside also
+    // submits an operation, whose adapter takes its own private per-card mint
+    // locks; nothing in the tree takes those and then this claim, so that
+    // nesting closes no cycle.
+    {
+        // Counted before the rendezvous so a case can tell "both requests
+        // observed an empty transcript" from "the second read the first's row".
+        app.today_summary_create
+            .bootstrap_arrivals
+            .fetch_add(1, Ordering::Relaxed);
+        // Armed only by the concurrency case; `None` in production. Outside the
+        // claim on purpose: parking inside it would serialize the two requests
+        // before they can race, which is the one thing the case must not do.
+        if let Some(barrier) = &app.today_summary_bootstrap_rendezvous {
+            barrier.wait().await;
+        }
+        let _first_message_claim =
+            lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
+        if !user_message_already_enqueued(&w, &wave_id, &derived.card_id).await? {
+            send_summary(
+                &s,
+                &w,
+                &cs,
+                &derived.card_id,
+                TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
+            )
+            .await?;
+        }
     }
 
     // Unconditional. This is the only channel the summary ever travels on, and

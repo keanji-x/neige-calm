@@ -562,7 +562,12 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  * it did not; the code was what moved.
  *
  * What IS true immediately is that the launchpad now carries a conversation, so
- * the conversation lists — and only those — are invalidated.
+ * the conversation lists — and only those — are invalidated. That "and only
+ * those" is asserted, not asserted-in-prose:
+ * `today-summary-write.contract.test.tsx` drives this hook and checks that
+ * neither `['today-launchpad']` nor `['wave', id]` appears. Without it, the
+ * document tests in `app/router` could pass on a refetch from here instead of
+ * on the invalidation policy they exist to pin.
  */
 export type TodaySummaryMutation = Readonly<{
   write: () => void;

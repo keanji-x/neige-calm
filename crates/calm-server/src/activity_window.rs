@@ -40,17 +40,24 @@
 //! The same hazard points forward: an emitter that logs one of the allowlisted
 //! kinds at `EventScope::System` writes a row this projection cannot see, and
 //! nothing in the schema forbids that. As of #1253 PR2 no emitter does — the
-//! call sites were enumerated by grepping each kind's constructor and reading
-//! the scope each is paired with:
+//! call sites below were enumerated by grepping the event **variant names**
+//! across `crates/calm-server/src` and reading the scope each is paired with:
 //!
 //! * `wave.lifecycle_changed` — `routes::waves::update_wave`,
 //!   `wave_lifecycle::apply_requested_transition_in_tx`,
-//!   `wave_lifecycle::auto_transition_if_current_in_tx`, `reaper::*`,
-//!   `scheduler::*`: all `EventScope::Wave`.
+//!   `wave_lifecycle::auto_transition_if_current_in_tx`, `reaper/mod.rs`,
+//!   `scheduler/mod.rs`, `bin/replay.rs`: all `EventScope::Wave`.
 //! * `wave.report_edited` — `wave_report::persist_report`, the single writer
 //!   every REST and MCP path funnels through: `EventScope::Wave`.
-//! * `task.completed` / `task.failed` — `decision_sink::commit_worker_task_report`:
-//!   `EventScope::Card`, which populates `scope_wave` as well.
+//! * `task.completed` / `task.failed` —
+//!   `decision_sink::commit_worker_task_report` (`EventScope::Card`, which
+//!   populates `scope_wave` as well), plus `reaper/mod.rs` and three sites in
+//!   `scheduler/mod.rs`, all `EventScope::Wave`.
+//!
+//! **This list was incomplete once, and in the worst place.** A first pass
+//! grepped only each kind's constructor and missed the reaper, the scheduler
+//! and the replay binary — four sites — and it missed them for `task.*`, the
+//! one pair with no end-to-end test behind it. Re-derive rather than trust it.
 //!
 //! Two of the four are pinned end to end against their real emitters
 //! (`today_summary::a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity`);

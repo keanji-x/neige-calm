@@ -267,6 +267,7 @@ impl BootState {
                 crate::routes::today_summary::TodaySummaryCreateCounters::default(),
             ),
             today_summary_create_rendezvous: None,
+            today_summary_bootstrap_rendezvous: None,
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -326,6 +327,10 @@ pub struct AppState {
     /// one-request-wide window is created rather than waited for; see
     /// [`crate::routes::today_summary::TodaySummaryCreateRendezvous`].
     pub today_summary_create_rendezvous: crate::routes::today_summary::TodaySummaryCreateRendezvous,
+    /// #1253 PR2 — `None` in production. Armed by the first-message race case;
+    /// see [`crate::routes::today_summary::TodaySummaryBootstrapRendezvous`].
+    pub today_summary_bootstrap_rendezvous:
+        crate::routes::today_summary::TodaySummaryBootstrapRendezvous,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
@@ -660,6 +665,18 @@ impl AppState {
         barrier: std::sync::Arc<tokio::sync::Barrier>,
     ) -> Self {
         self.today_summary_create_rendezvous = Some(barrier);
+        self
+    }
+
+    /// #1253 PR2 — arm the first-message race rendezvous. Same shape and same
+    /// reasons as the sibling above.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn with_today_summary_bootstrap_rendezvous(
+        mut self,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.today_summary_bootstrap_rendezvous = Some(barrier);
         self
     }
 
