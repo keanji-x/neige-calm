@@ -384,11 +384,30 @@ pub enum Event {
         old_phase: HarnessPhaseTag,
         new_phase: HarnessPhaseTag,
     },
+    /// #1252 S0-2 — the harness transcript reset hard-deletes every
+    /// `harness_items` row for the card, so this event is the *only*
+    /// surviving evidence of what was there. The measurements below are
+    /// taken inside the reset transaction immediately **before** the
+    /// delete; without them a later retrospective is not merely
+    /// incomplete but directionally biased (it would conclude "resets are
+    /// frequent and surviving contexts are short", both artifacts of the
+    /// delete). Required, never optional: a defaulted `0` would be
+    /// indistinguishable from a genuinely empty transcript.
     #[serde(rename = "harness.transcript.cleared")]
     HarnessTranscriptCleared {
         runtime_id: String,
         card_id: CardId,
         wave_id: WaveId,
+        /// Number of `harness_items` rows deleted by this reset.
+        cleared_item_count: i64,
+        /// Summed byte length of those rows' `params` payloads — the only
+        /// cumulative-size measure the `harness_items` schema carries
+        /// (there is no token-count column).
+        cleared_params_bytes: i64,
+        /// Card age at reset: emit time minus the card row's `created_at`,
+        /// in milliseconds. Lets a retrospective tell "reset an hour in"
+        /// from "reset after a week".
+        card_age_ms_at_clear: i64,
     },
     /// #615 F1 — emitted when `POST /api/cards/{id}/spec/input` queues
     /// a user-authored text observation onto the spec harness. Card-scoped
@@ -1919,6 +1938,9 @@ mod scope_tests {
             runtime_id: "runtime-1".into(),
             card_id: CardId::from("card-1"),
             wave_id: WaveId::from("wave-1"),
+            cleared_item_count: 12,
+            cleared_params_bytes: 3_400,
+            card_age_ms_at_clear: 86_400_000,
         };
         assert_eq!(transcript_cleared.kind_tag(), "harness.transcript.cleared");
 
@@ -2730,6 +2752,9 @@ mod scope_tests {
                 runtime_id: "runtime-transcript".into(),
                 card_id: CardId::from("card-runtime"),
                 wave_id: WaveId::from("wave-1"),
+                cleared_item_count: 12,
+                cleared_params_bytes: 3_400,
+                card_age_ms_at_clear: 86_400_000,
             },
             Event::HarnessUserMessageEnqueued {
                 runtime_id: "runtime-user-message".into(),

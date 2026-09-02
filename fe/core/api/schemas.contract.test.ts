@@ -256,6 +256,9 @@ describe('spec harness transcript lifecycle events', () => {
         runtime_id: 'runtime_2',
         card_id: 'card_spec_1',
         wave_id: 'wave_1',
+        cleared_item_count: 12,
+        cleared_params_bytes: 3400,
+        card_age_ms_at_clear: 86400000,
       },
     });
     expect(parsed.ev).toBe('harness.transcript.cleared');
@@ -263,6 +266,9 @@ describe('spec harness transcript lifecycle events', () => {
       expect(parsed.data.runtime_id).toBe('runtime_2');
       expect(parsed.data.card_id).toBe('card_spec_1');
       expect(parsed.data.wave_id).toBe('wave_1');
+      expect(parsed.data.cleared_item_count).toBe(12);
+      expect(parsed.data.cleared_params_bytes).toBe(3400);
+      expect(parsed.data.card_age_ms_at_clear).toBe(86400000);
     }
   });
 
@@ -270,6 +276,23 @@ describe('spec harness transcript lifecycle events', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
       data: {
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+        cleared_item_count: 12,
+        cleared_params_bytes: 3400,
+        card_age_ms_at_clear: 86400000,
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // #1252 S0-2 — the reset telemetry is required on the wire, not optional:
+  // a defaulted 0 would be indistinguishable from an empty transcript.
+  it('rejects harness.transcript.cleared missing the reset telemetry', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        runtime_id: 'runtime_2',
         card_id: 'card_spec_1',
         wave_id: 'wave_1',
       },

@@ -162,7 +162,23 @@ export type EditAuthor = "spec" | "user" | "assistant" | "kernel" | "plugin";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, 
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, 
+/**
+ * Number of `harness_items` rows deleted by this reset.
+ */
+cleared_item_count: number, 
+/**
+ * Summed byte length of those rows' `params` payloads — the only
+ * cumulative-size measure the `harness_items` schema carries
+ * (there is no token-count column).
+ */
+cleared_params_bytes: number, 
+/**
+ * Card age at reset: emit time minus the card row's `created_at`,
+ * in milliseconds. Lets a retrospective tell "reset an hour in"
+ * from "reset after a week".
+ */
+card_age_ms_at_clear: number, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, 
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`
  * (#955 §5.3); `None` for every other author.

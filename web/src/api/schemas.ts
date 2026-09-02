@@ -375,6 +375,11 @@ export const harnessTranscriptClearedSchema = z.object({
     runtime_id: z.string(),
     card_id: z.string(),
     wave_id: z.string(),
+    // #1252 S0-2 — the reset hard-deletes the transcript, so these are the
+    // only surviving record of its size and the card's age at reset.
+    cleared_item_count: z.number(),
+    cleared_params_bytes: z.number(),
+    card_age_ms_at_clear: z.number(),
   }),
 });
 

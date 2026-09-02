@@ -740,6 +740,9 @@ describe('EventBridge', () => {
           runtime_id: 'runtime_2',
           card_id: 'card_spec',
           wave_id: 'wave_1',
+          cleared_item_count: 12,
+          cleared_params_bytes: 3400,
+          card_age_ms_at_clear: 86400000,
         },
       }),
     ).not.toThrow();
