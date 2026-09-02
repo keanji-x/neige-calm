@@ -278,14 +278,27 @@ describe('creating a wave lands in its spec conversation', () => {
   });
 
   /*
-   * A wave with no spec card must not leave the request standing, or the
-   * drawer springs open on whichever wave the reader visits next that does
-   * have one. Nothing opens, and nothing is left armed.
+   * A landing that found nothing to open must not leave the mark standing.
+   *
+   * "Nothing opened" on its own is not that claim — it is true of a page with
+   * no spec card whatever the mark does, which is why this case goes on: the
+   * spec card arrives on a *later* read of the same wave, on the same history
+   * entry, and the drawer must still be shut. A reader three actions past the
+   * create is not asking for a conversation.
+   *
+   * Red when the redemption stops disarming on the no-card arm.
    */
   it('opens nothing, and arms nothing, when the wave has no spec card', async () => {
-    setup({ cards: [] });
+    const { client, setCardsOf } = setup({ cards: [] });
     await createAWave();
     await screen.findByRole('button', { name: 'Rename wave' });
+    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+
+    setCardsOf('w1', [SPEC_CARD]);
+    await act(async () => { await client.invalidateQueries(); });
+    /* The row for the spec card, which is proof the second read landed — and
+       the only place `Spec chat` may appear, because the drawer is shut. */
+    await screen.findByText('Spec chat');
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
   });
 });
