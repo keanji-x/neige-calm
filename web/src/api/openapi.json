@@ -2892,6 +2892,58 @@
         }
       }
     },
+    "/api/today/summary": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "Ask the summary conversation to write today's progress.",
+        "description": "See the module docs for the shape of the whole path; the comments below only\nsay what each step's alternative got wrong.",
+        "operationId": "write_today_summary",
+        "responses": {
+          "200": {
+            "description": "The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodaySummaryStarted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/version": {
       "get": {
         "tags": [
@@ -5304,7 +5356,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -6661,6 +6713,24 @@
           },
           "wave_id": {
             "type": "string"
+          }
+        }
+      },
+      "TodaySummaryStarted": {
+        "type": "object",
+        "description": "What the caller gets back on success.",
+        "required": [
+          "wave_id",
+          "card_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string",
+            "description": "The summary conversation's card. Stable for the launchpad's lifetime\n(INV-TODAYDOC-011) and openable in Today's Conversations module."
+          },
+          "wave_id": {
+            "type": "string",
+            "description": "The launchpad wave, whose report the agent is being asked to rewrite."
           }
         }
       },
