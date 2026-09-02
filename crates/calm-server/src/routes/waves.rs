@@ -1850,17 +1850,24 @@ fn prepare_fork_report(
             //
             // What `validate_body_fences` actually covers today (#1252 R1/F3
             // corrects an earlier "every other write end" claim here, which
-            // was false at the time): its production call sites are the
-            // markdown-carrying arms of `wave_report::apply_report_op` —
-            // `ReportDocOp::Replace`, `::WriteMarkdown`, and (since #1269)
-            // `::UpsertBlock` when `kind == "prose"` — plus this fork exit.
-            // #1269 closed the `UpsertBlock` entrance that this note used to
-            // record as still open: `ReportDoc::upsert_block` itself
-            // fence-checks only non-prose content (`if kind != KIND_PROSE`),
-            // so the prose case has to be checked in the op arm.
+            // was false at the time): its production call sites are
+            // `wave_report::apply_report_op`'s two whole-body arms —
+            // `ReportDocOp::Replace` and `::WriteMarkdown` — plus this fork
+            // exit. The prose `UpsertBlock` entrance, which this note used to
+            // record as still open, is closed since #1269 by a *different*
+            // and stricter check: `wave_report_guard::
+            // validate_prose_block_content`, which forbids any fence in
+            // prose. `ReportDoc::upsert_block` itself fence-checks only
+            // non-prose content (`if kind != KIND_PROSE`), which is why the
+            // prose case has to be checked in the op arm.
             //
-            // Deliberately only the fence check: running `validate_payload`
-            // on prose blocks is a separate behaviour change too.
+            // Deliberately only the fence check here: the fork exit does not
+            // additionally run `validate_payload` on the prose block's own
+            // `{"markdown": …}` payload — that is a separate behaviour
+            // change. Nor is this the stricter prose rule the op layer and
+            // the block surfaces apply; tightening fork to refuse
+            // well-formed fences too would reject already-persisted source
+            // waves, so it stays at "malformed / schema-invalid".
             if let Some(markdown) = block.payload.get("markdown").and_then(|v| v.as_str()) {
                 crate::wave_report_guard::validate_body_fences(markdown).map_err(|error| {
                     CalmError::BadRequest(format!(
@@ -3526,8 +3533,9 @@ mod tests {
     /// `validate_payload`, so the fence check has to happen inside that arm.
     /// A malformed ```` ```neige-block ```` fence in prose is refused by
     /// `wave_report_guard::validate_body_fences` at the whole-body write
-    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`) and, since #1269,
-    /// at the prose `::UpsertBlock` entrance; forking is a write end too.
+    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`), and since #1269
+    /// the prose `::UpsertBlock` entrance refuses it too — via the stricter
+    /// `validate_prose_block_content`. Forking is a write end as well.
     #[test]
     fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
         let prose = ReportBlock {

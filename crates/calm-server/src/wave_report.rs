@@ -252,7 +252,9 @@ fn require_tree_budget_postcondition(
     Ok(())
 }
 use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
-use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
+use crate::wave_report_guard::{
+    guard_non_prose_stomp, validate_body_fences, validate_prose_block_content,
+};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
@@ -428,11 +430,20 @@ pub(crate) fn apply_report_op(
                 check_rev(doc, id, expected)?;
                 // #1269 — the block-level entrance. `ReportDoc::
                 // upsert_block` fence-checks only NON-prose content, so
-                // prose would otherwise carry a malformed / schema-invalid
-                // ```neige-block fence straight in.
-                if kind == calm_types::report_blocks::KIND_PROSE {
-                    validate_body_fences(content)?;
-                }
+                // prose would otherwise carry a ```neige-block fence
+                // straight in. The rule here is the surfaces' rule
+                // (`check_prose_markdown`), not the weaker
+                // `validate_body_fences`: the op layer must not be weaker
+                // than the invariant `guard_task_declarations` /
+                // `guard_non_prose_stomp` rely on. A *well-formed* fence
+                // smuggled into a prose block is invisible to
+                // `ReportDoc::blocks_snapshot` (prose blocks project as
+                // `{"markdown": text}`, so `is_task` never sees it) and
+                // splinters into a live block of its own on the next
+                // wholesale write — which `guard_non_prose_stomp` cannot
+                // object to, since it early-returns while all *current*
+                // blocks are prose.
+                validate_prose_block_content(kind, content)?;
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
@@ -445,9 +456,7 @@ pub(crate) fn apply_report_op(
                 check_doc_rev(doc, expected)?;
                 // #1269 — same check on the create arm; leaving either
                 // arm open would leave the entrance open.
-                if kind == calm_types::report_blocks::KIND_PROSE {
-                    validate_body_fences(content)?;
-                }
+                validate_prose_block_content(kind, content)?;
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len

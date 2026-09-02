@@ -1,33 +1,48 @@
 //! #960 PR3 — fence validation + the prose-shim stomp guard for the
 //! wave-report write paths.
 //!
-//! Both checks run **inside** the persist transaction, from
+//! These checks run **inside** the persist transaction, from
 //! `wave_report::apply_report_op`, so they see the CRDT truth
-//! (`validate_body_fences` has one further call site outside it — the
-//! fork exit, noted below):
+//! (`validate_body_fences` has one further call site outside
+//! `apply_report_op` — the fork exit, noted below):
 //!
-//! * [`validate_body_fences`] — the markdown-carrying write arms of
-//!   `apply_report_op` must refuse malformed ```` ```neige-block ````
-//!   fences (the lenient read would silently persist them as prose)
-//!   and schema-invalid fence payloads. Today that is exactly three
-//!   arms: `Replace` (`calm.report.write`/`edit` + the REST user
-//!   path), `WriteMarkdown`, and — since #1269 — `UpsertBlock` when
-//!   `kind == "prose"`, on both the create (`id: None`) and the
-//!   replace (`id: Some(..)`) branch. It is also called outside
+//! * [`validate_body_fences`] — refuses malformed ```` ```neige-block ````
+//!   fences (the lenient read would silently persist them as prose) and
+//!   schema-invalid fence payloads. Its `apply_report_op` call sites are
+//!   the two whole-body arms: `Replace` (`calm.report.write`/`edit` + the
+//!   REST user path) and `WriteMarkdown`. It is also called outside
 //!   `apply_report_op` on the fork exit (`routes::waves::
 //!   prepare_fork_report`, #1252 S0b).
+//! * [`validate_prose_block_content`] — since #1269, the prose
+//!   `UpsertBlock` arm (both the create `id: None` and the replace
+//!   `id: Some(..)` branch). It defers to
+//!   `calm_types::report_blocks::check_prose_markdown`, the same rule the
+//!   MCP and REST block surfaces apply, which is *stricter* than
+//!   `validate_body_fences`: prose may not carry a `neige-block` fence at
+//!   all, well-formed or not.
 //! * [`guard_non_prose_stomp`] — only the `Replace` shim: it may not
 //!   modify or delete a non-prose block; a whole-document rewrite
 //!   that carries every fence through byte-for-byte passes.
 //!
-//! Both surface `CalmError::BadRequest`, which the MCP layers map to
+//! What is deliberately *not* claimed here: the **non-prose**
+//! `UpsertBlock` arm also carries markdown (a fence body) and is not
+//! covered by either fence check. `ReportDoc::upsert_block` only runs
+//! `parse_fence` + a kind match on it, never `validate_payload`, so at the
+//! op layer a schema-invalid payload inside an otherwise well-formed fence
+//! is accepted on that arm — while the identical bytes through `Replace` /
+//! `WriteMarkdown` are rejected. The MCP and REST surfaces close that gap
+//! ahead of the op by building non-prose content with
+//! `report_blocks::render_data_block`, which does schema-validate.
+//!
+//! All three surface `CalmError::BadRequest`, which the MCP layers map to
 //! `-32602` and REST maps to 400 — the tx aborts, nothing is written,
 //! no events are emitted.
 
 use crate::error::CalmError;
 use crate::wave_report_doc::ReportDoc;
 use calm_types::report_blocks::{
-    flat_text, invalid_neige_fences, parse_fence, reassign_ids, split_body, validate_payload,
+    KIND_PROSE, check_prose_markdown, flat_text, invalid_neige_fences, parse_fence, reassign_ids,
+    split_body, validate_payload,
 };
 
 /// Refuse malformed `neige-block` fences and schema-invalid fence
@@ -49,6 +64,27 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
                 ))
             })?;
         }
+    }
+    Ok(())
+}
+
+/// #1269 — the prose `UpsertBlock` entrance. For `kind == "prose"`,
+/// apply the surfaces' prose rule verbatim by calling
+/// [`calm_types::report_blocks::check_prose_markdown`]: prose may not
+/// embed a `neige-block` fence at all. Non-prose kinds are left to
+/// `ReportDoc::upsert_block`'s own canonical-fence check.
+///
+/// Deliberately stricter than [`validate_body_fences`], which tolerates
+/// a well-formed, schema-valid fence. The op layer must not be weaker
+/// than the invariant its neighbours rely on: a well-formed fence inside
+/// a prose block is invisible to `ReportDoc::blocks_snapshot` (prose
+/// projects as `{"markdown": text}`, so `guard_task_declarations`'
+/// `is_task` never sees it), and the next wholesale write splinters it
+/// into a live block — which `guard_non_prose_stomp` cannot object to,
+/// because it early-returns while all *current* blocks are prose.
+pub(crate) fn validate_prose_block_content(kind: &str, content: &str) -> Result<(), CalmError> {
+    if kind == KIND_PROSE {
+        check_prose_markdown(content).map_err(CalmError::BadRequest)?;
     }
     Ok(())
 }
@@ -229,85 +265,147 @@ mod tests {
 
     /// #1269 — the block-level entrance. `ReportDoc::upsert_block`
     /// fence-checks only NON-prose content, so a prose upsert carrying a
-    /// malformed ```` ```neige-block ```` fence used to land verbatim.
-    /// Both arms are covered: creating a block (`id: None`) and replacing
-    /// an existing one (`id: Some(..)` + `if_rev`).
+    /// ```` ```neige-block ```` fence used to land verbatim. Both arms are
+    /// covered: creating a block (`id: None`) and replacing an existing one
+    /// (`id: Some(..)` + `if_rev`).
+    ///
+    /// All three fence shapes are refused, because the op layer applies the
+    /// surfaces' `check_prose_markdown` rule (no fence in prose at all), not
+    /// the weaker `validate_body_fences`:
+    ///
+    /// 1. malformed (unparseable JSON interior),
+    /// 2. well-formed but schema-invalid — the case that a check built only
+    ///    on `invalid_neige_fences` would wave through,
+    /// 3. well-formed *and* schema-valid — refused because a fence hidden in
+    ///    a prose block is invisible to `blocks_snapshot` and splinters into
+    ///    a live block on the next wholesale write.
     #[test]
-    fn prose_upsert_with_a_malformed_fence_is_refused_on_both_arms() {
-        let bad_json = "# A\n```neige-block app\nnot json\n```\n";
+    fn prose_upsert_with_any_neige_fence_is_refused_on_both_arms() {
+        let well_formed_valid = calm_types::report_blocks::render_fence(
+            "app",
+            &json!({ "src": "/apps/x", "height": 480 }),
+        );
+        let cases: [(&str, String); 3] = [
+            (
+                "malformed",
+                "# A\n```neige-block app\nnot json\n```\n".into(),
+            ),
+            (
+                "well-formed, schema-invalid",
+                "# A\n```neige-block chart.candles\n{\"symbol\": \"X\"}\n```\n".into(),
+            ),
+            (
+                "well-formed, schema-valid",
+                format!("# A\n\n{well_formed_valid}"),
+            ),
+        ];
+
+        for (label, content) in cases {
+            // Create arm.
+            let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
+            let before = doc.project().unwrap();
+            let err = match apply_report_op(
+                &mut doc,
+                &ReportDocOp::UpsertBlock {
+                    id: None,
+                    kind: "prose".into(),
+                    content: content.clone(),
+                    if_rev: None,
+                    if_doc_rev: Some(0),
+                    position: None,
+                },
+                EditAuthor::Spec,
+            ) {
+                Ok(landed) => panic!("{label}: create arm must refuse the fence, got {landed:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(&err, CalmError::BadRequest(m) if m.contains("neige-block")),
+                "{label}: {err:?}"
+            );
+            assert_eq!(
+                doc.project().unwrap(),
+                before,
+                "{label}: create must not land"
+            );
+
+            // Replace arm: the existing prose block, at its current rev.
+            let block = doc.blocks_snapshot().unwrap().remove(0);
+            assert_eq!(block.kind, "prose");
+            let err = match apply_report_op(
+                &mut doc,
+                &ReportDocOp::UpsertBlock {
+                    id: Some(block.id.clone()),
+                    kind: "prose".into(),
+                    content: content.clone(),
+                    if_rev: Some(block.rev),
+                    if_doc_rev: None,
+                    position: None,
+                },
+                EditAuthor::Spec,
+            ) {
+                Ok(landed) => panic!("{label}: replace arm must refuse the fence, got {landed:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(&err, CalmError::BadRequest(m) if m.contains("neige-block")),
+                "{label}: {err:?}"
+            );
+            assert_eq!(
+                doc.project().unwrap(),
+                before,
+                "{label}: replace must not land"
+            );
+        }
+    }
+
+    /// The scope fence for the check above: it must refuse `neige-block`
+    /// fences, not ordinary markdown. Headings, lists and a plain
+    /// ```` ```rust ```` code fence still land on both arms.
+    #[test]
+    fn fence_free_prose_upsert_still_lands_on_both_arms() {
+        let body = "# Notes\n\n- alpha\n- beta\n\n```rust\nfn main() { println!(\"hi\"); }\n```\n";
 
         // Create arm.
         let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
-        let before = doc.project().unwrap();
-        let err = apply_report_op(
+        apply_report_op(
             &mut doc,
             &ReportDocOp::UpsertBlock {
                 id: None,
                 kind: "prose".into(),
-                content: bad_json.into(),
+                content: body.into(),
                 if_rev: None,
                 if_doc_rev: Some(0),
                 position: None,
             },
             EditAuthor::Spec,
         )
-        .unwrap_err();
+        .expect("fence-free prose must be accepted on the create arm");
         assert!(
-            matches!(&err, CalmError::BadRequest(m) if m.contains("neige-block")),
-            "{err:?}"
+            doc.project().unwrap().1.contains(body),
+            "create must land: {:?}",
+            doc.project().unwrap().1
         );
-        assert_eq!(doc.project().unwrap(), before, "create must not land");
 
-        // Replace arm: the existing prose block, at its current rev.
+        // Replace arm: overwrite the first prose block with the same body.
         let block = doc.blocks_snapshot().unwrap().remove(0);
         assert_eq!(block.kind, "prose");
-        let err = apply_report_op(
+        apply_report_op(
             &mut doc,
             &ReportDocOp::UpsertBlock {
                 id: Some(block.id.clone()),
                 kind: "prose".into(),
-                content: bad_json.into(),
+                content: body.into(),
                 if_rev: Some(block.rev),
                 if_doc_rev: None,
                 position: None,
             },
             EditAuthor::Spec,
         )
-        .unwrap_err();
+        .expect("fence-free prose must be accepted on the replace arm");
         assert!(
-            matches!(&err, CalmError::BadRequest(m) if m.contains("neige-block")),
-            "{err:?}"
-        );
-        assert_eq!(doc.project().unwrap(), before, "replace must not land");
-    }
-
-    /// The scope fence for the check above: the new call must reject only
-    /// *malformed* / schema-invalid fences, not every fence — a
-    /// well-formed, schema-valid one still lands.
-    #[test]
-    fn prose_upsert_with_a_well_formed_fence_still_lands() {
-        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
-        let fence_text = calm_types::report_blocks::render_fence(
-            "app",
-            &json!({ "src": "/apps/x", "height": 480 }),
-        );
-        let body = format!("# B\n\nbeta\n{fence_text}");
-        apply_report_op(
-            &mut doc,
-            &ReportDocOp::UpsertBlock {
-                id: None,
-                kind: "prose".into(),
-                content: body.clone(),
-                if_rev: None,
-                if_doc_rev: Some(0),
-                position: None,
-            },
-            EditAuthor::Spec,
-        )
-        .expect("well-formed fence must be accepted");
-        assert!(
-            doc.project().unwrap().1.contains(&body),
-            "write must land: {:?}",
+            doc.project().unwrap().1.contains(body),
+            "replace must land: {:?}",
             doc.project().unwrap().1
         );
     }
