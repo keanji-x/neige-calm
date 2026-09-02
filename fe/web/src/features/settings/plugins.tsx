@@ -67,7 +67,7 @@ export function PluginsPane({
 }: PluginsPaneProps) {
   return (
     <div className={styles.paneBody}>
-      <div className={`${styles.form} ${styles.pluginForm}`}>
+      <div className={styles.form}>
         <section className={styles.section} aria-labelledby="nc-settings-plugins">
           {/* The same heading weight the Templates pane uses: both are a pane's
               own title, and General's small grey labels name *cards inside* a

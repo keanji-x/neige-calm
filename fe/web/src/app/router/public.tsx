@@ -12,7 +12,7 @@
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -29,11 +29,6 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
-import {
-  SettingsPage, SettingsSurface, type SettingsSection, type ThemeMode as SettingsThemeMode,
-} from '../../features/settings/public.tsx';
-import { PluginsPane } from '../../features/settings/plugins.tsx';
-import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
@@ -68,15 +63,13 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
-  ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, pluginsQueryOptions,
-  prefetchCoveList, settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  usePluginMutations, useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
-  useWaveTemplateMutation, useWaveTemplates, useWorkspace,
+  ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions,
+  prefetchCoveList, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
+  useSpecMutations, useWaveConversationMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
-import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -818,6 +811,9 @@ export type AppRouterDeps = Readonly<{
   cards: CardRuntime;
 }>;
 
+/** The component every settings route uses; see `settingsRoute` below. */
+function renderNothing(): null { return null; }
+
 export function createRouteTree({ transport, unauthorized, client, onSignOut, cards }: AppRouterDeps): AnyRoute {
   const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /> });
 
@@ -847,28 +843,38 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
+  /*
+   * Every settings route renders nothing, deliberately.
+   *
+   * The URL is the state — which section is open, which template is being
+   * edited, what a deep link means, what Back does — and `app/shell`'s
+   * `SettingsOverlay` is the view of it. The dialog cannot live here: a route
+   * component is remounted on every navigation, so moving between the
+   * overlay's own sections rebuilt the panel and replayed its entrance
+   * animation, which the reader sees as a flash on every click.
+   */
   const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: () => <SettingsRoute transport={transport} unauthorized={unauthorized} />,
+    component: renderNothing,
   });
 
   const templateListRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/templates',
-    component: () => <TemplateListRoute transport={transport} unauthorized={unauthorized} />,
+    component: renderNothing,
   });
 
   const templateEditorRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/templates/$templateId',
-    component: () => <TemplateEditorRoute transport={transport} unauthorized={unauthorized} />,
+    component: renderNothing,
   });
 
   const pluginsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/plugins',
-    component: () => <PluginsRoute transport={transport} unauthorized={unauthorized} />,
+    component: renderNothing,
   });
 
   return rootRoute.addChildren([
@@ -2452,188 +2458,5 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback} />}
     {chat.drawer}
     </>
-  );
-}
-
-/**
- * The dialog every Settings route renders inside.
- *
- * Settings is a place you step into from wherever you were and leave with one
- * gesture — Escape, the `×`, or the scrim — so it is an overlay, and the
- * overlay is `ui/dialog`'s: the focus trap, the Escape handling and the restore
- * of the opener's focus are already correct there, and a second implementation
- * of a modal is the thing this app does not need.
- *
- * The sections stay **real routes** underneath (`/settings`,
- * `/settings/templates`, `/settings/plugins`): the nav column navigates, so
- * Back still leaves the template editor rather than leaving Settings, and every
- * pane can be linked to. `onClose` goes to Today rather than calling
- * `history.back()` — a cold-start deep link to `/settings/plugins` has nothing
- * to go back to, and walking out of the app is not "close this dialog".
- */
-function SettingsOverlay({ section, children }: { section: SettingsSection; children: ReactNode }) {
-  const go = useGo();
-  return (
-    <Dialog open onClose={() => go({ name: 'today' })} title="Settings" wide>
-      <SettingsSurface
-        section={section}
-        onSelectSection={(next) => {
-          go(next === 'general'
-            ? { name: 'settings' }
-            : next === 'templates' ? { name: 'settings-templates' } : { name: 'settings-plugins' });
-        }}
-      >
-        {children}
-      </SettingsSurface>
-    </Dialog>
-  );
-}
-
-function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const theme = useTheme();
-  const save = useSettingsMutation(transport, unauthorized);
-  const settings = useQuery(settingsQueryOptions(transport, unauthorized));
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  return (
-    <SettingsOverlay section="general">
-    <SettingsPage
-      settings={settings.data?.settings}
-      loadError={settings.error instanceof Error ? settings.error.message : null}
-      onRetryLoad={() => { void settings.refetch(); }}
-      saving={saving}
-      saveError={saveError}
-      savedAt={savedAt}
-      // `app/theme` and `features/settings` each own their copy of the mode
-      // union — features may not import app. The adaptation is here, and the
-      // two unions are only kept in step by this line.
-      themeMode={theme.mode satisfies SettingsThemeMode}
-      onThemeModeChange={(mode) => theme.setMode(mode)}
-      onSave={(patch) => {
-        setSaving(true);
-        setSaveError(null);
-        return save(patch)
-          .then(() => { setSavedAt(Date.now()); })
-          .catch((error: unknown) => {
-            setSaveError(error instanceof Error ? error.message : 'Save failed.');
-          })
-          .finally(() => { setSaving(false); });
-      }}
-    />
-    </SettingsOverlay>
-  );
-}
-
-/**
- * Settings › Plugins — the installed list, read here and rendered there.
- *
- * The list is not primed by a route loader: it is one screen's read, it fails
- * loudly on its own (`retry: false`), and a loader would make opening any other
- * settings pane wait on it.
- */
-function PluginsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const plugins = useQuery(pluginsQueryOptions(transport, unauthorized));
-  const mutations = usePluginMutations(transport, unauthorized);
-  return (
-    <SettingsOverlay section="plugins">
-      <PluginsPane
-        plugins={plugins.data}
-        loadError={plugins.error instanceof Error ? plugins.error.message : null}
-        onRetryLoad={() => { void plugins.refetch(); }}
-        pendingId={mutations.pendingId}
-        actionError={mutations.error}
-        onSetEnabled={mutations.setEnabled}
-      />
-    </SettingsOverlay>
-  );
-}
-
-/**
- * Settings › Templates (#1230). Two routes rather than page-local state, so
- * Back leaves the editor instead of leaving Settings, and one template's
- * editor is a URL.
- *
- * Both read the **template list** — the same read the New wave picker uses.
- * There is no per-template endpoint: the list already carries `id` / `title` /
- * `tasks[{key, goal}]`, and a second read would be a second authority for the
- * same facts plus an N+1 whose failure modes have to be reasoned about apart
- * from the list's.
- */
-function TemplateListRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const go = useGo();
-  const templates = useWaveTemplates(transport, unauthorized);
-  return (
-    <SettingsOverlay section="templates">
-      <TemplateListPage
-        templates={templates.loaded ? templates.templates : undefined}
-        loadError={templates.error}
-        onRetryLoad={templates.refetch}
-        onEdit={(templateId) => go({ name: 'settings-template', templateId })}
-      />
-    </SettingsOverlay>
-  );
-}
-
-function TemplateEditorRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const templateId = useRouteParam('/settings/templates/');
-  /*
-   * Keyed on the id: `saving` / `saveError` / `savedAt` are per-template facts,
-   * and this route component is reused across ids (same route, same instance).
-   * Without the key, one template's "Saved." and error banner render over the
-   * next template's editor, and an in-flight save suppresses the re-seed so
-   * template A's rows show under template B's title.
-   */
-  return (
-    <TemplateEditorSave
-      key={templateId ?? ''}
-      templateId={templateId}
-      transport={transport}
-      unauthorized={unauthorized}
-    />
-  );
-}
-
-function TemplateEditorSave({ templateId, transport, unauthorized }: {
-  templateId: string | undefined;
-  transport: ApiTransportPort;
-  unauthorized: UnauthorizedChannel;
-}) {
-  const go = useGo();
-  const templates = useWaveTemplates(transport, unauthorized);
-  const saveTemplate = useWaveTemplateMutation(transport, unauthorized);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const template = templates.loaded
-    ? templates.templates.find((entry) => entry.id === templateId)
-    : undefined;
-  return (
-    <SettingsOverlay section="templates">
-    <TemplateEditorPage
-      template={template}
-      /* An id that names no template is a load failure for this route, not an
-         empty editor: blank fields for a template that does not exist would
-         invite a save against nothing. */
-      loadError={templates.loaded && template === undefined
-        ? `No template named ${templateId ?? ''}.`
-        : templates.error}
-      onRetryLoad={templates.refetch}
-      saving={saving}
-      saveError={saveError}
-      savedAt={savedAt}
-      onOpenTemplates={() => go({ name: 'settings-templates' })}
-      onSave={(save) => {
-        setSaving(true);
-        setSaveError(null);
-        return saveTemplate(save)
-          .then(() => { setSavedAt(Date.now()); })
-          .catch((error: unknown) => {
-            setSaveError(error instanceof Error ? error.message : 'Save failed.');
-          })
-          .finally(() => { setSaving(false); });
-      }}
-    />
-    </SettingsOverlay>
   );
 }

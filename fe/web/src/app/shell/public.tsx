@@ -45,6 +45,7 @@ import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
 import { MobileCoves } from './mobile-coves.tsx';
 import { MobilePages } from './mobile-pages.tsx';
+import { SettingsOverlay } from './settings-overlay.tsx';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
@@ -459,6 +460,11 @@ export function AppShell({
           </button>
         ))}
       </nav>
+      {/* Owned here for the same reason the New wave dialog is: it has to stay
+          mounted while the reader navigates *inside* it (General → Plugins is a
+          route change), and the shell is the nearest thing above `<Outlet />`
+          that survives one. See `settings-overlay.tsx`. */}
+      <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
         initialFocusRef={newWaveTitleRef}>
         {newWaveCoveId !== null && (

@@ -11,16 +11,16 @@
    */
   .surface {
     display: grid;
-    grid-template-columns: 12rem minmax(0, 1fr);
-    gap: var(--space-8);
 
-    /* Centred and capped rather than filling the dialog's full measure: the
-       panel is the app's one wide overlay (--measure-page), and a 544px form
-       hard against its left edge reads as a layout that failed to fill, not as
-       whitespace someone chose. */
-    inline-size: 100%;
-    max-inline-size: 60rem;
-    margin-inline: auto;
+    /* The nav column starts at the panel's own edge, and the pane takes
+       everything after it. An earlier version capped the whole surface and
+       centred it, which floated the nav in the middle of the dialog with dead
+       space on both sides of it — a sidebar that does not touch the side reads
+       as a mistake. The measure now lives on the pane's content, where it
+       belongs: whitespace to the right of a 544px form is §7.3's page
+       whitespace, whitespace to the left of the *nav* is a gap. */
+    grid-template-columns: 11rem minmax(0, 1fr);
+    gap: var(--space-9);
     min-block-size: min(30rem, 60dvh);
   }
 
@@ -29,12 +29,17 @@
     flex-direction: column;
     gap: var(--space-1);
     border-inline-end: 1px solid var(--hairline);
-    padding-inline-end: var(--space-4);
+    /* Pulled back by its own inline padding so the *text* of the first nav row
+       lines up with the dialog title above it, not the highlight pill's left
+       edge. The pill is a hover/current affordance and must not set the
+       column's optical margin. */
+    margin-inline-start: calc(var(--space-4) * -1);
+    padding-inline-end: var(--space-6);
   }
 
   .sectionNavItem {
     min-block-size: var(--control-h-lg);
-    padding-block: var(--space-3);
+    padding-block: var(--space-4);
     padding-inline: var(--space-4);
     border: none;
     border-radius: var(--radius-md);
@@ -75,15 +80,17 @@
   }
 
   /*
-   * Capped at 544 and start-aligned. The space to its right is pane whitespace,
-   * not a hole: a second column there would be work invented to fill space, and
-   * §7.3's empty-rectangle rule measures the main column only.
+   * Capped and start-aligned. The measure is the *list* one, not the form one:
+   * the dialog this pane sits in is the app's wide overlay, and a 544px column
+   * inside 1180 left a third of the panel empty. What is left over at this
+   * measure is §7.3's page whitespace, which that rule measures on the main
+   * column only.
    */
   .form {
     display: flex;
     flex-direction: column;
     gap: var(--space-8);
-    max-inline-size: var(--measure-form);
+    max-inline-size: var(--measure-list);
     min-block-size: 0;
   }
 
@@ -162,6 +169,7 @@
       overflow-x: auto;
       border-block-end: 1px solid var(--hairline);
       border-inline-end: none;
+      margin-inline-start: 0;
       padding-block-end: var(--space-3);
       padding-inline-end: 0;
     }
@@ -221,13 +229,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
-  }
-
-  /* Wider than the 544 form measure: a plugin row is a name, a state, a
-     description and a switch on one line, and at form width the switch lands
-     under the description. */
-  .pluginForm {
-    max-inline-size: var(--measure-list);
   }
 
   /* The plugin list. Same one-channel separation as the template list: a
