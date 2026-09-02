@@ -82,9 +82,11 @@ const TASKS: readonly ReportTaskRow[] = [
     blockId: 'block-2', key: 'beta-gate', state: 'withdrawn', declaration: 'Withdrawn',
     status: null, statusDetail: null, kind: null, workerCardId: null,
   },
-  /* `status === ''` — a legitimate state upstream (`core/domain/report.ts`), and
-     the one that makes an empty token's text obligation vacuously true. A
-     checker comparing the token by truthiness would never be caught without it.
+  /* `status === ''` — not reachable through today's derivation, which
+     normalises `undefined | null | ''` alike to `null` (`core/domain/report.ts`),
+     but admitted by the row type, and the value that makes an empty token's text
+     obligation vacuously true. A checker comparing the token by truthiness
+     rather than by exact equality would never be caught without it.
      The kind is present with no worker card, so it renders as a label and the
      row carries only `reveal-block`. */
   {

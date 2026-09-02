@@ -104,10 +104,12 @@ const taskRow: PanelRow = Object.freeze({
   ]),
 });
 
-/** The empty-token row. `core/domain/report.ts` treats `status === ''` as a
- *  legitimate state, and an empty token makes the text obligation vacuously
- *  true — a checker that compared the token by truthiness rather than by
- *  equality would never be caught without it. */
+/** The empty-token row. Today's derivation cannot produce it —
+ *  `deriveReportTasks` normalises `undefined | null | ''` alike to `null` — but
+ *  `RowStatus['token']` is a plain string and this checker is generic over
+ *  everything that type admits. An empty token makes the text obligation
+ *  vacuously true, so a checker that compared the token by truthiness rather
+ *  than by exact equality would never be caught without it. */
 const blankStatusRow: PanelRow = Object.freeze({
   id: 't2',
   title: 'T-2',

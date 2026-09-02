@@ -473,26 +473,29 @@ describe('WavePage card inventory', () => {
    * `tasks`, and one that special-cases nothing but `outline` and
    * `conversations`. The defect it misses lives outside today's two keys: with a
    * trailing `else` for Conversations — which is what this file's renderer used
-   * to have — a row module the derivation *gains*, and the painter already
-   * supports, opens the Conversations page from a menu entry labelled with the
-   * module's title. `tsc` has nothing to say about it: the `else` is total.
+   * to have — any panel value the dispatch does not name lands on the
+   * Conversations page. `tsc` has nothing to say about it: the `else` is total.
    *
-   * So the property asserted here is the *shape* of the dispatch rather than
-   * either of today's keys: a kind the renderer does not special-case must
-   * reach `paintMobileModule`. The cast is the one thing a future
-   * `RowModuleView['key']` member would remove — `MobilePanelKind` widens with
-   * the derivation, so this is that widening arriving early, and the assertion
-   * survives it unchanged.
+   * **What this case does and does not claim.** It is deliberately narrow: a
+   * panel value the renderer does not special-case reaches the *row-module
+   * lookup* rather than the Conversations arm. `rowModule`'s error is the whole
+   * of the evidence — the only way to raise "has no … module" is to have gone
+   * through the lookup — and the value used is one that is not, and is not
+   * meant to become, a module key. So this asserts nothing about what the
+   * painter then draws, and nothing about a *future* `RowModuleView['key']`
+   * member: if the derivation ever gains one, the right behaviour is to paint
+   * it, and this case keeps holding unchanged because `no-such-module` still is
+   * not in `rowModules`. Widening the property to "every unnamed kind is
+   * painted" would need an injectable dispatch and a real third module; that is
+   * not bought here.
    *
-   * What proves it arrived at the painter is `rowModule`'s own error: the view
-   * model has no `future` module, and reaching that lookup at all is only
-   * possible through the painter arm. A renderer that fell through to
-   * Conversations would render a heading instead of throwing.
+   * The cast is only how an out-of-union runtime value is handed to a typed
+   * prop — the kind of value a stale URL's `?panel=` produces.
    */
-  it('sends a panel kind it does not special-case to the painter, not to Conversations', () => {
-    const future = 'future' as NonNullable<WavePageProps['panel']>;
-    expect(() => renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS, panel: future }))
-      .toThrow('the wave page view has no future module');
+  it('routes an unrecognised panel value into the row-module lookup, not Conversations', () => {
+    const unknown = 'no-such-module' as NonNullable<WavePageProps['panel']>;
+    expect(() => renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS, panel: unknown }))
+      .toThrow('the wave page view has no no-such-module module');
   });
 
   it('moves the mobile Outline into its own list and returns to the selected report anchor', async () => {

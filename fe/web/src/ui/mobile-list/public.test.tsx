@@ -314,7 +314,7 @@ describe('MobileListItem accessible description', () => {
       expect(container.querySelectorAll('[aria-describedby]').length).toBe(1);
     });
 
-    it('logs and keeps the li described when an inert row holds a control', () => {
+    it('logs and describes the unexpected first control when an inert row holds one', () => {
       vi.stubEnv('DEV', false);
       const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
       const { container, rerender } = render(row({ accessibleDescription: 'first' }));
@@ -353,8 +353,11 @@ describe('MobileListItem accessible description', () => {
  * So these cases observe from *inside the commit*: `CommitProbe` is a later
  * sibling of the row, and React runs layout effects in tree order, so its
  * `useLayoutEffect` fires in the same commit, right after the row's own. What it
- * records is the DOM as the browser would first paint it. A passive effect has
- * not run at that point; a layout effect has.
+ * records is therefore a precisely located snapshot: the DOM during the
+ * layout-effect phase, after the row's own layout effect and before any passive
+ * effect of that commit has run. It is not "the first painted frame" — jsdom
+ * never paints, and even in a browser React may run passive effects of an
+ * interactive update before the paint that follows them.
  */
 describe('MobileListItem accessible description, mid-commit', () => {
   type Snapshot = Readonly<{
