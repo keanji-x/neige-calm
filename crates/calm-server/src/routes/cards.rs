@@ -1404,10 +1404,14 @@ async fn reset_spec_harness_card(
     // `assistant`, so the thread and the card would disagree about what the
     // session may do.
     //
-    // #1211 S1: no profile inherits the wave title as a goal. A seeded
-    // `Observation::WaveGoal` makes the agent speak before the user does, and
-    // the title is no longer the wave's intent anyway — it defaults to
-    // `Untitled` until the spec agent names the wave.
+    // #1211 S1: no profile inherits the wave title as a goal on this
+    // user-driven reset path. A seeded `Observation::WaveGoal` makes the agent
+    // speak before the user does, and this path no longer treats the title as
+    // intent — whether the title is currently blank or not, and whoever wrote
+    // it. (Child waves are the one remaining place where a title IS intent:
+    // `operation/child_wave_adapter.rs` copies the parent spec's declared task
+    // goal into it. That is machine-written and stays; it just is not read
+    // here.)
     let role = s.write.verify_role(&card.id);
     let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
         HarnessProfile::PlainChat

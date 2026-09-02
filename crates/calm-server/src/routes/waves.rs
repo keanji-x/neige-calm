@@ -199,8 +199,9 @@ pub struct CreateWaveRequest {
     /// the wave's intent, so the client may omit it entirely. Omitting it
     /// stores the **empty string** — there is no server-side default; the
     /// `Untitled wave` a user sees in a list is the frontend's display
-    /// fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec agent then names the wave via `calm.wave.rename`,
-    /// which only succeeds while the stored title is still blank. The type
+    /// fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec
+    /// agent then names the wave via `calm.wave.rename`, which only succeeds
+    /// while the stored title is still blank. The type
     /// stays `String`: the empty string has always been a legal title and the
     /// server applies no non-empty validation.
     #[serde(default)]
@@ -1504,8 +1505,8 @@ async fn create_wave_structure(
                         // child waves still pass the task goal their parent
                         // spec declared (`operation/child_wave_adapter.rs`) —
                         // that is machine-written intent, not a title a human
-                        // typed, and it stays the seed both at child-wave
-                        // start and on `/spec/reset`.
+                        // typed, and it is what seeds the child's harness when
+                        // the child wave starts.
                         payload: spec_harness_card_payload(None),
                     },
                     CardRole::Spec,
@@ -1702,9 +1703,9 @@ async fn start_spec_harness(
 ) -> Result<()> {
     // #1211 S1: no goal is seeded on this user-driven create path. An omitted
     // title is stored as the empty string (`Untitled wave` is only what the
-    // frontend shows for a blank one) and the spec agent names the wave once it knows
-    // what the work is, so there is nothing here that could stand in for the
-    // user's intent. Child waves do NOT come through here — they start their
+    // frontend shows for a blank one) and the spec agent names the wave once
+    // it knows what the work is, so there is nothing here that could stand in
+    // for the user's intent. Child waves do NOT come through here — they start their
     // harness with the parent spec's declared task goal
     // (`scheduler/mod.rs`, `operation/child_wave_adapter.rs`).
     let request = SpecHarnessStartOperationPayload {
