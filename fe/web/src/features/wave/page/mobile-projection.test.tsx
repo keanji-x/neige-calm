@@ -55,6 +55,7 @@ import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts'
 import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter } from './mobile-painter.tsx';
+import pageSource from './public.tsx?raw';
 import { card, renderPage } from './test-fixtures.tsx';
 
 afterEach(cleanup);
@@ -356,5 +357,46 @@ describe('the rendered mobile Tasks page projects its view model faithfully', ()
     expect(text).not.toContain('Ready');
     expect(text).not.toContain('Not ready');
     expect(text).toContain('failed');
+  });
+});
+
+// ── A hygiene guard beside the above, not a premise of it ────────────────────
+
+describe('wording hygiene guard: the page words no task state of its own', () => {
+  /*
+   * The mobile Tasks branch used to hold the four words `deriveReportTasks`
+   * already produces, re-derived from `task.state` — which is how this surface
+   * came to say `Ready` where the desktop said nothing and `Not ready` where the
+   * desktop showed the run. The branch is gone (S1b-4b), and this stops the
+   * cheapest way of putting it back: writing one of those words in this file
+   * again.
+   *
+   * **A hygiene guard, not the oracle.** A page can still put a word on screen
+   * without spelling it — by a computed string, or through a component that
+   * carries wording of its own — so what actually holds the branch is
+   * `mobile-entry.test.tsx`'s `replace` case (nothing of the Tasks list survives
+   * the painter's output being taken away) and the projection above. This is the
+   * narrow, mechanical companion to those, in the shape the marker-literal scan
+   * in `desktop-projection.test.tsx` already takes for attribute names.
+   *
+   * **`Withdrawn` and `Unreadable` are here for the same reason as the other
+   * two**, even though the derivation still produces them: the fault is the page
+   * *deciding* the word, not the word being wrong. A branch that re-derived
+   * `Withdrawn` correctly today is the identical structure that got `Ready`
+   * wrong.
+   */
+  const STATE_WORDS: readonly string[] = ['Ready', 'Not ready', 'Withdrawn', 'Unreadable'];
+
+  it('spells none of the four declaration words', () => {
+    for (const word of STATE_WORDS) {
+      expect(pageSource, `public.tsx must not spell ${word}`).not.toContain(word);
+    }
+  });
+
+  /* The scan is over real source: a mis-wired import would make the assertion
+     above vacuously true. */
+  it('is scanning this page’s source', () => {
+    expect(pageSource).toContain('export function WavePage');
+    expect(pageSource).toContain('paintMobileModule');
   });
 });

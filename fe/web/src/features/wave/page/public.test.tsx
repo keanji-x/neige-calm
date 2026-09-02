@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
+import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
 import { WavePage } from './public.tsx';
 import { card, renderPage, wave } from './test-fixtures.tsx';
 
@@ -341,6 +342,68 @@ describe('WavePage card inventory', () => {
     expect(screen.queryByRole('heading', { name: 'Cards' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'mobile-layout' }));
     expect(onOpenTask).toHaveBeenCalledWith('task-1');
+  });
+
+  /*
+   * ── Δ2: the mobile module sequence has a carrier (#1234 S1b-4b) ───────────
+   *
+   * **What these two cases lock, and why they are not the menu restated.** On
+   * the desktop the row modules are a DOM sequence and `paintPanel` walks it, so
+   * "both surfaces show the same modules in the same order" is held by the
+   * traversal. Mobile drills into one module at a time, so that sequence lives
+   * in this menu — and until this slice it was two hand-written entries that
+   * merely *happened* to agree with `deriveWavePageView`. Nothing compared them,
+   * so the statement had no carrier on this side at all.
+   *
+   * Both halves are needed. The first compares the menu's labels against the
+   * derivation's `title`s, so a module added, dropped or reordered upstream
+   * moves the menu or goes red. The second follows each entry into the page it
+   * opens and reads the painted module's key, so an entry whose *label* is right
+   * and whose destination is not is caught too — a label sequence alone would be
+   * satisfied by two entries that both open Cards.
+   *
+   * `Outline` and `Conversations` are asserted in position as well: they are not
+   * row modules, and their staying put is the other half of "the derived entries
+   * go exactly here".
+   */
+  const MENU_CARDS = [card({ id: 'card-1', kind: 'terminal', title: 'Build log' })];
+  const MENU_TASKS: readonly ReportTaskRow[] = [{
+    blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+  }];
+
+  it('offers exactly the derived row modules, in the derivation’s order', async () => {
+    renderPage({
+      cards: MENU_CARDS,
+      tasks: MENU_TASKS,
+      outlineItems: [{ blockId: 'section-1', label: 'What changed', number: 1, children: [] }],
+    });
+    const modules = deriveWavePageView({ cards: MENU_CARDS, tasks: MENU_TASKS }).rowModules;
+    /* Not vacuous: a one-module derivation would make "the order matches" an
+       assertion about nothing. */
+    expect(modules.length).toBeGreaterThan(1);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Outline',
+      ...modules.map((module) => module.title),
+      'Conversations',
+      'Delete wave',
+    ]);
+  });
+
+  it('and each of those entries opens the module it names', async () => {
+    const modules = deriveWavePageView({ cards: MENU_CARDS, tasks: MENU_TASKS }).rowModules;
+    for (const [index, module] of modules.entries()) {
+      /* No `outlineItems`, so the derived entries start the list and their menu
+         position is their index in `rowModules`. */
+      const { container } = renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS });
+      await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+      await userEvent.click(screen.getAllByRole('menuitem')[index]);
+      const painted = container.querySelector('[data-nc-mobile-panel] [data-nc-module]');
+      expect(painted?.getAttribute('data-nc-module'), `menu entry ${index}`).toBe(module.key);
+      cleanup();
+    }
   });
 
   it('moves the mobile Outline into its own list and returns to the selected report anchor', async () => {

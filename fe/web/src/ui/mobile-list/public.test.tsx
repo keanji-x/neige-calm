@@ -94,20 +94,24 @@ describe('MobileListItem hint', () => {
 });
 
 /*
- * #1234 S1b-4a did not change this rule — and that is exactly why it is pinned
- * here. `MobileListItem` has seven call sites: `app/shell`'s Pages list, its
- * Coves list and a cove's Waves list, this page's Outline rows (parent and
- * child) and its Tasks rows, and the Cards row the painter now composes. Six of
- * the seven pass a string meta, so the composed name is live behaviour, not a
- * corner. This slice reworked the primitive around them — `onSelect` became
- * optional, `hint` and two marker channels arrived — and "the accessible name
- * still composes the way it always did" was, until this block, held up by
- * reading the diff. On a shared primitive that is not enough, so the
+ * #1234 S1b-4a/4b did not change this rule — and that is exactly why it is
+ * pinned here. `MobileListItem` has seven call sites: `app/shell`'s Pages list,
+ * its Coves list and a cove's Waves list, the wave page's Outline rows (parent
+ * and child), and the Cards and Tasks rows the painter now composes. Five of the
+ * seven pass a string meta, so the composed name is live behaviour, not a
+ * corner. Those two slices reworked the primitive around them — `onSelect`
+ * became optional, `hint` and three marker channels arrived — and "the
+ * accessible name still composes the way it always did" was, until this block,
+ * held up by reading the diff. On a shared primitive that is not enough, so the
  * composition is asserted in all four of its cases.
  *
- * The mobile Cards row is the third case: its meta lane is an element, not a
+ * The two painted rows are the other case: their meta lane is an element, not a
  * string, so `metaLabel` is null and the row carries no `aria-label` at all —
- * the row's name is the visible text, which is what the projection compares.
+ * the row's name is the visible text, which is what the projection compares. On
+ * a Task row that is load-bearing rather than incidental: the row is the
+ * `reveal-block` host, its action's `label` is null, and an `aria-label`
+ * composed from the meta lane would both override the visible text (WCAG 2.5.3)
+ * and go red as `action-label`.
  */
 describe('MobileListItem accessible name', () => {
   const label = (container: HTMLElement) => container.querySelector('li')?.getAttribute('aria-label');
@@ -183,6 +187,24 @@ describe('MobileListItem markers', () => {
   it('emits no field attribute when the prop is omitted', () => {
     const { container } = render(row());
     expect(container.querySelector('[data-nc-field]')).toBeNull();
+  });
+
+  /* #1234 S1b-4b — the row-action channel. It **shares the `<li>` with the row
+     marker on purpose**: on this surface the whole row is the tappable control,
+     and `data-nc-row-action` is a host annotation rather than a content marker,
+     so the one-content-marker-per-element rule is not engaged. */
+  it('puts the row-action marker on the root li, beside the row marker', () => {
+    const { container } = render(row({ rowMarker: 'block-1', rowActionMarker: 'reveal-block' }));
+    const item = container.querySelector('li');
+    expect(item?.getAttribute('data-nc-row')).toBe('block-1');
+    expect(item?.getAttribute('data-nc-row-action')).toBe('reveal-block');
+    expect(container.querySelectorAll('[data-nc-row-action]').length).toBe(1);
+  });
+
+  it('emits no row-action attribute when the prop is omitted', () => {
+    const { container } = render(row({ rowMarker: 'card-1' }));
+    expect(container.querySelector('[data-nc-row-action]')).toBeNull();
+    expect(container.querySelector('li')?.hasAttribute('data-nc-row-action')).toBe(false);
   });
 
   it('the two channels are independent', () => {

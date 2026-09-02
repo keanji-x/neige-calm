@@ -39,6 +39,20 @@ import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import styles from './page.module.css';
 
+/**
+ * The four mobile drill-down pages.
+ *
+ * **Two of them are named by the view model, and are spelled that way** (Δ2):
+ * `RowModuleView['key']` rather than `'cards' | 'tasks'`, so a row module the
+ * derivation gains or renames is a type error here instead of a menu entry that
+ * quietly opens nothing. The other two are not row modules — `Outline` reads the
+ * report's anchors and `Conversations` is a router-composed slot — and they are
+ * written out, because pushing them into `rowModules` to make one loop out of
+ * four entries would let this page's navigation decide the view model's
+ * contents.
+ */
+type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
+
 export type WavePageProps = Readonly<{
   wave: Wave;
   cards: readonly CardWire[];
@@ -96,8 +110,8 @@ export type WavePageProps = Readonly<{
    * offered on this viewport (`mobile-painter.tsx`'s capability table), so the
    * page it drilled into had nothing left to be.
    */
-  panel?: 'outline' | 'cards' | 'tasks' | 'conversations' | null;
-  onOpenPanel?: (panel: 'outline' | 'cards' | 'tasks' | 'conversations') => void;
+  panel?: MobilePanelKind | null;
+  onOpenPanel?: (panel: MobilePanelKind) => void;
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
@@ -112,8 +126,6 @@ function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
   if (lifecycle === 'draft' || lifecycle === 'done' || lifecycle === 'canceled') return null;
   return lifecycle;
 }
-
-type MobilePanelKind = 'outline' | 'cards' | 'tasks' | 'conversations';
 
 /**
  * The view model's module under `key`.
@@ -275,8 +287,32 @@ export function WavePage({
           ...(outlineItems.length > 0
             ? [{ label: 'Outline', onClick: () => openMobilePanel('outline') }]
             : []),
-          { label: 'Cards', onClick: () => openMobilePanel('cards') },
-          { label: 'Tasks', onClick: () => openMobilePanel('tasks') },
+          /*
+            ── Δ2: the module sequence is this menu ─────────────────────────
+            *
+            * On the desktop the two row modules are a DOM sequence and
+            * `paintPanel` walks it. Mobile drills into one at a time, so the
+            * sequence has no traversal to live in — it is a *navigation*
+            * structure, and until this slice it was two written-out entries
+            * that happened to agree with `deriveWavePageView`. Agreeing by
+            * coincidence is what the whole issue is about: the statement
+            * "**both surfaces show the same row modules, in the same order**"
+            * had no carrier on this side at all.
+            *
+            * It has one now — the derivation itself. A module the view model
+            * gains appears here; one it loses disappears; a reorder reorders
+            * the menu. `public.test.tsx`'s "the drill-down menu offers exactly
+            * the derived row modules" is what makes that mechanical, by
+            * comparing the menu against `rowModules` and following each entry
+            * into the page it opens.
+            *
+            * `Outline` above and `Conversations` below stay hand-written: they
+            * are not row modules (see `MobilePanelKind`).
+          */
+          ...panelView.rowModules.map((module) => ({
+            label: module.title,
+            onClick: () => openMobilePanel(module.key),
+          })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
           { label: 'Delete wave', onClick: () => deletion.request(wave.id) },
@@ -505,11 +541,16 @@ export function WavePage({
                 ── The mobile Tasks page goes through `core/view` (#1234 S1b-4b) ──
                 *
                 * The other half of the drift, and the louder one: this branch
-                * used to re-word `task.state` into four words of its own, so a
-                * `ready` task said `Ready` here and nothing on the desktop, and
-                * a dispatched one said `Not ready` here while the desktop showed
-                * the run. Both rules are `deriveReportTasks`' and now arrive
-                * through the derivation — a visible change, on the record as D8.
+                * used to re-word `task.state` into four declaration words of its
+                * own, so a ready task carried one here and none on the desktop,
+                * and a dispatched one carried its readiness word here while the
+                * desktop showed the run. Both rules are `deriveReportTasks`' and
+                * now arrive through the derivation — a visible change, on the
+                * record as D8.
+                *
+                * The four words are deliberately not quoted anywhere in this
+                * file: `mobile-projection.test.tsx`'s wording hygiene guard
+                * scans this source for them.
               */
               paintMobileModule(mobilePainter, rowModule(panelView, 'tasks'))
             ) : (
