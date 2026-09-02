@@ -126,9 +126,9 @@ describe('Settings appearance', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('marks the active mode as checked in the Appearance radiogroup', () => {
+  it('marks the active mode as checked in the Theme radiogroup', () => {
     render(<SettingsPage {...props({ themeMode: 'light' })} />);
-    const group = screen.getByRole('radiogroup', { name: 'Appearance' });
+    const group = screen.getByRole('radiogroup', { name: 'Theme' });
     expect(group).toBeTruthy();
     expect(screen.getByRole('radio', { name: 'Light' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByRole('radio', { name: 'System' }).getAttribute('aria-checked')).toBe('false');

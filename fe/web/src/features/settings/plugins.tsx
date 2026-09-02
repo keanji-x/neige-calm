@@ -68,23 +68,23 @@ export function PluginsPane({
   return (
     <div className={styles.paneBody}>
       <div className={styles.form}>
-        <section className={styles.section} aria-labelledby="nc-settings-plugins">
+        <section className={styles.group} aria-labelledby="nc-settings-plugins">
           {/* The same heading weight the Templates pane uses: both are a pane's
               own title, and General's small grey labels name *cards inside* a
               pane, which is a level down. */}
-          <AstryxHeading level={2} id="nc-settings-plugins">Plugins</AstryxHeading>
-          <p className={styles.hint}>
+          <AstryxHeading level={3} id="nc-settings-plugins">Plugins</AstryxHeading>
+          <AstryxText as="p" color="secondary">
             What the workspace can do beyond its own kernel. A disabled plugin keeps its
             configuration; nothing it created is removed.
-          </p>
+          </AstryxText>
 
           {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
           {actionError !== null && <p className={styles.error} role="alert">{actionError}</p>}
 
           {plugins === undefined
-            ? loadError === null && <p className={styles.hint}>Loading plugins…</p>
+            ? loadError === null && <AstryxText as="p" color="secondary">Loading plugins…</AstryxText>
             : plugins.length === 0
-              ? <p className={styles.hint}>No plugins installed.</p>
+              ? <AstryxText as="p" color="secondary">No plugins installed.</AstryxText>
               : (
                 <ul className={styles.pluginList}>
                   {plugins.map((plugin) => (
@@ -96,7 +96,7 @@ export function PluginsPane({
                         </div>
                         <span className={styles.pluginMeta}>{plugin.id} · {plugin.version}</span>
                         {plugin.manifest_description !== undefined && (
-                          <p className={styles.hint}>{plugin.manifest_description}</p>
+                          <AstryxText as="p" color="secondary">{plugin.manifest_description}</AstryxText>
                         )}
                         {/* The reason a row is `crashed` or `unavailable`. Kept
                             inside the row and not hoisted to a banner: it is a

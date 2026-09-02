@@ -19,11 +19,16 @@
 // still leaves the template editor rather than leaving Settings.
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
-import { Card as AstryxCard } from '@astryxdesign/core/Card';
+import { Divider as AstryxDivider } from '@astryxdesign/core/Divider';
+import { Field as AstryxField } from '@astryxdesign/core/Field';
+import { FormLayout as AstryxFormLayout } from '@astryxdesign/core/FormLayout';
+import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import {
   MetadataList as AstryxMetadataList,
   MetadataListItem as AstryxMetadataListItem,
 } from '@astryxdesign/core/MetadataList';
+import { SideNav as AstryxSideNav, SideNavItem as AstryxSideNavItem } from '@astryxdesign/core/SideNav';
+import { Text as AstryxText } from '@astryxdesign/core/Text';
 import {
   SegmentedControl as AstryxSegmentedControl,
   SegmentedControlItem as AstryxSegmentedControlItem,
@@ -46,9 +51,9 @@ import styles from './settings.module.css';
 export type SettingsSection = 'general' | 'templates' | 'plugins';
 
 const SETTINGS_SECTIONS = Object.freeze([
-  Object.freeze({ id: 'general', label: 'General' }),
-  Object.freeze({ id: 'templates', label: 'Templates' }),
-  Object.freeze({ id: 'plugins', label: 'Plugins' }),
+  Object.freeze({ id: 'general', label: 'General', icon: 'settings' }),
+  Object.freeze({ id: 'templates', label: 'Templates', icon: 'file-text' }),
+  Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'puzzle' }),
 ] as const);
 
 export type SettingsSurfaceProps = Readonly<{
@@ -61,10 +66,21 @@ export type SettingsSurfaceProps = Readonly<{
  * The two-column frame every Settings route renders inside: a nav column that
  * names the groups, and the pane for the current one.
  *
- * The nav rows are `<button>`s, not links (INV-A11Y-061), and the current one
- * carries `aria-current="page"` — they *are* navigation, each one a route, so
- * the current row has to say so to a screen reader and not only to a stripe of
- * accent colour.
+ * ## Built from `SideNav`, not from hand-written rows
+ *
+ * The first cut hand-rolled the column — a `<nav>` of `<button>`s with a
+ * CSS-module pill for the current one — and it was wrong twice over. Astryx
+ * ships this exact component (`SideNav` / `SideNavItem isSelected`), so the
+ * hand-rolled version was a second, worse copy of a solved problem: it had no
+ * icons, its own padding scale, and its selected pill hung outside the column
+ * on a negative margin, where the dialog body's `overflow: auto` clipped the
+ * left half of it off.
+ *
+ * `SideNavItem` renders a `<button>` when given `onClick` and no `href`, which
+ * keeps INV-A11Y-061 (navigation is a button plus a callback, never an
+ * `<a href>`); `aria-current="page"` is still stamped here, because
+ * `isSelected` is a visual state and the current *route* is a fact a screen
+ * reader has to be told.
  *
  * The dialog above supplies the title and the `×`; this component deliberately
  * has neither, so there is exactly one close affordance on screen.
@@ -72,20 +88,18 @@ export type SettingsSurfaceProps = Readonly<{
 export function SettingsSurface({ section, onSelectSection, children }: SettingsSurfaceProps) {
   return (
     <div className={styles.surface}>
-      <nav className={styles.sectionNav} aria-label="Settings sections">
+      <AstryxSideNav aria-label="Settings sections" xstyle={undefined} className={styles.sectionNav}>
         {SETTINGS_SECTIONS.map((entry) => (
-          <button
+          <AstryxSideNavItem
             key={entry.id}
-            type="button"
-            className={styles.sectionNavItem}
+            label={entry.label}
+            icon={entry.icon}
+            isSelected={entry.id === section}
             aria-current={entry.id === section ? 'page' : undefined}
-            data-nc-current={entry.id === section ? '' : undefined}
             onClick={() => onSelectSection(entry.id)}
-          >
-            {entry.label}
-          </button>
+          />
         ))}
-      </nav>
+      </AstryxSideNav>
       <div className={styles.pane}>{children}</div>
     </div>
   );
@@ -116,6 +130,7 @@ export type SettingsPageProps = Readonly<{
 
 const THEME_MODES = Object.freeze(['light', 'dark', 'system'] as const);
 const SAVED_NOTICE_MS = 4000;
+const THEME_CONTROL_ID = 'nc-settings-theme';
 
 type Draft = { http: string; https: string };
 
@@ -174,17 +189,32 @@ export function SettingsPage({
   return (
     <div className={styles.paneBody}>
       <div className={styles.form}>
-        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
-          <section className={styles.section} aria-labelledby="nc-settings-network">
-            <h2 className={styles.sectionLabel} id="nc-settings-network">Network</h2>
-            {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
-            {!loaded && loadError === null
-              ? <p className={styles.hint}>Loading settings…</p>
-              : loaded ? (
-                <>
+        {/*
+          * Groups are a heading, a divider and rows — not bordered cards.
+          *
+          * Cards were the previous shape and they said the wrong thing: a card
+          * is a boundary, and Network / Appearance / About are three parts of
+          * one screen, not three objects. Astryx's own settings guidance is
+          * this shape ("use horizontal-labels for settings pages where labels
+          * sit beside their inputs"), and it is what a settings pane looks like
+          * everywhere the reader already knows one from: a label column on the
+          * left, its control on the right, hairlines between groups.
+          */}
+        <section className={styles.group} aria-labelledby="nc-settings-network">
+          <AstryxHeading level={3} id="nc-settings-network">Network</AstryxHeading>
+          <AstryxText as="p" color="secondary">
+            Used when launching new agent cards. Empty inherits the container&rsquo;s own proxy.
+          </AstryxText>
+          {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
+          {!loaded && loadError === null
+            ? <AstryxText as="p" color="secondary">Loading settings…</AstryxText>
+            : loaded ? (
+              <>
+                <AstryxFormLayout direction="horizontal-labels">
                   <AstryxTextInput
                     label="HTTP proxy"
                     value={draft.http}
+                    placeholder="http://127.0.0.1:10809"
                     onChange={(value) => setDraft({ ...draft, http: value })}
                     size="lg"
                     width="100%"
@@ -192,82 +222,101 @@ export function SettingsPage({
                   <AstryxTextInput
                     label="HTTPS proxy"
                     value={draft.https}
+                    placeholder="http://127.0.0.1:10809"
                     onChange={(value) => setDraft({ ...draft, https: value })}
                     size="lg"
                     width="100%"
                   />
-                  <div className={styles.actions}>
-                    <AstryxButton
-                      label={saving ? 'Saving…' : 'Save'}
-                      variant="primary"
-                      size="lg"
-                      isDisabled={!dirty && !saving}
-                      isLoading={saving}
-                      isInterruptible
-                      data-nc-state={saving ? 'busy' : undefined}
-                      onClick={() => { if (saving) return; void onSave(buildPatch(draft, base)); }}
-                    />
-                    <AstryxButton
-                      label="Reset"
-                      variant="secondary"
-                      size="lg"
-                      isDisabled={!dirty || saving}
-                      data-nc-state={saving ? 'busy' : undefined}
-                      onClick={() => { if (saving) return; setDraft(base); }}
-                    />
-                    {/*
-                      * `data-nc-settings-saved` is the e2e seam, not decoration.
-                      * `role="status"` cannot locate this span: every Astryx
-                      * `Button` renders its own unconditional, empty-text
-                      * `role="status"` live region for loading announcements
-                      * (`@astryxdesign/core` `Button.tsx`), so the two buttons
-                      * beside this one make `getByRole('status')` resolve to
-                      * three elements. Filtering those by the text we are about
-                      * to assert would be circular — it could only prove "some
-                      * status says Saved.", never "the save succeeded". The
-                      * anchor keeps locating independent of asserting.
-                      */}
-                    {showSaved && (
-                      <span className={styles.saved} role="status" data-nc-settings-saved>Saved.</span>
-                    )}
-                  </div>
-                  {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
-                </>
-              ) : null}
-          </section>
-        </AstryxCard>
+                </AstryxFormLayout>
+                {/* The actions sit at the end of the block they commit, which
+                    is the convention this layout comes with — not floating at
+                    the bottom of a pane that holds three unrelated groups. */}
+                <div className={styles.actions}>
+                  <AstryxButton
+                    label={saving ? 'Saving…' : 'Save'}
+                    variant="primary"
+                    size="lg"
+                    isDisabled={!dirty && !saving}
+                    isLoading={saving}
+                    isInterruptible
+                    data-nc-state={saving ? 'busy' : undefined}
+                    onClick={() => { if (saving) return; void onSave(buildPatch(draft, base)); }}
+                  />
+                  <AstryxButton
+                    label="Reset"
+                    variant="secondary"
+                    size="lg"
+                    isDisabled={!dirty || saving}
+                    data-nc-state={saving ? 'busy' : undefined}
+                    onClick={() => { if (saving) return; setDraft(base); }}
+                  />
+                  {/*
+                    * `data-nc-settings-saved` is the e2e seam, not decoration.
+                    * `role="status"` cannot locate this span: every Astryx
+                    * `Button` renders its own unconditional, empty-text
+                    * `role="status"` live region for loading announcements
+                    * (`@astryxdesign/core` `Button.tsx`), so the two buttons
+                    * beside this one make `getByRole('status')` resolve to
+                    * three elements. Filtering those by the text we are about
+                    * to assert would be circular — it could only prove "some
+                    * status says Saved.", never "the save succeeded". The
+                    * anchor keeps locating independent of asserting.
+                    */}
+                  {showSaved && (
+                    <span className={styles.saved} role="status" data-nc-settings-saved>Saved.</span>
+                  )}
+                </div>
+                {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
+              </>
+            ) : null}
+        </section>
 
-        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
-          <section className={styles.section} aria-labelledby="nc-settings-appearance">
-            <h2 className={styles.sectionLabel} id="nc-settings-appearance">Appearance</h2>
-            <AstryxSegmentedControl
-              value={themeMode}
-              onChange={(value) => onThemeModeChange(value === 'light' || value === 'dark' ? value : 'system')}
-              label="Appearance"
-              size="lg"
-              layout="fill"
-            >
-              {THEME_MODES.map((mode) => (
-                <AstryxSegmentedControlItem key={mode} value={mode} label={themeLabel(mode)} />
-              ))}
-            </AstryxSegmentedControl>
-            <p className={styles.hint}>Stored on this device.</p>
-          </section>
-        </AstryxCard>
+        <AstryxDivider />
 
-        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
-          <section className={styles.section} aria-labelledby="nc-settings-about">
-            <h2 className={styles.sectionLabel} id="nc-settings-about">About</h2>
-            <AstryxMetadataList columns="single" label={{ position: 'start', width: '6rem' }}>
-              <AstryxMetadataListItem label="Version">
-                <span className={styles.aboutValue}>{__NC_VERSION__}</span>
-              </AstryxMetadataListItem>
-              <AstryxMetadataListItem label="Build">
-                <span className={styles.aboutValue}>{__NC_BUILD__}</span>
-              </AstryxMetadataListItem>
-            </AstryxMetadataList>
-          </section>
-        </AstryxCard>
+        <section className={styles.group} aria-labelledby="nc-settings-appearance">
+          <AstryxHeading level={3} id="nc-settings-appearance">Appearance</AstryxHeading>
+          <AstryxFormLayout direction="horizontal-labels">
+            {/* `SegmentedControl`'s own `label` is `aria-label` only — it is
+                never rendered — so on its own the control would sit in the
+                grid's input column with an empty label column beside it.
+                `Field` is astryx's stated wrapper for exactly that case
+                ("for controls that do not already provide field under the
+                hood"), and it is what puts `Theme` in the label column with
+                the proxy rows above. */}
+            <AstryxField label="Theme" inputID={THEME_CONTROL_ID}>
+              <AstryxSegmentedControl
+                id={THEME_CONTROL_ID}
+                className={styles.themeControl}
+                value={themeMode}
+                onChange={(value) => onThemeModeChange(value === 'light' || value === 'dark' ? value : 'system')}
+                /* Still passed: this is the radiogroup's `aria-label`, and it
+                   is what names the group for a screen reader. `Field`'s label
+                   is the visible one. */
+                label="Theme"
+                size="lg"
+              >
+                {THEME_MODES.map((mode) => (
+                  <AstryxSegmentedControlItem key={mode} value={mode} label={themeLabel(mode)} />
+                ))}
+              </AstryxSegmentedControl>
+            </AstryxField>
+          </AstryxFormLayout>
+          <AstryxText as="p" color="secondary">Stored on this device.</AstryxText>
+        </section>
+
+        <AstryxDivider />
+
+        <section className={styles.group} aria-labelledby="nc-settings-about">
+          <AstryxHeading level={3} id="nc-settings-about">About</AstryxHeading>
+          <AstryxMetadataList columns="single" label={{ position: 'start', width: '6.5rem' }}>
+            <AstryxMetadataListItem label="Version">
+              <span className={styles.aboutValue}>{__NC_VERSION__}</span>
+            </AstryxMetadataListItem>
+            <AstryxMetadataListItem label="Build">
+              <span className={styles.aboutValue}>{__NC_BUILD__}</span>
+            </AstryxMetadataListItem>
+          </AstryxMetadataList>
+        </section>
       </div>
     </div>
   );

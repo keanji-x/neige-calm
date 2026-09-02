@@ -9,7 +9,7 @@ import { SettingsPage } from './public.tsx';
 afterEach(() => { document.body.replaceChildren(); });
 
 describe('Settings mobile presentation', () => {
-  it('uses Astryx cards and standard form controls', async () => {
+  it('uses astryx form controls and one group per settings heading', async () => {
     await page.viewport(390, 844);
     const { container } = render(<SettingsPage
       settings={{}}
@@ -23,13 +23,14 @@ describe('Settings mobile presentation', () => {
       onThemeModeChange={vi.fn()}
     />);
 
-    // Network, Appearance, About. Templates left this pane when it became a
-    // nav section of its own; the count is asserted rather than
-    // `toBeGreaterThan` so adding a section is a deliberate edit here.
-    expect(container.querySelectorAll('[data-nc-settings-card]')).toHaveLength(3);
+    // Network, Appearance, About — three groups, asserted by count rather than
+    // `toBeGreaterThan` so adding one is a deliberate edit here. They are
+    // headings and hairlines now, not cards: a card is a boundary, and these
+    // are three parts of one screen.
+    expect(container.querySelectorAll('section[aria-labelledby^="nc-settings-"]')).toHaveLength(3);
     expect(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeTruthy();
     expect(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeTruthy();
-    expect(page.getByRole('radiogroup', { name: 'Appearance' })).toBeTruthy();
+    expect(page.getByRole('radiogroup', { name: 'Theme' })).toBeTruthy();
     expect(page.getByRole('button', { name: 'Save' })).toBeTruthy();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     await page.screenshot({ path: '../../../../test-results/mobile-settings.png' });

@@ -19,7 +19,7 @@ test('the four primary routes have no WCAG A or AA violations in light mode', as
     { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
     { path: `/next/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
     { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
-    { path: '/next/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
+    { path: '/next/settings', anchor: page.getByRole('radiogroup', { name: 'Theme' }) },
   ];
 
   for (const route of routes) {

@@ -78,7 +78,7 @@ export function TemplateListPage({
   return (
     <div className={styles.paneBody}>
       <VStack className={styles.form} gap={4} align="stretch">
-        <Heading level={2}>Templates</Heading>
+        <Heading level={3}>Templates</Heading>
         <Text as="p" color="secondary">
           What a new wave starts from. Editing a template changes every wave created
           from it afterwards; waves already created keep the plan they were forked with.

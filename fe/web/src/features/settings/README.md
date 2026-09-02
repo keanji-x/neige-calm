@@ -49,6 +49,31 @@ deliberately **not** here. Each is its own screen with its own failure modes,
 and the kernel routes for them (`routes/plugins.rs`) exist whenever they are
 picked up.
 
+## The shape: nav column + label-left rows
+
+The pane follows astryx's own settings guidance rather than an invented layout:
+`FormLayout direction="horizontal-labels"` — *"use horizontal-labels for
+settings pages where labels sit beside their inputs"* — with a group heading,
+its rows, and a `Divider` between groups.
+
+**No cards.** Bordered cards were the previous shape and they said the wrong
+thing: a card is a boundary, and Network / Appearance / About are three parts of
+one screen, not three objects. One channel (the hairline) does the separating.
+
+**The nav column is astryx `SideNav` / `SideNavItem isSelected`**, not a
+hand-rolled list of buttons. The hand-rolled one was a worse copy of a component
+the design system already ships, and its selected pill hung outside the column
+on a negative margin where the dialog body's `overflow: auto` clipped half of it
+off. `SideNavItem` renders a `<button>` for an `onClick` without an `href`,
+which keeps INV-A11Y-061; `aria-current="page"` is stamped on top, because
+`isSelected` is a visual state and the current route is a fact a screen reader
+has to be told.
+
+A control astryx does not label visually — `SegmentedControl`'s `label` is
+`aria-label` only — gets wrapped in `Field`, which is what astryx documents that
+wrapper for. That is what puts `Theme` in the label column with the rows above
+it.
+
 ## Built from `@astryxdesign/core`
 
 `SegmentedControl`, `TextInput`, `Button`, `Banner`, `Heading`, `MetadataList`,
@@ -71,8 +96,8 @@ Three places astryx does not fit, each with the reasoning at its call site:
 ## Sections
 
 - **Network** — HTTP / HTTPS proxy inputs seeded from the settings bag.
-- **Appearance** — a `SegmentedControl` labelled `Appearance`, Light / Dark /
-  System, reporting through `onThemeModeChange`.
+- **Appearance** — a `SegmentedControl` labelled `Theme` (the group heading is
+  `Appearance`), Light / Dark / System, reporting through `onThemeModeChange`.
 - **About** — build-time `version` / `build` in a `MetadataList`.
 
 ## `null` clears a key (INV-SETTINGS-001)

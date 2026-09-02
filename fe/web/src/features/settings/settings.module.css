@@ -9,60 +9,27 @@
    * one (a template's task list) must not resize the panel between them, which
    * is §2.6's "no reflow from our own chrome" applied to a dialog.
    */
+  /*
+   * The overlay's two columns: astryx `SideNav` and the pane it selects.
+   *
+   * The nav column's own width comes from `SideNav` (260 by default, the width
+   * the convention lands on); this only says where the two columns are and that
+   * the pane is the one that scrolls, so switching groups never moves the nav
+   * under the pointer.
+   *
+   * The block size is a floor, not a height: a short group (Appearance) and a
+   * long one (a template's task list) must not resize the panel between them,
+   * which is §2.6's "no reflow from our own chrome" applied to a dialog.
+   */
   .surface {
     display: grid;
-
-    /* The nav column starts at the panel's own edge, and the pane takes
-       everything after it. An earlier version capped the whole surface and
-       centred it, which floated the nav in the middle of the dialog with dead
-       space on both sides of it — a sidebar that does not touch the side reads
-       as a mistake. The measure now lives on the pane's content, where it
-       belongs: whitespace to the right of a 544px form is §7.3's page
-       whitespace, whitespace to the left of the *nav* is a gap. */
-    grid-template-columns: 11rem minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
     gap: var(--space-9);
     min-block-size: min(30rem, 60dvh);
   }
 
   .sectionNav {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
     border-inline-end: 1px solid var(--hairline);
-    /* Pulled back by its own inline padding so the *text* of the first nav row
-       lines up with the dialog title above it, not the highlight pill's left
-       edge. The pill is a hover/current affordance and must not set the
-       column's optical margin. */
-    margin-inline-start: calc(var(--space-4) * -1);
-    padding-inline-end: var(--space-6);
-  }
-
-  .sectionNavItem {
-    min-block-size: var(--control-h-lg);
-    padding-block: var(--space-4);
-    padding-inline: var(--space-4);
-    border: none;
-    border-radius: var(--radius-md);
-    background: none;
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-tight);
-    color: var(--text-2);
-    text-align: start;
-    cursor: pointer;
-  }
-
-  .sectionNavItem:hover {
-    background: var(--overlay-hover);
-    color: var(--text);
-  }
-
-  /* The current group is the one emphasis on this column — same rule the rail
-     holds to: exactly one thing may carry --accent, and it is where you are. */
-  .sectionNavItem[data-nc-current] {
-    background: var(--accent-soft);
-    font-weight: var(--weight-medium);
-    color: var(--accent);
   }
 
   .pane {
@@ -89,27 +56,25 @@
   .form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
+    gap: var(--space-9);
     max-inline-size: var(--measure-list);
     min-block-size: 0;
   }
 
-  .sectionCard {
-    inline-size: 100%;
-    border-radius: var(--radius-lg) !important;
+  /* The segmented control sizes to its three options. Without this it fills the
+     grid's input column, leaving a wide empty track to the right of "System"
+     that reads as a broken control rather than a chosen width. */
+  .themeControl {
+    inline-size: fit-content;
   }
 
-  .section {
+  /* A group is a heading, its rows, and the space around them. The separation
+     between groups is one hairline (`Divider`) — per the boundary ladder, one
+     channel does the separating, so no box as well. */
+  .group {
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
-  }
-
-  .sectionLabel {
-    font-size: var(--text-base);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-tight);
-    color: var(--text-2);
   }
 
   .actions {
@@ -125,13 +90,6 @@
     font-weight: var(--weight-medium);
     line-height: var(--leading-none);
     color: var(--success-text);
-  }
-
-  .hint {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
   }
 
   /* The error box: dot, message, and a home of its own — error tones, never
@@ -158,6 +116,9 @@
     /* One column: the nav becomes a row above the pane. A 12rem column beside a
        phone-width pane leaves the pane too narrow to hold a form field, so the
        axis flips rather than the column shrinking. */
+    /* One column: the nav becomes a band above the pane. A 260px column beside
+       a phone-width pane leaves the pane too narrow to hold a form row, so the
+       axis flips rather than the column shrinking. */
     .surface {
       grid-template-columns: minmax(0, 1fr);
       gap: var(--space-6);
@@ -165,18 +126,8 @@
     }
 
     .sectionNav {
-      flex-direction: row;
-      overflow-x: auto;
       border-block-end: 1px solid var(--hairline);
       border-inline-end: none;
-      margin-inline-start: 0;
-      padding-block-end: var(--space-3);
-      padding-inline-end: 0;
-    }
-
-    .sectionNavItem {
-      flex: 0 0 auto;
-      min-block-size: var(--rail-w-collapsed);
     }
 
     .form {
@@ -185,10 +136,6 @@
       padding-block-end: var(--space-8);
     }
 
-    .sectionCard input,
-    .sectionCard button {
-      min-block-size: var(--rail-w-collapsed) !important;
-    }
   }
 
   /*
@@ -223,12 +170,6 @@
   .templateRow > :first-child {
     flex: 1 1 auto;
     min-inline-size: 0;
-  }
-
-  .templateName {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
   }
 
   /* The plugin list. Same one-channel separation as the template list: a
