@@ -85,6 +85,13 @@ pub(crate) struct Boot {
     /// #1189 S6 — the second assistant conversation. See
     /// [`ASSISTANT_B_SESSION_ID`].
     pub(crate) assistant_b_card_id: CardId,
+    /// #1252 — the same `CardRoleCache` handle that is inside
+    /// [`Boot::ctx`]'s `WriteContext` (`CardRoleCache` is an `Arc<DashMap>`
+    /// newtype, so this clone shares state). A test that mints a card after
+    /// `boot()` has to get it into the cache the role gate reads, and the
+    /// production way to do that is `repo.seed_card_role_cache(&cache)` —
+    /// the same call `AppState::new` makes at boot (`state.rs:996`).
+    pub(crate) card_role_cache: CardRoleCache,
 }
 
 fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
@@ -159,8 +166,31 @@ async fn seed_non_root_session(
     card_id: &CardId,
     session_id: &str,
 ) {
+    seed_non_root_session_with_provider(
+        repo,
+        wave_id,
+        card_id,
+        session_id,
+        WorkerProviderKind::Codex,
+    )
+    .await;
+}
+
+/// [`seed_non_root_session`] with the `worker_sessions.provider` column
+/// spelled out. #1252 needs a Claude-provider row: the actor a Claude
+/// assistant's MCP write lands under is decided by
+/// `registry::provider_session_actor`, and a fixture that only ever seeds
+/// `Codex` rows cannot tell the two arms apart.
+pub(crate) async fn seed_non_root_session_with_provider(
+    repo: &dyn RepoEventWrite,
+    wave_id: &WaveId,
+    card_id: &CardId,
+    session_id: &str,
+    provider: WorkerProviderKind,
+) {
     let mut session = planner_session(session_id, wave_id.clone(), card_id.clone());
     session.contract = WorkerContract::Executor;
+    session.provider = provider;
     calm_server::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             session_insert_tx(tx, session)
@@ -333,7 +363,7 @@ pub(crate) async fn boot() -> Boot {
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -355,6 +385,7 @@ pub(crate) async fn boot() -> Boot {
         worker_card_id: worker_card.id,
         assistant_card_id: assistant_card.id,
         assistant_b_card_id: assistant_b_card.id,
+        card_role_cache,
     }
 }
 
