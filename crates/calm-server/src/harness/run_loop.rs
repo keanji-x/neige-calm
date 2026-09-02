@@ -962,6 +962,88 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 )
                 .await?;
         }
+        // `turn/plan/updated` — codex's own TODO checklist for the running
+        // turn (`{ threadId, turnId, explanation, plan: [{ step, status }] }`,
+        // status spelled `pending` | `inProgress` | `completed` on the wire).
+        // Each notification carries the *whole* checklist and supersedes the
+        // previous one for that turn; we kept dropping it into the catch-all
+        // below, so the shape has never been observable from real data. This
+        // arm only persists it (#1255) — no UI reads it yet, deliberately:
+        // how often codex revises a plan inside one turn decides the UI shape,
+        // and only stored rows can answer that.
+        Notification::Other { method, params } if method == "turn/plan/updated" => {
+            // Same guard as the item arm above — `harness_items.thread_id` is
+            // NOT NULL, so it cannot be dropped. It logs at `warn` rather than
+            // `debug` because the drop paths differ: the item arm's dominant
+            // loss is a missing `params.item`, but a plan has no `item`, which
+            // makes an unknown thread id the *only* way a plan is silently
+            // lost — and a plan can arrive early in a turn, exactly when the
+            // thread id may not be known yet.
+            let Some(thread_id) = inner.thread_id.read().await.clone() else {
+                tracing::warn!(
+                    runtime_id = %inner.runtime_id,
+                    card_id = %inner.card_id,
+                    method,
+                    "spec harness dropping turn/plan/updated: thread id unknown; this is the \
+                     only silent loss path for a plan (it carries no item), and a plan can \
+                     arrive early in a turn"
+                );
+                return persist_snapshot(inner).await;
+            };
+            // `turnId` is top-level on a plan; `item_turn_id` already falls
+            // back to it, so it is reused unchanged.
+            let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
+            let params_json = serde_json::to_string(&params)?;
+            let item_db_id = inner
+                .repo
+                .harness_item_insert(
+                    &inner.runtime_id,
+                    inner.card_id.as_str(),
+                    inner.wave_id.as_str(),
+                    &thread_id,
+                    turn_id.as_deref(),
+                    // No `item_uuid`: a plan is not an item and has no id.
+                    None,
+                    // `item_type = None` is load-bearing, not incidental. The
+                    // frontend's `activityShape` default branch
+                    // (fe/core/domain/conversation.ts) turns any non-null
+                    // `item_type` into a visible activity line — this row
+                    // would render as `Worked turn/plan/updated` in the
+                    // transcript. A null `item_type` is what keeps the row
+                    // invisible until a deliberate UI slice reads it.
+                    None,
+                    &method,
+                    &params_json,
+                )
+                .await?;
+            // The *existing* `HarnessItemAdded` event, exactly as the item arm
+            // emits it. No new `Event` variant: `harness.item.added` already
+            // invalidates `['harness-items', cardId]`, so a new variant would
+            // buy nothing and cost a `SYNC_EVENT_VERSION` bump plus three
+            // hard-coded golden counts.
+            let scope = harness_event_scope(inner, "harness.item.added");
+            inner
+                .repo
+                .log_pure_event(
+                    ActorId::Kernel,
+                    scope,
+                    None,
+                    &inner.events,
+                    &inner.card_role_cache,
+                    &inner.wave_cove_cache,
+                    Event::HarnessItemAdded {
+                        runtime_id: inner.runtime_id.clone(),
+                        card_id: inner.card_id.clone(),
+                        wave_id: inner.wave_id.clone(),
+                        item_db_id,
+                        item_uuid: None,
+                        item_type: None,
+                        turn_id,
+                        method,
+                    },
+                )
+                .await?;
+        }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
     persist_snapshot(inner).await

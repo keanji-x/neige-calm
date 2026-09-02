@@ -1,0 +1,27 @@
+{
+  "_provenance": [
+    "HAND-AUTHORED FROM THE PINNED UPSTREAM SCHEMA. This is NOT a capture.",
+    "Transcribed from codex upstream tag rust-v0.151.0 — the exact version of the",
+    "binary this box spawns (~/.codex/packages/standalone/current/codex-package.json",
+    "-> 0.151.0). No codex turn was run to produce it: the only machine available",
+    "here is production, and #1255 forbids running real turns on it.",
+    "Shape: { threadId, turnId, explanation, plan: [{ step, status }] }.",
+    "`explanation` has no skip_serializing_if upstream, so treat it as optional AND",
+    "nullable. `status` is camelCase on the wire: pending | inProgress | completed.",
+    "Both literals `turn/plan/updated` and `inProgress` were confirmed present in the",
+    "shipped binary itself (strings ~/.codex/.../bin/codex).",
+    "Once the kernel arm that persists these rows ships,",
+    "`SELECT params FROM harness_items WHERE method='turn/plan/updated'` promotes this",
+    "to a captured payload — and THAT, not this file, is what a UI slice gets built on."
+  ],
+  "params": {
+    "threadId": "thread-items-persist",
+    "turnId": "turn-plan-1",
+    "explanation": "Splitting the migration into a read-only audit before touching any writer.",
+    "plan": [
+      { "step": "Audit every explicit CardRow SELECT", "status": "completed" },
+      { "step": "Add the column plus a backfill migration", "status": "inProgress" },
+      { "step": "Re-run the nextest gate with the CI features", "status": "pending" }
+    ]
+  }
+}

@@ -1752,6 +1752,35 @@ mod tests {
         }
     }
 
+    /// `turn/plan/updated` needs no variant of its own: it must reach the
+    /// run loop through `Other` with `params` untouched, and `thread_id()`
+    /// must still resolve from the top-level `threadId`. Both are what the
+    /// persistence arm in `harness/run_loop.rs` relies on.
+    #[test]
+    fn notification_parse_preserves_turn_plan_updated_frame() {
+        let params = json!({
+            "threadId": "t-plan",
+            "turnId": "turn-plan-1",
+            "explanation": null,
+            "plan": [
+                { "step": "first", "status": "inProgress" },
+                { "step": "second", "status": "pending" }
+            ]
+        });
+        let n = Notification::parse("turn/plan/updated".into(), params.clone());
+        assert_eq!(n.thread_id(), Some("t-plan"));
+        match n {
+            Notification::Other {
+                method,
+                params: got,
+            } => {
+                assert_eq!(method, "turn/plan/updated");
+                assert_eq!(got, params, "params must survive parse byte-for-byte");
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
     #[test]
     fn notification_parse_unknown_method_is_other_not_error() {
         let n = Notification::parse("thread/realtime/sdp".into(), json!({ "anything": 1 }));

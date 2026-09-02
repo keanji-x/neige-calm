@@ -274,6 +274,77 @@ async fn item_notification_persists_row_and_emits_event() {
     harness.shutdown().await.unwrap();
 }
 
+/// The `turn/plan/updated` payload, hand-authored from codex upstream
+/// `rust-v0.151.0` (the version this box actually spawns) — see the
+/// `_provenance` block inside the file. It is deliberately not a capture:
+/// this commit is what makes a capture possible.
+const PLAN_FIXTURE: &str = include_str!("../fixtures/turn_plan_updated.json");
+
+#[tokio::test]
+async fn turn_plan_updated_persists_row_with_null_item_type() {
+    let fixture: Value = serde_json::from_str(PLAN_FIXTURE).unwrap();
+    let params = fixture
+        .get("params")
+        .expect("fixture must carry the wire params under `params`")
+        .clone();
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    daemon.emit_notification_for_test(Notification::Other {
+        method: "turn/plan/updated".into(),
+        params: params.clone(),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    let row = &rows[0];
+    assert_eq!(row.card_id.as_str(), card_id);
+    assert_eq!(row.wave_id.as_str(), wave_id);
+    assert_eq!(row.thread_id, "thread-items-persist");
+    assert_eq!(row.method, "turn/plan/updated");
+    // `turnId` is top-level on a plan, not under `turn.id`.
+    assert_eq!(row.turn_id.as_deref(), Some("turn-plan-1"));
+    assert_eq!(row.item_uuid, None, "a plan is not an item and has no id");
+    assert_eq!(
+        row.item_type, None,
+        "item_type MUST stay null: a non-null one would make the transcript \
+         render `Worked turn/plan/updated` via activityShape's default branch"
+    );
+    // Byte-for-byte: the stored string is exactly what serializing the wire
+    // params produces — nothing filtered, reordered, or re-shaped.
+    assert_eq!(row.params, serde_json::to_string(&params).unwrap());
+    let stored: Value = serde_json::from_str(&row.params).unwrap();
+    assert_eq!(stored, params);
+    assert_eq!(stored["plan"][1]["status"], "inProgress");
+    assert!(stored["explanation"].is_string());
+
+    let envelope = recv_item_event(&mut rx).await;
+    match envelope.event {
+        Event::HarnessItemAdded {
+            card_id: event_card_id,
+            item_db_id,
+            item_uuid,
+            item_type,
+            turn_id,
+            method,
+            ..
+        } => {
+            assert_eq!(event_card_id.as_str(), card_id);
+            assert_eq!(item_db_id, row.id);
+            assert_eq!(item_uuid, None);
+            assert_eq!(item_type, None);
+            assert_eq!(turn_id.as_deref(), Some("turn-plan-1"));
+            assert_eq!(method, "turn/plan/updated");
+        }
+        other => panic!("expected HarnessItemAdded, got {other:?}"),
+    }
+
+    harness.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn phase_log_failure_keeps_last_phase_for_retry() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

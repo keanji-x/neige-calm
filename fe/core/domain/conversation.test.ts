@@ -681,6 +681,37 @@ describe('buildTranscript', () => {
     ])).toEqual([]);
   });
 
+  it('never renders a turn/plan/updated row as a transcript line', () => {
+    const planParams = JSON.stringify({
+      threadId: 't', turnId: 'turn-plan-1', explanation: null,
+      plan: [{ step: 'audit', status: 'inProgress' }, { step: 'ship', status: 'pending' }],
+    });
+    const planRow = (overrides: Partial<HarnessItem>): HarnessItem => ({
+      id: 2, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
+      item_uuid: null, item_type: null, method: 'turn/plan/updated',
+      params: planParams, created_at_ms: 1002, ...overrides,
+    });
+
+    // The row exactly as the kernel writes it: null item_uuid, null item_type.
+    expect(buildTranscript([planRow({})])).toEqual([]);
+
+    // And the fail-closed half: the *method* alone decides, whatever else the
+    // row carries. If a converter is ever widened — or a future writer stops
+    // leaving `item_type` null — a plan must still never become a line.
+    expect(buildTranscript([planRow({
+      item_type: 'commandExecution',
+      params: JSON.stringify({ completedAtMs: 1002, item: { command: 'ls' } }),
+    })])).toEqual([]);
+
+    // It also does not disturb the lines around it.
+    expect(buildTranscript([
+      row(1, 'userMessage', 'item/completed', { content: [{ text: 'go' }] }),
+      planRow({}),
+      row(3, 'agentMessage', 'item/completed', { text: 'done' }, 'u3'),
+    ]).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+      .toEqual(['go', 'done']);
+  });
+
   it('does not render empty completed messages as activities', () => {
     expect(buildTranscript([
       row(1, 'agentMessage', 'item/completed', { text: '' }),

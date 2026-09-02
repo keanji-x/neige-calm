@@ -958,6 +958,21 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
   const byKey = new Map<string, TranscriptEntry>();
 
   for (const item of [...items].sort((left, right) => left.id - right.id)) {
+    /* `turn/plan/updated` is codex's TODO checklist for the running turn. The
+       kernel now stores it in `harness_items` (#1255) so its real shape can be
+       read out of production before any UI is designed for it; nothing in the
+       transcript is meant to render it yet.
+
+       This skip is DELIBERATELY REDUNDANT today: `harnessItemToTurn` requires
+       `item/completed`, and `harnessItemToActivity` requires
+       `item/started | item/completed` *and* a non-null `item_type` — a plan row
+       has neither method nor an `item_type`, so both converters already reject
+       it. What it fails closed against is that agreement quietly ending: two
+       unrelated converters happening to reject the same row is an implicit
+       contract, and this commit starts feeding these rows into a table the
+       frontend re-reads on every poll. If either converter is ever widened,
+       plan rows must still not appear as transcript lines by accident. */
+    if (item.method === 'turn/plan/updated') continue;
     const turn = harnessItemToTurn(item);
     if (turn !== null) {
       const key = `turn-${item.id}`;
