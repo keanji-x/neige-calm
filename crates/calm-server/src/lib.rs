@@ -35,6 +35,10 @@ pub mod plain_chat;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
+// If this module is ever re-gated for integration-test reuse, revisit its
+// nested `cfg(test)` interceptor and test-module gates at the same time:
+// integration tests compile the library without `cfg(test)`, so both would
+// otherwise disappear from that configuration.
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod worker_flow;
