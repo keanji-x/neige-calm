@@ -570,8 +570,10 @@ export function WavePage({
             className={styles.desktopPanelSurface}
             /* The projection's root on this surface. `.mobileListSurface` is a
                sibling and is in the DOM at the same time (the desktop side only
-               takes `inert`), so a whole-page scan would mix the two the moment
-               S1b-4 marks the mobile rows. */
+               takes `inert`), and since S1b-4a/4b it carries markers of its own,
+               so a whole-page scan would now mix the two. Each surface's scan is
+               rooted at its own marker: this attribute, and
+               `data-nc-mobile-panel` opposite. */
             data-nc-desktop-panel=""
             aria-hidden={mobilePanelOpen ? true : undefined}
             inert={mobilePanelOpen}

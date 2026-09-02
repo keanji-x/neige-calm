@@ -57,9 +57,13 @@ const TASKS: readonly ReportTaskRow[] = [
 
 describe('a withdrawn declaration on the mobile Tasks page', () => {
   it('is struck through, and an ordinary declaration beside it is not', async () => {
-    /* Narrow enough for `@media (width < 60rem)`: at the default 1024 the
-       mobile rule is not eligible and both readings would be `none`, which is
-       the shape that would make this test pass for the wrong reason. */
+    /* Narrow enough for `@media (width < 60rem)`. This call is what makes the
+       case *run*, not a guard against a false green — measured by putting 1024
+       here instead: the whole mobile surface is collapsed at that width, both
+       badges measure 0 wide, and the **width premise below** is what goes red,
+       before either decoration is ever read. What excludes the false green is
+       the positive assertion at the end: `line-through` is a value nothing but
+       the rule produces. */
     await browserPage.viewport(420, 900);
     render(
       <WavePage

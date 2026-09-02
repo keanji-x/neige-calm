@@ -336,15 +336,6 @@ describe('the mobile painter is a faithful projection of a Tasks module', () => 
 });
 
 /*
- * `RowAction.label`, in both directions.
- *
- * The projection case above is the mechanical half; these two say *where* the
- * name goes and, more importantly, that a null label leaves **no attribute at
- * all** rather than an empty or fabricated one. A painter hard-coding
- * `ariaLabel: undefined` passes the first and fails nothing — so the pair is
- * written against the same host element.
- */
-/*
  * The three boundaries, each read off the DOM as well as through the projection.
  *
  * The projection case above would catch all three, but it reports one list of
@@ -378,6 +369,21 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
   });
 });
 
+/*
+ * `RowAction.label`, in both directions.
+ *
+ * The projection case above is the mechanical half; these two say *where* the
+ * name goes — the action host, which on this surface is the row's own `<li>` —
+ * and that a null label leaves **no attribute at all** rather than an empty or
+ * fabricated one.
+ *
+ * Neither case carries the pair alone, which is why there are two. A painter
+ * that hard-codes `ariaLabel: undefined` — the shape this channel had before
+ * the label was consumed at all — fails the first and passes the second; one
+ * that names every row unconditionally fails the second and passes the first.
+ * They are written against the same host element so that a painter which put
+ * the name somewhere else could not satisfy both.
+ */
 describe('the mobile Task row’s action label', () => {
   const paint = (module: RowModuleView) =>
     render(<>{paintMobileModule(painter(), module)}</>).container;

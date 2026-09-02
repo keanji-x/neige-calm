@@ -32,7 +32,10 @@
 // **The two surfaces still word a status differently, and only in their chrome.**
 // The desktop draws a dot, which is a graphic and therefore needs a name; this
 // one prints the token. Both write the same `data-nc-status` and the same
-// `title`, which is the part the projection reads — see `statusWord`.
+// `title`, which is the part the projection reads; and since the S1b-4b review
+// this surface also hands the same phrase to the row's accessible description,
+// because its status sits *beside* the generated control rather than inside it —
+// see `statusWord`.
 
 import type { ReactNode } from 'react';
 

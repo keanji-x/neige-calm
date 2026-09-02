@@ -5,8 +5,9 @@ import { MobileHeader } from '../mobile-header/public.tsx';
 import styles from './mobile-list.module.css';
 
 /*
- * #1234 S1b-4a / S1b-4b — six projection marker channels, and one tooltip
- * channel.
+ * #1234 S1b-4a / S1b-4b — six projection marker channels, plus two channels
+ * that are not markers: the pointer tooltip and the row's accessible
+ * description.
  *
  * The mobile painter has to put the panel's projection markers on elements this
  * primitive owns: the drill-down page's container, its heading (by way of
@@ -17,6 +18,16 @@ import styles from './mobile-list.module.css';
  * different targets — so each channel is its own named, **opt-in** prop. This is
  * the same shape `ui/panel-card` took for the desktop (S1b-3b), for the same
  * reason.
+ *
+ * **The other two channels are wording, not markers, and they are three
+ * different things.** A row's visible `title` is its name; `hint` is the pointer
+ * tooltip (`RowAction.hint`, forwarded as the `<li>`'s `title` attribute); and
+ * `accessibleDescription` is text a screen-reader user gets *on top of* the
+ * name. None substitutes for another — WCAG 2.5.3 is why the tooltip may not
+ * become the name — and the description is the only one of the three that is not
+ * an ordinary prop on the root element, because the element it has to reach is a
+ * control Astryx generates and hands no props to. See `MobileListItem`'s
+ * docstrings for each.
  *
  * **Opt-in, and that is load-bearing.** `app/shell`'s cove and page lists and
  * this page's Outline / Conversations pages render through these same

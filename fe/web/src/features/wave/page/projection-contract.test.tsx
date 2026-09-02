@@ -833,8 +833,9 @@ describe('a faithful painter is green', () => {
      *
      * This is a false-red guard with a date on it: the checker's ownership scope
      * began at `parentElement`, which reads this row as owning zero actions and
-     * reports `action-sequence` against a correct painter. S1b-4 would have hit
-     * it on its first render.
+     * reports `action-sequence` against a correct painter. It is no longer
+     * hypothetical — S1b-4b's mobile Task row paints exactly this shape, and
+     * `mobile-projection.test.tsx` runs the checker over it.
      *
      * The element is a `<div>` because this file's `mount` has no `<ul>` to put
      * an `<li>` in; the tag is immaterial to the checker, which by §6.3 declines
