@@ -8,7 +8,7 @@
 //! validation gives better error messages without a new dependency tree. The
 //! subset is enforced at manifest-validation time so the instance validator
 //! below never has to silently ignore a constraint it does not understand —
-//! whatever a plugin declares, the kernel executes in full. When a workflow
+//! whatever a plugin declares, the kernel executes in full. When a template
 //! ever needs full JSON Schema, replace this module (single-function seam).
 //!
 //! Supported subset:

@@ -60,7 +60,7 @@
 // ("Choose a template") until there is something to name, and the sentinel is
 // "No template" in the list — `Blank` was this file's own word for "no
 // `template_id` on the wire", and it had ended up on a control read by someone
-// who has not been told this app has workflows.
+// who has not been told this app has templates.
 //
 // One concept, one word, one field: the list, the chip and the wire all say
 // *template* / `template_id`. (#1209 removed the vocabulary seam this comment
@@ -245,7 +245,7 @@ const BLANK = '';
  *
  * `Blank` was the codebase's word for "no `template_id` on the wire", and it
  * had leaked onto a chip a person reads before they know this app has
- * workflows at all. What a reader needs from an unset control is what it is
+ * templates at all. What a reader needs from an unset control is what it is
  * *for*, in the words they would use themselves — so unset the chip asks, and
  * once a choice exists it names it. The absence itself keeps a plain name of
  * its own in the menu, because a list of alternatives has to be able to offer

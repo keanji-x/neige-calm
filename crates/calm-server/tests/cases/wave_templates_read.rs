@@ -73,7 +73,7 @@ struct Boot {
 
 /// `running`: whether the trusted plugin that declares `issue-development` is
 /// spawned. It is registered either way, so the only difference between the
-/// two cases is the thing `resolve_trusted_workflow` actually gates on.
+/// two cases is the thing `resolve_template_binding` actually gates on.
 async fn boot(running: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -97,14 +97,14 @@ async fn boot(running: bool) -> Boot {
 
     let manifest: Manifest = Manifest::parse(
         &json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": plugin_id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
             "display_name": "Trusted template owner",
             "entrypoint": { "command": "bin/stub" },
             "input_schema": stub_input_schema(),
-            "workflows": [ { "id": ISSUE_DEVELOPMENT } ],
+            "templates": [ { "id": ISSUE_DEVELOPMENT } ],
             "permissions": {}
         })
         .to_string(),
@@ -225,7 +225,7 @@ async fn lists_every_template_with_its_kernel_title() {
         vec![ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION],
         "the read must expose exactly the kernel's template keys, in order"
     );
-    // Titles come from `WORKFLOW_TEMPLATES`, not from this test's wishes.
+    // Titles come from `TEMPLATES`, not from this test's wishes.
     assert_eq!(row(&body, ISSUE_DEVELOPMENT)["title"], "Issue development");
     assert_eq!(row(&body, SMALL_CHANGE)["title"], "Small change");
     assert_eq!(row(&body, INVESTIGATION)["title"], "Investigation");
@@ -267,7 +267,7 @@ async fn bound_template_carries_the_plugin_input_schema() {
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert!(
         row(&body, ISSUE_DEVELOPMENT).get("input_schema").is_none(),
-        "a stopped plugin must drop the schema, matching resolve_trusted_workflow: {body}"
+        "a stopped plugin must drop the schema, matching resolve_template_binding: {body}"
     );
 }
 
@@ -314,7 +314,7 @@ async fn every_template_lists_the_tasks_its_report_pre_sets() {
             assert!(!goal.trim().is_empty(), "empty goal in {entry}");
         }
     }
-    // Verbatim from `workflow_templates.rs`, not a paraphrase minted here.
+    // Verbatim from `templates.rs`, not a paraphrase minted here.
     assert_eq!(
         row(&body, INVESTIGATION)["tasks"][1]["goal"],
         "Write findings, remaining unknowns, and recommended next steps into this wave report. Do not open a PR or merge."

@@ -120,13 +120,13 @@ Wave is implicit — derived from your card identity. Do NOT pass a `wave_id` (t
 Do not mint new spec cards from within this session.
 
 
-## Bound Workflow Input
+## Bound Template Input
 ```json
 {
   "issue_number": 985,
   "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
   "merge_policy": "auto-merge",
-  "notes": "Full golden fixture covers every shipped workflow input field.",
+  "notes": "Full golden fixture covers every shipped template input field.",
   "repo": "neige-calm/neige-calm"
 }
 ```

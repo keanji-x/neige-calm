@@ -77,9 +77,9 @@ const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
 const ISSUE_VIEW_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.view";
 const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
-const SPEC_SESSION_ID: &str = "forge-workflow-spec-session";
+const SPEC_SESSION_ID: &str = "forge-template-spec-session";
 
-const WORKFLOW_ID: &str = "issue-development";
+const TEMPLATE_ID: &str = "issue-development";
 
 struct Fixture {
     _server: Arc<McpServer>,
@@ -117,7 +117,7 @@ struct Caller {
 }
 
 #[tokio::test]
-async fn git_forge_workflow_registers_and_wave_create_binds() {
+async fn git_forge_template_registers_and_wave_create_binds() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -138,22 +138,22 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         "issue_number": 888,
         "merge_policy": "auto-merge"
     });
-    let wave_dir = wave_cwd_tempdir("wf").expect("workflow wave cwd");
+    let wave_dir = wave_cwd_tempdir("wf").expect("template wave cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
             "cove_id": fx.cove_id,
-            "title": "bound workflow wave",
+            "title": "bound template wave",
             "cwd": wave_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "template_input": bound_input.clone(),
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(body["template_id"], WORKFLOW_ID);
+    assert_eq!(body["template_id"], TEMPLATE_ID);
     assert_eq!(body["plugin_scope"], PLUGIN_ID);
     assert_eq!(body["template_input"], bound_input);
     let wave_id = body["id"].as_str().expect("created wave id");
@@ -162,7 +162,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         .fetch_one(fx.repo.pool())
         .await
         .expect("select template_id");
-    assert_eq!(stored.as_deref(), Some(WORKFLOW_ID));
+    assert_eq!(stored.as_deref(), Some(TEMPLATE_ID));
     let stored_scope: Option<String> =
         sqlx::query_scalar("SELECT plugin_scope FROM waves WHERE id = ?1")
             .bind(wave_id)
@@ -190,7 +190,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         app.clone(),
         json!({
             "cove_id": fx.cove_id,
-            "title": "input without workflow",
+            "title": "input without template",
             "cwd": orphan_input_dir.path().display().to_string(),
             "attach_folder": true,
             "template_input": { "issue_url": "https://github.com/o/r/issues/1" },
@@ -215,7 +215,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             "title": "bound without required input",
             "cwd": required_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
@@ -243,7 +243,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             "title": "bound with partial input",
             "cwd": partial_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "template_input": {
                 "issue_url": "https://github.com/o/r/issues/888",
                 "repo": "o/r"
@@ -277,7 +277,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             "title": "bound with invalid input",
             "cwd": invalid_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "template_input": {
                 "issue_url": "https://github.com/o/r/issues/888",
                 "repo": "o/r",
@@ -313,7 +313,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             "title": "bound with extra input key",
             "cwd": extra_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "template_input": {
                 "issue_url": "https://github.com/o/r/issues/888",
                 "repo": "o/r",
@@ -363,10 +363,10 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         app.clone(),
         json!({
             "cove_id": fx.cove_id,
-            "title": "input against schema-less workflow",
+            "title": "input against schema-less template",
             "cwd": no_schema_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "template_input": { "issue_url": "https://github.com/o/r/issues/1" },
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -379,7 +379,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     // #891 slice ② r2 — schema-less fail-closed 400 likewise leaves no
     // wave row behind.
     assert_eq!(
-        wave_count_by_title(&fx.repo, "input against schema-less workflow").await,
+        wave_count_by_title(&fx.repo, "input against schema-less template").await,
         0,
         "schema-less-input 400 must not create a wave row"
     );
@@ -402,7 +402,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             "title": "schema-less bound wave",
             "cwd": no_input_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
@@ -420,15 +420,15 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         fx.plugin_host.registry_insert(&g, shipped, None);
     }
 
-    let missing_dir = wave_cwd_tempdir("wf-missing").expect("missing workflow cwd");
+    let missing_dir = wave_cwd_tempdir("wf-missing").expect("missing template cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
             "cove_id": fx.cove_id,
-            "title": "missing workflow wave",
+            "title": "missing template wave",
             "cwd": missing_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": "missing-workflow",
+            "template_id": "missing-template",
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
@@ -444,22 +444,22 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("known wave template"), "body={body}");
     assert!(
-        !error.contains("registered trusted workflow"),
+        !error.contains("registered trusted template"),
         "body={body}"
     );
-    assert!(error.contains("missing-workflow"), "body={body}");
+    assert!(error.contains("missing-template"), "body={body}");
 
     drop(trusted);
     let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "other.plugin");
-    let untrusted_dir = wave_cwd_tempdir("wf-untrusted").expect("untrusted workflow cwd");
+    let untrusted_dir = wave_cwd_tempdir("wf-untrusted").expect("untrusted template cwd");
     let (status, body) = post_wave(
         app,
         json!({
             "cove_id": fx.cove_id,
-            "title": "untrusted workflow wave",
+            "title": "untrusted template wave",
             "cwd": untrusted_dir.path().display().to_string(),
             "attach_folder": true,
-            "template_id": WORKFLOW_ID,
+            "template_id": TEMPLATE_ID,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
@@ -468,7 +468,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     // untrusted git-forge no longer 400s the create. Plugin tools stay
     // unbound (`plugin_scope` is null); the template report is still forked.
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(body["template_id"], WORKFLOW_ID);
+    assert_eq!(body["template_id"], TEMPLATE_ID);
     assert!(
         body["plugin_scope"].is_null(),
         "untrusted plugin must not stamp plugin_scope, body={body}"
@@ -481,7 +481,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
 }
 
 #[tokio::test]
-async fn git_forge_happy_path_persists_ordered_workflow_events() {
+async fn git_forge_happy_path_persists_ordered_template_events() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -570,7 +570,7 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
             "head": head,
             "base": base,
             "title": "E2E feature",
-            "body": "Created by forge workflow E2E"
+            "body": "Created by forge template E2E"
         }),
     )
     .await;
@@ -1540,7 +1540,7 @@ async fn boot_fixture() -> Fixture {
 
     let cove = repo
         .cove_create(NewCove {
-            name: "forge-workflow-e2e".into(),
+            name: "forge-template-e2e".into(),
             color: "#000".into(),
             sort: None,
         })
@@ -1550,7 +1550,7 @@ async fn boot_fixture() -> Fixture {
         .wave_create(NewWave {
             template_input: None,
             cove_id: cove.id.clone(),
-            title: "forge-workflow-e2e".into(),
+            title: "forge-template-e2e".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
             template_id: None,
@@ -2396,7 +2396,7 @@ async fn drive_pr_to_diff(
             "head": head,
             "base": base,
             "title": title,
-            "body": "Created by forge workflow review E2E"
+            "body": "Created by forge template review E2E"
         }),
     )
     .await;
@@ -2683,7 +2683,7 @@ async fn mark_parked_artifacts_dead(repo: &SqlxRepo, op_id: &str) {
         start_time: 0,
         boot_id: "dead-boot-for-e2e".into(),
         log_path: None,
-        extra: json!({ "source": "forge_workflow_e2e_crash" }),
+        extra: json!({ "source": "forge_template_e2e_crash" }),
     };
     sqlx::query(
         r#"UPDATE operations

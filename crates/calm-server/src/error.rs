@@ -103,7 +103,7 @@ pub enum CalmError {
     ///
     /// Deliberately distinct from [`CalmError::PluginConflict`], which is also
     /// a 409: `plugin_conflict` means "this will never work as asked" (the id
-    /// is already installed, the workflow id is taken) and the client must
+    /// is already installed, the template id is taken) and the client must
     /// change the request, whereas `plugin_busy` means "try again in a moment"
     /// and the identical request will succeed. A client that cannot tell the
     /// two apart either retries forever or gives up on a transient refusal, so

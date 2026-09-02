@@ -1786,9 +1786,9 @@ export interface components {
             sort?: number | null;
             template_id?: string | null;
             /**
-             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-             *     accepted when `template_id` names a running trusted workflow whose
-             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+             * @description Issue #891 / #1110 S2 — JSON input for the bound template. Only
+             *     accepted when `template_id` names a template a running trusted plugin
+             *     binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
              *     route validates the value against that schema before any DB write. The
              *     kernel never interprets the blob — it is persisted verbatim and injected
              *     into the spec harness developer instructions at thread-mint time.
@@ -2278,7 +2278,7 @@ export interface components {
             lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: int64 */
             pinned_at?: number | null;
-            /** @description Owning plugin copied from the bound workflow. Immutable after creation. */
+            /** @description Owning plugin copied from the bound template. Immutable after creation. */
             plugin_scope?: string | null;
             /** @description Server-owned structural marker. Public wave creation cannot set this. */
             purpose?: string | null;
@@ -4670,7 +4670,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
+            /** @description Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4781,7 +4781,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
+            /** @description Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -379,7 +379,7 @@ pub struct Wave {
     // there would put it back into five generated artifacts.
     #[serde(default, alias = "workflow_id")]
     pub template_id: Option<String>,
-    /// Owning plugin copied from the bound workflow. Immutable after creation.
+    /// Owning plugin copied from the bound template. Immutable after creation.
     #[serde(default)]
     pub plugin_scope: Option<String>,
     /// Server-owned structural marker. Public wave creation cannot set this.
