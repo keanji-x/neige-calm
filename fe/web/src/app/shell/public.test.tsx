@@ -9,7 +9,7 @@
 // branch would prove only that the fixture agrees with itself.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,11 +31,12 @@ function memoryStorage() {
   };
 }
 
-/* The Task field's accessible name after #1209's astryx rewrite: the label is
-   visually hidden (the field is one line and the placeholder already says what
-   it wants), so the name is spelled out here on purpose — losing it would make
-   the field unreachable by screen reader and by voice control. */
+/* The words the deleted task field answered to (#1211 S2), kept as literals so
+   the absence assertions are about *those strings* rather than about "some
+   textbox" — which would go green again the day the field returns under a new
+   name. */
 const TASK_LABEL = 'What this wave should do';
+const TASK_PLACEHOLDER = 'What should this wave do?';
 
 /* The folder chip's copy, restated for the same reason as `TASK_LABEL`: it is
    user-facing text, and a test that imported it from the component could not
@@ -145,27 +146,55 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
    * #1161. The dialog's opening focus went to `focusables(panel)[0]`, which is
    * the header's Close button, so a reader who opened this and typed put
    * nothing in the field — and **space activates a focused button**, so the
-   * first space in a title threw the dialog away. It read as a flaky test
-   * because whether the frame landed before or after the reader's click
-   * decided which of the two failures happened.
+   * first space in a title threw the dialog away.
+   *
+   * #1211 S2 deleted that field, and this case is the reason the ref was
+   * re-aimed rather than dropped: with nothing named, the dialog would have
+   * fallen straight back to Close — the same defect, reintroduced by a
+   * deletion instead of by a forgotten prop. The named target is now the
+   * Start from trigger, which is the form's first control.
    *
    * Asserted through the shell rather than against `<Dialog>` directly,
    * because the defect was a missing `initialFocusRef` at this call site while
    * the primitive was working as designed.
    */
-  it('opens with the Task field focused, so typing a title reaches it', async () => {
-    harness();
+  it('opens with Start from focused, never on the header Close button', async () => {
+    harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    await screen.findByRole('dialog', { name: 'New wave' });
+    const dialog = await screen.findByRole('dialog', { name: 'New wave' });
     await act(async () => { await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); }); });
 
-    expect(document.activeElement).toBe(screen.getByLabelText(TASK_LABEL));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: TEMPLATE_CHIP }));
+    // Stated as the defect, not only as the fix: Close is the element the
+    // fallback would have chosen.
+    expect(document.activeElement).not.toBe(within(dialog).queryByRole('button', { name: /close/i }));
+  });
 
-    // The consequence, stated as behaviour: the space in "Read it" is what used
-    // to close the dialog.
-    await userEvent.keyboard('Read it');
-    expect(screen.getByLabelText<HTMLInputElement>(TASK_LABEL).value).toBe('Read it');
-    expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
+  /*
+   * #1211 S2 — the dialog collects no sentence any more, and Create is not
+   * gated on one. This is the inverse of the assertion it replaces ("keeps
+   * submit disabled while the task is empty"), driven through the shell so it
+   * covers the whole path from the opened dialog to the POST.
+   *
+   * The body is asserted on **key absence**: `title: ''` reaches the same
+   * stored value, so an assertion on the value could not tell "nobody named
+   * this wave" from "this client named it the empty string" — and only the
+   * former leaves `calm.wave.rename` able to name it (#1211 S3).
+   */
+  it('creates with no title field on screen and no title key on the wire', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+    expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
+    expect(screen.queryByPlaceholderText(TASK_PLACEHOLDER)).toBeNull();
+
+    const create = await screen.findByRole('button', { name: 'Create wave' });
+    expect(create.hasAttribute('disabled')).toBe(false);
+    await userEvent.click(create);
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
+    expect(Object.hasOwn(body, 'title')).toBe(false);
+    expect(body).toMatchObject({ cove_id: 'c2' });
   });
 
   it('posts the opener\'s cove_id and omits cwd / attach_folder with no folder chosen', async () => {
@@ -182,11 +211,10 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
        "no folder chosen" looks like, and it is what the absence checks on the
        body below are the consequence of. */
     expect(screen.getByRole('button', { name: FOLDER_PLACEHOLDER }).textContent).toBe(FOLDER_PLACEHOLDER);
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ cove_id: 'c2', title: 'Read it' });
+    expect(body).toMatchObject({ cove_id: 'c2' });
     expect(body).toHaveProperty('theme');
     // The managed-workspace branch is keyed on *absence*, not on a value:
     // `cwd: null` and `attach_folder: false` are both a different kernel path.
@@ -209,7 +237,6 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
 
     await userEvent.click(await screen.findByRole('button', { name: FOLDER_PLACEHOLDER }));
     // The picker pushes into the *same* dialog rather than opening a second
@@ -224,7 +251,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
     expect(body).toMatchObject({
-      cove_id: 'c1', title: 'Read it', cwd: '/srv/app', attach_folder: true,
+      cove_id: 'c1', cwd: '/srv/app', attach_folder: true,
     });
     expect(sent.some((request) => request.path === '/api/fs/listdir')).toBe(true);
     // Attaching a folder is orthogonal to #1209's template choice: staying on
@@ -242,7 +269,6 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
 
@@ -254,7 +280,6 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({
       cove_id: 'c1',
-      title: 'Read it',
       template_id: 'small-change',
       cwd: '/srv/app',
       attach_folder: true,
@@ -273,7 +298,6 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     // The request, its rejection, and the re-render are three ticks the click
     // does not await; the default 1s window is not enough under a loaded suite.
@@ -294,7 +318,6 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Fix the thing');
     /* `findBy`: the picker's trigger is there from the first paint, but the
        option only exists once the template read has landed — so the wait is on
        the option inside the opened menu, not on the trigger. */
@@ -308,7 +331,6 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({
       cove_id: 'c2',
-      title: 'Fix the thing',
       template_id: 'issue-development',
       template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
@@ -323,13 +345,12 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Tiny fix');
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ title: 'Tiny fix', template_id: 'small-change' });
+    expect(body).toMatchObject({ template_id: 'small-change' });
     expect(body).not.toHaveProperty('template_input');
   });
 
@@ -351,9 +372,8 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
        consumed (`useWaveTemplates` turns `isError` into this string), so it is
        what the wait is on. */
     await screen.findByText(/Could not load templates/);
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
-    expect(createdWaveBodies(sent)[0]).toMatchObject({ cove_id: 'c2', title: 'Read it anyway' });
+    expect(createdWaveBodies(sent)[0]).toMatchObject({ cove_id: 'c2' });
   });
 });

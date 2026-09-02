@@ -35,6 +35,7 @@ import { folderConflictMessage } from '../../../../core/domain/cove.ts';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { useConversationRegistry } from '../conversations/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
 import {
   ApiError, folderConflictOf, useCoveMutations, useWaveMutations, useWaveTemplates, useWorkspace,
@@ -117,6 +118,9 @@ const NO_COVE_SELECTED: CoveSelection = Object.freeze({ coveId: null, motion: 'n
 
 export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
+  /* Reachable from here because `ShellRoute` mounts `ConversationProvider`
+     above this component; the create callback is the only thing that uses it. */
+  const conversations = useConversationRegistry();
   const coveMutations = useCoveMutations(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
@@ -202,9 +206,16 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
    * does not pick one. The POST still requires `cove_id` this slice.
    */
   const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
-  // Named explicitly rather than left to the dialog's first-focusable default,
-  // which is the Close button (#1161).
-  const newWaveTitleRef = useRef<HTMLInputElement | null>(null);
+  /*
+   * Named explicitly rather than left to the dialog's first-focusable default,
+   * which is the Close button (#1161).
+   *
+   * It aims at the form's **Start from** trigger. It used to aim at the task
+   * `<input>`, and that field is gone (#1211 S2) — leaving the ref where it
+   * was would have handed the opening focus back to Close, i.e. reintroduced
+   * #1161 by deleting a field rather than by forgetting a prop.
+   */
+  const newWaveStartFromRef = useRef<HTMLButtonElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   /*
@@ -287,7 +298,13 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     setCreateError(null);
     void waveMutations.create({
       cove_id: newWaveCoveId,
-      title: draft.title,
+      /*
+       * No `title`, and not an empty string either (#1211 S2). The kernel's
+       * `#[serde(default)]` branch is what stores the empty title that
+       * `calm.wave.rename` is allowed to fill in; a `title: ''` on the wire
+       * reaches the same stored value today, but it says this client decided
+       * the name — and the whole point is that it did not.
+       */
       theme: readHostThemeRgb(),
       // Spread, not two optional fields: Blank leaves both keys absent, and
       // `template_id: undefined` is not the same request as no `template_id`
@@ -312,6 +329,16 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
     }).then((wave) => {
       setNewWaveCoveId(null);
+      /*
+       * The wave is created unnamed and with nothing said in it (#1211 S2), so
+       * landing on a wave page with a shut drawer would be landing on a blank
+       * page with no visible way to begin. The intent is stated *by wave*
+       * because that is all this callback has: `POST /api/waves` answers with
+       * a `Wave`, and the spec card's id — what `requestOpen` needs — arrives
+       * with the wave detail one route later. `WaveRouteBody` redeems it and
+       * clears it; see `app/conversations`.
+       */
+      conversations.requestSpecOpen(wave.id);
       go({ name: 'wave', waveId: wave.id });
     }).catch((error: unknown) => {
       const conflict = folderConflictOf(error);
@@ -455,10 +482,10 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
         ))}
       </nav>
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
-        initialFocusRef={newWaveTitleRef}>
+        initialFocusRef={newWaveStartFromRef}>
         {newWaveCoveId !== null && (
           <NewWaveForm
-            titleRef={newWaveTitleRef}
+            startFromRef={newWaveStartFromRef}
             submitting={creating}
             error={createError}
             templates={waveTemplates.templates}
