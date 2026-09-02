@@ -3222,6 +3222,64 @@ async fn a_number_shaped_credential_never_reaches_the_wire() {
     }
 }
 
+// ===========================================================================
+// #1194 round 4 — a credential overlapping the redaction marker is refused at
+// the source
+// ===========================================================================
+
+/// One scrub pass never rescans what it wrote, so a credential that shares text
+/// with `<redacted>` can be re-formed out of its own redaction: with
+/// `redacted>y`, the upstream string `redacted>yy` scrubs to `<redacted>y`,
+/// which carries the credential verbatim into `ExposedTool` and the wave
+/// transcript. Round 3 accepted these credentials and recorded the leak as an
+/// open residual; they are refused now.
+///
+/// Driven through the real `spawn` — and therefore the real
+/// `connect_mcp_http` → `HttpCredential::parse` boundary — because the unit
+/// tests in `http_mcp.rs` cannot show that this rule is on the production path
+/// at all. One case per overlap direction.
+#[tokio::test]
+async fn a_credential_overlapping_the_redaction_marker_never_reaches_the_wire() {
+    for (overlapping, direction) in [
+        ("redacted>y", "begins with a suffix of the marker"),
+        ("abcdef-<", "ends with a prefix of the marker"),
+        ("sk-<redacted>-x", "contains the marker"),
+        ("edacted>#", "is a piece of the marker"),
+    ] {
+        let stub = StubServer::start(StubMode::Normal).await;
+        let b = boot().await;
+        let dir = write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+        let secrets = dir.join("secrets.json");
+        std::fs::write(&secrets, json!({ SECRET_NAME: overlapping }).to_string()).unwrap();
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let host = b.host();
+        seed_row(&b, CONNECTOR_ID).await;
+
+        let err = match host.spawn(CONNECTOR_ID).await {
+            Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
+            other => {
+                panic!("{overlapping:?} ({direction}) must not bring a connector up: {other:?}")
+            }
+        };
+        assert!(
+            err.contains("overlaps the marker"),
+            "{overlapping:?} ({direction}): the refusal must say what is wrong: {err}"
+        );
+        // Persisted and broadcast as `PluginState.last_error`: it may quote
+        // neither the credential nor — since some of these ARE pieces of it —
+        // the marker.
+        assert!(!err.contains(overlapping), "{overlapping:?}: {err}");
+        assert!(!err.contains("<redacted>"), "{overlapping:?}: {err}");
+        // Nothing was sent: the client is never constructed.
+        assert!(
+            stub.queries().is_empty(),
+            "{overlapping:?} reached the wire: {:?}",
+            stub.queries()
+        );
+        assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 /// Seed the `plugins` row the install route would have written (FK target for

@@ -106,11 +106,16 @@
 //! from characters — see [`is_number_shaped`].
 //! Constraining the credential removes *that* case: a number-shaped credential
 //! is no longer representable, so the JSON-number hole is closed structurally.
-//! The same move closes a second one: a credential that is a **fragment of the
-//! redaction marker itself** (`redacted`, `edacted>#`, `<redacted>#2`) makes the
-//! rekey pass's fail-closed self-check unsatisfiable — every name it could mint
-//! still contains the credential — which is a runtime-hang, not a leak. That
-//! shape is refused at the same layer; see [`overlaps_redaction_marker`].
+//! The same move closes a second one, and this one is the sharper of the two: a
+//! credential that **shares any text with the redaction marker** can be re-formed
+//! out of its own redaction, because one `str::replace` pass never rescans what
+//! it wrote. `redacted>yy` scrubbed for the credential `redacted>y` yields
+//! `<redacted>y` — a "redacted" string that contains the credential verbatim, on
+//! its way to `ExposedTool` and the wave transcript. There are exactly four ways
+//! a window can overlap the marker, they are derived rather than listed, and all
+//! four are refused at this layer; see [`overlaps_redaction_marker`]. That is
+//! what lets [`scrub_with`] be a single pass and still state idempotence as a
+//! theorem.
 //!
 //! **Nothing above is a completeness claim, and this header must not be read as
 //! one** (#1194 residual 2 — the residual is exactly that this list *reads*
@@ -140,18 +145,24 @@
 //!   short key, a checksum, the credential embedded in an upstream-built URL
 //!   with different escaping than [`percent_encode`] produces.
 //!
-//! One more gap, of a different kind, because it is manufactured HERE rather
-//! than chosen by the upstream: [`str::replace`] does not rescan what it wrote,
-//! so a credential that overlaps the marker's own text can be re-formed by its
-//! own redaction. With the credential `redacted>y`, the upstream string
-//! `redacted>yy` scrubs to `<redacted>y` — which contains the credential again.
-//! [`HttpCredential::parse`] refuses credentials that are *fragments* of the
-//! marker (they hang the rekey pass — see [`overlaps_redaction_marker`]), but it
-//! accepts ones that merely overlap it, so this residual is open. Closing it
-//! means either iterating the scrub to a fixpoint or refusing every credential
-//! that shares an edge with the marker; both are decisions #1194 has not taken,
-//! and neither is worth taking while the real answer is to move the key out of
-//! the URL.
+//! One gap of a different kind — manufactured HERE rather than chosen by the
+//! upstream — used to sit in this list and is now CLOSED, recorded because the
+//! list above must not be read as "everything we know about", and because two
+//! earlier rounds of this file stated its status wrongly. `str::replace` does not
+//! rescan what it wrote, so a credential overlapping the marker's own text was
+//! re-formed by its own redaction (`redacted>y` + upstream `redacted>yy` →
+//! `<redacted>y`). It is closed by refusal at the constructor rather than by
+//! iterating the scrub to a fixpoint: [`overlaps_redaction_marker`] derives the
+//! four ways a window can overlap the marker and refuses all four, and
+//! [`scrub_with`] carries the resulting idempotence proof. It is NOT closed by
+//! anything on the encoding axis, so it does not shrink the list above.
+//!
+//! **A residual that is accepted rather than closed** (#1194 residual 1): two
+//! sibling object keys that scrub to the same marker collapse into one entry.
+//! That is data loss, not disclosure, it needs a pathological upstream to
+//! trigger, and the disambiguating-suffix alternative was implemented and
+//! withdrawn on defects it produced. The reasoning is on the rekey branch in
+//! [`scrub_value`], which is where a reader who hits the behaviour will land.
 //!
 //! **Why the gaps are not closed by adding literals or a smarter matcher.**
 //! Enumeration does not converge (2ⁿ hex spellings, an unbounded set of
@@ -179,7 +190,6 @@
 //! longer a literal member of `secret_forms`, so a later `replace` misses it
 //! entirely and a partial credential ships.
 
-use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -270,9 +280,12 @@ impl HttpCredential {
     ///   not an option (it would rewrite unrelated values and change the
     ///   payload's type); making the credential un-number-like is;
     /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant;
-    /// * **not a fragment of the redaction marker** — see
-    ///   [`overlaps_redaction_marker`]. Such a credential makes the rekey pass
-    ///   in [`scrub_value`] spin forever on a tokio worker thread.
+    /// * **shares no text with the redaction marker** — see
+    ///   [`overlaps_redaction_marker`], which enumerates the four (and only
+    ///   four) ways a credential can be re-formed out of its own redaction.
+    ///   Such a credential leaks: one scrub pass hands back a string that
+    ///   contains it verbatim, and that string is what reaches `ExposedTool`
+    ///   and the wave transcript.
     ///
     /// The error text never quotes the credential — only the single offending
     /// character class — because this string is operator-facing and lands in
@@ -316,17 +329,19 @@ impl HttpCredential {
         }
         if overlaps_redaction_marker(raw) {
             // The marker itself is deliberately NOT spelled in this message:
-            // every credential this rule refuses is a substring of it, so
+            // several credentials this rule refuses are substrings of it, so
             // quoting it would quote the credential — the one thing an
-            // operator-facing string on this path may never do.
-            return Err("is a fragment of the marker string this module rewrites \
-                 credentials to (or of the `#<n>`-suffixed key names derived \
-                 from it): every name the redactor could give a rewritten \
-                 object key would still contain this credential, so the \
-                 fail-closed name search in `scrub_value` could never accept \
-                 one and a single upstream response would spin a runtime worker \
-                 instead of returning. Choose a credential that is not a piece \
-                 of that marker."
+            // operator-facing string on this path may never do. For the same
+            // reason it does not say WHICH of the four overlap cases fired.
+            return Err("overlaps the marker string this module rewrites \
+                 credentials to — it ends where that marker begins, begins \
+                 where it ends, contains it, or is a piece of it. Scrubbing is \
+                 a single left-to-right pass that never rescans what it wrote, \
+                 so an upstream can steer it into re-forming exactly this \
+                 credential out of the marker's own text: the scrubbed string \
+                 would then carry the credential verbatim into tool catalogs \
+                 and wave transcripts. Choose a credential that shares no text \
+                 with that marker."
                 .to_string());
         }
         Ok(Self(raw.to_string()))
@@ -370,28 +385,63 @@ fn is_number_shaped(raw: &str) -> bool {
         || serde_json::from_str::<serde::de::IgnoredAny>(raw).is_ok()
 }
 
-/// Is `raw` a **substring of some name the redactor can mint**?
+/// Can a single [`scrub_with`] pass **re-form `raw` out of its own redaction**?
 ///
-/// The names [`scrub_value`]'s rekey pass can produce are exactly the marker
-/// family
+/// This is the guard that makes one-pass scrubbing sound, and it is derived,
+/// not enumerated. [`str::replace`] never rescans what it wrote, so the output
+/// of one pass is `A₀ · M · A₁ · M · … · Aₙ` — upstream text `Aᵢ` with the
+/// marker `M` = [`REDACTED`] spliced in at the places a form was removed. The
+/// `Aᵢ` are attacker-chosen; `M` is not.
+///
+/// Ask when the credential `raw` can occur in that output. Every occurrence is
+/// a contiguous window `X = raw`. A window lying wholly inside some `Aᵢ` is
+/// impossible for the form that pass replaced — `replace` removed all of them
+/// from exactly that text. So any surviving occurrence **must intersect an
+/// inserted `M`**, and a contiguous window intersecting a contiguous marker
+/// leaves exactly four positional relationships:
+///
+/// 1. `X` starts inside `M` and ends past it ⇒ `X` BEGINS with a nonempty
+///    suffix of `M` — [`head_is_marker_suffix`];
+/// 2. `X` starts before `M` and ends inside it ⇒ `X` ENDS with a nonempty
+///    prefix of `M` — [`tail_is_marker_prefix`];
+/// 3. `X` starts before `M` and ends past it ⇒ `M ⊆ X` — `raw.contains(M)`;
+/// 4. `X` lies wholly inside `M` ⇒ `X ⊆ M` — [`is_marker_family_substring`],
+///    which is the same case widened to the `#<n>`-suffixed family for the
+///    historical reason recorded on it.
+///
+/// The four are exhaustive by construction (the window either contains `M`'s
+/// start, `M`'s end, both, or neither-but-overlapping), so refusing all four at
+/// the constructor is what lets [`scrub_with`] state idempotence as a theorem
+/// rather than a hope. See that function for the corollary.
+///
+/// Each case is upstream-triggerable with one response, and each is a LEAK, not
+/// a hang: with the credential `redacted>y` (case 1) the body `redacted>yy`
+/// scrubs to `<redacted>y`, whose text contains the credential verbatim — and
+/// that string is what reaches `ExposedTool` and the wave transcript. Round 3
+/// of #1194 refused only case 4 and stated cases 1–3 as an open residual; this
+/// is that residual closed.
+fn overlaps_redaction_marker(raw: &str) -> bool {
+    is_marker_family_substring(raw)
+        || tail_is_marker_prefix(raw)
+        || head_is_marker_suffix(raw)
+        || raw.contains(REDACTED)
+}
+
+/// Case 4 — `raw` is a substring of some name in the marker family
 ///
 /// > `M = {REDACTED} ∪ {REDACTED + "#" + <nonempty decimal digits>}`
 ///
-/// and this predicate answers `∃m ∈ M. raw ⊆ m`. Such a credential is a hang,
-/// not a leak, and it is upstream-triggerable with a single response: with the
-/// credential `redacted`, an upstream answering `{"xredactedy": 1}` scrubs that
-/// key to `x<redacted>y`, whose every candidate name (`x<redacted>y`,
-/// `…#2`, `…#3`, …) contains the credential, so the fail-closed self-check
-/// `scrub_with(candidate) == candidate` is unsatisfiable and the loop spins. It
-/// spins on a tokio WORKER (`parse_scrubbed` runs after the `spawn_blocking`
-/// join, not inside it) at 100% of one core and cannot be cancelled — measured
-/// at 9 min 17 s without exiting before the reviewer killed it.
+/// The `#<n>` half is wider than the derivation above needs (only `REDACTED`
+/// itself is ever spliced in today), and it is kept deliberately: those names
+/// were minted by the disambiguating-suffix rekey pass that #1194 round 4
+/// withdrew, and re-introducing that pass — the one thing that would make them
+/// reachable again — must not silently re-open a credential class. Refusing a
+/// handful of extra 8-plus-character strings costs an operator nothing.
 ///
-/// **The decision procedure**, derived rather than enumerated. Write
-/// `P = REDACTED + "#"`. `REDACTED` is a prefix of `P`, so substrings of
-/// `REDACTED` are already substrings of `P` and the first half of `M` needs no
-/// case of its own. `P` contains no digit, so for any `m = P·D` a substring `x`
-/// of `m` is exactly one of:
+/// **The decision procedure.** Write `P = REDACTED + "#"`. `REDACTED` is a
+/// prefix of `P`, so substrings of `REDACTED` are already substrings of `P` and
+/// the first half of the family needs no case of its own. `P` contains no
+/// digit, so for any `m = P·D` a substring `x` of `m` is exactly one of:
 ///
 /// 1. wholly inside `P` — i.e. `P.contains(x)`;
 /// 2. wholly inside `D` — i.e. `x` is all digits, and since `D` ranges over
@@ -406,20 +456,7 @@ fn is_number_shaped(raw: &str) -> bool {
 /// unreachable behind [`is_number_shaped`] (an all-digit credential is refused
 /// as number-shaped first) and is kept only so this function answers the
 /// question its name asks, independently of its caller's ordering.
-///
-/// **What it deliberately does NOT refuse**, and the residual that leaves:
-/// a credential that merely *contains* the marker (`sk-<redacted>-x`) or
-/// *overlaps its edge* (`redacted>y`) is accepted, because it is not a fragment
-/// of any name the redactor mints, so the rekey candidates `…#2`, `…#3` do
-/// eventually clear the self-check. Those credentials still have a sharper
-/// edge of their own: [`str::replace`] does not rescan what it wrote, so
-/// scrubbing `redacted>yy` for the credential `redacted>y` yields
-/// `<redacted>y`, which contains the credential again. That is a residual of
-/// the ONE-PASS scrubber (recorded with the other residuals in the module
-/// header), not of this rule, and it is why nothing downstream may assume
-/// `scrub_with` is idempotent — see the probe budget in [`scrub_value`], which
-/// is what actually bounds the rekey loop.
-fn overlaps_redaction_marker(raw: &str) -> bool {
+fn is_marker_family_substring(raw: &str) -> bool {
     let family = format!("{REDACTED}#");
     let head = raw.trim_end_matches(|c: char| c.is_ascii_digit());
     let digits = &raw[head.len()..];
@@ -430,6 +467,25 @@ fn overlaps_redaction_marker(raw: &str) -> bool {
     } else {
         family.ends_with(head)
     }
+}
+
+/// Case 2 — `raw` ends with a nonempty prefix of [`REDACTED`], so an upstream
+/// can place the rest of `raw` immediately before a splice point and have the
+/// marker's own opening text complete it (`abcde<re` + a redaction starting
+/// `<re…`).
+///
+/// `REDACTED` is ASCII, so byte slicing it at any index is a char boundary.
+fn tail_is_marker_prefix(raw: &str) -> bool {
+    (1..=REDACTED.len()).any(|k| raw.ends_with(&REDACTED[..k]))
+}
+
+/// Case 1 — `raw` begins with a nonempty suffix of [`REDACTED`], so an upstream
+/// can place the rest of `raw` immediately after a splice point and have the
+/// marker's own closing text start it (`>y-abcdef` after a redaction ending
+/// `…>`). This is the case that admitted `redacted>y`, the credential round 3
+/// accepted and round 4 measured a real leak from.
+fn head_is_marker_suffix(raw: &str) -> bool {
+    (1..=REDACTED.len()).any(|k| raw.starts_with(&REDACTED[REDACTED.len() - k..]))
 }
 
 /// Redacting, so a credential cannot reach a log line through a `{:?}` on a
@@ -866,15 +922,7 @@ fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, R
             format!("mcp-http {method}: malformed JSON: {e}"),
         ))
     })?;
-    // Fail-closed on the one shape the rekey pass cannot name: hand back an
-    // error instead of a document, never an unredacted or a lossy one. The
-    // message names no key and quotes no upstream text.
-    scrub_value(forms, &mut parsed).map_err(|RekeyBudgetExhausted| {
-        RpcError::internal(format!(
-            "mcp-http {method}: response could not be redacted — an object's keys \
-             exhausted the rekey probe budget"
-        ))
-    })?;
+    scrub_value(forms, &mut parsed);
     Ok(parsed)
 }
 
@@ -886,15 +934,12 @@ fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, R
 /// properties are object keys that reach `ExposedTool` and, from there, the
 /// agent-visible tool catalog.
 ///
-/// Rekeying is entry-count preserving: keys that collide after redaction are
-/// disambiguated rather than merged. See the comment on the rekey branch for
-/// why that is not cosmetic.
-///
-/// Returns [`RekeyBudgetExhausted`] instead of looping forever when no name can
-/// be found for a rewritten key — see the budget on the rekey branch.
-fn scrub_value(forms: &[String], v: &mut Value) -> Result<(), RekeyBudgetExhausted> {
+/// Rekeying is NOT entry-count preserving, deliberately — see the comment on
+/// the rekey branch for the accepted behaviour and why the alternative was
+/// withdrawn.
+fn scrub_value(forms: &[String], v: &mut Value) {
     if forms.is_empty() {
-        return Ok(());
+        return;
     }
     match v {
         // `scrub_with` already skips the allocation when nothing matches, so
@@ -904,7 +949,7 @@ fn scrub_value(forms: &[String], v: &mut Value) -> Result<(), RekeyBudgetExhaust
         Value::String(s) => *s = scrub_with(forms, std::mem::take(s)),
         Value::Array(items) => {
             for item in items {
-                scrub_value(forms, item)?;
+                scrub_value(forms, item);
             }
         }
         Value::Object(map) => {
@@ -916,131 +961,71 @@ fn scrub_value(forms: &[String], v: &mut Value) -> Result<(), RekeyBudgetExhaust
                 .keys()
                 .any(|k| forms.iter().any(|f| k.contains(f.as_str())));
             if rekey {
-                // #1194 residual 1 — this used to `collect()` straight back
-                // into a `Map`, which SILENTLY DROPS entries: two distinct keys
-                // that both scrub to `<redacted>` collapse to one, and the
-                // surviving value is whichever came last. That is data loss on
-                // a path whose entire job is to hand the caller a faithful
-                // document minus the credential — and it is reachable without
-                // anything exotic, because an upstream that echoes our query
-                // string may well report the raw and the percent-encoded form
-                // as sibling keys, both of which are scrub patterns
-                // (`HttpMcpClient::new` registers the raw and the
-                // percent-encoded spelling).
+                // #1194 residual 1, and the accepted behaviour is the LOSSY
+                // one: two sibling keys that scrub to the same marker collapse
+                // into a single entry, and the surviving value is whichever the
+                // `collect()` below inserts last (`BTreeMap` order — the
+                // `preserve_order` feature is off).
                 //
-                // A collision therefore gets a disambiguating suffix
-                // (`<redacted>`, `<redacted>#2`, …) instead of disappearing.
-                // The reader still learns nothing about the credential — every
-                // colliding key rendered to the same marker by construction —
-                // but the entry count, and every value hanging off it, survive.
+                // **What that costs, precisely.** It is DATA LOSS, not a leak:
+                // every colliding key rendered to the same marker by
+                // construction, so the reader learns nothing about the
+                // credential from the collapse, and no value is disclosed that
+                // redaction was supposed to hide. What is lost is one entry of
+                // an upstream document.
                 //
-                // THREE properties the naive spelling of that got wrong:
+                // **What it takes to trigger.** The upstream must echo the SAME
+                // credential back in two different spellings AS SIBLING KEYS of
+                // one object — e.g. the raw form and the percent-encoded form
+                // this client puts on the wire, the only two literals
+                // `HttpMcpClient::new` registers. A server that answers a
+                // `tools/list` by reflecting our query string into its own
+                // schema keys, twice, in two encodings, is already pathological;
+                // #1194 says so in as many words and offers "a comment or a
+                // dedupe suffix" as alternative acceptance criteria. This is the
+                // comment.
                 //
-                // 1. **Untouched keys keep their names** (#1194 B4). A key the
-                //    scrubber did not change is upstream data — a real schema
-                //    property, possibly literally `<redacted>` — and renaming it
-                //    corrupts a document that never carried the credential. The
-                //    old single pass processed keys in `BTreeMap` order, so a
-                //    credential key sorting before a genuine `<redacted>` key
-                //    took that name and pushed the innocent one to
-                //    `<redacted>#2`. Pass 1 below reserves every unchanged key
-                //    first; pass 2 only ever picks a name that is still free.
-                // 2. **A generated name can never spell the credential**
-                //    (#1194 B1). `<redacted>#2` is itself a LEGAL credential
-                //    (printable ASCII, 12 chars, not number-shaped), so an
-                //    operator with that key would have this code MINT the secret
-                //    — after redaction, straight into `ExposedTool` and the wave
-                //    transcript. The candidate is therefore re-scrubbed and
-                //    rejected unless it survives unchanged: fail-closed on the
-                //    scrubber's own verdict, not on a "does it look like a
-                //    marker" heuristic.
-                // 3. **Assignment is linear, not quadratic** (#1194 B3).
-                //    Restarting the suffix search at 2 for every key makes a
-                //    document whose keys all redact to one base cost O(n²)
-                //    probes — measured at 59 s for a 2.4 MiB body of 19 683
-                //    such keys, from a stateless upstream we do not trust. One
-                //    monotone counter PER BASE makes the total probe count
-                //    linear in the entry count.
+                // **Why not the dedupe suffix.** It was implemented on this
+                // branch and withdrawn, on defects the implementation actually
+                // produced rather than imagined ones:
                 //
-                // Assignment is deterministic and independent of how the
-                // document was built: `serde_json::Map` is a `BTreeMap` here
-                // (the `preserve_order` feature is off), so `into_iter` yields
-                // keys in sorted order and the same key set always produces the
-                // same suffixes.
+                // * a minted name can BE the credential. `<redacted>#2` passes
+                //   every rule in `HttpCredential::parse` as it stood, so an
+                //   operator holding that key would have the redactor emit the
+                //   secret verbatim — after redaction — into `ExposedTool` and
+                //   the wave transcript. Turning "data loss" into a leak is a
+                //   strictly worse trade than the loss;
+                // * guarding that by re-scrubbing each candidate name and
+                //   accepting only a fixpoint does not terminate. The scrubber
+                //   was not idempotent for credentials overlapping the marker's
+                //   own text, so every candidate for a base could fail the
+                //   self-check forever — measured at 9 min 17 s of 100% CPU on
+                //   a tokio worker, uncancellable, from ONE upstream response;
+                // * bounding that by a probe budget then made a redaction pass
+                //   able to refuse a whole healthy response, on arithmetic that
+                //   itself needed a proof.
+                //
+                // The marker-overlap guard in `HttpCredential::parse` has since
+                // made `scrub_with` idempotent for every credential this client
+                // can hold, so the second bullet no longer bites — but the first
+                // one is untouched by that, and the whole apparatus buys back
+                // one entry of a pathological document. Both directions of this
+                // trade have been paid for once; do not re-open it without a
+                // real upstream that needs the entry.
                 let taken = std::mem::take(map);
-                let taken_len = taken.len();
-                let mut rebuilt = serde_json::Map::with_capacity(taken_len);
-                let mut redacted: Vec<(String, Value)> = Vec::new();
-                // Pass 1 — reserve the names that are upstream's own.
-                for (k, v) in taken {
-                    let scrubbed = scrub_with(forms, k.clone());
-                    if scrubbed == k {
-                        rebuilt.insert(k, v);
-                    } else {
-                        redacted.push((scrubbed, v));
-                    }
-                }
-                // Pass 2 — name the redacted ones around what pass 1 reserved.
-                //
-                // `next[base]` is how many names this base has already been
-                // given, so probing never revisits a taken suffix. `u64` cannot
-                // overflow here by a wide margin: the counter is bounded by the
-                // entry count plus the handful of skips rules (1) and (2) can
-                // force, and the entry count is bounded by `MAX_BODY_BYTES`
-                // (4 MiB) over the two bytes a `{}` -delimited entry needs.
-                //
-                // **TERMINATION** is by budget, not by faith (#1194 round-3).
-                // The self-check in rule (2) is a fail-closed test on a
-                // scrubber that is NOT idempotent — `str::replace` does not
-                // rescan what it wrote, so for a credential that overlaps the
-                // marker's text (`redacted>y`) every candidate a base can
-                // produce may fail the check forever. `redacted>yy` as an
-                // upstream key is enough. Each iteration of the loop below
-                // either breaks or consumes one probe from a finite budget, so
-                // it runs at most `probes` times; exhausting the budget aborts
-                // the whole response rather than spinning a tokio worker (the
-                // shape a reviewer measured at 9 min 17 s, 99.6% CPU, on the
-                // strictly worse credentials that `overlaps_redaction_marker`
-                // now refuses outright).
-                //
-                // The budget cannot fire on a healthy document, and that is
-                // arithmetic rather than a hope: for one map, a probe is
-                // skipped only because the candidate name is already in
-                // `rebuilt` or because it failed the self-check. Skips of the
-                // first kind are at most `taken.len()` in total, because the
-                // per-base counter is monotone, so each skip burns a DISTINCT
-                // candidate name, and every name in `rebuilt` can block at most
-                // one of them. Each of the `redacted.len()` keys additionally
-                // spends the one probe it succeeds on. So absent self-check
-                // failures the total is at most `2 × taken.len()`, and the
-                // budget is that plus a margin.
-                let mut probes: u64 = 2 * (taken_len as u64) + 2;
-                let mut next: HashMap<String, u64> = HashMap::new();
-                for (base, v) in redacted {
-                    let counter = next.entry(base.clone()).or_insert(0);
-                    let name = loop {
-                        if probes == 0 {
-                            return Err(RekeyBudgetExhausted);
-                        }
-                        probes -= 1;
-                        let candidate = if *counter == 0 {
-                            base.clone()
-                        } else {
-                            format!("{base}#{}", *counter + 1)
-                        };
-                        *counter += 1;
-                        if !rebuilt.contains_key(&candidate)
-                            && scrub_with(forms, candidate.clone()) == candidate
-                        {
-                            break candidate;
-                        }
-                    };
-                    rebuilt.insert(name, v);
-                }
-                *map = rebuilt;
+                *map = taken
+                    .into_iter()
+                    .map(|(k, v)| (scrub_with(forms, k), v))
+                    .collect();
             }
+            // Children are walked whether or not this map was rekeyed. Moving
+            // this into an `else` is a LEAK, not a refactor:
+            // `{"<credential>": "see key <credential> in the docs"}` would come
+            // back with the key redacted and the value verbatim. It survived a
+            // 139-case suite once; `a_rekeyed_object_still_scrubs_its_children`
+            // is what kills it now.
             for (_, child) in map.iter_mut() {
-                scrub_value(forms, child)?;
+                scrub_value(forms, child);
             }
         }
         // Numbers, booleans and null carry no string to redact. A number-shaped
@@ -1049,14 +1034,7 @@ fn scrub_value(forms: &[String], v: &mut Value) -> Result<(), RekeyBudgetExhaust
         // serde_json's scanner accepts as a bare literal (`is_number_shaped`).
         _ => {}
     }
-    Ok(())
 }
-
-/// The rekey pass ran out of probes for one object's keys — see the budget in
-/// [`scrub_value`]. Carries nothing: there is no detail here that is safe to
-/// print, and the caller turns it into a fixed operator-facing sentence.
-#[derive(Debug, PartialEq, Eq)]
-struct RekeyBudgetExhausted;
 
 /// Trips its flag when dropped. See the comment at its construction site in
 /// [`HttpMcpClient::request`].
@@ -1085,23 +1063,50 @@ const REDACTED: &str = "<redacted>";
 /// event, and the HTTP error body. The `debug_assert` keeps the invariant honest
 /// if a future caller builds `secret_forms` some other way.
 ///
-/// **This is one pass per pattern, and it is NOT idempotent.** `str::replace`
-/// scans left to right and never rescans what it wrote, so a substitution CAN
-/// manufacture a match the same pass has already walked past: with the
-/// credential `redacted>y`, `"hit redacted>yy end"` comes back as
-/// `"hit <redacted>y end"` — the credential, re-formed out of the marker's own
-/// text. An earlier revision of this comment claimed the opposite ("substitution
-/// does not manufacture a new match for a later form"); it was disproved by
-/// review with `"hit redacted%3E end"` for the credential `redacted>`, which
-/// yields `"hit <<redacted> end"`.
+/// **This is one pass per pattern, and one pass is enough — but only because
+/// the constructor makes it enough.** `str::replace` scans left to right and
+/// never rescans what it wrote, so a substitution CAN in principle manufacture
+/// a match the pass has already walked past: with the credential `redacted>y`,
+/// `"hit redacted>yy end"` comes back as `"hit <redacted>y end"` — the
+/// credential, re-formed out of the marker's own text. Two successive revisions
+/// of this comment got the resulting property wrong in opposite directions
+/// (round 2 claimed "substitution does not manufacture a new match", disproved
+/// with `"hit redacted%3E end"` for the credential `redacted>`; round 3 then
+/// declared the class simply open). Round 4 closed it at the constructor, so
+/// the property is restated here from scratch rather than inherited:
 ///
-/// [`HttpCredential::parse`] closes the sharpest corner of that class — a
-/// credential that is a FRAGMENT of the marker, which additionally made the
-/// rekey pass unable to name a key at all — but the overlapping shapes above
-/// stay open (see [`overlaps_redaction_marker`] and the module header). So no
-/// caller may assume `scrub_with(scrub_with(x)) == scrub_with(x)`: the one place
-/// that needs a fixpoint asks for it explicitly and is budgeted for the answer
-/// never arriving ([`scrub_value`]'s pass 2).
+/// > **For every form list [`HttpMcpClient::new`] can build, the output of one
+/// > `scrub_with` pass contains no registered form.** Hence
+/// > `scrub_with(f, scrub_with(f, x)) == scrub_with(f, x)`.
+///
+/// Proof, by induction over the forms in order. After the pass for form `Fₖ`,
+/// the string is carried-over text with the marker `M` spliced in. No
+/// occurrence of `Fₖ` can lie wholly inside carried text — `replace`'s scan is
+/// exhaustive left to right, so a full occurrence at a position it did not
+/// consume is a contradiction — therefore any surviving occurrence intersects
+/// an inserted `M`, which forces one of the four relationships enumerated on
+/// [`overlaps_redaction_marker`], all four of which
+/// [`HttpCredential::parse`] refuses. Earlier forms `F₁…Fₖ₋₁` were already
+/// absent from this pass's input by the induction hypothesis, and a substring of
+/// a string that lacks `Fᵢ` still lacks it, so the only new occurrences they
+/// could gain are ones intersecting the `M`s this pass inserted — refused by the
+/// same four cases.
+///
+/// The second registered form is the percent-encoding, which
+/// [`HttpCredential::parse`] never sees; it needs no rule of its own. Either it
+/// equals the raw credential (no reserved characters — and then the dedupe in
+/// `new` collapses the two), or it contains a `%` triplet, and in every case
+/// [`percent_encode`] emits `<` and `>` as `%3C`/`%3E`. A form with no `<` and
+/// no `>` cannot begin with a suffix of `<redacted>` (all of which end in `>`),
+/// cannot end with a prefix of it (all of which begin with `<`), and cannot
+/// contain it; the one marker-family substring free of both characters is
+/// `redacted`-shaped text, which the encoding of a credential can only be if the
+/// credential already is that text — refused.
+///
+/// The scope of the theorem is exactly "form lists `new` builds". This is a free
+/// function taking an arbitrary `&[String]`, and tests pass hand-built lists
+/// that do NOT satisfy the precondition; for those, idempotence is not claimed
+/// and nothing in production depends on it.
 fn scrub_with(forms: &[String], s: String) -> String {
     let mut out = s;
     for form in forms {
@@ -1222,13 +1227,6 @@ mod tests {
     /// with a hand-picked credential rather than through `HttpMcpClient::new`.
     fn exact_forms(keys: &[&str]) -> Vec<String> {
         keys.iter().map(|k| (*k).to_string()).collect()
-    }
-
-    /// `scrub_value` on a tree that is known not to exercise the rekey budget,
-    /// so the vast majority of cases below read as they did before that branch
-    /// could fail.
-    fn scrub_tree(forms: &[String], v: &mut Value) {
-        scrub_value(forms, v).expect("fixture must not exhaust the rekey budget");
     }
 
     /// Shorthand for a credential the HTTP path will accept.
@@ -1718,19 +1716,23 @@ mod tests {
         assert_eq!(props.get("safe"), Some(&serde_json::json!(2)));
     }
 
-    /// #1194 residual 1 — two DIFFERENT keys that redact to the same marker
-    /// must not collapse into one entry.
+    /// #1194 residual 1 — the ACCEPTED behaviour, pinned so it cannot drift
+    /// silently in either direction.
     ///
-    /// Drives `scrub_value` directly rather than restating what it does: build
-    /// an object whose keys are the raw and the percent-encoded form of the
-    /// same credential (exactly what an upstream echoing our query string back
-    /// alongside its decoded parse produces), then assert on the entry COUNT
-    /// and on both values being reachable. The old `collect()` kept whichever
-    /// came last and dropped the other — a green "the key is redacted"
-    /// assertion would have passed over it, which is why the count is the
-    /// load-bearing line here.
+    /// Two sibling keys that scrub to the same marker collapse into ONE entry.
+    /// The issue offers "a comment or a dedupe suffix" as acceptance criteria;
+    /// round 4 took the comment — it is on the rekey branch in `scrub_value`,
+    /// with the defects the suffix machine actually produced — and this test is
+    /// what keeps that comment describing the code.
+    ///
+    /// The load-bearing assertions are the SECURITY ones: no surviving key
+    /// holds either credential form, and a key that never held it is untouched.
+    /// The collapse itself is data loss, not disclosure. The entry count is
+    /// asserted exactly rather than as `<= 3` on purpose: if disambiguation is
+    /// ever reintroduced, this must go red and be re-read, not pass silently
+    /// under a changed contract.
     #[test]
-    fn two_keys_redacting_to_the_same_marker_do_not_collapse() {
+    fn two_keys_redacting_to_the_same_marker_collapse_into_one_entry() {
         let key = "sk-a/b+c-8213";
         let encoded = percent_encode(key);
         assert_ne!(encoded, key, "fixture needs two distinct literals");
@@ -1743,171 +1745,31 @@ mod tests {
         let mut v = Value::Object(obj);
         assert_eq!(v.as_object().unwrap().len(), 3, "fixture must start with 3");
 
-        scrub_tree(&forms, &mut v);
+        scrub_value(&forms, &mut v);
         let obj = v.as_object().unwrap();
 
-        assert_eq!(obj.len(), 3, "an entry was silently dropped: {v}");
-        assert_eq!(obj.get("safe"), Some(&serde_json::json!(3)));
-        // Neither credential form survives in any key…
+        // Neither credential form survives in any key — the property the pass
+        // exists for, and the one the collapse does not touch.
         for k in obj.keys() {
             assert!(!k.contains(key), "raw key survived: {v}");
             assert!(!k.contains(&encoded), "encoded key survived: {v}");
         }
-        // …and both values are still reachable, under distinguishable markers.
-        let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
-        values.sort_unstable();
-        assert_eq!(values, vec![1, 2, 3], "a value was lost: {v}");
-        // ⚠️ DO NOT relax the next two lines into a set assertion. They are not
-        // only about this document: WHICH key gets the bare marker and which
-        // gets `#2` is decided by `BTreeMap` iteration order, and `%` (0x25)
-        // sorts before `/` (0x2F), so the ENCODED key is processed first. That
-        // holds only while `serde_json`'s `preserve_order` feature is off — the
-        // assumption the rekey branch's determinism comment states and that
-        // nothing else in this crate checks. Turn the feature on (directly or
-        // through a dependency unifying features) and insertion order takes
-        // over, these two lines swap, and this test is the sentinel that says
-        // so. A set assertion would pass silently and delete that signal.
-        assert_eq!(obj.get("<redacted>"), Some(&serde_json::json!(2)));
-        assert_eq!(obj.get("<redacted>#2"), Some(&serde_json::json!(1)));
-    }
-
-    /// The suffix must step over a marker the upstream itself already used,
-    /// otherwise the collision handling reintroduces the very drop it exists to
-    /// prevent — one level along.
-    #[test]
-    fn a_preexisting_marker_key_does_not_get_overwritten() {
-        let key = "sk-collide-8213";
-        let forms = exact_forms(&[key]);
-        let mut obj = serde_json::Map::new();
-        obj.insert(key.to_string(), serde_json::json!(1));
-        obj.insert("<redacted>".to_string(), serde_json::json!(2));
-        obj.insert("<redacted>#2".to_string(), serde_json::json!(3));
-        let mut v = Value::Object(obj);
-        scrub_tree(&forms, &mut v);
-        let obj = v.as_object().unwrap();
-        assert_eq!(obj.len(), 3, "an entry was dropped: {v}");
-        let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
-        values.sort_unstable();
-        assert_eq!(values, vec![1, 2, 3], "a value was lost: {v}");
-    }
-
-    /// #1194 B4 — a key the scrubber did NOT touch is upstream data, and its
-    /// name is not ours to change.
-    ///
-    /// The old single pass walked the map in `BTreeMap` order and let whoever
-    /// came first take `<redacted>`. When the credential key sorted before a
-    /// genuine `<redacted>` property, the credential took the name and the
-    /// innocent schema property was renamed to `<redacted>#2` — a rewrite of a
-    /// document that has nothing to do with the credential, landing in
-    /// `inputSchema.properties` and therefore in the agent-visible catalog.
-    ///
-    /// Both sort orders are covered because the defect is order-dependent:
-    /// with the credential sorting AFTER, the old code happened to be right,
-    /// so a single-order test would have passed over it.
-    #[test]
-    fn an_untouched_upstream_key_keeps_its_own_name_in_either_sort_order() {
-        // `-` (0x2D) sorts before `<` (0x3C); `s` (0x73) sorts after it.
-        for (key, where_) in [
-            (
-                "-abc-defg",
-                "credential key sorts BEFORE the innocent marker key",
-            ),
-            ("sk-abc-defg", "credential key sorts AFTER it"),
-        ] {
-            let forms = exact_forms(&[key]);
-            assert!(
-                HttpCredential::parse(key).is_ok(),
-                "{where_}: fixture must be a real credential"
-            );
-            let mut obj = serde_json::Map::new();
-            obj.insert(
-                key.to_string(),
-                serde_json::json!("from the credential key"),
-            );
-            obj.insert(
-                "<redacted>".to_string(),
-                serde_json::json!("upstream's own"),
-            );
-            obj.insert("safe".to_string(), serde_json::json!(3));
-            let mut v = Value::Object(obj);
-            scrub_tree(&forms, &mut v);
-            let obj = v.as_object().unwrap();
-
-            assert_eq!(obj.len(), 3, "{where_}: an entry was dropped: {v}");
-            // THE assertion: the innocent key kept BOTH its name and its value.
-            assert_eq!(
-                obj.get("<redacted>"),
-                Some(&serde_json::json!("upstream's own")),
-                "{where_}: a key that never held the credential was renamed \
-                 and/or had its value swapped: {v}"
-            );
-            assert_eq!(
-                obj.get("safe"),
-                Some(&serde_json::json!(3)),
-                "{where_}: {v}"
-            );
-            // …and the redacted one went somewhere else, without vanishing.
-            assert_eq!(
-                obj.get("<redacted>#2"),
-                Some(&serde_json::json!("from the credential key")),
-                "{where_}: {v}"
-            );
-        }
-    }
-
-    /// #1194 B1 — the disambiguating suffix must not be able to RE-MINT the
-    /// credential.
-    ///
-    /// `<redacted>#2` passes every rule in [`HttpCredential::parse`]: printable
-    /// ASCII, no quote/backslash/space, twelve characters, not number-shaped. An
-    /// operator may legitimately hold it. The suffix is appended AFTER the key
-    /// has been scrubbed, so a naive counter hands `<redacted>#2` — the
-    /// credential, verbatim — to `ExposedTool` and the wave transcript, on the
-    /// success path, with the redaction machinery reporting success.
-    ///
-    /// The fix is fail-closed on the scrubber's own verdict: a candidate name is
-    /// accepted only if re-scrubbing leaves it unchanged.
-    ///
-    /// **Round 3 moved the belt and left this as the braces.**
-    /// `HttpCredential::parse` now REFUSES `<redacted>#2` outright
-    /// ([`overlaps_redaction_marker`]) — that shape does not merely re-mint the
-    /// credential, it makes the name search unsatisfiable and hangs a runtime
-    /// worker. So this case can no longer be built through
-    /// `HttpMcpClient::new`, and the first assertion below pins that. The
-    /// self-check itself stays and is still exercised here on a hand-built form
-    /// list, because it is what keeps a minted name honest for *any* pattern set
-    /// a future caller assembles, not only the two `new` registers.
-    #[test]
-    fn a_disambiguating_suffix_can_never_spell_a_registered_pattern() {
-        // The belt: this credential is refused before a client exists.
-        assert!(
-            HttpCredential::parse("<redacted>#2").is_err(),
-            "a marker fragment must not be registrable as a credential"
+        assert_eq!(
+            obj.get("safe"),
+            Some(&serde_json::json!(3)),
+            "a key that never held the credential must be untouched: {v}"
         );
-
-        // The braces, on a form list production can no longer produce: two
-        // distinct keys collapse to the same base, and the obvious second name
-        // for it is itself a registered pattern.
-        let forms = exact_forms(&["k1secret", "k2secret", "<redacted>#2"]);
-        let mut obj = serde_json::Map::new();
-        obj.insert("k1secret".to_string(), serde_json::json!(1));
-        obj.insert("k2secret".to_string(), serde_json::json!(2));
-        let mut v = Value::Object(obj);
-        scrub_tree(&forms, &mut v);
-
-        let obj = v.as_object().unwrap();
-        assert_eq!(obj.len(), 2, "an entry was dropped: {v}");
-        let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
-        values.sort_unstable();
-        assert_eq!(values, vec![1, 2], "a value was lost: {v}");
-        // Stated positively so the test cannot pass by refusing to name
-        // anything: it stepped OVER `#2` and landed on `#3`.
+        // The accepted loss: three entries in, two out, one of the two
+        // credential-keyed values gone. WHICH one survives is `BTreeMap`
+        // ordering and is deliberately not asserted — it is not a property this
+        // module promises anybody.
+        assert_eq!(
+            obj.len(),
+            2,
+            "residual 1 says these two collapse; if they no longer do, the \
+             rekey branch's comment is stale: {v}"
+        );
         assert!(obj.contains_key("<redacted>"), "{v}");
-        assert!(
-            obj.contains_key("<redacted>#3"),
-            "the suffix search handed out a name that is itself a scrub \
-             pattern: {v}"
-        );
     }
 
     /// #1194 channel-A A1 — an object whose KEY was rekeyed must still have its
@@ -2084,108 +1946,44 @@ mod tests {
         assert!(untouched.to_string().contains(key));
     }
 
-    /// #1194 B3 measurement harness — NOT a gate (it is `#[ignore]`d because it
-    /// allocates a multi-MiB document and is only meaningful in `--release`).
+    /// #1194 round 4 — a credential that OVERLAPS the redaction marker is
+    /// refused, in each of the four ways a window can overlap it.
     ///
-    /// Run with:
-    /// `cargo test --release -p calm-server --lib -- --ignored --nocapture
-    ///  plugin_host::http_mcp::tests::collision_suffix_assignment_scales`
+    /// Every refused value is a LEAK, not a style rule: one scrub pass hands
+    /// back a string that contains the credential verbatim, and that string is
+    /// what reaches `ExposedTool` and the wave transcript. Round 3 refused only
+    /// the substring case (on a different argument — it hung the withdrawn rekey
+    /// pass) and recorded the rest as an open residual, with `redacted>y` +
+    /// upstream `redacted>yy` as the witness. Two entries below are round 3's
+    /// verdicts inverted: `sk-<redacted>-x` and `<redacted>#2x` were ACCEPTED
+    /// then and are refused now, because they contain the marker outright.
     ///
-    /// The adversarial construction is the one the review channel proposed:
-    /// concatenate segments, each independently spelled as one of the registered
-    /// literals, so every key is DISTINCT on the wire yet redacts to the same
-    /// base. That is what makes a "probe from 2 every time" loop quadratic — a
-    /// construction where each base has only O(1) pre-images cannot show it,
-    /// which is why the two review channels reached opposite verdicts on the
-    /// same code.
-    ///
-    /// **The numbers below were measured under the round-2 registration**, which
-    /// recognised THREE spellings, over 3⁹ = 19 683 keys / 2 480 058 key bytes,
-    /// `--release`, on this box:
-    ///
-    /// | `scrub_value` | wall     |
-    /// |---------------|----------|
-    /// | probe-from-2  | 58.976 s |
-    /// | per-base counter | 29.4 ms |
-    ///
-    /// Round 3 reverted that registration to two literals, so the construction
-    /// below now uses two spellings over 2¹⁴ = 16 384 keys. The asymptotics are
-    /// what the table is about and they are unchanged; the wall times have NOT
-    /// been re-measured for the two-spelling shape — re-run the command above if
-    /// you need current figures.
+    /// Every case clears `MIN_CREDENTIAL_LEN` and every other rule, so a refusal
+    /// here can only be the marker rule — which is asserted, not assumed.
     #[test]
-    #[ignore = "measurement harness; multi-MiB fixture, --release only"]
-    fn collision_suffix_assignment_scales() {
-        let key = "sk-a/b+c=d";
-        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
-            "url": "https://mcp.example.com/mcp",
-            "api_key_secret": "K",
-            "api_key_in": "query:api_key",
-        }))
-        .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
-        // The alphabet is stated HERE rather than read out of `secret_forms`,
-        // so a change to what gets registered cannot silently change what this
-        // measures.
-        let spellings = [key.to_string(), percent_encode(key)];
-
-        let mut obj = serde_json::Map::new();
-        let segments = 14usize;
-        let total = spellings.len().pow(segments as u32);
-        for i in 0..total {
-            let mut k = String::new();
-            let mut n = i;
-            for _ in 0..segments {
-                k.push_str(&spellings[n % spellings.len()]);
-                n /= spellings.len();
-            }
-            obj.insert(k, serde_json::json!(1));
-        }
-        let n = obj.len();
-        let bytes: usize = obj.keys().map(String::len).sum();
-        let mut v = Value::Object(obj);
-        let t0 = std::time::Instant::now();
-        scrub_tree(&client.secret_forms, &mut v);
-        let elapsed = t0.elapsed();
-        eprintln!(
-            "B3: spellings={} keys={n} key_bytes={bytes} scrub_value={:?}",
-            spellings.len(),
-            elapsed
-        );
-        assert_eq!(v.as_object().unwrap().len(), n, "entries were dropped");
-    }
-
-    /// #1194 round 3 — a credential that is a FRAGMENT of the redaction marker
-    /// is refused, in both directions of the rule.
-    ///
-    /// The refused column is the hang class: every name the rekey pass could
-    /// mint for a key containing such a credential still contains it, so the
-    /// fail-closed self-check is unsatisfiable. Both review channels reproduced
-    /// it independently (`redacted` with `{"xredactedy":1}`; `edacted>#` with a
-    /// sibling `<redacted>` key), each time as an unkillable 100%-CPU tokio
-    /// worker.
-    ///
-    /// The accepted column is why the rule is stated as SUBSTRING-OF-THE-MARKER
-    /// and not "contains any of its characters": `sk-<redacted>-x` contains the
-    /// marker outright and `redactedX` shares a long prefix with it, yet neither
-    /// is a piece of a name the redactor mints, so `#2`/`#3` do clear the
-    /// self-check and the loop ends. Those credentials carry a residual of their
-    /// own — one-pass `str::replace` can re-form them out of the marker's text —
-    /// which is documented on [`overlaps_redaction_marker`] and bounded by the
-    /// rekey probe budget, not by this rule.
-    #[test]
-    fn a_credential_that_is_a_fragment_of_the_marker_is_refused() {
-        // Every case is ≥ MIN_CREDENTIAL_LEN and passes every other rule, so a
-        // refusal here can only be this one.
+    fn a_credential_that_overlaps_the_marker_is_refused() {
         let refused = [
-            ("redacted", "the marker's body — channel A's repro"),
+            // Case 4 — the credential is a piece of the marker family.
+            ("redacted", "the marker's body"),
             ("<redacte", "a prefix of the marker"),
             ("edacted>", "a suffix of the marker"),
             ("<redacted>", "the marker itself"),
             ("redacted>", "an interior slice reaching the end"),
             ("edacted>#", "reaching into the `#` of a suffixed name"),
-            ("<redacted>#2", "a whole suffixed name — the B1 credential"),
+            ("<redacted>#2", "a whole suffixed name"),
             ("acted>#12", "straddling the `#` into a two-digit suffix"),
+            // Case 1 — the credential BEGINS with a suffix of the marker, so an
+            // upstream supplies its tail immediately after a splice point.
+            ("redacted>y", "round 3's accepted leak, reproduced below"),
+            (">y-abcdef", "one marker character is enough"),
+            ("d>abcdefg", "two"),
+            // Case 2 — the credential ENDS with a prefix of the marker, so an
+            // upstream supplies its head immediately before a splice point.
+            ("abcdef-<", "one marker character is enough"),
+            ("abcde<re", "three"),
+            // Case 3 — the credential contains the whole marker.
+            ("sk-<redacted>-x", "round 3 accepted this one"),
+            ("<redacted>#2x", "and this one"),
         ];
         let mut wrong: Vec<String> = Vec::new();
         for (bad, why) in refused {
@@ -2196,151 +1994,183 @@ mod tests {
             );
             match HttpCredential::parse(bad) {
                 Ok(_) => wrong.push(format!("{bad:?} ({why}): ACCEPTED")),
-                Err(e) if !e.contains("fragment of the marker") => {
+                Err(e) if !e.contains("overlaps the marker") => {
                     wrong.push(format!("{bad:?} ({why}): refused by another rule: {e}"));
                 }
                 Err(e) => {
-                    // Operator-facing, and every one of these values is a
-                    // substring of the marker — so the message must not spell
-                    // the marker either.
+                    // Operator-facing. Several of these values are substrings of
+                    // the marker, so the message may quote neither them nor it.
                     assert!(!e.contains(bad), "{why}: the refusal quotes it: {e}");
+                    assert!(
+                        !e.contains(REDACTED),
+                        "{why}: the refusal spells the marker, which for the \
+                         substring cases is quoting the credential: {e}"
+                    );
                 }
             }
         }
         assert!(
             wrong.is_empty(),
-            "these marker fragments are still registrable, so one upstream \
-             response can hang a runtime worker:\n  {}",
+            "these credentials overlap the marker and are still registrable, so \
+             one upstream response can re-form them out of their own \
+             redaction:\n  {}",
             wrong.join("\n  ")
         );
 
+        // Stated positively, so the rule cannot pass by refusing everything.
+        // These are real API-key shapes and shapes that merely RESEMBLE the
+        // marker without sharing an edge with it.
         for (good, why) in [
-            ("redactedX", "shares a prefix, is not a substring"),
-            (
-                "my-redacted-key",
-                "the marker's body embedded in a longer key",
-            ),
-            (
-                "sk-<redacted>-x",
-                "CONTAINS the marker, is not a piece of it",
-            ),
-            ("<redacted>#2x", "a suffixed name plus a trailing non-digit"),
+            ("redactedX", "shares a prefix, shares no edge"),
+            ("my-redacted-key", "the marker's body inside a longer key"),
+            ("sk-live-abcdefgh", "an ordinary key"),
+            ("a/b+c=d&e", "punctuation an API key really uses"),
         ] {
             assert!(
                 HttpCredential::parse(good).is_ok(),
-                "{why}: {good:?} must still be accepted — this rule refuses \
-                 fragments of the marker, not everything that resembles it"
+                "{why}: {good:?} must still be accepted — this rule refuses text \
+                 shared with the marker, not everything that resembles it"
             );
         }
     }
 
-    /// The predicate's own boundary, stated on the function rather than through
-    /// `parse`, so the digit-run reasoning is pinned where it is derived.
+    /// Each of the four clauses has a witness NO other clause catches.
+    ///
+    /// This is the mutation surface, made explicit: short-circuit any single
+    /// clause of `overlaps_redaction_marker` to `false` and exactly one group
+    /// below goes red. A lump assertion (`overlaps(x)` for a pile of values)
+    /// would let three clauses cover for a deleted fourth.
     #[test]
-    fn the_marker_fragment_predicate_splits_at_the_trailing_digit_run() {
+    fn each_marker_overlap_clause_has_a_witness_no_other_clause_catches() {
+        // Case 4 — a piece of the marker family, and nothing else.
+        let only_family = "redacted";
+        assert!(is_marker_family_substring(only_family));
+        assert!(!tail_is_marker_prefix(only_family));
+        assert!(!head_is_marker_suffix(only_family));
+        assert!(!only_family.contains(REDACTED));
+
+        // Case 2 — the tail is a prefix of the marker, and nothing else.
+        let only_tail = "abcde<re";
+        assert!(tail_is_marker_prefix(only_tail));
+        assert!(!is_marker_family_substring(only_tail));
+        assert!(!head_is_marker_suffix(only_tail));
+        assert!(!only_tail.contains(REDACTED));
+
+        // Case 1 — the head is a suffix of the marker, and nothing else.
+        let only_head = ">y-abcdef";
+        assert!(head_is_marker_suffix(only_head));
+        assert!(!is_marker_family_substring(only_head));
+        assert!(!tail_is_marker_prefix(only_head));
+        assert!(!only_head.contains(REDACTED));
+
+        // Case 3 — contains the marker, and nothing else.
+        let only_contains = "sk-<redacted>-x";
+        assert!(only_contains.contains(REDACTED));
+        assert!(!is_marker_family_substring(only_contains));
+        assert!(!tail_is_marker_prefix(only_contains));
+        assert!(!head_is_marker_suffix(only_contains));
+
+        // All four reach the guard.
+        for w in [only_family, only_tail, only_head, only_contains] {
+            assert!(overlaps_redaction_marker(w), "{w:?}");
+        }
+        // …and a credential sharing no text with the marker does not.
+        assert!(!overlaps_redaction_marker("sk-live-abcdefgh"));
+    }
+
+    /// The family predicate's own boundary, stated on the function rather than
+    /// through `parse`, so the digit-run reasoning is pinned where it is
+    /// derived. (Through `parse` these near misses are useless: `<redacted>x`
+    /// is not a family substring but IS caught by the contains clause.)
+    #[test]
+    fn the_marker_family_predicate_splits_at_the_trailing_digit_run() {
         // Case 1 — wholly inside `<redacted>#`.
-        assert!(overlaps_redaction_marker("<redacted>#"));
-        assert!(overlaps_redaction_marker("d>"));
+        assert!(is_marker_family_substring("<redacted>#"));
+        assert!(is_marker_family_substring("d>"));
         // Case 2 — all digits (also refused earlier, as number-shaped).
-        assert!(overlaps_redaction_marker("12"));
+        assert!(is_marker_family_substring("12"));
         // Case 3 — head is a suffix of `<redacted>#`, tail is digits.
-        assert!(overlaps_redaction_marker("<redacted>#987"));
-        assert!(overlaps_redaction_marker(">#4"));
+        assert!(is_marker_family_substring("<redacted>#987"));
+        assert!(is_marker_family_substring(">#4"));
         // …and the near misses on each case.
         assert!(
-            !overlaps_redaction_marker("<redacted>x"),
+            !is_marker_family_substring("<redacted>x"),
             "not a substring: the marker is not followed by `x`"
         );
         assert!(
-            !overlaps_redaction_marker("<redacted#2"),
+            !is_marker_family_substring("<redacted#2"),
             "a fragment with a character removed is not a fragment"
         );
         assert!(
-            !overlaps_redaction_marker("redacted>2"),
+            !is_marker_family_substring("redacted>2"),
             "the digit must sit behind the `#`, not against `>`"
         );
-        assert!(!overlaps_redaction_marker("sk-abc-8213"));
+        assert!(!is_marker_family_substring("sk-abc-8213"));
     }
 
-    /// The rekey loop TERMINATES on a credential the guard above deliberately
-    /// accepts, instead of spinning a runtime worker.
+    /// The idempotence theorem on [`scrub_with`], pinned at the boundary the
+    /// guard now draws.
     ///
-    /// `redacted>y` is not a fragment of the marker, so `HttpCredential::parse`
-    /// takes it — but `str::replace` does not rescan what it wrote, so the
-    /// upstream key `redacted>yy` scrubs to `<redacted>y`, which contains the
-    /// credential again. Every candidate name for that base therefore fails the
-    /// fail-closed self-check, forever. The probe budget is what ends it: the
-    /// whole response is refused, deterministically.
-    ///
-    /// Run on a worker thread with a timeout so a regression FAILS instead of
-    /// wedging the test binary — `parse_scrubbed` is not cancellable and the
-    /// spin is 100% CPU.
+    /// One `str::replace` pass never rescans what it wrote, so "one pass is
+    /// enough" is a property of the CREDENTIAL, not of the scrubber. This test
+    /// stands on both sides of the line: the shape the guard refuses really does
+    /// re-form itself in one pass (so the rule is not decoration), and its
+    /// nearest legal neighbour — same length, one character off the marker's
+    /// edge — comes out clean and stays clean under a second pass.
     #[test]
-    fn an_unnameable_key_exhausts_the_probe_budget_instead_of_spinning() {
-        let key = "redacted>y";
+    fn one_scrub_pass_is_enough_exactly_because_the_guard_refuses_the_overlap() {
+        // The refused side. `exact_forms` is hand-built on purpose: production
+        // can no longer assemble this list, which is the point.
+        let leaky = "redacted>y";
         assert!(
-            HttpCredential::parse(key).is_ok(),
-            "the premise: this credential really is accepted today"
+            HttpCredential::parse(leaky).is_err(),
+            "this credential is what round 3 accepted; it must be refused now"
         );
+        let once = scrub_with(&exact_forms(&[leaky]), "hit redacted>yy end".to_string());
+        assert!(
+            once.contains(leaky),
+            "the premise of the whole rule: one pass really does re-form this \
+             credential out of the marker's own text: {once}"
+        );
+
+        // The legal neighbour, driven through the production constructor so the
+        // registered form list is the real one.
+        let good = "redactedZy";
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
-        // The premise of the premise: one scrub pass really does re-form the
-        // credential, which is what makes the self-check unsatisfiable.
+        let client = HttpMcpClient::new("c", &block, Some(&cred(good)));
+        let body = format!("hit {good}y end");
+        let scrubbed = client.scrub(body);
         assert!(
-            scrub_with(&client.secret_forms, "redacted>yy".to_string()).contains(key),
-            "fixture no longer reproduces the non-idempotent scrub"
+            !scrubbed.contains(good),
+            "one pass left the credential in the output: {scrubbed}"
         );
-
-        let forms = client.secret_forms.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let body = r#"{"result":{"redacted>yy":1}}"#;
-            let _ = tx.send(parse_scrubbed(&forms, body, "tools/list").is_err());
-        });
-        match rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(is_err) => assert!(
-                is_err,
-                "the response must be refused, not silently handed back"
-            ),
-            Err(_) => panic!(
-                "`parse_scrubbed` did not return within 10 s — the rekey loop is \
-                 spinning again, on a tokio worker in production"
-            ),
-        }
-    }
-
-    /// The budget's own arithmetic, on the healthy side: a document with many
-    /// colliding keys AND many pre-existing marker names must NOT trip it.
-    ///
-    /// This is the false-positive direction of the branch above. `2 × entries`
-    /// is not a round number picked to look safe: pass 1 reserves the 40
-    /// upstream `<redacted>#k` names, and the single credential key then has to
-    /// probe past all of them.
-    #[test]
-    fn the_probe_budget_is_not_tripped_by_a_document_full_of_marker_names() {
-        let key = "sk-budget-8213";
-        let forms = exact_forms(&[key]);
-        let mut obj = serde_json::Map::new();
-        obj.insert("<redacted>".to_string(), serde_json::json!(0));
-        for k in 2..=40u64 {
-            obj.insert(format!("<redacted>#{k}"), serde_json::json!(k));
-        }
-        obj.insert(key.to_string(), serde_json::json!(1_000));
-        let n = obj.len();
-        let mut v = Value::Object(obj);
-        scrub_value(&forms, &mut v).expect("a healthy document must not exhaust the budget");
-        let obj = v.as_object().unwrap();
-        assert_eq!(obj.len(), n, "an entry was dropped: {v}");
         assert_eq!(
-            obj.get("<redacted>#41"),
-            Some(&serde_json::json!(1_000)),
-            "the credential key must have stepped past every reserved name: {v}"
+            client.scrub(scrubbed.clone()),
+            scrubbed,
+            "a second pass changed the string, so the scrubber is not idempotent"
         );
+
+        // The same, for a credential whose percent-encoded form is a second
+        // registered literal: the encoding can carry no `<` or `>`, so it cannot
+        // overlap the marker either, and two forms do not reopen the class.
+        let two_form = "sk-a/b+c=d";
+        let client = HttpMcpClient::new("c", &block, Some(&cred(two_form)));
+        assert_eq!(client.secret_forms.len(), 2);
+        for spelling in [two_form.to_string(), percent_encode(two_form)] {
+            let out = client.scrub(format!("upstream echoed ?api_key={spelling}!"));
+            for form in &client.secret_forms {
+                assert!(
+                    !out.contains(form.as_str()),
+                    "{spelling}: a registered form survived one pass: {out}"
+                );
+            }
+            assert_eq!(client.scrub(out.clone()), out, "{spelling}: not idempotent");
+        }
     }
 
     /// No key configured ⇒ nothing to scrub, and no accidental blanket
