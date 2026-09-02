@@ -5334,6 +5334,17 @@
               "null"
             ],
             "description": "Active runtime id, or null when the harness is dormant."
+          },
+          "token_usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SpecRunTokenUsage",
+                "description": "#1255 S3 — latest context-window usage, or null when the harness is\ndormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.\n\nKnown consequence, recorded rather than fixed in this commit: a dormant\nconversation reports `null` here even though the reading IS on disk in\n`worker_sessions.handle_state`. This whole endpoint reads the live\nin-memory harness (registry hit on the active runtime row) and answers\n`phase: null` when there is none — see the handler. Token usage\ninherits that exactly, so a card whose harness has been shut down shows\nno meter until something respawns it. The UI slice decides whether\nthat is acceptable or whether the dormant path should fall back to the\npersisted snapshot; the kernel slice does not pick for it."
+              }
+            ]
           }
         }
       },
@@ -6446,6 +6457,42 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "SpecRunTokenUsage": {
+        "type": "object",
+        "description": "#1255 S3 — the context-usage half of [`GetSpecRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
+        "required": [
+          "used_tokens",
+          "at_ms"
+        ],
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock ms of the codex frame this reading came from.\n\nShipped because the reading survives a reboot: it rides the runtime\nsnapshot, so a harness respawned by boot recovery or by lazy recovery\nserves whatever number was last observed — possibly months ago — and\nwithout this field a rehydrated reading is indistinguishable on the\nwire from a live one. A UI that draws a meter needs to be able to say\n\"as of then\", or to stop drawing it. The kernel does not pick a\nstaleness threshold; it ships the timestamp so a reader can."
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The model's context window, or null when codex has never reported one."
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Context occupancy as a whole percentage, `0.0..=100.0`.\n\nNull means \"no percentage can honestly be stated\": no known window, a\nwindow at or below the 12000-token baseline, or `used_tokens` above\nthe window. That last case is deliberately NOT clamped to 100 — see\n`TokenUsage::percent`. Render the raw count with no meter."
+          },
+          "used_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens in the model's context as of the most recent response\n(`tokenUsage.last.totalTokens` upstream). Always present — this is the\nraw evidence, and it ships even when `percent` does not."
           }
         }
       },
