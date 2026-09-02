@@ -228,7 +228,7 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
@@ -314,7 +314,7 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
@@ -395,7 +395,7 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
@@ -549,7 +549,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
@@ -850,7 +850,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: None,
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
@@ -1313,7 +1313,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: None,
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
@@ -2027,7 +2027,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: None,
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: Some(FixtureIssue {
                 number: CAPSTONE_ISSUE_NUMBER,

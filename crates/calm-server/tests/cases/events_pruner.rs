@@ -139,12 +139,12 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                 let wave = wave_create_tx(
                     tx,
                     NewWave {
-                        workflow_input: None,
+                        template_input: None,
                         cove_id,
                         title: "w".into(),
                         sort: None,
                         cwd: String::new(),
-                        workflow_id: None,
+                        template_id: None,
                         plugin_scope: None,
                         attach_folder: false,
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),

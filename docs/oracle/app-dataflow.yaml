@@ -2003,7 +2003,7 @@
     storage 读写是 best-effort，异常不得逃逸且内存值继续保持权威。
   why: >
     这些约束共同阻止跨数据库 cursor 重放、旧 idle 续体复活 cursor，以及实例切换首帧先建连。
-  source: fe/web/src/app/events/browser-cursor-store.ts:24-91; fe/web/src/app/providers/public.tsx:35-64
+  source: fe/web/src/app/events/browser-cursor-store.ts:24-91; fe/web/src/app/providers/public.tsx:47-76
   authoritative_test: fe/web/src/app/events/browser-cursor-store.test.ts:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/events-glue/event-bridge
   runtime_layer: app

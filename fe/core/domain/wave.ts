@@ -173,7 +173,7 @@ export type NewWaveBody = Readonly<{
   attach_folder?: boolean;
   /**
    * The chosen template's key (#1209). Read as `template.id` from
-   * `GET /api/wave-templates`; the write side still spells it `workflow_id`
+   * `GET /api/wave-templates`; the write side still spells it `template_id`
    * because on this field that name is accurate — it is what the kernel's
    * plugin-binding path resolves. #1209 records the seam and the decision not
    * to add a `template_id` alias.
@@ -183,13 +183,13 @@ export type NewWaveBody = Readonly<{
    * `deny_unknown_fields`-strict, so the only spelling of "no template" is
    * absence.
    */
-  workflow_id?: string;
+  template_id?: string;
   /**
    * Only accepted when the chosen template is bound to a running trusted
    * plugin — i.e. exactly when `GET /api/wave-templates` returned an
    * `input_schema` for it. Sending it otherwise is a 400.
    */
-  workflow_input?: Readonly<Record<string, unknown>>;
+  template_input?: Readonly<Record<string, unknown>>;
 }>;
 
 /**

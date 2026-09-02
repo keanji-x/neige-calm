@@ -159,7 +159,7 @@ impl SpecHarnessStartAdapter {
             );
             return Ok(None);
         };
-        let Some(workflow_id) = wave.workflow_id.as_deref() else {
+        let Some(template_id) = wave.template_id.as_deref() else {
             return Ok(None);
         };
         let running_plugin_ids = self.plugin.running_plugin_ids().await;
@@ -170,21 +170,21 @@ impl SpecHarnessStartAdapter {
             if let Some(workflow) = manifest
                 .workflows
                 .into_iter()
-                .find(|workflow| workflow.id == workflow_id)
+                .find(|workflow| workflow.id == template_id)
             {
                 return Ok(Some(BoundWorkflow {
                     descriptor: workflow,
-                    input: wave.workflow_input.clone(),
+                    input: wave.template_input.clone(),
                 }));
             }
         }
         // Descriptor unresolved (plugin stopped / trust revoked): fail-safe
-        // to the vanilla prompt — the persisted workflow_input is dropped
+        // to the vanilla prompt — the persisted template_input is dropped
         // along with the descriptor rather than injected without context.
         tracing::error!(
             target: "spec_harness::workflow_binding",
             wave_id,
-            workflow_id,
+            template_id,
             "bound workflow descriptor was not resolved from a running trusted forge plugin; using vanilla spec prompt"
         );
         Ok(None)
@@ -192,7 +192,7 @@ impl SpecHarnessStartAdapter {
 }
 
 /// #891 — a resolved workflow binding: the descriptor from the running
-/// trusted plugin plus the wave row's persisted `workflow_input` (already
+/// trusted plugin plus the wave row's persisted `template_input` (already
 /// schema-validated at create time).
 struct BoundWorkflow {
     descriptor: WorkflowDescriptor,
@@ -342,7 +342,7 @@ pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = "assistant";
 pub(crate) fn render_spec_developer_instructions(
     wave_id: &str,
     workflow_descriptor: Option<&WorkflowDescriptor>,
-    workflow_input: Option<&serde_json::Value>,
+    template_input: Option<&serde_json::Value>,
 ) -> String {
     let mut instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
@@ -350,18 +350,18 @@ pub(crate) fn render_spec_developer_instructions(
     );
     // #1110 S5 — the descriptor is an id handle only. Plan prose lives in
     // the forked report; the remaining injected contract is the wave's
-    // validated `workflow_input`, gated on a resolved binding.
+    // validated `template_input`, gated on a resolved binding.
     if workflow_descriptor.is_none() {
         return instructions;
     }
-    // #891 — the wave's validated workflow_input, verbatim. Deliberately
+    // #891 — the wave's validated template_input, verbatim. Deliberately
     // NOT passed through `render_system_prompt`: user-controlled JSON must
     // not have literal `{wave_id}` substituted.
-    if let Some(input) = workflow_input {
+    if let Some(input) = template_input {
         instructions.push_str("\n\n## Bound Workflow Input\n");
         instructions.push_str("```json\n");
         instructions
-            .push_str(&serde_json::to_string_pretty(input).expect("workflow_input serializes"));
+            .push_str(&serde_json::to_string_pretty(input).expect("template_input serializes"));
         instructions.push_str("\n```");
     }
     instructions
@@ -372,9 +372,9 @@ pub(crate) fn render_spec_developer_instructions(
 pub fn render_spec_developer_instructions_for_test(
     wave_id: &str,
     workflow_descriptor: Option<&WorkflowDescriptor>,
-    workflow_input: Option<&serde_json::Value>,
+    template_input: Option<&serde_json::Value>,
 ) -> String {
-    render_spec_developer_instructions(wave_id, workflow_descriptor, workflow_input)
+    render_spec_developer_instructions(wave_id, workflow_descriptor, template_input)
 }
 
 #[async_trait]
@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_developer_instructions_append_workflow_input_when_present() {
+    fn spec_developer_instructions_append_template_input_when_present() {
         let workflow = populated_workflow_descriptor();
         let input = json!({
             "issue_url": "https://github.com/o/r/issues/1",
@@ -1703,7 +1703,7 @@ mod tests {
             .expect("resolve trusted running descriptor")
             .expect("bound workflow");
         assert_eq!(bound.descriptor.id, WORKFLOW_ID);
-        // The wave row's persisted workflow_input rides along with the descriptor.
+        // The wave row's persisted template_input rides along with the descriptor.
         assert_eq!(bound.input.as_ref(), Some(&bound_input));
 
         let (trusted_stopped_host, _trusted_stopped_tmp) =
@@ -1778,24 +1778,24 @@ mod tests {
 
     async fn make_wave(
         repo: &SqlxRepo,
-        workflow_id: Option<&str>,
-        workflow_input: Option<serde_json::Value>,
+        template_id: Option<&str>,
+        template_input: Option<serde_json::Value>,
     ) -> crate::model::Wave {
         let cove = repo
             .cove_create(NewCove {
-                name: format!("cove-{workflow_id:?}"),
+                name: format!("cove-{template_id:?}"),
                 color: "#101010".into(),
                 sort: None,
             })
             .await
             .expect("create cove");
         repo.wave_create(NewWave {
-            workflow_input,
+            template_input,
             cove_id: cove.id,
             title: "workflow resolver".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: workflow_id.map(str::to_string),
+            template_id: template_id.map(str::to_string),
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

@@ -16,6 +16,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0076_waves_plugin_scope.sql",
     "0077_wave_workspace.sql",
     "0078_cards_role_assistant.sql",
+    "0079_waves_rename_workflow_id_to_template_id.sql",
 ];
 
 #[test]

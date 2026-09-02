@@ -109,12 +109,12 @@ async fn boot_with_registry(
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "transport-vector-test".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -594,12 +594,12 @@ impl PrincipalFixture {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: cove.id.clone(),
                 title: "principal-delta".into(),
                 sort: None,
                 cwd: String::new(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -621,12 +621,12 @@ impl PrincipalFixture {
 
         let away_wave_row = repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: cove.id.clone(),
                 title: "principal-delta-away".into(),
                 sort: None,
                 cwd: String::new(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
