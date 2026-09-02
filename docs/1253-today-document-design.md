@@ -1,6 +1,6 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r12 —— 含 PR1 实现期 + CI 期裁决**（r12：常规缺席改 200+null，见 §5.1）。r11（§5.1 的 `is_unique_constraint` 两处不对称、D7 的 O(1) 上限、INV-002 三态、§6 的 PR2 失效链）。原 r10：七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
+> 状态：设计 **r13 —— 含 PR2 评审期修订**（r13：判据加「已有 enqueued 证据」一层 + 补发必须持锁，见 D5）。r12（r12：常规缺席改 200+null，见 §5.1）。r11（§5.1 的 `is_unique_constraint` 两处不对称、D7 的 O(1) 上限、INV-002 三态、§6 的 PR2 失效链）。原 r10：七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
 > review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|…|-r7].md`。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
@@ -191,6 +191,8 @@ card_id = derive_wave_conversation_keys(launchpad_wave, "today-summary").card_id
           ← 裸 key。见下：digest 绝不能掺进这里，它同时决定 card id
 if card_get(card_id) 不存在:
     POST /api/waves/{launchpad}/conversations   ← 只发静态 bootstrap 文本
+if 该卡还没有任何 harness.user_message.enqueued:   ← r13 追加，见下
+    补发 bootstrap（持 conversation_first_message_locks 的 per-card 锁）
 POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，带活动摘要
 ```
 
@@ -198,13 +200,23 @@ POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，�
 - **然后无条件走一次 spec input**。r5 把摘要只交给「重跑」分支，而创建路径的 `text` 是唯一送达 agent 的东西（create 成功后立即 `send_spec_input`，此后 `user_message_already_enqueued` 保证不再补发）——所以 r5 的**第一次使用必然产出无素材的汇总**，而那正是用户唯一会看的第一印象。
 - **分支判据必须是 `card_get(derived.card_id)`，不能靠列表或启发式**：`Stuck` 补偿会留下卡却没有 runtime，而且那张卡 `deletable: false` 用户删不掉；选错分支就直接撞下面的 dormant 死路。
 
+> **r13（PR2 评审期修订）——「卡存在」不足以判定 bootstrap 已送达，判据是「卡存在 ∧ 已有 enqueued 证据」，且补发必须持锁。**
+>
+> 两条通道从相反的入口撞见同一个根因：(a) 首次 create 落在 `Stuck`，留下一张**没有 runtime、也没有首条消息**的卡；(b) create 的 operation 成功（卡与 harness 都铸好了），紧接着它内部的首条 `send_spec_input` 失败（app-server 掉线 503）。两种情况下卡都在，而 bootstrap **从未送达**——按 card-only 判据，下一次触发会跳过 create 只发摘要，于是「首次成功 +2 行」变成 +1 行，那句常驻指令**永远不会发出**。
+>
+> **补发这一步必须持 `conversation_first_message_locks` 的 per-card 锁。** 把「发首条消息」从 `create_wave_conversation` 搬进 handler 却没搬锁，会在**恰好是这次修复要救的那个状态**上开一个并发窗口：实测两个并发请求各发一条 bootstrap（5/5 复现）。生产的 create 路径与 cove 会话路径都持这把锁，三处不能只有这处不持；`create_wave_conversation` 的注释逐字把「the agent gets the same instruction twice」列为它存在的理由。注意普通首次双击**撞不上**（两个请求都进 create 臂，被幂等 + 该锁串行化），敞开的窗口只在空-transcript 态，而那个态是**持久的**（卡 `deletable:false`）。
+>
+> **判据问的是「有没有任意用户消息」，不是「bootstrap 在不在」——这个近似必须写在明处。** `user_message_already_enqueued` 只问该卡有无任何 `harness.user_message.enqueued`。所以用户若在那张可见的会话卡里**先手打一句**，bootstrap 就永久不再补发。同理，验证补发的测试必须断言**送达内容的同一性**（是那段 bootstrap 文本），不能断言行数——行数断言会被「别人的消息 + 摘要」满足，PR2 第一版的用例正是这样绿的。
+>
+> **上游还有一条本设计管不到的窗口**：`send_spec_input` 先入队观测、后写证据事件，所以证据写失败时 agent 已收到而行不存在，重试会再发一次。改它在 PR2 的切片之外；本设计只保证「有证据行就不重发」，**不保证 exactly-once**，别把它写成后者。
+
 **key 必须是裸 `today-summary`，_不_ 掺 workspace digest——r6 在这里判反了，r8 改回来。** 创建路径把整个 `SpecHarnessStartOperationPayload` 送进 `stable_payload_hash`，其中含 `actor` 与 `cwd: wave.workspace.path`；`insert_operation` 对「同 key + 不同 payload_hash」**硬 409，而 `operations` 全仓无 pruner ⇒ 永久**。这正是 `today.rs` 里逐字记过的事故（*"409, on every request, forever"*），当时的解法是把 workspace digest 掺进 key。r6 照搬了那个解法——**但它搬不过来**：`derive_wave_conversation_keys` 用同一个 digest 同时喂 **card_id 和 operation_key**（`conversation_keys.rs` 的 doc comment 写死：card 是 `conv-{digest[..32]}`，operation key 是 `wave-conversation-{digest}`）。所以 key 掺了 cwd，**card id 也跟着变**：一次 re-point 就派生出第二张会话卡，直接推翻「全生命周期一条汇总 conversation」；而伪码若按裸 key 查卡、用 digest key 创建，创建出来的又不是查的那张。`today.rs` 的 key 不承担 conversation identity，这里的承担——所以那个解法在这条路径上是错的。
 
 **正确的解法是把 payload 里的变量消掉，而不是把变量塞进 key。** `SpecHarnessStartOperationPayload` 有 **12 个字段**（穷举，别只数前几个）：`wave_id` 固定；`spec_card_id` 由裸 key 派生因而固定；`report_card_id` / `sort` / `goal` 是 `None`；`reset_harness_items: false`、`force_new_thread: true`、`profile: Assistant`、`create_card`（内含同一个裸 key）都是常量。所以只剩**三个**变量——
 
 1. **`actor` 固定为单一值**，但理由要说准：`Actor::to_actor_id()` 把 `"user"` **和一切非 `ai:codex` 的值**都映射成 `ActorId::User`，而中间件只放行 `user` / `ai:<id>`。所以「owner/dev 两个人类账号各点一次」根本到不了——两者同为 `ActorId::User`。**真正的变量通道是客户端自带的 `X-Calm-Actor: ai:<id>`**，服务端合成路径不透传它即可消掉。
    **实现约束**：若要按 kernel 归属，**不能**经 `Actor::to_actor_id()`（`Actor("kernel").to_actor_id()` 会降为 `User`），必须直接构造 `ActorId::Kernel`。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决。
-2. **`cwd` 只在 workspace re-point 时变**，而 re-point 之后我们**不会再调 create**——分支判据是 `card_get(derived.card_id)`，卡已存在就直接走 spec input，且那张卡 `deletable: false` 不会消失（`plan_compensation` 的注释逐字写明：补偿第一次出错就 `Stuck`、不再重驱，遗留的卡带 `deletable: false`）。所以「succeeded 之后 payload 变了」这个永久 409 的触发条件在本路径上到不了。
+2. **`cwd` 只在 workspace re-point 时变**，而 re-point 之后我们**不会再调 create**——分支判据的第一层仍是 `card_get(derived.card_id)`，卡已存在就不再进 create 臂（r13 追加的第二层只决定要不要补发 bootstrap，不会重进 create），且那张卡 `deletable: false` 不会消失（`plan_compensation` 的注释逐字写明：补偿第一次出错就 `Stuck`、不再重驱，遗留的卡带 `deletable: false`）。所以「succeeded 之后 payload 变了」这个永久 409 的触发条件在本路径上到不了。
 3. **`first_message_sha256`** —— 它由 D5 上一段的「bootstrap 文本必须逐字节静态」管住。这一条要和上面两条一起读：**三个变量各有各的约束，缺一条这个论证就不成立**。
 
 **残余窗口**（写在明处，且比初稿更窄）：create 尝试过但**没有成功**（`Stuck`，arm (c) 持续 500）、**且补偿没有留下派生卡**，期间又发生了 re-point——此时同 key 不同 hash 会 409。`retryable_operation_key` 的 `#N` 逃逸只在 `phase == Failed` 时给，`Stuck` 不给。
