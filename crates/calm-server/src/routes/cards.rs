@@ -1550,7 +1550,19 @@ async fn reset_spec_harness_card(
     })
 }
 
-async fn run_spec_card_operation(s: &RouteState, kind: &str, payload: Value) -> Result<()> {
+/// Submit one spec-card operation and wait for it, mapping its outcome onto a
+/// `CalmError`.
+///
+/// `pub(crate)` since #1253: `routes::today_summary`'s dormant recovery
+/// re-submits `spec-harness-start` through it. Calling this rather than
+/// re-implementing the submit/wait/map is the point — an operation that mapped
+/// its failure classes differently would answer 500 where this answers 400 or
+/// 503, and the divergence would only show up under failure.
+pub(crate) async fn run_spec_card_operation(
+    s: &RouteState,
+    kind: &str,
+    payload: Value,
+) -> Result<()> {
     let payload_hash = stable_payload_hash(&payload)?;
     let op_id = s
         .operation_runtime
