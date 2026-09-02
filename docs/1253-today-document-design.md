@@ -1,7 +1,7 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r5**（四轮双通道 review 后。r4 的 descope 由用户 2026-09-02 裁决；r5 砍掉 MCP 工具那一层）。Issue：#1253。
-> review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|-r3|-r4].md`（四轮共八份）。
+> 状态：设计 **r6**（五轮双通道 review 后。r4 的 descope 由用户 2026-09-02 裁决；r5 删掉 MCP 工具层；r6 修 D5 的触发路径与四条不变量的证明层）。Issue：#1253。
+> review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|-r3|-r4|-r5].md`（五轮共十份）。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
 ## 0. r3 → r4：为什么砍掉跨天历史
@@ -58,6 +58,28 @@ Today 变文档形态（D2/D7）、AI 写今日进度（D5）、活动源与它�
 
 **r5 的净效果：`calm.day.activity`、`day_activity_allowed`、截断纪律、INV-004、INV-005 全部删除，§7 里自认的最大风险（全 MCP 面第一个跨 cove 读）随之消失，PR2 缩小约一半。**
 
+## 0c. r5 → r6：第五轮改掉了什么
+
+两通道均判 fix-then-ship，载体、D4 单层 projection、D7 判据、两处 `is_unique_constraint` 全部经代码验证成立。改的都是 D5 与不变量的**证明层**。
+
+1. **r5 的 D5 自相矛盾，第一次点击拿不到任何活动数据**（两通道独立同结论）。r5 说「摘要注入 prompt」，又说「创建那条消息不得含摘要，摘要走重跑分支」——而 create 的 `text` 是唯一送达 agent 的东西（成功后立即 `send_spec_input`，此后 `user_message_already_enqueued` 保证不再补发），且 r5 已经删掉了 agent 侧的查询能力。**结果是首次使用必然产出无素材的汇总，而那是用户唯一会看的第一印象。** → 改成「按需先建（静态 bootstrap），然后**一律** spec input」，一条路径不是两条。
+
+2. **「点三次跑三轮」被 harness 设计证伪。** `maybe_issue_turn` 一次 `drain` 把整个 pending 队列拼成一条只发**一个** `turn_start`，还有 250ms/5s 去抖。连点三次的典型结果是 **2 个 turn**。→ INV-010 换证明层：改证每次触发留下一条永久的 `harness.user_message.enqueued`，**明确接受合并 turn**。
+
+3. **INV-007 又一次写宽过载体（同一条老病的第五次发作）。** 闸只在新端点里，用户仍可直接打 conversations 或 spec_input。→ 收窄成「**这个端点**在空窗口下既不建会话也不发消息」，并写明另两条路故意不在射程内。§8 同步改。
+
+4. **「全生命周期只有一条会话」证不了**（内核对每 wave 的 assistant 会话数无上界，Today 的 Conversations 模块本来就有 `+`）。→ 换成 INV-011：固定 key 下派生 card_id 恒定，golden 钉住。
+
+5. **确定性 key 会复活一个已记录在案的事故。** payload hash 含 `actor` 与 `cwd`，`insert_operation` 对「同 key + 不同 hash」**永久 409**（`operations` 无 pruner）——`today.rs` 逐字记过 *"409, on every request, forever"*，当时的解法就是把 workspace digest 掺进 key。→ actor 固定、key 掺 `workspace_key_digest`、加 409 兜底。
+
+6. **dormant 会让按钮永久死掉。** 在「只有一条会话」下，一次 `spec_harness_dormant` 之后只能靠人手 reset。→ D5 写明恢复规则并挂进 INV-002。
+
+7. **`report_startup_read_required()` 答的问题和文档说的不是同一个**（它是「被任何人写过没有」，不是「今日汇总跑过没有」；只比 summary+body）。好消息是 blocks-only 写**不会**漏判（每次落库都从 CRDT 重投影 body）。→ 写明这层近似 + 补反方向断言。
+
+8. 两处论证降级：「中间态 404」的理由不成立（同事务建卡，那个状态不可达），404 保留但理由改成「便宜且 fail-closed」；`is_unique_constraint` 的修复**是行为变更**（死代码 → 重试成功），必须配真并发/故障注入用例。
+
+9. 删掉截断纪律后 prompt 没有长度界 → D4 裁决 projection 为 **O(1) DTO**（32,768 字符硬上限就在那条路上）。另记一个更坏的模式：pending 队列满且折叠超限时观测被**直接丢弃**，只留 warn 日志。
+
 ## 1. 问题
 
 Today 只有「当前状态」，没有「发生了什么」。
@@ -74,9 +96,9 @@ Today 只有「当前状态」，没有「发生了什么」。
 
 ## 3. 已确认的既有事实
 
-**每行标注载体依赖**——三轮里两次事故都是把某个载体下才为真的事实搬到了新载体上（r3 review 称之为「过度推销」，它在 r3 自己的对照表里又犯了一次，只是方向相反）。r4 的载体是 launchpad 现有的 `wave-report` 卡。
+**每行标注载体依赖**——五轮里同一个错犯了四次：把某个上下文下才为真的结论搬到新上下文（详见 §10）。载体是 launchpad 现有的 `wave-report` 卡。
 
-| 事实 | 位置 | 在 r4 载体下 |
+| 事实 | 位置 | 在本载体下 |
 |---|---|---|
 | launchpad wave 的 ensure 端点存在且幂等；它已建了 `wave-report` 卡 | `routes/today.rs` | ✔ 直接可用 |
 | **但 `ensure` 没有任何生产调用方**；且它会 materialize workspace 再 `submit("spec-harness-start")` 并 **`.wait()`** | 全仓 grep；`routes/today.rs` | ⚠ 见 §5.1：读路径不得走它 |
@@ -145,6 +167,8 @@ r5 删掉了 r4 的第二层（见 §0b.4）。活动**不由 agent 去查**，�
 
 **窗口是半开区间 `[start, next_start)`**，按 `at` 查询，**不与 id 游标混用**（`0004_events.sql` 的警告抄进 doc comment）。另一条要抄的：`0007_events_scope.sql` 明写老行一律 `scope_kind='system'` 且**不做 payload 回填**，所以跨过升级点的窗口会静默漏掉老事件。
 
+**投影是 O(1) 的，因此 prompt 有可证明的长度界。** 删掉 MCP 层时把截断纪律一起删了，但注入 prompt 这条路仍有硬上限：`validate_first_message` 与 `spec/input` 都拒绝超过 **32,768 Unicode 字符**（`MAX_SPEC_INPUT_CHARS`）。裁决：**projection 只返回固定几个计数**（每 kind 一个全局计数 + 最多 N 条 wave 级明细，N 写死），DTO 形状 O(1) 与工作区规模无关。若哪天要返回可变长明细，必须同时恢复确定性字符预算（预算须覆盖模板文本本身），并配 32,768 / 32,769 与 CJK 边界用例。
+
 **时区**：日界仍需定义，但 descope 后它**不再是主键**，只是窗口边界。取服务端本地日；跨时区错位的代价写进 doc comment（单机 LAN 单用户下无害，「何时不再无害」要写清）。不引入 workspace timezone 设置——那是独立的产品决策，不该被本 issue 顺手绑架。
 
 ### D5 —— 触发：一个服务端合成的专用动作；创建与重跑是两条路径
@@ -158,16 +182,32 @@ r4 把「复用当天那条会话」压在 `Idempotency-Key` 上，两个通道�
 3. 把活动摘要**注入 prompt**（不是让 agent 去查，见 D4）；
 4. 分派到下面两条路径之一。
 
-**创建与重跑是两条路径，不能合成一条**：
+**「按需先建，然后一律 spec input」——不是两条并列分支**（r5 的写法两个通道都判 BLOCKER，见 §0c.1）：
 
-| 情形 | 走什么 | 为什么 |
-|---|---|---|
-| 汇总会话**尚不存在** | `POST /api/waves/{launchpad}/conversations`，`Idempotency-Key` **确定性派生**（如 `today-summary`） | key 必须是纯函数：现有 `mintIdempotencyKey` 每次返回随机 v4，且落在 #1225 的丢失窗口里（路由级 `useReducer`，切走再回来必丢）。确定性 key 自动绕开 #1225 |
-| 会话**已存在**（第二次及以后） | resolve `derive_wave_conversation_keys(wave_id, key).card_id`，然后 `POST /api/cards/{id}/spec/input` | conversation-create 在成功后走 `user_message_already_enqueued`，为真就**跳过** `send_spec_input`；arm (a) 明写「不重新发送首条消息」。想让 agent 真的再跑一轮，只能走 spec input |
+```
+card_id = derive_wave_conversation_keys(launchpad_wave, "today-summary").card_id
+if card_get(card_id) 不存在:
+    POST /api/waves/{launchpad}/conversations   ← 只发静态 bootstrap 文本
+POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，带活动摘要
+```
 
-**会话生命周期裁决**：**launchpad 全生命周期只有一条汇总 conversation**（不按日分键）。r4 写「不是每天一条会话」却又按天分键，是自相矛盾；按天分键的稳态与 r3 判死过的那条论证逐字相同（每条 = 一个可恢复 harness session + 50ms run loop + 一条永久 operation，而 `operations` 全仓无 pruner），只是没有 wave 和工作区。单条会话的代价是 transcript 无界增长，用既有的 `reset_harness_items` / force-new-thread 控制。
+- **创建那次只发静态 bootstrap**（常驻指令，不含日期/摘要/时间戳），因为 arm (e) 把 `text` 以 SHA-256 绑进 operation payload，动态文本会让重试 409。
+- **然后无条件走一次 spec input**。r5 把摘要只交给「重跑」分支，而创建路径的 `text` 是唯一送达 agent 的东西（create 成功后立即 `send_spec_input`，此后 `user_message_already_enqueued` 保证不再补发）——所以 r5 的**第一次使用必然产出无素材的汇总**，而那正是用户唯一会看的第一印象。
+- **分支判据必须是 `card_get(derived.card_id)`，不能靠列表或启发式**：`Stuck` 补偿会留下卡却没有 runtime，而且那张卡 `deletable: false` 用户删不掉；选错分支就直接撞下面的 dormant 死路。
 
-**prompt 文本必须逐字节稳定**（仅在创建那一次）：arm (e) 是同 key + 不同 `text` → 409 `conflict`（text 以 SHA-256 绑进 operation payload）。所以**创建用的首条消息不得内嵌日期、活动摘要或时间戳**——活动摘要走重跑路径的 spec input，不走创建。这条要配断言。
+**key 里必须掺 workspace digest，不能是裸 `today-summary`。** 创建路径把整个 `SpecHarnessStartOperationPayload` 送进 `stable_payload_hash`，其中含 `actor` 与 `cwd: wave.workspace.path`；`insert_operation` 对「同 key + 不同 payload_hash」**硬 409，而 `operations` 全仓无 pruner ⇒ 永久**。这正是 `today.rs` 里逐字记过的事故（*"409, on every request, forever"*），当时的解法就是把 workspace digest 掺进 key。launchpad 的路径明确允许 re-point，而 owner/dev 两个账号都存在，所以这条不是理论风险。
+
+因此：**actor 固定为单一值**（这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决），key 比照 `today.rs` 掺 `workspace_key_digest(cwd)`，并加兜底——**创建返回 409 conflict ⇒ resolve 派生卡 ⇒ 转 spec input**。
+
+**dormant 恢复规则（不写就等于按钮会永久死掉）：** `send_spec_input` → `ensure_live_spec_harness` 有四种失败：无 active runtime / 无 thread / snapshot 损坏 → **409 `spec_harness_dormant`**；`Starting` → 503；共享 app-server 未运行 → 503；`observe` 的有界 `try_send`（`OBSERVATION_BUFFER = 256`）→ 503。在「全生命周期只有一条会话」的裁决下，**一次 dormant 就让这个按钮永久失效**，只能靠人手 reset。裁决：收到 `spec_harness_dormant` 时对该卡重新提交 spec-harness-start（或走 `/spec/reset`）再重试一次；503 类按可重试错误浮出。这条挂进 INV-002。
+
+**会话生命周期裁决**：**launchpad 全生命周期只有一条汇总 conversation**（不按日分键）。按天分键的稳态与 r3 判死过的论证逐字相同（每条 = 一个可恢复 harness session + 50ms run loop + 一条永久 operation），只是没有 wave 和工作区。单条会话的代价是 transcript 无界增长，用既有的 `reset_harness_items` / force-new-thread 控制。
+
+> 注意这条**不是**「内核保证只有一条」——内核对每 wave 的 assistant 会话数没有任何上界，任意 key 都派生新卡，而 Today 的 Conversations 模块本来就有 `+`。可证的是纯函数性质，不是数据库计数，见 INV-010。
+
+**触发不保证一轮一 turn。** `run_loop::maybe_issue_turn` 一次 `drain` 把整个 pending 队列拼成一条 `joined_observation_text` 只发**一个** `turn_start`，发车前还有 `debounce_min_idle=250ms` / `debounce_max_wait=5s`。所以连点三次的典型结果是 **2 个 turn**，不是 3。设计**接受合并**，INV-010 因此改证「每次触发都留下一条永久的 `harness.user_message.enqueued`」，而不是数 turn（见 §5.2）。
+
+> 还有一个更坏的模式要防：pending 队列满 256 且折叠后超过 `MAX_FOLDED_USER_MESSAGE_CHARS`（4×32768）时，观测会被**直接丢弃**，只留一条 warn 日志——「点了，什么都没发生，且没有错误返回」。这与 INV-010 要防的是同一类，实现时要让它至少可观测。
 
 **会话对用户可读**，出现在 Today 现有的 Conversations 模块里——它就是用户要的那个 conversation。
 
@@ -185,6 +225,8 @@ descope 的直接后果。文档只有一份且每次 REWRITE，不增长；1000
 - 主体：`ReportDocument`。空态「还没有今日进度」+ 触发按钮。
 
   **空态判据是服务端的 `report_started`，不是「report 为空」。** `readWaveReport` 对 canonical 初始 report 返回**非空**——`initial()` 的 body 含契约注释和四个 H1，字符串非空——而 `ReportDocument` 只在 `report === null` 时渲染空态。所以照 r4 的写法，空态永远不会出现，用户第一次打开看到的是四个空标题。判据用 §5.1 resolve 返回的 `report_started`，它在服务端复用 `report_startup_read_required()` 的 canonical 判据；**不在 FE 镜像初始 body 文本**（那是 mirror code）。
+
+  **它是一个近似，要写明。** `report_startup_read_required()` 答的是「这份 report 被**任何人**写过没有」，不是「今日汇总跑过没有」——它只比较 `summary + body`，刻意忽略 `doc_rev` 与 `blocks`。所以汇总跑过一次之后空态永不回来，哪怕内容陈旧、或最后的写者是用户手改（甚至 D1 记的第二写者复活）。descope 之后这可以接受，但 DTO 字段名应叫 `report_has_noninitial_content` 之类的实话，不要叫成「曾经汇总过」；若哪天真需要后者，得用持久 marker/event，不能复用这个 helper。
 
   按钮在无活动时不出现，但那只是 UI；真正的闸在服务端（D5）。
 - 右面板：日历（现有行为）+ Running / Recent + 现有 Conversations 模块。
@@ -209,9 +251,11 @@ GET wave detail                 → readWaveReport 自己按 kind 定位那张�
 
 - 页面加载**只 resolve**，404 是正常空态。
 - **不给 `TodayLaunchpad` 加 `report_card_id`**：wave detail 已返回 cards，`readWaveReport` 自己按 `kind === 'wave-report'` 定位，那个字段没有消费者。新增的是**窄只读 DTO**，它带的 `report_started` 才是 FE 真正缺的东西（D7）。所以 D1 的「不新建端点」精确表述为：**不新增写/CRDT 端点，只新增一个只读 resolve 和一个触发动作**。
-- resolve 会看到 `ensure` 未走完的中间态（wave 行在、report 卡还没建，或 adopt-legacy 的旧 `Today` wave）。**裁决：那算 404**（「wave 存在但无 report 卡」= 还没有，走空态），不引入 `Option<report_card_id>` 给解析链加分支。
+- 「wave 存在但无 report 卡」**裁决为 404**（走空态）。但要说清理由：这不是在防一个真实可达的中间态——`today_launchpad_ensure_tx` 在**同一个事务**里建 wave 和 report 卡，adopt-legacy 那支在提交前也还没有 `purpose='launchpad'`，所以按 purpose 查的 resolve 根本看不见它。**404 是因为它便宜且 fail-closed，不是因为那个状态会发生**；别把不可达状态写成裁决理由，那又会变成一条删掉也不会红的假不变量。
 - `ensure` 只挂在显式动作上；它的任何失败必须浮出为错误，不得静默重试或降级成空态（与 INV-TODAYTERM-001 同理：静默会把「读失败」变成「悄悄铸了第二份」）。
-- 顺手修 `is_unique_constraint`：它在 `today.rs` 里被按**索引名**调用了**两处**——`idx_coves_one_system` 与 `idx_waves_one_launchpad`——而 SQLite 报的是 `coves.kind` / `waves.purpose`。两处一起改成列名形式，抄 `routes/waves.rs::ensure_cove_chat_wave_inner` 的现成写法。前者恰好在 system cove 首次并发 mint 的那个 race 上，正是 §7 要求验的路径。
+- 顺手修 `is_unique_constraint`：它在 `today.rs` 里被按**索引名**调用了**两处**——`idx_coves_one_system` 与 `idx_waves_one_launchpad`——而 SQLite 报的是 `coves.kind` / `waves.purpose`（两个索引都是 partial，实跑确认错误串不含索引名）。**所以那两个 `Err(...)` 分支现在都是死代码。**
+
+  **改它是行为变更，不是纯修辞**：从「500 直抛」变成「重试并成功」。因此必须配**真并发或故障注入**用例——`waves.rs` 已导出 `is_unique_constraint_for_test`，用手工构造的 `CalmError` 很容易只测到 helper 那一层而测不到路径。前者恰好在 system cove 首次并发 mint 的那个 race 上，正是 §7 要求验的路径。
 
 ### 5.2 不变量表
 
@@ -223,14 +267,17 @@ GET wave detail                 → readWaveReport 自己按 kind 定位那张�
 | ~~INV-TODAYDOC-004~~ | ~~`day_activity_allowed`~~ | 随 D4 第二层一并删除（§0b.4） | — |
 | ~~INV-TODAYDOC-005~~ | ~~返回体字段 allowlist~~ | 随 D4 第二层一并删除 | — |
 | INV-TODAYDOC-006 | 活动窗口是半开区间；相邻两天不重复计数 | 午夜边界事件被两天各计一次 | 边界事件恰好计一次 |
-| INV-TODAYDOC-007 | **服务端**在活动窗口为空时拒绝发起（不是 FE 藏按钮） | 绕过按钮直接 POST 触发端点、空窗口仍起了会话 | 空窗口 → 409/204，无会话、无 turn |
-| INV-TODAYDOC-010 | 汇总会话全生命周期只有一条；且**每次触发都真的产生一次新的 agent turn** | 点三次留下三条会话；**或**点三次只有一条会话但只跑了一轮 | 一条会话，三次 turn |
+| INV-TODAYDOC-007 | **`POST /api/today/summary` 自身**在活动窗口为空时既不建会话也不发消息 | 空窗口下打该端点，仍产生了会话或 `harness.user_message.enqueued` | 空窗口 → 409/204，两者皆无 |
+| INV-TODAYDOC-010 | 每次成功触发都留下一条 `harness.user_message.enqueued`（允许 harness 合并 turn） | 第二次触发后没有新的 enqueued 行（r4 的 no-op 病） | 三次触发 → 三行 |
+| INV-TODAYDOC-011 | 固定 key 下 `derive_wave_conversation_keys(launchpad, key).card_id` 恒定 | 派生结果随调用/环境变化 | golden 钉住 |
 
 方法论备注：
 
-- **INV-010 的第二个反例是 r4 的教训**：r4 只写了「三次落到同一条」，而那条在 `Idempotency-Key` 实现下会**绿着骗人**——第二次 HTTP 201、会话不变、agent 根本没跑。一条不变量如果只约束「不多」不约束「有效」，它证死的是错的东西。
-- **INV-003 防的是 mirror code**：`initial()` 的 body 文本是内核事实，FE 复述它必然产错（`feedback_mirror_code_must_call_the_original`）。判据必须来自服务端调用 `report_startup_read_required()`。
-- **自反排除不进不变量表**：它当前不承重（可见性 join 已先滤掉 system cove），写成「必须」会是一条删掉也不红的假不变量。见 D4。
+- **INV-007 是收窄后的陈述，不是全称否定。** r5 写成「服务端在空窗口时拒绝发起」，但闸只在这一个端点里：同一个已认证用户可以直接打 `POST /api/waves/{launchpad}/conversations`（wave 级守卫只拒 cove-chat，launchpad 不在其列）或 `POST /api/cards/{id}/spec/input`。**那两条路故意不在射程内**——用户自己手打不是要防的事，要防的是「按钮在没素材时也发起」。写成全称就是一条按字面读自己就红的假不变量。§8 的「没有素材时不写」同步收窄。
+- **INV-010 换了证明层。** r5 要求「点三次跑三轮」，而 harness 的 drain + debounce 语义使它**必红或只能靠时序凑绿**（见 D5）。改证 `harness.user_message.enqueued` —— 它是永久 kind、每次入队一行，既抓得住 r4 的 no-op 病（那才是真正要防的回归），又不与合并 turn 冲突。
+- **INV-011 取代 r5 的「全生命周期只有一条会话」。** 内核对每 wave 的 assistant 会话数没有上界，端到端数数量证不了它；可证的是派生函数的纯函数性质，用 golden 钉住（与 `conversation_keys.rs` 现成的两条 golden 同型）。
+- **INV-003 防的是 mirror code**：`initial()` 的 body 文本是内核事实，FE 复述必然产错。判据来自服务端。**已验证 blocks-only 写不会漏判**——`calm.report.blocks.*` 每次落库都从 CRDT 重投影出 `body` 再写回 payload，所以只比 summary+body 的判据会翻真。但要补**反方向**断言：canonical 初始 payload 且 `doc_rev`/`blocks` 已被 CRDT 物化时（该函数**刻意**忽略这两者），`report_started` 仍须为 false——这正是 r4 判据翻车的那一格。
+- **自反排除不进不变量表**：它当前不承重（可见性 join 已先滤掉 system cove），写成「必须」会是删掉也不红的假不变量。见 D4。
 
 ## 6. 切片计划
 
@@ -266,7 +313,7 @@ PR2 比 r4 小了约三分之一：删掉 MCP 工具那一层，连带 `day_acti
 - `turns` 计数（D4，无永久事实源）。
 - workspace timezone 设置（D4，独立产品决策）。
 - **任何 MCP 工具**（§0b.4：删掉的那一层不要在实现时又长回来）。
-- 汇总内容的质量评价。本设计只保证「没有素材时不写」（INV-007），不保证「有素材时写得好」。
+- 汇总内容的质量评价。本设计只保证「**这个按钮**在没有素材时不发起」（INV-007，收窄后的陈述），不保证「有素材时写得好」，也**不防**用户自己手打对话去让 agent 写——那不是要防的事。
 
 ## 9. 开放问题
 
