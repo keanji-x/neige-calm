@@ -31,6 +31,7 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     onOpenToday: vi.fn(),
     themeMode: 'system',
     onThemeModeChange: vi.fn(),
+    onOpenTemplates: vi.fn(),
     ...overrides,
   };
 }

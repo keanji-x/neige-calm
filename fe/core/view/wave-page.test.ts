@@ -93,11 +93,62 @@ describe('deriveWavePageView cards', () => {
       card({ id: 'card-user', deletable: true }),
     ]).rows;
 
-    expect(owned.actions).toEqual([{ kind: 'open-card', cardId: 'card-owned' }]);
-    expect(user.actions).toEqual([
-      { kind: 'open-card', cardId: 'card-user' },
-      { kind: 'delete-card', cardId: 'card-user' },
+    expect(owned.actions.map((action) => action.kind)).toEqual(['open-card']);
+    expect(user.actions.map((action) => action.kind)).toEqual(['open-card', 'delete-card']);
+    expect(owned.actions).toEqual([
+      { kind: 'open-card', cardId: 'card-owned', label: null, hint: null },
     ]);
+    expect(user.actions).toEqual([
+      { kind: 'open-card', cardId: 'card-user', label: null, hint: null },
+      {
+        kind: 'delete-card',
+        cardId: 'card-user',
+        label: 'Delete card Main pane',
+        hint: 'Delete card',
+      },
+    ]);
+  });
+
+  /*
+   * The four control sentences (§Δ1), pinned per row.
+   *
+   * They existed only in `public.tsx` until this slice; with two painters
+   * about to be written, wording that is not in the view model is wording each
+   * painter invents for itself — which is precisely how the mobile surface
+   * ended up with no status wording at all.
+   *
+   * `label` and `hint` are asserted **separately and on both sides of null**,
+   * because they are two channels on purpose (WCAG 2.5.3, `public.tsx:743`):
+   * a control with visible text must get no `aria-label`, and asserting only
+   * "some string reaches the control" would not see the two channels swapped.
+   */
+  it('gives the Cards row body neither an accessible name nor a hint: it has visible text', () => {
+    const [row] = cardsModule([card({ title: 'Main pane' })]).rows;
+    const [open] = row.actions;
+
+    expect(open.kind).toBe('open-card');
+    expect(open.label).toBeNull();
+    expect(open.hint).toBeNull();
+  });
+
+  it('names the delete target in the ×’s accessible name and keeps its hint bare', () => {
+    const [row] = cardsModule([card({ title: 'Main pane', deletable: true })]).rows;
+    const remove = row.actions[1];
+
+    expect(remove.kind).toBe('delete-card');
+    expect(remove.label).toBe('Delete card Main pane');
+    expect(remove.hint).toBe('Delete card');
+  });
+
+  /* The delete label uses the name the row actually prints — for an untitled
+     card that is the kind, exactly as `public.tsx:536`'s `title ?? card.kind`. */
+  it('falls back to the printed name — the kind — when the card has no title', () => {
+    const [row] = cardsModule([card({ title: null, kind: 'harness', deletable: true })]).rows;
+    const remove = row.actions[1];
+
+    expect(row.title).toBe('harness');
+    expect(remove.label).toBe(`Delete card ${row.title}`);
+    expect(remove.label).toBe('Delete card harness');
   });
 });
 
@@ -107,20 +158,74 @@ describe('deriveWavePageView tasks', () => {
 
     expect(row.id).toBe('block-3');
     expect(row.title).toBe('gate-alpha');
-    expect(row.actions).toEqual([{ kind: 'reveal-block', blockId: 'block-3' }]);
+    expect(row.actions).toEqual([{
+      kind: 'reveal-block',
+      blockId: 'block-3',
+      label: null,
+      hint: 'Show gate-alpha in the report',
+    }]);
   });
 
   it('adds the worker-card action only when a card is running the task', () => {
     const [without, with_] = tasksModule([
-      task({ blockId: 'b-a', kind: 'codex', workerCardId: null }),
-      task({ blockId: 'b-b', kind: 'codex', workerCardId: 'card-9' }),
+      task({ blockId: 'b-a', key: 'k-a', kind: 'codex', workerCardId: null }),
+      task({ blockId: 'b-b', key: 'k-b', kind: 'codex', workerCardId: 'card-9' }),
     ]).rows;
 
-    expect(without.actions).toEqual([{ kind: 'reveal-block', blockId: 'b-a' }]);
+    expect(without.actions.map((action) => action.kind)).toEqual(['reveal-block']);
+    expect(with_.actions.map((action) => action.kind)).toEqual(['reveal-block', 'open-card']);
+    expect(without.actions).toEqual([{
+      kind: 'reveal-block',
+      blockId: 'b-a',
+      label: null,
+      hint: 'Show k-a in the report',
+    }]);
     expect(with_.actions).toEqual([
-      { kind: 'reveal-block', blockId: 'b-b' },
-      { kind: 'open-card', cardId: 'card-9' },
+      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: 'Show k-b in the report' },
+      {
+        kind: 'open-card',
+        cardId: 'card-9',
+        label: null,
+        hint: 'Open the worker card for k-b',
+      },
     ]);
+  });
+
+  /*
+   * Both Task-row controls wrap visible text (`public.tsx:642`, `:747`), so
+   * neither may carry an `aria-label`; each carries only a pointer `title`
+   * naming its destination.
+   */
+  it('gives each Task control a destination hint and no accessible name', () => {
+    const [row] = tasksModule([
+      task({ key: 'gate-alpha', kind: 'codex', workerCardId: 'card-9' }),
+    ]).rows;
+    const [reveal, open] = row.actions;
+
+    expect(reveal.label).toBeNull();
+    expect(reveal.hint).toBe('Show gate-alpha in the report');
+    expect(open.label).toBeNull();
+    expect(open.hint).toBe('Open the worker card for gate-alpha');
+  });
+
+  /*
+   * The wording is **not a function of `kind`**: the same `open-card` reads
+   * `Open the worker card for …` on a Task row and has no wording at all on a
+   * Cards row. A painter that looked its sentences up per kind would collapse
+   * these two, so the difference is pinned as its own obligation.
+   */
+  it('words `open-card` differently on a Task row than on a Cards row', () => {
+    const [cardsRow] = cardsModule([card({ id: 'card-9', title: 'Main pane' })]).rows;
+    const [tasksRow] = tasksModule([
+      task({ key: 'gate-alpha', kind: 'codex', workerCardId: 'card-9' }),
+    ]).rows;
+
+    const fromCards = cardsRow.actions.find((action) => action.kind === 'open-card');
+    const fromTasks = tasksRow.actions.find((action) => action.kind === 'open-card');
+
+    expect(fromCards?.hint).toBeNull();
+    expect(fromTasks?.hint).toBe('Open the worker card for gate-alpha');
+    expect(fromCards?.hint).not.toBe(fromTasks?.hint);
   });
 
   /*
@@ -134,9 +239,16 @@ describe('deriveWavePageView tasks', () => {
    * S1b's painters an action the page never draws.
    */
   it('offers no worker card when the task declares no kind, whatever the card id says', () => {
-    const [row] = tasksModule([task({ blockId: 'b-k', kind: null, workerCardId: 'card-9' })]).rows;
+    const [row] = tasksModule([
+      task({ blockId: 'b-k', key: 'k-k', kind: null, workerCardId: 'card-9' }),
+    ]).rows;
 
-    expect(row.actions).toEqual([{ kind: 'reveal-block', blockId: 'b-k' }]);
+    expect(row.actions).toEqual([{
+      kind: 'reveal-block',
+      blockId: 'b-k',
+      label: null,
+      hint: 'Show k-k in the report',
+    }]);
   });
 
   it('strikes the declaration badge of a withdrawn task and no other', () => {

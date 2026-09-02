@@ -22,12 +22,17 @@ describe('Settings mobile presentation', () => {
       onOpenToday={vi.fn()}
       themeMode="system"
       onThemeModeChange={vi.fn()}
+      onOpenTemplates={vi.fn()}
     />);
 
-    expect(container.querySelectorAll('[data-nc-settings-card]')).toHaveLength(3);
+    // Network, Templates, Appearance, About. #1230 added Templates; the count
+    // is asserted rather than `toBeGreaterThan` so adding a section is a
+    // deliberate edit here, not something that slips in unnoticed.
+    expect(container.querySelectorAll('[data-nc-settings-card]')).toHaveLength(4);
     expect(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeTruthy();
     expect(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeTruthy();
     expect(page.getByRole('radiogroup', { name: 'Appearance' })).toBeTruthy();
+    expect(page.getByRole('button', { name: 'Edit templates' })).toBeTruthy();
     expect(page.getByRole('button', { name: 'Save' })).toBeTruthy();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     await page.screenshot({ path: '../../../../test-results/mobile-settings.png' });
