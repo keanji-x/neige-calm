@@ -126,7 +126,10 @@ impl WorkspaceActivityWindow {
     /// Total counted events. `waves_touched` is not added in — it is a
     /// dimension of the same rows, not more of them.
     pub fn total_events(&self) -> i64 {
-        self.wave_lifecycle_changed + self.wave_report_edited + self.task_completed + self.task_failed
+        self.wave_lifecycle_changed
+            + self.wave_report_edited
+            + self.task_completed
+            + self.task_failed
     }
 
     /// Nothing counted. The gate INV-TODAYDOC-007 is written against.
@@ -244,7 +247,10 @@ pub fn local_day_window(now_ms: i64) -> (i64, i64) {
     let tomorrow = today
         .succ_opt()
         .expect("the calendar does not end within this program's lifetime");
-    (local_start_of_day_ms(today), local_start_of_day_ms(tomorrow))
+    (
+        local_start_of_day_ms(today),
+        local_start_of_day_ms(tomorrow),
+    )
 }
 
 /// The first instant of `date` in the server's local zone.
@@ -420,8 +426,14 @@ mod tests {
         // The instant before the boundary belongs to the earlier day, which is
         // what makes the two windows a partition rather than a gap.
         f.event("wave.report_edited", "wave-1", midnight - 1).await;
-        assert_eq!(f.window(midnight - day, midnight).await.wave_report_edited, 1);
-        assert_eq!(f.window(midnight, midnight + day).await.wave_report_edited, 1);
+        assert_eq!(
+            f.window(midnight - day, midnight).await.wave_report_edited,
+            1
+        );
+        assert_eq!(
+            f.window(midnight, midnight + day).await.wave_report_edited,
+            1
+        );
     }
 
     /// Each allowlisted kind lands in its own field, and a kind outside the

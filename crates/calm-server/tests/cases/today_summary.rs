@@ -124,7 +124,13 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
 }
 
 impl Boot {
-    async fn request(&self, method: &str, uri: &str, actor: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
+    async fn request(
+        &self,
+        method: &str,
+        uri: &str,
+        actor: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().method(method).uri(uri);
         if let Some(actor) = actor {
             builder = builder.header("x-calm-actor", actor);
@@ -150,7 +156,12 @@ impl Boot {
     /// the cards and workspace a production wave has.
     async fn user_wave(&self, title: &str) -> String {
         let (status, cove) = self
-            .request("POST", "/api/coves", None, Some(json!({"name": title, "color": "#abc"})))
+            .request(
+                "POST",
+                "/api/coves",
+                None,
+                Some(json!({"name": title, "color": "#abc"})),
+            )
             .await;
         assert_eq!(status, StatusCode::CREATED, "cove={cove}");
         let (status, wave) = self
@@ -187,11 +198,15 @@ impl Boot {
     }
 
     async fn summary(&self, actor: Option<&str>) -> (StatusCode, Value) {
-        self.request("POST", "/api/today/summary", actor, None).await
+        self.request("POST", "/api/today/summary", actor, None)
+            .await
     }
 
     async fn scalar(&self, sql: &str) -> i64 {
-        sqlx::query_scalar(sql).fetch_one(self.repo.pool()).await.unwrap()
+        sqlx::query_scalar(sql)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
     }
 
     /// Every `harness.user_message.enqueued` row's `char_count`, oldest first.
@@ -247,7 +262,11 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
 
     let (status, body) = b.summary(None).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], json!("today_summary_no_activity"), "body={body}");
+    assert_eq!(
+        body["code"],
+        json!("today_summary_no_activity"),
+        "body={body}"
+    );
 
     assert_eq!(
         b.launchpad_wave_id().await,
@@ -257,7 +276,8 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
          before it precisely so an empty day costs neither"
     );
     assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'").await,
+        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
+            .await,
         0,
         "no conversation card may exist after a refusal"
     );
@@ -273,7 +293,8 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert!(b.launchpad_wave_id().await.is_some());
     assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'").await,
+        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
+            .await,
         1
     );
     assert_eq!(
@@ -339,12 +360,18 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
 
     assert_eq!(
         b.enqueued_char_counts().await,
-        vec![bootstrap_chars(), summary_chars, summary_chars, summary_chars],
+        vec![
+            bootstrap_chars(),
+            summary_chars,
+            summary_chars,
+            summary_chars
+        ],
         "three triggers must leave 2 + 1 + 1 = 4 rows; a second trigger that \
          adds none is the silent no-op this invariant exists to catch"
     );
     assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'").await,
+        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
+            .await,
         1,
         "three triggers, one conversation"
     );
@@ -418,7 +445,10 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
         .fetch_one(repo.pool())
         .await
         .unwrap();
-    assert_eq!(cards, 1, "three requests across two roots, one conversation");
+    assert_eq!(
+        cards, 1,
+        "three requests across two roots, one conversation"
+    );
     // …and it is still the same conversation, still being talked to: 2 + 1 + 1.
     let enqueued: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'",

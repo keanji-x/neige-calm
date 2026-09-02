@@ -42,7 +42,9 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::activity_window::{WorkspaceActivityWindow, local_day_window, workspace_activity_window};
+use crate::activity_window::{
+    WorkspaceActivityWindow, local_day_window, workspace_activity_window,
+};
 use crate::actor::Actor;
 use crate::conversation_keys::{DerivedConversationKeys, derive_wave_conversation_keys};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -454,7 +456,10 @@ mod tests {
         );
         // The bootstrap travels the same channel and is validated by
         // `validate_first_message` under the identical ceiling.
-        assert!(TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count() < crate::routes::cards::MAX_SPEC_INPUT_CHARS);
+        assert!(
+            TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count()
+                < crate::routes::cards::MAX_SPEC_INPUT_CHARS
+        );
         assert!(!TODAY_SUMMARY_BOOTSTRAP_TEXT.trim().is_empty());
     }
 }
