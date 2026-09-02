@@ -440,11 +440,56 @@ describe('harnessItemToActivity', () => {
     }))).toMatchObject({ state: 'failed', detail: 'wave is not attached', durationMs: 45 });
   });
 
+  /*
+   * ── The `Caused by:` chain, verbatim from the production database ────────
+   *
+   * These two messages are not constructed for the test: they are the `error`
+   * member of *both* of the only two failed `mcpToolCall` rows the production
+   * database has (`harness_items` 34080 and 34526), and neither of those rows
+   * carries an `aggregatedOutput`, so `error` is the only source there is.
+   * Their shape is the anyhow chain's: a generic wrapper naming the tool, then
+   * `Caused by:`, then the root cause — which is the whole of what the reader
+   * opened the line to find out, and which reading the message from the front
+   * throws away. Same rule as the shell tail above, for the same reason: a
+   * machine writes the thing it is finally reporting last.
+   */
+  const mcpFailure = (error: unknown): HarnessItem => row({
+    item_type: 'mcpToolCall',
+    params: JSON.stringify({
+      item: { tool: REPORT_WRITE_TOOLS[0], error, status: 'failed', type: 'mcpToolCall' },
+    }),
+  });
+
+  it('reads the root cause out of a `Caused by:` chain, not its wrapper', () => {
+    expect(harnessItemToActivity(mcpFailure({
+      message: 'tool call error: tool call failed for `calm/calm.report.edit`\n'
+        + '\nCaused by:\n    Mcp error: -32602: message must be non-empty\n',
+    }))).toMatchObject({ state: 'failed', detail: 'Mcp error: -32602: message must be non-empty' });
+  });
+
+  it('reads the root cause of the other failed row on the wire', () => {
+    expect(harnessItemToActivity(mcpFailure({
+      message: 'tool call error: tool call failed for `calm/calm.plan.upsert`\n'
+        + '\nCaused by:\n    Mcp error: -32602: `tasks` must be a non-empty array\n',
+    }))).toMatchObject({
+      state: 'failed', detail: 'Mcp error: -32602: `tasks` must be a non-empty array',
+    });
+  });
+
+  /* The one-line case the rule must leave exactly where it was: with nothing
+     after it, the last non-empty line *is* the first one. */
+  it('still says a single-line error whole', () => {
+    expect(harnessItemToActivity(mcpFailure('wave is not attached')))
+      .toMatchObject({ state: 'failed', detail: 'wave is not attached' });
+  });
+
   /* The payload **carries** a `durationMs` here, and that is the whole point: a
      started row is the item as codex knew it at the start, nothing stops a
      number riding along on it, and a row still saying `Running` must not print
      an interval that has not ended. Fed a payload without the key, this case
-     passes with or without the gate that enforces that. */
+     passes with or without the gate that enforces that — and what codex sends
+     today is neither: a JSON `null`, which the `typeof` test rejects on its
+     own. A number is the input that can tell the rule from the type check. */
   it('has no duration on a row that has not finished', () => {
     expect(harnessItemToActivity(row({
       method: 'item/started',
