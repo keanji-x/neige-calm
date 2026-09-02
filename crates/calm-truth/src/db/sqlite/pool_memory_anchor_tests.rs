@@ -6,10 +6,10 @@
 //! (`file:sqlx-in-memory-{seqno}?cache=shared`, seqno fixed per parsed
 //! `SqliteConnectOptions` — see sqlx-sqlite `options/parse.rs`). The cache
 //! — i.e. the entire database — lives only while at least one connection
-//! holds it. `SqlxRepo::open` uses `SqlitePoolOptions` defaults
-//! (`idle_timeout` 600 s, `max_lifetime` 1800 s, `min_connections` 0), so
-//! every pool connection churns: the reaper closes idle connections, the
-//! same-age connections hit the lifetime boundary together, and error
+//! holds it. `SqlxRepo::open` leaves the `SqlitePoolOptions` defaults for
+//! `idle_timeout` (600 s), `max_lifetime` (1800 s), and `min_connections`
+//! (0), so every pool connection churns: the reaper closes idle connections,
+//! the same-age connections hit the lifetime boundary together, and error
 //! paths `close_hard` (including #920's fail-closed `after_release`
 //! branch). When the LAST connection closes, sqlite destroys the cache;
 //! the next acquire attaches a fresh EMPTY database of the same name,

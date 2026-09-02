@@ -176,8 +176,9 @@ pub struct SqlxRepo {
     /// shared-cache database (`file:sqlx-in-memory-{seqno}?cache=shared`,
     /// seqno fixed per parsed `SqliteConnectOptions`); the cache — i.e.
     /// the entire database — lives only while at least one connection
-    /// holds it. Every POOL connection churns under the default
-    /// `SqlitePoolOptions`: the reaper closes connections idle > 600 s,
+    /// holds it. The `SqlitePoolOptions` fields `idle_timeout`,
+    /// `max_lifetime`, and `min_connections` retain their defaults, so every
+    /// POOL connection churns: the reaper closes connections idle > 600 s,
     /// `max_lifetime` (1800 s) hits the same-age connections together,
     /// and error paths `close_hard` — including the #920 `after_release`
     /// hook's fail-closed branch. If the pool's LAST connection closed,
