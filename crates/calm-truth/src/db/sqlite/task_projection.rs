@@ -463,12 +463,25 @@ struct InflightTaskRow {
 /// it needs, as one JSON parameter, and returns facts; the verdict remains the
 /// single Rust predicate shared by reads and writes.
 #[derive(Serialize)]
-struct ReferenceLookupRequest {
-    reference: String,
-    lookup_kind: &'static str,
-    track_id: Option<String>,
-    block_id: Option<String>,
-    card_id: Option<String>,
+#[serde(tag = "lookup_kind", rename_all = "snake_case")]
+enum ReferenceLookupRequest {
+    TrackBlock {
+        reference: String,
+        track_id: String,
+        block_id: String,
+    },
+    Card {
+        reference: String,
+        card_id: String,
+    },
+}
+
+impl ReferenceLookupRequest {
+    fn reference(&self) -> &str {
+        match self {
+            Self::TrackBlock { reference, .. } | Self::Card { reference, .. } => reference,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -500,23 +513,18 @@ fn declaration_references(declaration: &TaskDeclaration) -> Vec<String> {
 
 fn reference_lookup_request(reference: &str) -> Option<ReferenceLookupRequest> {
     if let Some((track_id, Some(block_id))) = parse_destination(reference) {
-        return Some(ReferenceLookupRequest {
+        return Some(ReferenceLookupRequest::TrackBlock {
             reference: reference.into(),
-            lookup_kind: "track_block",
-            track_id: Some(track_id),
-            block_id: Some(block_id),
-            card_id: None,
+            track_id,
+            block_id,
         });
     }
     reference
         .strip_prefix("neige://card/")
         .filter(|id| !id.is_empty() && !id.contains('/'))
-        .map(|card_id| ReferenceLookupRequest {
+        .map(|card_id| ReferenceLookupRequest::Card {
             reference: reference.into(),
-            lookup_kind: "card",
-            track_id: None,
-            block_id: None,
-            card_id: Some(card_id.into()),
+            card_id: card_id.into(),
         })
 }
 
@@ -726,7 +734,9 @@ async fn evaluate_schedulability_with_tree_term(
         .flatten()
         .filter_map(|reference| reference_lookup_request(reference))
         .fold(BTreeMap::new(), |mut requests, request| {
-            requests.entry(request.reference.clone()).or_insert(request);
+            requests
+                .entry(request.reference().to_owned())
+                .or_insert(request);
             requests
         })
         .into_values()
