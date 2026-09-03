@@ -200,10 +200,13 @@ struct BoundTemplate {
     input: Option<serde_json::Value>,
 }
 
+/// The serialized names below are FROZEN, and deliberately out of step with the
+/// Rust variant names — see [`PlannerHarnessStartOperationPayload`] for why.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HarnessProfile {
     #[default]
+    #[serde(rename = "spec")]
     Planner,
     PlainChat,
     /// #1189 — a track-scoped assistant conversation. Minted lazily like a
@@ -213,10 +216,42 @@ pub enum HarnessProfile {
     Assistant,
 }
 
+/// **The serialized field names in this struct are FROZEN and do not follow the
+/// #1316 renames.** They are `wave_id` and `spec_card_id`, and the Rust fields
+/// deliberately disagree with them.
+///
+/// This struct is not a DTO — it is persisted verbatim in
+/// `operations.payload_json`, and a SHA-256 over its serialization is persisted
+/// alongside it as `operations.payload_hash`
+/// (`routes/today.rs::stable_payload_hash(json!({"actor":…,"request":&req}))`).
+/// The operation runtime treats "same idempotency key, different payload hash"
+/// as a permanent 409 (`operation/repo_sqlite.rs:88`), and **nothing ever
+/// deletes rows from `operations`**.
+///
+/// So renaming a serialized field here is not a rename, it is a silent,
+/// permanent outage for every install that already has rows: the Today panel's
+/// `today-launchpad:<card>:<mode>:<digest>` key and the scheduler's child
+/// bootstrap key are both stable across deploys, so the first `ensure` after
+/// the upgrade re-submits an unchanged key with a changed hash and 409s —
+/// forever, with no self-healing path. `routes/today.rs:766-781` records
+/// #1147 hitting exactly this and solving it by putting the varying part in
+/// the KEY; here the varying part would be the whole payload shape, so the
+/// answer is to not vary it.
+///
+/// Migration 0082 therefore rewrites `operations.kind` (a lookup key, not
+/// hashed) but deliberately leaves `operations.payload_json` alone.
+///
+/// `track_id` also carries a `serde(alias)` for the S2-era spelling: #1316 S2
+/// renamed this field to `track_id` without freezing it, so an install that
+/// ran that build has rows spelled the other way. The alias lets those rows
+/// deserialize; their hash still cannot match, which is the pre-existing S2
+/// defect this freeze stops from spreading.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerHarnessStartOperationPayload {
     pub actor: ActorId,
+    #[serde(rename = "wave_id", alias = "track_id")]
     pub track_id: String,
+    #[serde(rename = "spec_card_id")]
     pub planner_card_id: CardId,
     #[serde(default)]
     pub report_card_id: Option<String>,
@@ -1500,6 +1535,63 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
 
 #[cfg(test)]
 mod tests {
+
+    /// The persisted wire shape of [`PlannerHarnessStartOperationPayload`],
+    /// pinned as a golden.
+    ///
+    /// Not a style check. This payload is stored in `operations.payload_json`
+    /// with a SHA-256 of its serialization in `operations.payload_hash`, and
+    /// the runtime turns "same idempotency key, different payload hash" into a
+    /// permanent 409 that nothing cleans up. #1316 S2 renamed one of these
+    /// fields without noticing, which is how this test came to exist; S3 froze
+    /// them and added this so the next rename fails here instead of in
+    /// production on the first `ensure` after a deploy.
+    ///
+    /// If this test fails, the fix is NOT to update the expectation.
+    #[test]
+    fn the_persisted_payload_field_names_are_frozen() {
+        let payload = PlannerHarnessStartOperationPayload {
+            actor: ActorId::Kernel,
+            track_id: "t1".into(),
+            planner_card_id: CardId::from("c1"),
+            report_card_id: None,
+            sort: None,
+            cwd: "/tmp".into(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: false,
+            profile: HarnessProfile::Planner,
+            create_card: None,
+            first_message_sha256: None,
+        };
+        let json = serde_json::to_value(&payload).expect("serialize");
+        let object = json.as_object().expect("object");
+        assert!(
+            object.contains_key("wave_id") && !object.contains_key("track_id"),
+            "the track field must still serialize as `wave_id`: {json}"
+        );
+        assert!(
+            object.contains_key("spec_card_id") && !object.contains_key("planner_card_id"),
+            "the planner-card field must still serialize as `spec_card_id`: {json}"
+        );
+        assert_eq!(
+            object.get("profile").and_then(serde_json::Value::as_str),
+            Some("spec"),
+            "the default profile must still serialize as `spec`: {json}"
+        );
+
+        // And the S2-era spelling still reads back, for installs that ran it.
+        // Derived from the real serialization rather than hand-written, so the
+        // case cannot drift out of shape as unrelated fields change.
+        let mut s2_era = object.clone();
+        let track = s2_era.remove("wave_id").expect("wave_id present");
+        s2_era.insert("track_id".into(), track);
+        let s2_era = serde_json::Value::Object(s2_era);
+        assert!(
+            serde_json::from_value::<PlannerHarnessStartOperationPayload>(s2_era.clone()).is_ok(),
+            "the `track_id` alias must keep S2-era rows readable: {s2_era}"
+        );
+    }
     use super::*;
     use std::path::PathBuf;
     use std::time::Duration;

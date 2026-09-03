@@ -100,6 +100,12 @@ UPDATE events SET actor = 'ai:planner:' || substr(actor, length('ai:spec:') + 1)
 --    Rewritten with JSON1 rather than a string REPLACE so a body that merely
 --    mentions the word cannot be corrupted.
 --
+--    `events.payload` has no `json_valid` CHECK (unlike `operations`), and a
+--    non-JSON body makes `json_extract` abort the whole migration — measured.
+--    The guard is a CASE rather than a second `AND` because SQLite does not
+--    promise left-to-right evaluation of WHERE conjuncts, so an `AND
+--    json_valid(...)` sibling is not actually a guard; CASE orders it.
+--
 --    No `event_version` bump accompanies section 3 or 4: unlike 0080/0081,
 --    neither rewrites an event KIND, so a client's per-frame discriminator gate
 --    still recognises these rows. What changes is a field's value, and the
@@ -109,42 +115,36 @@ UPDATE events SET actor = 'ai:planner:' || substr(actor, length('ai:spec:') + 1)
 UPDATE events
    SET payload = json_set(payload, '$.author', 'planner')
  WHERE kind = 'track.report_edited'
-   AND json_valid(payload)
-   AND json_extract(payload, '$.author') = 'spec';
+   AND CASE WHEN json_valid(payload)
+            THEN json_extract(payload, '$.author')
+       END = 'spec';
 
 -- ---------------------------------------------------------------------------
--- 5. `operations.kind` and `operations.payload_json`.
+-- 5. `operations.kind`.
 --
 --    Operations are NOT immutable history — a row can be pending or parked
---    across a restart and then resumed, so both its dispatch key and its
---    payload have to survive the rename.
+--    across a restart and then resumed, so its dispatch key has to survive the
+--    rename. `kind` is how the driver finds an adapter
+--    (`operation/driver.rs::adapter` keys a `HashMap<&'static str, _>` on it)
+--    and how `session_repo_impl.rs:218` locates a track's planner session.
+--    Leaving it means a parked `spec-harness-start` can never be resumed, AND
+--    the session lookup matches zero rows for every pre-upgrade track, so live
+--    planner sessions read as dormant.
 --
---    `kind` is how the driver finds an adapter (`operation/driver.rs::adapter`
---    keys a `HashMap<&'static str, _>` on it) and how
---    `session_repo_impl.rs` locates a track's planner session. Leaving it
---    means a parked `spec-harness-start` can never be resumed (its adapter no
---    longer exists under that name), AND the session lookup matches zero rows
---    for every pre-upgrade track, so live planner sessions read as dormant.
+--    `operations.payload_json` is deliberately NOT rewritten. Its field names
+--    are frozen instead, in the struct itself — see the doc comment on
+--    `PlannerHarnessStartOperationPayload`. A rewrite here would desync the row
+--    from its own `payload_hash`, which is a permanent 409 on every stable
+--    idempotency key (Today's launchpad, the scheduler's child bootstrap) with
+--    no self-healing path, because nothing deletes from `operations`.
 --
---    `payload_json` carries the adapter's own struct. `spec_card_id` has no
---    serde default, so a stale row fails to deserialize outright; the
---    `HarnessProfile` variant is `rename_all = "snake_case"`, so its persisted
---    value is the bare `"spec"`. Both are rewritten with JSON1 rather than a
---    string REPLACE so a payload that merely mentions the word is untouched,
---    and `json_valid` guards the same way section 4 does.
+--    `operations` carries `UNIQUE (kind, idempotency_key) WHERE
+--    idempotency_key IS NOT NULL`, so a kind rewrite could in principle collide.
+--    It cannot here, and the argument is checkable rather than assumed: the
+--    three `planner-harness-*` strings do not appear anywhere in the tree before
+--    this slice (`git grep planner-harness- origin/main` is empty), so no build
+--    that has ever run could have written a row under those names.
 -- ---------------------------------------------------------------------------
 UPDATE operations SET kind = 'planner-harness-start'     WHERE kind = 'spec-harness-start';
 UPDATE operations SET kind = 'planner-harness-interrupt' WHERE kind = 'spec-harness-interrupt';
 UPDATE operations SET kind = 'planner-harness-shutdown'  WHERE kind = 'spec-harness-shutdown';
-
-UPDATE operations
-   SET payload_json = json_remove(
-         json_set(payload_json, '$.planner_card_id', json_extract(payload_json, '$.spec_card_id')),
-         '$.spec_card_id')
- WHERE json_valid(payload_json)
-   AND json_extract(payload_json, '$.spec_card_id') IS NOT NULL;
-
-UPDATE operations
-   SET payload_json = json_set(payload_json, '$.profile', 'planner')
- WHERE json_valid(payload_json)
-   AND json_extract(payload_json, '$.profile') = 'spec';
