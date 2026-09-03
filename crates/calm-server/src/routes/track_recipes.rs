@@ -67,12 +67,21 @@ pub fn router() -> Router<AppState> {
 /// Two transforms, and both are about **not carrying one track's authority
 /// into every wave made from this recipe**:
 ///
-/// 1. **Tombstones are dropped.** A tombstone blocks re-declaring its key
-///    (`report_blocks::tasks`), so a recipe carrying one would poison every
-///    instantiated wave — that key could never be used again in any of them.
-///    This is the one place recipes deliberately diverge from fork, which
-///    *keeps* tombstones because they are that track's audit history. A
-///    recipe has no history to preserve; it describes work not yet done.
+/// 1. **Tombstones are dropped**, leaving a blank-line boundary behind. A
+///    tombstone blocks re-declaring its key (`report_blocks::tasks`), so a
+///    recipe carrying one would poison every instantiated wave — that key
+///    could never be used again in any of them. This is the one place
+///    recipes deliberately diverge from fork, which *keeps* tombstones
+///    because they are that track's audit history. A recipe has no history
+///    to preserve; it describes work not yet done.
+///
+///    The blank line is not cosmetic. Splicing the dropped fence's two prose
+///    neighbours together makes them one Markdown paragraph context, and the
+///    join can *create* syntax neither side wrote: `foo\n` followed by
+///    `---\n` is a Setext H2 titled "foo", where the original had a
+///    paragraph and a thematic break. Deleting one task must not re-parse
+///    the prose around it, so [`restore_paragraph_break`] reinstates the
+///    paragraph boundary the fence used to provide.
 /// 2. **Privilege fields are normalized** via the same
 ///    [`normalize_task_privilege_fields`] the fork path calls, so
 ///    `declared_by`/`ready`/`released_by_user` cannot smuggle in authorship
@@ -88,35 +97,58 @@ pub fn router() -> Router<AppState> {
 /// twice cannot disagree with itself; that was #1230's failure shape.
 fn normalize_recipe_body(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
+    // Set when a tombstone was dropped; consumed by whatever is emitted
+    // next. Deferring it this way is what keeps normalization idempotent:
+    // a body with nothing after the tombstone gains no trailing blank
+    // line, and a normalized body has no tombstones left to drop, so
+    // re-normalizing it is byte-for-byte the identity.
+    let mut pending_break = false;
     for slice in split_body(body) {
-        let Some(fence) = parse_fence(&slice.raw) else {
-            out.push_str(&slice.raw);
-            continue;
-        };
-        if fence.kind != KIND_TASK {
-            out.push_str(&slice.raw);
-            continue;
-        }
-        if fence
-            .payload
-            .get("tombstone")
-            .is_some_and(|value| !value.is_null())
-        {
-            continue;
-        }
-        let mut payload = match fence.payload {
-            Value::Object(map) => map,
-            // `parse_fence` only returns object payloads; keep the slice
-            // rather than inventing a shape if that ever changes.
-            _ => {
-                out.push_str(&slice.raw);
-                continue;
+        let rendered = match parse_fence(&slice.raw) {
+            Some(fence) if fence.kind == KIND_TASK => {
+                if fence
+                    .payload
+                    .get("tombstone")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    pending_break = true;
+                    continue;
+                }
+                match fence.payload {
+                    Value::Object(mut payload) => {
+                        normalize_task_privilege_fields(&mut payload);
+                        render_fence(KIND_TASK, &Value::Object(payload))
+                    }
+                    // `parse_fence` only returns object payloads; keep the
+                    // slice rather than inventing a shape if that changes.
+                    _ => slice.raw,
+                }
             }
+            _ => slice.raw,
         };
-        normalize_task_privilege_fields(&mut payload);
-        out.push_str(&render_fence(KIND_TASK, &Value::Object(payload)));
+        if pending_break {
+            restore_paragraph_break(&mut out);
+            pending_break = false;
+        }
+        out.push_str(&rendered);
     }
     out
+}
+
+/// End `out` on a blank line so that whatever is appended next starts a new
+/// Markdown block, never a continuation of the last one.
+///
+/// No-op when `out` is empty (nothing to separate from) or already ends on a
+/// blank line (nothing to add) — which is what makes repeated calls, and
+/// therefore repeated normalization, non-accumulating.
+fn restore_paragraph_break(out: &mut String) {
+    if out.is_empty() || out.ends_with("\n\n") {
+        return;
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
 }
 
 /// Validate a candidate recipe body the same way wave creation validates the
@@ -127,6 +159,28 @@ fn normalize_recipe_body(body: &str) -> String {
 fn validate_recipe_body(body: &str) -> Result<()> {
     crate::track_report_guard::validate_body_fences(body)
         .map_err(|error| CalmError::BadRequest(format!("wave recipe body: {error}")))
+}
+
+/// The same actor decision the block endpoints make, said in this endpoint's
+/// own words.
+///
+/// The rule is identical — REST writes are the human's channel — so the
+/// *judgement* stays in [`require_rest_user_actor`] and is never restated
+/// here; restating it is how the two drift apart. Only the sentence differs:
+/// the block endpoints' text points the refused caller at `calm.report.*`,
+/// which is the right redirect for a track report and the wrong one for a
+/// recipe (no MCP tool writes recipes at all — an agent that wants this
+/// starting point asks its human for it).
+fn require_recipe_user_actor(actor: &Actor) -> Result<()> {
+    match require_rest_user_actor(actor) {
+        Ok(()) => Ok(()),
+        Err(CalmError::Forbidden(_)) => Err(CalmError::Forbidden(format!(
+            "track recipe write: only `X-Calm-Actor: user` is allowed; got `{}`. Recipes are the \
+             human's own saved starting points and have no agent-facing write path.",
+            actor.as_str()
+        ))),
+        Err(other) => Err(other),
+    }
 }
 
 fn validate_title(title: &str) -> Result<()> {
@@ -198,7 +252,7 @@ pub(crate) async fn create_recipe(
     actor: Actor,
     Json(body): Json<CreateRecipeBody>,
 ) -> Result<(StatusCode, Json<TrackRecipe>)> {
-    require_rest_user_actor(&actor)?;
+    require_recipe_user_actor(&actor)?;
     validate_title(&body.title)?;
     let normalized = normalize_recipe_body(&body.body);
     validate_recipe_body(&normalized)?;
@@ -229,7 +283,7 @@ pub(crate) async fn update_recipe(
     Path(id): Path<String>,
     Json(body): Json<UpdateRecipeBody>,
 ) -> Result<Json<TrackRecipe>> {
-    require_rest_user_actor(&actor)?;
+    require_recipe_user_actor(&actor)?;
     validate_title(&body.title)?;
     let normalized = normalize_recipe_body(&body.body);
     validate_recipe_body(&normalized)?;
@@ -260,7 +314,7 @@ pub(crate) async fn delete_recipe(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    require_rest_user_actor(&actor)?;
+    require_recipe_user_actor(&actor)?;
     s.repo.track_recipe_delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

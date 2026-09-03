@@ -464,6 +464,7 @@ dependencies = [
  "http-body-util",
  "libc",
  "nix 0.29.0",
+ "pulldown-cmark",
  "rand 0.8.6",
  "semver",
  "serde",

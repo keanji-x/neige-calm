@@ -182,6 +182,185 @@ async fn create_normalizes_every_privilege_field_and_drops_tombstones() {
     );
 }
 
+/// Every Markdown heading in `body`, as `(level, text)`, read with a real
+/// CommonMark parser.
+///
+/// Deliberately not a substring scan: the bug this pins is that dropping a
+/// tombstone *creates* a heading out of prose that contains no heading
+/// marker at all (`foo\n---\n` is a Setext H2), so only a parser can see it.
+fn headings(body: &str) -> Vec<(u32, String)> {
+    use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+    let mut out = Vec::new();
+    let mut current: Option<(u32, String)> = None;
+    for event in Parser::new(body) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let level = match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                };
+                current = Some((level, String::new()));
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, buffer)) = current.as_mut() {
+                    buffer.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(heading) = current.take() {
+                    out.push(heading);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Dropping a tombstone must not change how its *neighbours* parse.
+///
+/// The shape is specific and adversarial: the prose before the fence ends on
+/// a non-blank line (`foo`), the prose after it opens with `---`. Spliced
+/// naively those two become `foo\n---\n` — a Setext H2 titled "foo" — so
+/// "delete one task" would silently promote a paragraph to a heading and
+/// swallow the thematic break. The oracle is the whole heading list, before
+/// and after: nothing about the surrounding prose may move.
+#[tokio::test]
+async fn dropping_a_tombstone_does_not_splice_its_prose_neighbours() {
+    let boot = boot().await;
+    let body = format!(
+        "# Plan\n\nfoo\n{}---\n\nbar\n",
+        task_fence(json!({
+            "key": "retired",
+            "tombstone": { "reason": null },
+            "declared_by": "user",
+            "tombstoned_by": "user",
+        })),
+    );
+    // Precondition: in the input, `foo` is a paragraph and the only heading
+    // is `# Plan`. If this ever stops holding the test below proves nothing.
+    assert_eq!(
+        headings(&body),
+        vec![(1, "Plan".to_string())],
+        "input must start with exactly one heading: {body}"
+    );
+
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "mine", "body": body })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let stored = created["body"].as_str().expect("body");
+
+    assert!(
+        task_payloads(stored).is_empty(),
+        "the tombstone must still be dropped: {stored}"
+    );
+    assert_eq!(
+        headings(stored),
+        vec![(1, "Plan".to_string())],
+        "dropping the task must not re-parse the prose around it: {stored:?}"
+    );
+}
+
+/// Normalization is a fixed point: storing what a store returned changes
+/// nothing, byte for byte.
+///
+/// Without this, the fix above could pay for its paragraph break by growing
+/// the body a blank line on every save — the same content, re-saved from the
+/// editor a few times, would drift.
+#[tokio::test]
+async fn normalization_is_byte_identical_the_second_time() {
+    let boot = boot().await;
+    let body = format!(
+        "# Plan\n\nfoo\n{}---\n\nbar\n{}{}end\n",
+        task_fence(json!({
+            "key": "retired",
+            "tombstone": { "reason": null },
+            "declared_by": "user",
+        })),
+        task_fence(json!({
+            "key": "live",
+            "goal": "do the thing",
+            "kind": "codex",
+            "declared_by": "user",
+            "ready": true,
+            "released_by_user": true,
+        })),
+        task_fence(json!({
+            "key": "also-retired",
+            "tombstone": { "reason": "dropped" },
+            "declared_by": "user",
+        })),
+    );
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "mine", "body": body })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let first = created["body"].as_str().expect("body").to_string();
+
+    let (status, updated) = send(
+        boot.app.clone(),
+        "PUT",
+        &format!("/api/track-recipes/{id}"),
+        Some("user"),
+        Some(json!({ "title": "mine", "body": first, "if_revision": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    let second = updated["body"].as_str().expect("body");
+    assert_eq!(
+        second, first,
+        "re-storing a stored body must be the identity"
+    );
+}
+
+/// The 403 a refused recipe write returns must talk about **recipes**.
+///
+/// The decision is the block endpoints' shared helper, but their sentence
+/// sends the caller to the MCP `calm.report.*` tools — advice that is simply
+/// wrong here: no MCP tool writes recipes.
+#[tokio::test]
+async fn the_recipe_403_explains_recipes_not_report_blocks() {
+    let boot = boot().await;
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("ai:claude"),
+        Some(json!({ "title": "theirs", "body": "# Plan\n" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={error}");
+    let message = error["error"].as_str().expect("error message");
+    assert!(
+        message.contains("recipe"),
+        "must name what was refused: {message}"
+    );
+    assert!(
+        !message.contains("calm.report."),
+        "must not redirect to a tool that cannot write recipes: {message}"
+    );
+    assert!(
+        message.contains("ai:claude"),
+        "must name the rejected actor: {message}"
+    );
+}
+
 /// The same normalization on the update path. Without this, a recipe could
 /// be created clean and then edited dirty.
 #[tokio::test]
