@@ -295,6 +295,12 @@ tokio = { version = "1", features = ["full", "test-util"] }
 # as comment/string-sensitive text. This exact release is already locked as
 # a transitive dependency; only the test-only AST features are enabled here.
 syn = { version = "2.0.117", features = ["full", "visit"] }
+# #1252 S2 fix round 1 — the structural door's gate pins rendered *types*, not
+# only parameter and field names: two reviewer-built bypasses kept every pinned
+# name and swapped the type under it. Rendering needs `ToTokens`, which lives in
+# `quote`; it is already locked as syn's own dependency, so this adds no crate to
+# the graph.
+quote = "1"
 # #1196 S1 review r5 — `a9b` needs a POSITIVE observation that the stale crash
 # supervisor woke from its backoff and took the epoch-mismatch branch, instead
 # of sleeping to a computed instant and asserting an arithmetic identity about

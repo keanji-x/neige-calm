@@ -1,6 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use quote::ToTokens;
 use syn::visit::Visit;
 use syn::{Item, ItemMod, UseTree, Visibility};
 
@@ -12,8 +13,59 @@ const PRIVATE_IMPL: &str = "guard_forked_blocks_impl";
 const STRUCTURAL_DOOR: &str = "structural_init_report_tx";
 const STRUCTURAL_TARGET: &str = "InitialReportTarget";
 
+/// The structural door's parameter list, `(name, type-as-written)`, in order.
+///
+/// The types are here because a previous version of this gate pinned only the
+/// names, and a review channel walked through it by keeping every pinned name
+/// and swapping the type underneath: `tx: &mut StructuralTx<'_, '_>`, where
+/// `StructuralTx` is a one-line newtype in the same file holding
+/// `{ inner: &mut Transaction<..>, who: ActorId }`. The name `tx` was
+/// unchanged, the ident `ActorId` never appeared in this function's signature,
+/// and all four tests in this file stayed green.
+const DOOR_PARAMETERS: &[(&str, &str)] = &[
+    ("tx", "&mut sqlx::Transaction<'_, sqlx::Sqlite>"),
+    ("target", "InitialReportTarget<'_>"),
+];
+
+/// The structural door's return type, as written.
+///
+/// Half of the same bypass: `Emitted` was a file-local
+/// `type Emitted = Vec<Event>;` and the door returned
+/// `(Card, TaskProjectionOutcome, Emitted)`. No ident `Event` appears in the
+/// signature, so the name list below never saw it.
+const DOOR_RETURN: &str = "Result<(Card, TaskProjectionOutcome), CalmError>";
+
+/// Every field of the door's argument struct, `name -> type-as-written`.
+///
+/// The other bypass: field name `payload` kept, its type changed to
+/// `&'a InitContent<'a>` where `InitContent` is
+/// `{ inner: &'a TrackReportPayload, by: EditAuthor }`. That is #1115's hole
+/// re-opened — the door body could then call
+/// `guard_task_declarations(.., target.payload.by, ..)` — under a field name
+/// this gate already expected.
+const DOOR_TARGET_FIELDS: &[(&str, &str)] = &[
+    ("report_card_id", "&'a str"),
+    ("track_id", "&'a str"),
+    ("payload", "&'a TrackReportPayload"),
+    ("doc", "&'a mut ReportDoc"),
+    (
+        "declarations",
+        "&'a [calm_types::report_blocks::tasks::TaskDeclaration]",
+    ),
+    (
+        "diagnostics",
+        "&'a [Vec<calm_types::report_blocks::tasks::Diagnostic>]",
+    ),
+];
+
 /// Every name that must not appear anywhere in the structural door's signature
 /// or in the struct that carries its arguments.
+///
+/// This is the gate's **second** line of defence, behind the three tables
+/// above. The tables catch a pinned name with a different type under it; this
+/// list catches a concept arriving somewhere the tables have no row for — an
+/// added parameter, a seventh field, a changed generic — and names the concept
+/// in the failure message.
 ///
 /// Both spellings of each concept, because the mutation this list exists to
 /// catch can arrive as either: the type (`EditAuthor`) or the parameter /
@@ -56,10 +108,10 @@ const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
 
 /// Every identifier appearing anywhere under a piece of syntax.
 ///
-/// `syn`'s `printing` feature would let this be a string compare over rendered
-/// tokens; walking idents instead is both narrower and harder to fool with
-/// whitespace, and the `visit` feature is already enabled for this crate's dev
-/// build.
+/// Used for the name checks, which are the ones that have to reach *inside* a
+/// type — `Option<EditAuthor>` nested in some position no table has a row for.
+/// [`rendered`] is the complementary tool: exact text for the positions that
+/// are pinned exactly.
 #[derive(Default)]
 struct Idents(BTreeSet<String>);
 
@@ -69,22 +121,57 @@ impl<'ast> Visit<'ast> for Idents {
     }
 }
 
+/// A piece of syntax as it is *written*, with every space removed.
+///
+/// Whitespace goes so that the expected spellings in the tables above can be
+/// written the way a human writes them (`&mut sqlx::Transaction<'_,
+/// sqlx::Sqlite>`) while the comparison stays immune to rustfmt's line
+/// wrapping and to `quote`'s own token spacing.
+///
+/// This compares *spelling*, not resolved meaning: it reads the path
+/// `sqlx::Transaction` as the string `sqlx::Transaction` and would not notice
+/// that path being re-exported onto something else inside the `sqlx` crate.
+/// What it does notice is any change to what is written in this repository's
+/// own `write.rs`, which is where a new type has to be introduced for the door
+/// to acquire an argument it must not have.
+fn rendered(tokens: &impl ToTokens) -> String {
+    tokens
+        .to_token_stream()
+        .to_string()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
 /// #1252 S2 — the six absences on `track_report::write::structural_init_report_tx`
 /// are the whole content of that door, so they are a gate rather than a comment.
 ///
 /// The door writes a forked or templated report onto the report card inside the
 /// track-creation transaction. What makes it safe is not something it does; it
-/// is the set of things it has **no way to say**: it cannot name an author
-/// (#1115 — so `guard_task_declarations` is unreachable from it, because there
-/// is nothing to pass), it cannot emit (Q12 — no `EventBus`, no event in the
-/// return type, so no `track.report_edited` and no `card.updated`), it cannot
-/// compare-and-swap (the row was INSERTed by the same transaction), and it has
-/// no lifecycle, auto-promote or recorder-probe leg.
+/// is what its argument set is: two parameters and six fields, each pinned here
+/// **by name and by written type**, plus a pinned return type. So the door has
+/// no author to give `guard_task_declarations` (#1115), no bus and no event in
+/// what it returns (Q12), no prior revision to compare against, and no
+/// lifecycle, auto-promote or recorder-probe leg.
 ///
-/// Prose says that; this test is what makes it fail to build a green run.
-/// Add any one of `author: EditAuthor`, `attribution: WriteAttribution`,
-/// `events: &EventBus` or `if_doc_rev: u64` to the signature — or smuggle the
-/// same field into `InitialReportTarget` — and this goes red on the exact name.
+/// # What this test does and does not close
+///
+/// It closes **this signature drifting**: any change to either parameter's name
+/// or type, to any of the six fields' names or types, or to the return type,
+/// is red here, and a reviewer has to come back to this file and say why.
+/// That is a stronger statement than the one this test made before #1252 R1/F1,
+/// which pinned names only — and which a review channel walked past twice, in
+/// both cases by keeping every pinned name and defining one newtype in
+/// `write.rs` to change what the name stood for (see `DOOR_PARAMETERS` and
+/// `DOOR_TARGET_FIELDS` for the two constructions verbatim).
+///
+/// It does **not** close "the door cannot express an author" as a statement
+/// about the language. Rendered token text is not resolved types: a pinned
+/// spelling like `sqlx::Transaction` says nothing about what that path resolves
+/// to elsewhere, and nothing here constrains what a *pinned* type such as
+/// `ReportDoc` or `TrackReportPayload` may grow inside its own definition. The
+/// property under test is the shape of the signature as written, which is a
+/// syntactic fact — and drift in it is the failure mode this gate exists for.
 ///
 /// It reads the file rather than the compiled crate on purpose: the door is
 /// `pub(crate)`, so no integration test can name it, and the property under
@@ -106,27 +193,51 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
         })
         .unwrap_or_else(|| panic!("`{STRUCTURAL_DOOR}` vanished from {}", path.display()));
 
-    // The parameter list itself, by name. This is the assertion that bites on
-    // an added argument even if its type is spelled in a way the name list
-    // below has never heard of.
-    let parameters: Vec<String> = door
+    // The parameter list itself, name *and* written type. This is the
+    // assertion that bites on an added argument even if its type is spelled in
+    // a way the name list below has never heard of — and, since R1/F1, on an
+    // argument that keeps its name and changes what that name stands for.
+    let parameters: Vec<(String, String)> = door
         .sig
         .inputs
         .iter()
         .map(|input| match input {
             syn::FnArg::Receiver(_) => panic!("{STRUCTURAL_DOOR} must be a free function"),
             syn::FnArg::Typed(typed) => match &*typed.pat {
-                syn::Pat::Ident(ident) => ident.ident.to_string(),
+                syn::Pat::Ident(ident) => (ident.ident.to_string(), rendered(&*typed.ty)),
                 _ => panic!(
                     "{STRUCTURAL_DOOR}: every parameter must be a plain `name: Type` binding"
                 ),
             },
         })
         .collect();
+    let expected_parameters: Vec<(String, String)> = DOOR_PARAMETERS
+        .iter()
+        .map(|(name, ty)| {
+            (
+                (*name).to_string(),
+                rendered(&syn::parse_str::<syn::Type>(ty).unwrap()),
+            )
+        })
+        .collect();
     assert_eq!(
-        parameters,
-        vec!["tx".to_string(), "target".to_string()],
-        "the structural door takes the transaction and its target, and nothing else"
+        parameters, expected_parameters,
+        "the structural door takes the transaction and its target, and nothing else — neither \
+         under a new name nor under a new type wearing one of these two names"
+    );
+
+    // The return type, for the same reason: `TaskProjectionOutcome` is what
+    // this door hands back, and a third tuple member is how an event vector
+    // leaves it without any parameter changing.
+    let return_type = match &door.sig.output {
+        syn::ReturnType::Default => "()".to_string(),
+        syn::ReturnType::Type(_, ty) => rendered(ty),
+    };
+    assert_eq!(
+        return_type,
+        rendered(&syn::parse_str::<syn::Type>(DOOR_RETURN).unwrap()),
+        "the structural door returns the written card and the projection outcome, and nothing \
+         else: a widened return is how this door would come to emit"
     );
 
     let target = syntax
@@ -140,34 +251,35 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
         })
         .unwrap_or_else(|| panic!("`{STRUCTURAL_TARGET}` vanished from {}", path.display()));
 
-    // Field names, pinned as a set for the same reason: an added field is how
-    // an argument arrives once the parameter list is pinned.
-    let fields: BTreeSet<String> = target
+    // Fields, pinned name-to-written-type for the same reason: an added field
+    // is how an argument arrives once the parameter list is pinned, and a
+    // retyped field is how one arrives once the field names are pinned too.
+    let fields: BTreeMap<String, String> = target
         .fields
         .iter()
         .map(|field| {
-            field
+            let name = field
                 .ident
                 .as_ref()
                 .unwrap_or_else(|| panic!("{STRUCTURAL_TARGET} must be a named struct"))
-                .to_string()
+                .to_string();
+            (name, rendered(&field.ty))
         })
         .collect();
-    let expected_fields: BTreeSet<String> = [
-        "report_card_id",
-        "track_id",
-        "payload",
-        "doc",
-        "declarations",
-        "diagnostics",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let expected_fields: BTreeMap<String, String> = DOOR_TARGET_FIELDS
+        .iter()
+        .map(|(name, ty)| {
+            (
+                (*name).to_string(),
+                rendered(&syn::parse_str::<syn::Type>(ty).unwrap()),
+            )
+        })
+        .collect();
     assert_eq!(
         fields, expected_fields,
         "the structural door's argument struct carries report content and two ids — nothing that \
-         names a writer, an authority or a prior revision"
+         names a writer, an authority or a prior revision, and nothing that wraps one of these \
+         six types around something that does"
     );
 
     // And the name check over both, which is what catches the same concept

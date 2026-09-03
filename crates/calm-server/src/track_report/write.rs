@@ -439,11 +439,20 @@ pub(crate) async fn agent_report_op(
 ///   `create_track_structure` runs on a REST request whose only identity is the
 ///   `Actor` extractor's — so there is no session for a probe to read.
 ///
-/// None of the six is expressible by a caller of this function, which is the
-/// difference between a door and a flag. In particular this door does not take
-/// a `track_report_origin::WritePolicy` and reads no field of one: three of its
-/// four fields are consumed here by *not existing*, and the fourth (`actor`) is
-/// consumed by the create closure, outside this boundary.
+/// None of the six appears in this signature, and none can be added to it
+/// quietly: `tests/cases/fork_guard_exemption_invariant.rs` pins both
+/// parameters, all six fields of [`InitialReportTarget`] and the return type
+/// **by name and by written type**, so acquiring any of them is a decision
+/// somebody has to record in that file. That is a gate against drift, not a
+/// proof about the language — the earlier wording here ("none of the six is
+/// expressible by a caller") claimed the latter, and a review channel broke it
+/// twice with newtypes that kept every pinned name. What is true without
+/// qualification is the narrower thing: as written today this door takes a
+/// transaction and report content, so there is no author to hand
+/// `guard_task_declarations` and no `track_report_origin::WritePolicy` field to
+/// read — three of that struct's four fields are consumed here by *not
+/// existing*, and the fourth (`actor`) is consumed by the create closure,
+/// outside this boundary.
 pub(crate) async fn structural_init_report_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     target: InitialReportTarget<'_>,
