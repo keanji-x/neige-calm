@@ -2,8 +2,12 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::Plugin;
+use crate::plugin_host::template_input::{
+    TEMPLATE_INPUT_MAX_BYTES, declares_key, reject_undeclared_keys, validate_instance,
+};
 use crate::plugin_host::{
-    Manifest, PluginRegistry, PluginRuntimeStatus, ResourceError, RpcError, read_ui_resource,
+    Manifest, PluginRegistry, PluginRuntimeStatus, ResourceError, RpcError, effective_config,
+    read_ui_resource,
 };
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
@@ -15,7 +19,7 @@ use axum::{
     routing::{get, patch, post},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::path::{Path as StdPath, PathBuf};
 use utoipa::{IntoParams, ToSchema};
 
@@ -88,6 +92,20 @@ pub struct PluginListItem {
     pub manifest_description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// #1284 §2.5 — does this plugin declare a `config_schema`?
+    ///
+    /// The list deliberately does not carry the manifest (see the struct doc),
+    /// which left "this plugin has nothing to configure" and "the config
+    /// screen isn't built yet" indistinguishable from list data alone — so the
+    /// UI could only guess, and guessing wrong produces exactly the empty
+    /// shell this work exists to remove. This is the one bit that makes the
+    /// question decidable, read from the **registry** — the same source the
+    /// write path validates against, so "the form is offered" and "the write
+    /// is accepted" cannot disagree. A plugin whose row exists but whose
+    /// manifest the kernel has not loaded (see [`registry_manifest`]) reports
+    /// `false`: the kernel knows of no configurable key for it, and its
+    /// `PATCH` says so explicitly rather than 400-ing as "no schema".
+    pub has_config: bool,
 }
 
 /// Single-plugin detail returned by GET-by-id, install, enable, disable,
@@ -105,8 +123,51 @@ pub struct PluginDetail {
     pub last_error: Option<String>,
     #[schema(value_type = Object)]
     pub manifest: Value,
+    /// #1284 §2.5 / §2.7 — the schema the config form renders from, read from
+    /// the **registry**, i.e. from the same document the PATCH validates
+    /// against and every S2/S3 consumer will read.
+    ///
+    /// **Which copy is which, since there are now two.** `manifest` above is
+    /// still the persisted `plugins.manifest` blob, verbatim, as it has always
+    /// been published — it is the row, and rewriting it here would make this
+    /// response a document that exists nowhere. This field is the registry's,
+    /// and for `config_schema` specifically it is the authoritative one; when
+    /// the two disagree (an install by a pre-#1284 kernel dropped the key from
+    /// the blob; a `reload` refreshed the registry) `manifest.config_schema`
+    /// is stale or absent and this field is not.
+    ///
+    /// Round 1 left this half-done and the contradiction was pinned by a test
+    /// of its own: `has_config` and `effective_config` had moved to the
+    /// registry while the schema a form needs was still only reachable through
+    /// the blob, so the API could answer "yes, this plugin is configurable"
+    /// and "here is what is in force" while being unable to produce the
+    /// document §2.5 renders controls from.
+    ///
+    /// `None` means the same thing `has_config: false` means on the list row:
+    /// no schema is in force — either the manifest declares none, or the
+    /// kernel has not loaded it (see [`registry_manifest`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
+    pub config_schema: Option<Value>,
+    /// What the operator has actually **set** — the persisted row, verbatim,
+    /// with no defaults folded in.
     #[schema(value_type = Object)]
     pub user_config: Value,
+    /// #1284 §2.3 — `defaults ⊕ user_config`, i.e. what the plugin runs with.
+    ///
+    /// Carried **alongside** `user_config` rather than replacing it, and that
+    /// is a contract, not redundancy. §2.2.4 says defaults are applied on read
+    /// and never persisted, and §2.2.5 says a Save may only carry the keys the
+    /// operator edited; a form that could not tell "the operator chose `dark`"
+    /// from "the manifest defaults to `dark`" would have to post the merged
+    /// object back, and its very first Save would materialize every default
+    /// into the DB — killing §2.2.4 outright. `user_config` answers "what did
+    /// the operator choose" (so a default renders as a placeholder and stays
+    /// out of the payload); `effective_config` answers "what is in force".
+    /// Dropping `user_config` would also be a wire break for the field's
+    /// existing readers, for no gain.
+    #[schema(value_type = Object)]
+    pub effective_config: Value,
     pub installed_at: i64,
     pub updated_at: i64,
 }
@@ -164,6 +225,29 @@ pub enum InstallSource {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct LogQuery {
     pub n: Option<usize>,
+}
+
+/// Query for `PATCH /api/plugins/{id}/config`.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+pub struct ConfigPatchQuery {
+    /// Discard the stored `user_config` entirely and apply this patch to an
+    /// empty object (#1284 S1 review P0-C).
+    ///
+    /// The recovery action for a row whose `user_config` is not a JSON object,
+    /// which the kernel otherwise refuses to merge into (409
+    /// `plugin_config_corrupt`) precisely so it does not silently discard
+    /// data. Without an explicit knob that refusal is permanent: this endpoint
+    /// is the only writer of the field on an installed row (`plugin_install`
+    /// sets it once at row creation and its upsert path leaves it alone —
+    /// P2-3), so no request could ever restore it.
+    ///
+    /// It is destructive on purpose and never implicit — that is what makes it
+    /// compatible with "a write path must never be the thing that loses
+    /// configuration": the deletion is the operator's, named in the request.
+    /// It works on a healthy row too, where it means "reset this plugin to its
+    /// manifest defaults".
+    #[serde(default)]
+    pub reset: bool,
 }
 
 /// M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
@@ -246,6 +330,8 @@ pub(crate) async fn list_plugins(
                 .and_then(|v| v.as_str())
                 .map(String::from),
             last_error,
+            // Registry, not the persisted blob — see [`registry_manifest`].
+            has_config: registry_manifest(&cs, &plug.id).is_some_and(|m| m.config_schema.is_some()),
         });
     }
     Ok(Json(out))
@@ -383,15 +469,158 @@ pub(crate) async fn disable_plugin(
 // PATCH config
 // ---------------------------------------------------------------------------
 
+/// #1284 §2.2 — a real PATCH with a real validator.
+///
+/// What this used to be: `Json<Value>` written to the row wholesale, with the
+/// name PATCH and the semantics of PUT and no validation of any kind. Three
+/// things change, all of them observable:
+///
+/// 1. **No `config_schema` ⇒ 400.** A plugin that declares no configurable
+///    surface has no key this endpoint could meaningfully store; accepting
+///    arbitrary JSON there was how "configuration" stayed a field with no
+///    semantics. This **overturns** the existing assertion in
+///    `tests/cases/plugin_routes.rs::patch_config_writes_user_config`, which
+///    pinned the 200; that test now drives a plugin that declares a schema,
+///    and its sibling pins the 400 for one that does not.
+/// 2. **Patch semantics** per `INV-SETTINGS-001`: absent keys keep their
+///    stored value, an explicit `null` deletes the key (and thereby restores
+///    its manifest default — see
+///    [`effective_config`](crate::plugin_host::effective_config)).
+/// 3. **Validation** against the manifest's `config_schema`, with the byte cap
+///    `template_input` already uses.
+///
+/// ## Every branch that reaches (or refuses) the write, audited
+///
+/// Round 2 of the S1 review, and the reason this table is in the source rather
+/// than in a PR comment. Round 1 introduced two defects **of the class it was
+/// fixing**: guarding against "an invisible key locks the operator out" it
+/// added a silent destructive write, and guarding against "a coerced row
+/// silently loses data" it added a 500 that no API could clear. Patching those
+/// two cells one at a time would have been the same mistake a third time, so
+/// the branches are enumerated and each is asked the two questions that
+/// generated both defects. Any cell answering "yes" is a bug, not a trade-off.
+///
+/// * **(a) Can this branch lose configuration the operator did not delete?**
+/// * **(b) If this branch refuses, is the operator then unable to fix it
+///   through any API?**
+///
+/// | # | branch | writes? | (a) silent loss | (b) locked out | why |
+/// |---|---|---|---|---|---|
+/// | 1 | unknown id ⇒ 404 | no | no | n/a | there is no row to lose or repair |
+/// | 2 | registry has no `Manifest` ⇒ 409 `plugin_manifest_unloaded` | no | no | **no** | `POST /reload` re-reads the manifest; for the durable half (a `manifest.json` that fails to parse) the message names *that* as the thing to fix, because a reload alone would fail again |
+/// | 3 | stored `user_config` is not an object ⇒ 409 `plugin_config_corrupt` | no | no | **no** | `?reset=true` replaces it with `{}` from the API. This cell was the round-1 defect: a 500 on the only write path for this field *on an installed row* (round 3 P2-3 moved that claim onto its carrier — `plugin_install`'s upsert no longer resets `user_config`, so it no longer rests on the duplicate-id 409), so every later request failed identically and the outs were uninstall/reinstall or a hand-edited DB |
+/// | 4 | `?reset=true` ⇒ base is `{}` | yes | **no** | n/a | destructive, but only on an explicit query parameter — the operator *is* the deletion. Without a knob like this, cell 3 has no exit |
+/// | 5 | manifest declares no `config_schema` ⇒ 400 | no | no | no | permanent by construction; there is no configuration to be locked out of |
+/// | 6 | body is not a JSON object ⇒ 400 | no | no | no | fixed by resending |
+/// | 7 | request names an undeclared key ⇒ 400 | no | no | no | fixed by dropping that key; the request document is the operator's and fully visible to them |
+/// | 8 | request key with a non-`null` value | yes | no | n/a | overwrites exactly the key the operator named |
+/// | 9 | request key with `null` | yes | no | n/a | deletes exactly the key the operator named |
+/// | 10 | stored keys the current schema no longer declares | yes | **no** | no | they are **kept** in the row and merely excluded from what is validated. Round 1 pruned them *and wrote the pruned map back*, destroying an operator's values on an unrelated PATCH — and if the manifest ever widens back, the setting returns. `effective_config` ignores them either way, so nothing runs with them and the unlock is identical |
+/// | 11 | merged declared-key document violates the schema ⇒ 400 | no | no | no | the previous row stands; every key named in the error is one the form shows |
+/// | 12 | byte cap over the merged declared-key document ⇒ 400 | no | no | **no** | the operator shrinks or clears a declared key and the same request succeeds. It is deliberately **not** taken over the residue in cell 10: those bytes are not shrinkable by an ordinary patch, so refusing on them here would be a lockout — and they are not what a consumer reads, since `effective_config` drops them. **This bounds each write, not the row**: cell 12b is what bounds the row |
+/// | 12b | total cap over the whole stored document, residue included ⇒ 400 | no | no | **no** | round 3 (P1-1). Cell 12's exclusion of residue is right for *that* cap and says nothing about the total: residue only ever grows (nothing prunes it, the write is whole-document, `reload` does not touch `user_config`), so `declare {a}` → fill `a` → narrow to `{b}` → reload → fill `b` → narrow … adds ~8 KiB per turn with every step a legal 200, and the row is echoed in every detail response. The refusal names the exit and the exit is real: `?reset=true` carrying the operator's current keys keeps their configuration and drops exactly the residue, in one request. That is why this is a cap and not the lockout cell 12 avoids |
+/// | 13 | `plugin_update_user_config` fails ⇒ 500 | no | no | no | genuinely server-side and transient; the row is untouched |
+/// | 14 | another lifecycle operation holds the id ⇒ 409 `plugin_busy` | no | no | **no** | round 3 (P1-2). The handler is a read-modify-write and used to take no lock while every other lifecycle entry point does, so **(a) was "yes"**: two concurrent PATCHes both read the old row and the loser's key vanished from the winner's write. The other interleaving is PATCH against `reload`: judge against the registry's schema at line N, store for the schema a consumer reads at line N+1 — and `effective_config` type-checks nothing on read, so that value reaches S2/S3a/S3b verbatim. The guard closes both. Retry is the whole remedy: a refused acquisition has done nothing |
+/// | 15 | the `Query` / `Json` extractors reject (`?reset=x`, malformed JSON, no `application/json`) ⇒ 400 / 415 / 422 | no | no | no | **runs before cell 1** — before the handler exists — so it outranks even the 404, and its body is axum's plain text with no `code`: this row is the one place where a response from this path is *outside* the `ErrorBody` contract the rest of the table assumes. Left as-is deliberately: it is the shape of every extractor in this tree, and a rejection wrapper for one endpoint would make this route the exception rather than the rule. The `utoipa` responses list 415 and 422 so the published contract does not claim they cannot happen |
+///
+/// Three further things the S1 review settled, all of which are semantics
+/// rather than plumbing:
+///
+/// 4. **The request document is judged first, values second.** A key the
+///    schema does not declare is refused whatever its value — including
+///    `null`. The first cut interpreted `null` as "delete" *before* validating
+///    and so let `{"ghost": null}` through with a 200 on a schema that has no
+///    `ghost`, which made "the request is validated against the schema" false
+///    as written. The key-name rule comes from
+///    [`reject_undeclared_keys`](crate::plugin_host::template_input::reject_undeclared_keys),
+///    the same function `validate_instance` uses.
+/// 5. **Stored keys the current schema no longer declares are excluded from
+///    validation, and kept in the row.** They are residue from an older
+///    manifest; [`effective_config`](crate::plugin_host::effective_config)
+///    already drops them, so nothing runs with them. Carrying them into
+///    validation meant that after a schema narrowed, *every* subsequent PATCH
+///    — however legal — failed with "unknown field `old`" until the operator
+///    guessed to send `{"old": null}` for a key no UI shows. An operator must
+///    not be locked out by a key they cannot see. **Round 2 corrected the
+///    remedy**: round 1 pruned the merged map and wrote the pruned result
+///    back, which unlocked the write by *deleting the operator's data* on an
+///    unrelated edit. Validating a pruned copy unlocks it identically and
+///    keeps the row intact.
+/// 6. **`required` is not enforced here** (design adjudication on the S1
+///    review). §2.2.5 says a Save carries only the keys the operator edited,
+///    so enforcing `required` on the write would make the first Save of any
+///    plugin with two no-default required keys unconditionally 400 — the two
+///    rules are incompatible and this is the one that gives. `required` is
+///    enforced at **consumption** (S2/S3 bring-up): a plugin missing required
+///    configuration does not start, and lands in the `unavailable` +
+///    `last_error` terminal state §2.4 already defines. This **overturns**
+///    `patch_config_enforces_required_keys_but_lets_defaults_satisfy_them`.
+///    With `required` gone, the two validation passes the first cut ran
+///    collapse into one — the second existed only to enforce it.
+///
+/// ## Refusal priority: `404 → 409 → 400`
+///
+/// The gates run in that order, and the order is part of the contract. Two
+/// things sit outside it and are stated rather than hidden:
+///
+/// * **The extractors run first** (table cell 15). `Query<ConfigPatchQuery>`
+///   and `Json<Value>` reject `?reset=x`, malformed JSON and a missing
+///   `application/json` before this function is entered, with axum's plain-text
+///   400 / 415 / 422 and no `code`. Those responses are *not* `ErrorBody`s;
+///   everything the priority list below covers is.
+/// * **The lifecycle guard is taken before the 404** (cell 14), the same
+///   ordering `install` uses. It cannot change any answer below — a
+///   nonexistent id's lock is always free — and it exists so this
+///   read-modify-write cannot interleave with itself, or with a `reload`.
+///
+/// * **404** — an unknown id is an unknown id regardless of what the body
+///   says. Checking anything else first would leak "this plugin has no config
+///   schema" for plugins that do not exist.
+/// * **409** — the two *state* refusals (the registry does not hold this
+///   manifest; the stored row is corrupt). Both mean "not right now, and here
+///   is the action that changes that".
+/// * **400** — everything about this manifest or this request being wrong:
+///   no `config_schema` at all, a non-object body, an undeclared key, a value
+///   the schema rejects.
+///
+/// The cell that decides the order is **no schema *and* a registry gap**: it
+/// answers **409**, not 400, because the kernel does not know whether this
+/// plugin declares a schema — it has not loaded the manifest. Answering 400
+/// there would tell the operator "this plugin will never be configurable" on
+/// the strength of a document the kernel never read, which is exactly the
+/// wrong action (they would stop, rather than reload / fix `manifest.json`).
+/// That is why the registry lookup precedes the `config_schema` check in the
+/// body below and not the other way round.
+///
+/// Timing is likewise unchanged, but the comment that used to sit in the body
+/// overstated it: it claimed the new config would be read "on next spawn",
+/// which was never true of anything — nothing read `user_config` at all.
+/// §2.4: the write does not touch the running process or connector, and taking
+/// effect needs an explicit `POST /api/plugins/{id}/reload`. For a `cli-query`
+/// connector that is not a nicety — its command, PATH and entire env are built
+/// once at bring-up and cached, so an un-reloaded config change is
+/// *completely* inert, not partly.
 #[utoipa::path(
     patch,
     path = "/api/plugins/{id}/config",
     tag = "plugins",
-    params(("id" = String, Path, description = "Plugin id")),
-    request_body(content = Object, description = "Free-form user-config JSON object"),
+    params(
+        ("id" = String, Path, description = "Plugin id"),
+        ConfigPatchQuery,
+    ),
+    request_body(
+        content = Object,
+        description = "Partial user-config object: only the keys being edited. \
+                       An explicit `null` deletes a key; absent keys are left alone. \
+                       Validated against the plugin manifest's `config_schema`."
+    ),
     responses(
         (status = 200, description = "Config updated", body = PluginDetail),
+        (status = 400, description = "Plugin declares no `config_schema`, or the patched config violates it", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 409, description = "Another lifecycle operation holds this plugin (`plugin_busy`); or the plugin row exists but its manifest is not loaded in the kernel registry (`plugin_manifest_unloaded`); or its stored `user_config` is not a JSON object (`plugin_config_corrupt`, clearable with `?reset=true`)", body = ErrorBody),
+        (status = 415, description = "Extractor-level rejection (missing/!= `application/json` content type). Raised by axum's `Json` extractor **before** this handler runs, so the body is plain text and carries no `code` — outside the `ErrorBody` contract"),
+        (status = 422, description = "Extractor-level rejection (well-formed JSON that is not deserializable into the request type). Same caveat as 415: plain text, no `code`"),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -399,19 +628,186 @@ pub(crate) async fn patch_plugin_config(
     State(s): State<RouteState>,
     State(cs): State<CodexShellState>,
     Path(id): Path<String>,
+    Query(q): Query<ConfigPatchQuery>,
     Json(body): Json<Value>,
 ) -> Result<Json<PluginDetail>> {
-    s.repo
+    // (P1-2, S1 review round 3) **The lifecycle guard.** Everything below is
+    // one read-modify-write over `user_config`: read the row, read the
+    // registry's schema, judge the merge, write the merge back. Until this
+    // round it ran with no lock at all, while `enable` / `disable` / `reload`
+    // / `uninstall` all take this same per-id guard — so two concurrent
+    // PATCHes could both read the old row and the second write would drop the
+    // first one's key (a silent loss of configuration the operator never
+    // deleted, which is question (a) of the branch table), and a PATCH
+    // interleaved with a `reload` could validate against the schema the
+    // registry held at line N and store the result for the schema a consumer
+    // reads at line N+1 — `effective_config` does no type checking on read, so
+    // that value goes to S2/S3 as-is.
+    //
+    // Refused acquisitions answer the 409 `plugin_busy` the §2.4 table already
+    // defines for every other lifecycle entry point, and — like them — having
+    // done nothing at all. The guard is taken before the 404 for the same
+    // reason `install` takes it before its duplicate-id probe: nothing above
+    // it writes, so ordering it first costs no correctness, and an id that
+    // does not exist has a free lock anyway, which is why
+    // `patch_config_unknown_id_is_still_404` still holds.
+    let _guard = cs
+        .plugin
+        .try_lock_lifecycle(&id)
+        .map_err(crate::plugin_host::lifecycle::spawn_error_to_calm)?;
+
+    // Gate order is `404 → 409 → 400` — see the priority section on this
+    // handler's doc for why the registry lookup has to precede the
+    // `config_schema` check rather than follow it.
+    let existing = s
+        .repo
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    let plug = s.repo.plugin_update_user_config(&id, body.clone()).await?;
-    // Choice: the running plugin keeps running with the *old* config. Reading
-    // the new config happens on next spawn. The alternative — fire a
-    // `neige.config.changed` notification — is reasonable but the design doc
-    // doesn't pin a method name, plugin authors haven't seen this hook yet,
-    // and most M3 plugins won't read user_config dynamically. We can wire the
-    // notification later without an API break.
+
+    let manifest = registry_manifest(&cs, &id).ok_or_else(|| registry_gap(&id))?;
+
+    // (P0-C) A row whose `user_config` is not an object is a corrupt row, not
+    // an empty one: coercing it to `{}` would silently discard whatever it
+    // held, and a write path must never be the thing that loses configuration.
+    // But refusing is only half an answer — this endpoint is the *only* writer
+    // of this field on an existing row, so a refusal with no way out is a
+    // permanent lockout with uninstall/reinstall or a hand-edited DB as the
+    // only remedies. Hence a 409 with an explicit, operator-initiated escape
+    // hatch rather than a 500.
+    //
+    // "On an existing row" is exact, and round 3 (P2-3) made the code carry
+    // it: `plugin_install`'s `INSERT` supplies the initial `{}`, and its
+    // `ON CONFLICT DO UPDATE` used to reset `user_config` too — so this
+    // sentence held only by way of the duplicate-id 409 in
+    // `PluginHost::install`, one TOCTOU-shaped check away from the argument
+    // this whole cell rests on. `user_config` is no longer in that update set.
+    let mut merged = if q.reset {
+        // (P2-4) This is the one branch in the tree that throws an operator's
+        // whole configuration document away, and it left no trace anywhere:
+        // the row afterwards is indistinguishable from one that was never
+        // configured. The count is logged, never the values — a corrupt
+        // `user_config` can hold anything, and the refusal above already
+        // declines to echo it (see `kind_of`).
+        tracing::warn!(
+            plugin = %id,
+            discarded_keys = existing.user_config.as_object().map_or(0, Map::len),
+            stored_kind = kind_of(&existing.user_config),
+            "?reset=true discarded the stored plugin user_config"
+        );
+        Map::new()
+    } else {
+        match &existing.user_config {
+            Value::Object(map) => map.clone(),
+            other => {
+                return Err(CalmError::PluginConfigCorrupt(format!(
+                    "plugin `{id}` has a stored user_config that is not a JSON object \
+                     (found {}); refusing to merge into it. Resend with `?reset=true` \
+                     to discard it and start from an empty config",
+                    kind_of(other)
+                )));
+            }
+        }
+    };
+
+    let schema = manifest.config_schema.clone().ok_or_else(|| {
+        CalmError::BadRequest(format!(
+            "plugin `{id}` declares no `config_schema`, so it has no configurable keys"
+        ))
+    })?;
+
+    let patch = body.as_object().ok_or_else(|| {
+        CalmError::BadRequest(
+            "config patch must be a JSON object of the keys being edited".to_string(),
+        )
+    })?;
+
+    // (4) The request's **key names** are judged against the schema first,
+    // before `null` is allowed to mean anything, so a key the schema does not
+    // declare cannot slip past validation by being sent as a deletion.
+    reject_undeclared_keys("config", &schema, patch.keys().map(String::as_str))
+        .map_err(CalmError::BadRequest)?;
+
+    // Absent = unchanged, explicit null = delete. Anything else overwrites the
+    // one key it names.
+    for (key, value) in patch {
+        if value.is_null() {
+            merged.remove(key);
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+
+    // (5) **Validate a pruned copy; store the unpruned map.**
+    //
+    // Stored keys the current schema no longer declares are residue from an
+    // older manifest. They must not be *validated* — carrying them into the
+    // validator meant that after a schema narrowed, every subsequent PATCH,
+    // however legal, failed with "unknown field `old`" until the operator
+    // guessed to send `{"old": null}` for a key no UI shows. But round 1
+    // pruned `merged` itself and then wrote the pruned map back, so an
+    // unrelated edit of one key silently deleted the operator's values for
+    // others — a destructive write, and the very failure the round-1 comment
+    // two paragraphs up swore off. Excluding them from the judgement is enough
+    // to unlock the write; deleting them from the row buys nothing on top of
+    // that and costs the data. `effective_config` drops them on read either
+    // way, so nothing runs with them, and if the manifest ever widens back the
+    // setting is still there.
+    let mut judged = merged.clone();
+    judged.retain(|key, _| declares_key(&schema, key));
+
+    // One pass, because there is one question left: is the declared-key
+    // document we are about to **store** well-formed — right types, inside the
+    // byte cap. `required` is stripped (6): a key left to its manifest default
+    // is not missing, and enforcing it here would make a partial Save
+    // impossible. The cap is measured over `judged` — see cell 12 of the
+    // branch table: the residue in `merged` is not shrinkable through any API
+    // and is not what a consumer reads, so counting it would be a lockout.
+    let mut structural = schema.clone();
+    if let Some(obj) = structural.as_object_mut() {
+        obj.remove("required");
+    }
+    validate_instance("config", &structural, &Value::Object(judged))
+        .map_err(CalmError::BadRequest)?;
+
+    // (P1-1, S1 review round 3) **A second cap, on the whole stored
+    // document.** The one above is measured over the declared-key subset,
+    // deliberately (cell 12): counting residue there would refuse requests the
+    // operator has no way to make smaller. But "each write is bounded" is not
+    // "the row is bounded", and round 2's note conflated the two. Residue only
+    // ever accumulates — nothing prunes it, `plugin_update_user_config` writes
+    // the document whole, `reload` does not touch `user_config`, and
+    // `effective_config` merely ignores it on read — so the loop
+    // `declare {a} → fill a → narrow to {b} → reload → fill b → narrow …`
+    // grows the row by ~8 KiB per turn, forever, with every step a legal 200.
+    // The row is then re-serialized verbatim into every `GET /api/plugins/:id`.
+    //
+    // 4× the per-write cap: large enough that the useful case this leaves room
+    // for — a manifest that narrows and later widens again, with the operator's
+    // old values still waiting (cell 10) — survives several rounds of schema
+    // churn, and small enough that the response payload stays bounded by a
+    // constant.
+    //
+    // This is a refusal, so it owes question (b) an answer, and the message has
+    // to carry it: `?reset=true` with the keys the operator wants keeps their
+    // current configuration and drops exactly the residue, in one request. That
+    // is what keeps the cap from being the lockout cell 12 avoided.
+    let stored = Value::Object(merged);
+    let stored_bytes = serde_json::to_string(&stored)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX);
+    if stored_bytes > USER_CONFIG_MAX_BYTES {
+        return Err(CalmError::BadRequest(format!(
+            "config: storing this patch would make plugin `{id}`'s user_config {stored_bytes} \
+             bytes, over the {USER_CONFIG_MAX_BYTES}-byte cap on the whole stored document. \
+             Its declared keys are within the {TEMPLATE_INPUT_MAX_BYTES}-byte cap, so the excess \
+             is residue left by keys earlier manifests declared and this one does not — no \
+             ordinary patch can shrink it. Resend this request with `?reset=true` to discard the \
+             stored document, residue included, and keep exactly the keys you send"
+        )));
+    }
+
+    let plug = s.repo.plugin_update_user_config(&id, stored).await?;
     Ok(Json(build_detail(&cs, plug).await))
 }
 
@@ -966,6 +1362,19 @@ async fn build_detail(cs: &CodexShellState, plug: Plugin) -> PluginDetail {
             (wire.to_string(), None)
         }
     };
+    // Merged against the registry's typed manifest — the same document the
+    // write path validates against and the same one every runtime consumer
+    // (S2/S3) will read, so "which defaults are in force" has one answer. The
+    // published `config_schema` comes off that same `Manifest`, so the three
+    // config-facing answers this response gives (is it configurable / what is
+    // in force / what does the form render) cannot come from different
+    // documents — the contradiction round 1 shipped.
+    let registry = registry_manifest(cs, &plug.id);
+    let effective = registry
+        .as_ref()
+        .map(|m| effective_config(m, &plug.user_config))
+        .unwrap_or_default();
+    let config_schema = registry.and_then(|m| m.config_schema.clone());
     PluginDetail {
         id: plug.id,
         version: plug.version,
@@ -973,9 +1382,112 @@ async fn build_detail(cs: &CodexShellState, plug: Plugin) -> PluginDetail {
         state,
         last_error,
         manifest: plug.manifest,
+        config_schema,
         user_config: plug.user_config,
+        effective_config: Value::Object(effective),
         installed_at: plug.installed_at,
         updated_at: plug.updated_at,
+    }
+}
+
+/// The **registry's** typed manifest for a plugin id — the one and only source
+/// of `config_schema` on the route side.
+///
+/// #1284 S1 review, one root cause behind three defects. The first cut read
+/// the schema out of the persisted `plugins.manifest` blob by string key, on
+/// the theory that the blob is what `PluginDetail.manifest` publishes. That
+/// theory cost more than it bought:
+///
+/// * **Upgrade.** The blob is written at install time from the manifest as it
+///   parsed *then* (`lifecycle.rs`), and a pre-#1284 `Manifest` had no
+///   `config_schema` field, so serde dropped the key. Every plugin installed
+///   before this kernel would therefore have come up with no config surface at
+///   all — no form, and a PATCH that 400s as "declares no `config_schema`" —
+///   until someone thought to `/reload` it by hand.
+/// * **Drift.** The blob and the registry are written in *opposite orders* by
+///   the two paths that write both (install: DB then registry; reload:
+///   registry then DB) and boot rebuilds only the registry, so there is a
+///   window in which they disagree. Validating a write against the older of
+///   the two can store a value the runtime — which reads the registry — will
+///   then reject or misread.
+/// * **The seam.** §2.3 names `effective_config(&Manifest, ..)` as the one
+///   function every consumer goes through. A route side that could not produce
+///   a `Manifest` forced a second public entry point taking a bare schema, and
+///   a seam with two doors is not a seam.
+///
+/// (The comment this replaces had the drift direction backwards: it claimed
+/// the registry lags the blob. Reload writes the registry first and the DB
+/// second; boot writes the registry only.)
+///
+/// `None` means the row exists but the kernel has not loaded that manifest —
+/// the install window (the DB row is written before the registry insert) and,
+/// durably, a plugin whose on-disk manifest failed to parse at boot, which
+/// `registry::load_from_dir` skips with a `warn!`. Readers report "no
+/// configurable keys"; the writer refuses with [`registry_gap`] instead of
+/// pretending the plugin declared nothing.
+/// Cap on the **whole** serialized `user_config` document a PATCH may leave in
+/// the row, residue included — as opposed to
+/// [`TEMPLATE_INPUT_MAX_BYTES`], which
+/// `patch_plugin_config` measures over the declared-key subset only.
+///
+/// Two caps because they answer two different questions. The per-write cap
+/// bounds what a consumer will read and must exclude residue, or an operator
+/// would be refused for bytes no API of theirs can shrink (branch table cell
+/// 12). This one bounds what the row can *accumulate*: residue is append-only
+/// (see the comment at the check site), so without it a schema that narrows
+/// repeatedly grows the row without limit, one legal 200 at a time — and that
+/// row is echoed verbatim in every plugin-detail response.
+///
+/// 4× is a judgement, not a derivation: enough headroom that the narrow →
+/// widen round trip cell 10 preserves values for still works across a few
+/// rounds of schema churn, while keeping the detail payload bounded by a
+/// constant. `?reset=true` is the way back under it.
+const USER_CONFIG_MAX_BYTES: usize = 4 * TEMPLATE_INPUT_MAX_BYTES;
+
+fn registry_manifest(cs: &CodexShellState, id: &str) -> Option<Manifest> {
+    cs.plugin.registry().get(id)
+}
+
+/// The refusal for the [`registry_manifest`] gap: 409, not 400 and not 500.
+///
+/// It is deliberately a different answer from "this plugin declares no
+/// `config_schema`" (400). That one means *never* — stop asking. This one
+/// means the kernel does not currently hold this plugin's manifest, which the
+/// operator fixes by reloading the plugin (or by fixing the `manifest.json`
+/// that failed to parse), and the identical request then succeeds.
+///
+/// **The distinction lives in the error code** ([`CalmError::PluginManifestUnloaded`],
+/// `plugin_manifest_unloaded`), not in this string — round 1 used the generic
+/// `Conflict` (`code: "conflict"`), which left every consumer, the test
+/// included, matching on message text. `error.rs` says in as many words that
+/// codes are where 409s are told apart; this is that rule applied.
+///
+/// The message names **both** causes because they need different actions. The
+/// transient one (the install window, before the registry insert) clears by
+/// itself and a reload is a fine reflex. The durable one — a `manifest.json`
+/// that `registry::load_from_dir` failed to parse and skipped with a `warn!` —
+/// will fail the reload too, and an operator told only "reload the plugin"
+/// would loop on it.
+fn registry_gap(id: &str) -> CalmError {
+    CalmError::PluginManifestUnloaded(format!(
+        "plugin `{id}` is installed but its manifest is not loaded in the kernel \
+         registry, so there is no schema to validate against; reload the plugin, \
+         or fix its manifest.json if it failed to parse (a reload will fail again \
+         until it does)"
+    ))
+}
+
+/// Name a JSON value's kind for an error message, without printing the value —
+/// a corrupt `user_config` may hold anything, including something an operator
+/// would rather not see echoed into a log line.
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 

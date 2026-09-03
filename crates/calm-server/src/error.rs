@@ -25,6 +25,7 @@ pub struct ErrorBody {
     /// `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
+    /// `plugin_manifest_unloaded`, `plugin_config_corrupt`,
     /// `spec_harness_dormant`, `today_summary_no_activity`,
     /// `db_error`, `io_error`, `serde_error`,
     /// `codex_app_server`, `service_unavailable`, `internal`,
@@ -125,6 +126,40 @@ pub enum CalmError {
     #[error("plugin busy: {0}")]
     PluginBusy(String),
 
+    /// 409 — #1284 §2.7: the plugin's DB row exists, but the kernel registry
+    /// does not hold its `Manifest`, so there is no `config_schema` to
+    /// validate a write against.
+    ///
+    /// Its own code rather than the generic [`CalmError::Conflict`] for the
+    /// reason spelled out on [`CalmError::PluginBusy`]: the distinction lives
+    /// in the error *code*, not in the message text. A client has to tell this
+    /// apart from the 400 that means "this plugin declares no configurable
+    /// keys, and never will" — the actions differ (reload / fix
+    /// `manifest.json` vs. stop asking) — and the only alternative on offer
+    /// was `text.contains("not loaded")`, which is precisely the shape that
+    /// rationale forbids.
+    #[error("plugin manifest not loaded: {0}")]
+    PluginManifestUnloaded(String),
+
+    /// 409 — #1284 S1 review P0-C: the plugin's stored `user_config` is not a
+    /// JSON object, so the kernel cannot merge a patch into it without
+    /// discarding whatever it holds.
+    ///
+    /// **Not a 500.** Nothing went wrong server-side (see the note on
+    /// [`CalmError::ServiceUnavailable`] for the same distinction), and the
+    /// status matters operationally: `PATCH /config` is the only write path
+    /// for this field on a row that already exists (`plugin_install` writes it
+    /// once, at row creation; round 3 P2-3 took `user_config` out of that
+    /// statement's `ON CONFLICT DO UPDATE` set so the claim is carried by the
+    /// SQL rather than by `install`'s duplicate-id refusal), so a 500 here made
+    /// every subsequent request fail with
+    /// no API that could restore the row — an operator's only outs were
+    /// uninstall/reinstall or a hand-edited database. 409 plus a named
+    /// recovery action (`?reset=true`, which replaces the corrupt value with
+    /// `{}` on explicit request) leaves the state reachable from the API.
+    #[error("plugin config corrupt: {0}")]
+    PluginConfigCorrupt(String),
+
     /// 422 — manifest is structurally valid but its `min_kernel_version`
     /// demands a kernel newer than the one we are. Distinct from
     /// `PluginInstall` (which is a 400 "your input is malformed") because
@@ -194,6 +229,8 @@ impl CalmError {
             CalmError::PluginPermission(_) => "plugin_permission",
             CalmError::PluginConflict(_) => "plugin_conflict",
             CalmError::PluginBusy(_) => "plugin_busy",
+            CalmError::PluginManifestUnloaded(_) => "plugin_manifest_unloaded",
+            CalmError::PluginConfigCorrupt(_) => "plugin_config_corrupt",
             CalmError::PluginKernelTooOld(_) => "plugin_kernel_too_old",
             CalmError::SpecResetUnsupportedInSharedMode(_) => {
                 "spec_reset_unsupported_in_shared_mode"
@@ -216,6 +253,8 @@ impl CalmError {
             | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::PluginConflict(_)
             | CalmError::PluginBusy(_)
+            | CalmError::PluginManifestUnloaded(_)
+            | CalmError::PluginConfigCorrupt(_)
             | CalmError::SpecHarnessDormant(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
@@ -330,6 +369,8 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
             | CalmError::PluginBusy(m)
+            | CalmError::PluginManifestUnloaded(m)
+            | CalmError::PluginConfigCorrupt(m)
             | CalmError::PluginKernelTooOld(m)
             | CalmError::SpecResetUnsupportedInSharedMode(m)
             | CalmError::SpecHarnessDormant(m)

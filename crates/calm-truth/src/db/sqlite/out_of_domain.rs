@@ -405,6 +405,22 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     // --------------------------------------------------------------- plugins
+    /// #1284 S1 review round 3 (P2-3) — **the `DO UPDATE` set deliberately
+    /// omits `user_config`.**
+    ///
+    /// `PATCH /api/plugins/{id}/config` documents itself as the only thing
+    /// that can change an installed plugin's `user_config`, and a good deal
+    /// hangs off that sentence: it is the whole reason a corrupt row had to be
+    /// given an API-reachable exit (`?reset=true`) rather than a 500. Until
+    /// this round the sentence was true only because
+    /// `PluginHost::install` refuses a duplicate id a few lines before
+    /// reaching here — an argument that leans on a TOCTOU-shaped check
+    /// elsewhere rather than on this statement's own carrier.
+    ///
+    /// So the statement is carried here instead: the upsert can no longer
+    /// reset an existing row's operator configuration to the `{}` a fresh
+    /// install passes in, whatever calls it. The `INSERT` still supplies the
+    /// initial value — creating the field is not overwriting it.
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
         let manifest_text = serde_json::to_string(&p.manifest)?;
         let user_config_text = serde_json::to_string(&p.user_config)?;
@@ -419,7 +435,8 @@ impl RepoOutOfDomain for SqlxRepo {
                    install_path = excluded.install_path,
                    manifest     = excluded.manifest,
                    enabled      = excluded.enabled,
-                   user_config  = excluded.user_config,
+                   -- user_config is intentionally NOT in this set; see the
+                   -- doc comment on this method (#1284 S1 P2-3).
                    updated_at   = excluded.updated_at
                RETURNING id, version, install_path, manifest, enabled, user_config,
                          installed_at, updated_at"#,

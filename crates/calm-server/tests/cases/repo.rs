@@ -1522,6 +1522,44 @@ async fn plugin_install_get_list_round_trip() {
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
+/// #1284 S1 review round 3 (P2-3). `PATCH /api/plugins/{id}/config` documents
+/// itself as the only writer of an installed plugin's `user_config`, and the
+/// 409-plus-`?reset=true` design for a corrupt row rests entirely on that
+/// sentence. It used to be true only because `PluginHost::install` refuses a
+/// duplicate id before reaching the upsert — a statement propped up by a check
+/// in another crate, which is not where it can be relied on.
+///
+/// So the SQL carries it: `plugin_install`'s `ON CONFLICT DO UPDATE` set
+/// leaves `user_config` alone. Everything else in that set still updates,
+/// which is the half that must not regress.
+#[tokio::test]
+async fn plugin_install_upsert_never_resets_operator_config() {
+    let repo = fresh_repo().await;
+    repo.plugin_install(sample_new_plugin("p.cfg", false))
+        .await
+        .unwrap();
+    repo.plugin_update_user_config("p.cfg", json!({ "theme": "light" }))
+        .await
+        .unwrap();
+
+    // A second install of the same id — what the upsert branch is for — passes
+    // the `{}` every fresh install passes.
+    let mut np = sample_new_plugin("p.cfg", true);
+    np.version = "0.2.0".into();
+    let after = repo.plugin_install(np).await.unwrap();
+
+    assert_eq!(
+        after.user_config,
+        json!({ "theme": "light" }),
+        "the upsert must not be a second writer of user_config"
+    );
+    assert_eq!(
+        after.version, "0.2.0",
+        "…while the rest of the set still updates"
+    );
+    assert!(after.enabled);
+}
+
 #[tokio::test]
 async fn plugin_token_round_trip() {
     let repo = fresh_repo().await;

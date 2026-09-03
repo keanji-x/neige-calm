@@ -2,6 +2,16 @@
 //! `Manifest.input_schema` and the matching instance validator for
 //! `NewWave.template_input`.
 //!
+//! **#1284 S1 — second user.** `Manifest.config_schema` (plugin user config)
+//! reuses this exact subset and this exact instance validator. The module doc
+//! below predicted a second user; what it did not predict is that the error
+//! paths were hard-coded to `input_schema…` / `template_input…`, so a
+//! `config_schema` violation would have been reported against a field the
+//! manifest does not even have. Both validators therefore take a `root_path`
+//! now ([`validate_object_schema`] / [`validate_instance`]); the two original
+//! entry points are thin wrappers that pass the original literals, which is
+//! what keeps every pre-existing error string byte-identical.
+//!
 //! Deliberately not the `jsonschema` crate (twice-recorded decision:
 //! `manifest.rs` module doc + `calm-server/Cargo.toml` dependency notes): the
 //! supported surface is a closed keyword set, small enough that hand-written
@@ -53,10 +63,12 @@ impl SchemaError {
     }
 }
 
-/// Validate that `schema` stays inside the supported subset. Run at
-/// manifest-validation time (fail-close at the authoring point).
-pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
-    let path = |s: &str| format!("input_schema{s}");
+/// Validate that `schema` stays inside the supported subset, reporting
+/// violations under `root_path` (the Manifest field the schema was read from:
+/// `input_schema`, `config_schema`, …). Run at manifest-validation time
+/// (fail-close at the authoring point).
+pub fn validate_object_schema(root_path: &str, schema: &Value) -> Result<(), SchemaError> {
+    let path = |s: &str| format!("{root_path}{s}");
 
     if serde_json::to_string(schema)
         .map(|s| s.len())
@@ -161,6 +173,12 @@ pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
     Ok(())
 }
 
+/// `Manifest.input_schema`'s entry point — [`validate_object_schema`] rooted
+/// at the field name it has always reported.
+pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
+    validate_object_schema("input_schema", schema)
+}
+
 /// Validate one property spec; error paths are relative to the property
 /// (empty string = the property object itself).
 fn validate_property(_name: &str, spec: &Value) -> Result<(), SchemaError> {
@@ -233,24 +251,25 @@ fn validate_property(_name: &str, spec: &Value) -> Result<(), SchemaError> {
     Ok(())
 }
 
-/// Validate a `template_input` instance against an already subset-validated
-/// `input_schema`. Errors carry the offending field path
-/// (`template_input.merge_policy: expected one of […]`) so the route can
-/// surface them verbatim in a 400.
-pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), String> {
+/// Validate an instance against an already subset-validated schema of this
+/// module's subset. Errors carry the offending field path rooted at
+/// `root_path` (`template_input.merge_policy: expected one of […]`,
+/// `config.theme: expected type \`string\``) so the route can surface them
+/// verbatim in a 400.
+pub fn validate_instance(root_path: &str, schema: &Value, input: &Value) -> Result<(), String> {
     if serde_json::to_string(input)
         .map(|s| s.len())
         .unwrap_or(usize::MAX)
         > TEMPLATE_INPUT_MAX_BYTES
     {
         return Err(format!(
-            "template_input: must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"
+            "{root_path}: must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"
         ));
     }
 
     let object = input
         .as_object()
-        .ok_or_else(|| "template_input: expected a JSON object".to_string())?;
+        .ok_or_else(|| format!("{root_path}: expected a JSON object"))?;
 
     let empty = Map::new();
     let properties = schema
@@ -261,24 +280,78 @@ pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), Stri
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for key in required.iter().filter_map(Value::as_str) {
             if !object.contains_key(key) {
-                return Err(format!("template_input.{key}: required field is missing"));
+                return Err(format!("{root_path}.{key}: required field is missing"));
             }
         }
     }
 
+    // `additionalProperties: false` is guaranteed present by the subset
+    // validator — undeclared keys are always rejected.
+    reject_undeclared_keys(root_path, schema, object.keys().map(String::as_str))?;
+
     for (key, value) in object {
-        // `additionalProperties: false` is guaranteed present by the subset
-        // validator — undeclared keys are always rejected.
-        let Some(spec) = properties.get(key) else {
-            return Err(format!(
-                "template_input.{key}: unknown field (schema declares additionalProperties: false)"
-            ));
-        };
+        // Unreachable-by-construction: the sweep above refused every key that
+        // is not in `properties`. Written as a `?` rather than an `unwrap` so a
+        // future regression up there fails closed instead of panicking.
+        let spec = properties
+            .get(key)
+            .ok_or_else(|| undeclared_key_error(root_path, key))?;
         check_value(value, spec.as_object().unwrap_or(&empty))
-            .map_err(|reason| format!("template_input.{key}: {reason}"))?;
+            .map_err(|reason| format!("{root_path}.{key}: {reason}"))?;
     }
 
     Ok(())
+}
+
+fn undeclared_key_error(root_path: &str, key: &str) -> String {
+    format!("{root_path}.{key}: unknown field (schema declares additionalProperties: false)")
+}
+
+/// Reject any key `schema.properties` does not declare — the *same* rule
+/// [`validate_instance`] applies, exposed on its own.
+///
+/// #1284 S1 review: the plugin-config `PATCH` has to judge the **request
+/// document's** key names before it can interpret their values, because an
+/// explicit `null` there means "delete this key" and would otherwise vanish
+/// from the merged map before any validation saw it — `{"ghost": null}`
+/// returned 200 against a schema that declares no `ghost`. The route calls
+/// this function rather than restating the rule, so "which keys does this
+/// schema declare" has exactly one implementation and one error string.
+pub fn reject_undeclared_keys<'a>(
+    root_path: &str,
+    schema: &Value,
+    keys: impl Iterator<Item = &'a str>,
+) -> Result<(), String> {
+    for key in keys {
+        if !declares_key(schema, key) {
+            return Err(undeclared_key_error(root_path, key));
+        }
+    }
+    Ok(())
+}
+
+/// Does `schema` declare `key`? The predicate underneath
+/// [`reject_undeclared_keys`], as a plain boolean.
+///
+/// #1284 S1 review P2-G. Callers that need a *filter* rather than a *verdict*
+/// (the config PATCH prunes stored residue with one) were reading
+/// `reject_undeclared_keys(..).is_ok()`, i.e. using a `Result` as a boolean.
+/// That is fine only for as long as the function has exactly one failure mode:
+/// the day it grows a second — a malformed schema, a reserved key name — every
+/// such call site would silently reclassify that new failure as "not
+/// declared", and the pruning one would translate it into deleting the
+/// operator's data. A `bool` cannot acquire a second failure mode.
+pub fn declares_key(schema: &Value, key: &str) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| properties.contains_key(key))
+}
+
+/// `NewWave.template_input`'s entry point — [`validate_instance`] rooted at
+/// the field name it has always reported.
+pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), String> {
+    validate_instance("template_input", schema, input)
 }
 
 /// Check a single value against a property spec's `type` + `enum`.
@@ -576,6 +649,121 @@ mod tests {
     fn rejects_non_object_input() {
         let err = validate_template_input(&schema(), &json!(["not", "an", "object"])).unwrap_err();
         assert!(err.contains("expected a JSON object"), "{err}");
+    }
+
+    // ---------------- root-path parameterization (#1284 S1) ----------------
+    //
+    // The two wrappers above must keep reporting `input_schema…` /
+    // `template_input…` (pinned by every assertion in this file), and an
+    // arbitrary root must be honoured verbatim so `config_schema` violations
+    // do not get reported against `input_schema`.
+
+    #[test]
+    fn schema_violations_report_under_the_callers_root_path() {
+        let mut v = schema();
+        v["properties"]["merge_policy"]["default"] = json!("yolo-merge");
+
+        // positive control: the wrapper's root is unchanged
+        assert_eq!(
+            validate_input_schema(&v).unwrap_err().path,
+            "input_schema.properties.merge_policy.default"
+        );
+        // and the parameterized form reports the root it was given
+        assert_eq!(
+            validate_object_schema("config_schema", &v)
+                .unwrap_err()
+                .path,
+            "config_schema.properties.merge_policy.default"
+        );
+    }
+
+    #[test]
+    fn instance_violations_report_under_the_callers_root_path() {
+        let bad = json!({ "issue_url": "u", "issue_number": "1" });
+
+        assert!(
+            validate_template_input(&schema(), &bad)
+                .unwrap_err()
+                .starts_with("template_input.issue_number:")
+        );
+        assert!(
+            validate_instance("config", &schema(), &bad)
+                .unwrap_err()
+                .starts_with("config.issue_number:")
+        );
+
+        // The non-object and byte-cap arms are rooted too — they are the two
+        // that name the root with no field suffix. Both are asserted, because
+        // they are two separate `format!`s and the comment used to claim
+        // coverage the test did not have.
+        assert!(
+            validate_instance("config", &schema(), &json!([]))
+                .unwrap_err()
+                .starts_with("config: ")
+        );
+        let oversized = json!({
+            "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
+            "issue_number": 1
+        });
+        let err = validate_instance("config", &schema(), &oversized).unwrap_err();
+        assert!(err.starts_with("config: "), "{err}");
+        assert!(err.contains("8192"), "{err}");
+    }
+
+    /// #1284 S1 review — the string an undeclared key produces, pinned at both
+    /// entry points.
+    ///
+    /// **Round 2 (P2-H):** this test used to compare the two errors to each
+    /// other (`assert_eq!(inline, extracted)`), which is a tautology —
+    /// `validate_instance` *calls* `reject_undeclared_keys`, so the expression
+    /// expands to `f(x) == f(x)` and cannot fail for any implementation. It is
+    /// the same shape as the `both_entry_points_agree` assertion round 1
+    /// deleted. What has content is the literal on the right-hand side: it is
+    /// the text that ships in a 400 body, so both entry points are asserted
+    /// against the literal instead of against each other.
+    #[test]
+    fn an_undeclared_key_reports_the_same_shipped_string_at_both_entry_points() {
+        let inline = validate_instance(
+            "config",
+            &schema(),
+            &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
+        )
+        .unwrap_err();
+        assert_eq!(
+            inline,
+            "config.ghost: unknown field (schema declares additionalProperties: false)"
+        );
+        let extracted =
+            reject_undeclared_keys("config", &schema(), ["issue_url", "ghost"].into_iter())
+                .unwrap_err();
+        assert_eq!(
+            extracted,
+            "config.ghost: unknown field (schema declares additionalProperties: false)"
+        );
+
+        // …and it accepts what the schema does declare, so the check is not a
+        // constant `Err`.
+        reject_undeclared_keys("config", &schema(), ["issue_url", "dry_run"].into_iter())
+            .expect("declared keys pass");
+    }
+
+    /// A schema with no `properties` at all declares **nothing**, so every key
+    /// is undeclared. (The subset validator accepts such a schema — see
+    /// `accepts_schema_without_properties_or_required`.)
+    #[test]
+    fn reject_undeclared_keys_refuses_everything_when_properties_is_absent() {
+        let closed = json!({ "type": "object", "additionalProperties": false });
+        assert!(reject_undeclared_keys("config", &closed, ["x"].into_iter()).is_err());
+        reject_undeclared_keys("config", &closed, std::iter::empty()).expect("no keys, no verdict");
+        assert!(!declares_key(&closed, "x"));
+    }
+
+    /// P2-G — the boolean the config PATCH prunes with, in both directions,
+    /// so it is not a constant.
+    #[test]
+    fn declares_key_answers_the_membership_question_directly() {
+        assert!(declares_key(&schema(), "issue_url"));
+        assert!(!declares_key(&schema(), "ghost"));
     }
 
     #[test]
