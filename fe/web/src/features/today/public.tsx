@@ -368,24 +368,11 @@ export function TodayPage({
                 is what `Section` already does in the main column — an empty
                 RUNNING module would read as a gap.
 
-                RECENT used to sit here and no longer does — a trade, not a
-                de-duplication. The overlap was real: the agenda above draws
-                every visible track overlapping the selected day with no row
-                cap, RECENT kept 12, so on the default selection a quiet track
-                whose interval covers today was drawn twice in one card unless
-                the cap had already dropped it, and the de-dup that was here
-                only excluded waiting/running and never looked at the agenda.
-                What RECENT could show and today's agenda cannot is the quiet
-                tracks the day's overlap test rejects — in practice those whose
-                interval closed before today's start, where "closed" is
-                `terminalAt ?? (isTerminal ? updatedAt : nowMs)`, so a terminal
-                row with a null `terminalAt` is closed at `updatedAt` and a
-                metadata edit today pulls it back into today's agenda. Those
-                rows stay reachable in the agenda of the day their interval
-                closed, one `Previous week` press per week back; giving up that
-                glance is the price of Today staying "what needs me" rather
-                than an archive ordered by `updatedAt`. See this feature's
-                README. */}
+                RECENT used to sit here and no longer does — a trade of reach
+                for focus, not a de-duplication. The criterion that decides what
+                the agenda above shows is `activeTracksOn`
+                (`fe/core/domain/track.ts`); this comment does not restate it.
+                See this feature's README for the decision. */}
             <PanelRows title="Running" tracks={running} render={renderTrackRow} />
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>

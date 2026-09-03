@@ -78,13 +78,15 @@ describe('the summary notice answers a control, not the document', () => {
      * Compared against the tokens as the engine resolves them, not against
      * `18px` / `13px`.
      *
-     * What this locks is "the notice reads at the interface rank and not at
-     * the prose rank" — a statement about which token it takes. Pinning the
-     * numbers would additionally lock what those tokens are *worth*, so a
-     * legitimate global retune of `--text-lg` or `--text-base` would fail this
-     * test while the implementation stayed correct. The probes below make the
-     * comparison relative, and the ranks staying distinct is asserted first so
-     * the two cannot pass by collapsing into each other.
+     * What this locks is the size each element ends up at: the notice computes
+     * to whatever `--text-base` resolves to right now and the document region
+     * to `--text-lg`, with the two ranks asserted distinct first so they cannot
+     * pass by collapsing into each other. It does not lock which token the CSS
+     * *names* — a rule written as a literal would pass too, as long as the
+     * number still matches the token's current value. Comparing against probes
+     * rather than `18px` / `13px` is what keeps a legitimate global retune of
+     * either token from failing this test while the implementation stays
+     * correct.
      */
     const prose = fontSizeOf('--text-lg');
     const interfaceRank = fontSizeOf('--text-base');
