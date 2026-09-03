@@ -235,6 +235,86 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
     );
 }
 
+/// Issue #1115 / #1252 S2 — the release belt stays in `prepare_fork_report`,
+/// upstream of the shared structural door.
+///
+/// # Why this is a syntactic assertion and not a behavioural one
+///
+/// Because a behavioural one does not exist, and that was established by
+/// running it rather than by argument. **Measured**: deleting the
+/// `guard_forked_blocks(&blocks)?` call from `prepare_fork_report` leaves the
+/// whole `calm-server` package green — 1259 tests, 0 failures. That is not a
+/// coverage hole to be patched with a better fixture; it is what the belt *is*.
+/// `normalize_task_privilege_fields` runs over every block first and strips
+/// `released_by_user` from every live task, and the tombstone arm's residues are
+/// refused earlier still by `validate_payload`, so no production input reaches
+/// the belt with the flag set. `fork_guard.rs` says this in its own words: "that
+/// no-op is the intended steady state, not evidence the rule is vacuous."
+///
+/// What the belt buys is measurable, just not from its own call site: delete the
+/// `payload.remove("released_by_user")` in `normalize_task_privilege_fields` and
+/// a fork sent with **no `X-Calm-Actor` header** — the #1115 accident's original
+/// shape, a browser fork — answers 400 carrying the belt's own message, red in
+/// `track_report_fork::forked_task_does_not_inherit_the_source_users_release`.
+/// That is the belt firing for a `User` author, which is the whole difference
+/// from §3.7 Rule 5. Re-branching it on the author instead reds
+/// `routes::tracks::fork_guard::tests::
+/// fork_guard_exempts_rule_one_but_belts_release_for_every_author`.
+///
+/// So the two failure modes with no behavioural detector are the two this test
+/// takes: the call disappearing, and the belt migrating onto the shared door.
+/// The second is the one #1252 S2 makes newly possible and explicitly vetoed —
+/// `track_report::write::structural_init_report_tx` serves `TrackInit::Template`
+/// as well as `TrackInit::Fork`, so a belt hung there would give template
+/// instantiation a guard it has never had, and would separate the belt from the
+/// normalization it belts. Both are one-line edits; both are red here.
+///
+/// It reads the source rather than linking against the symbols because both are
+/// module-private (`pub(in crate::routes::tracks)` and `pub(crate)`), which is
+/// the same reason the sibling test in this file parses `write.rs`.
+#[test]
+fn the_release_belt_stays_next_to_the_normalization_it_belts() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let tracks_path = manifest.join("src/routes/tracks.rs");
+    let tracks_source = std::fs::read_to_string(&tracks_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", tracks_path.display()));
+    let tracks = syn::parse_file(&tracks_source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", tracks_path.display()));
+    let prepare = tracks
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == "prepare_fork_report" => Some(function),
+            _ => None,
+        })
+        .expect("`prepare_fork_report` vanished from routes/tracks.rs");
+    let mut prepare_names = Idents::default();
+    prepare_names.visit_block(&prepare.block);
+    for required in [EXPORTED_ENTRY, "normalize_task_privilege_fields"] {
+        assert!(
+            prepare_names.0.contains(required),
+            "`prepare_fork_report` must still call `{required}`: the belt and the normalization \
+             it belts are only meaningful adjacent to each other"
+        );
+    }
+
+    let door_path = manifest.join("src/track_report/write.rs");
+    let door_source = std::fs::read_to_string(&door_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", door_path.display()));
+    let door = syn::parse_file(&door_source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", door_path.display()));
+    let mut door_names = Idents::default();
+    door_names.visit_file(&door);
+    assert!(
+        !door_names.0.contains(EXPORTED_ENTRY),
+        "the fork belt must not move onto the shared structural door: that door also serves \
+         `TrackInit::Template`, which has never carried this guard, and hanging it there \
+         separates the belt from the normalization in `prepare_fork_report` that it exists to \
+         catch a regression in"
+    );
+}
+
 /// INV-1110-005 (partial, S5): `TemplateDescriptor` is an id handle. Do not
 /// grow a public descriptor body (plan_template / gates / planner_instructions /
 /// card_kinds / leftover input_schema) or add sibling public template types.
