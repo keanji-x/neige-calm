@@ -26,7 +26,7 @@ import {
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import type {
-  ScheduledEvent, TodayCompactProps, TodayPageProps, TrackRowRenderer,
+  ScheduledEvent, TodayCompactProps, TodayPageProps, TodaySummaryPhase, TrackRowRenderer,
 } from './page-props.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -40,7 +40,7 @@ import styles from './today.module.css';
 // `page-props.ts`, next to the viewport ledger that has to enumerate every one
 // of `TodayPageProps`' keys, and are re-exported here so this module stays the
 // feature's entry. See that file's header for why the ledger cannot live here.
-export type { ScheduledEvent, TodayPageProps, TrackRowRenderer } from './page-props.ts';
+export type { ScheduledEvent, TodayPageProps, TodaySummaryPhase, TrackRowRenderer } from './page-props.ts';
 
 /** The copy for "the day has no document yet". */
 const NO_PROGRESS_YET = 'Nothing written today yet.';
@@ -63,6 +63,29 @@ const NO_PROGRESS_YET = 'Nothing written today yet.';
 const WRITE_SUMMARY = 'Write today\u2019s progress';
 const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
 
+/**
+ * One line above the control saying what pressing it does.
+ *
+ * The button's label is a verb phrase and nothing on the page said who acts or
+ * where the result lands, so the control read as a phrase before it read as
+ * something to press. This is the caption, not a guarantee: it says what the
+ * press asks for, and the answer — including "nothing happened today" — comes
+ * back beside the button as the notice.
+ */
+const SUMMARY_CAPTION = 'An agent reads today\u2019s activity and writes it up here.';
+
+/**
+ * What the control says while a press is in flight.
+ *
+ * Two, because the two steps take different amounts of time and the slow one is
+ * invisible: on a workspace with no launchpad yet the press first materialises
+ * one and waits on a harness start, which is seconds to tens of seconds, and a
+ * button that said "Writing…" for all of it would be describing the wrong step.
+ * These are labels for the step actually running, not a progress estimate —
+ * neither one claims to know how far along it is.
+ */
+const PREPARING_LABEL = 'Preparing today\u2019s workspace\u2026';
+const WRITING_LABEL = 'Writing\u2026';
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
 
 /**
@@ -237,7 +260,7 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  onWriteSummary, summaryPending, summaryNotice,
+  onWriteSummary, summaryPending, summaryPhase, summaryNotice,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
@@ -270,6 +293,7 @@ function TodayDesktop({
             error={launchpadError}
             onWriteSummary={onWriteSummary}
             pending={summaryPending}
+            phase={summaryPhase}
             notice={summaryNotice}
           />
         </div>
@@ -302,6 +326,7 @@ function TodayDesktop({
             error={launchpadError}
             onWriteSummary={onWriteSummary}
             pending={summaryPending}
+            phase={summaryPhase}
             notice={summaryNotice}
           />
         </div>
@@ -416,12 +441,13 @@ function WaitingSection({ tracks, render }: {
  * on this page (INV-TODAYDOC-003) — no null-check of the document, no reading
  * of its text.
  */
-function TodayDocument({ launchpad, document, error, onWriteSummary, pending, notice }: {
+function TodayDocument({ launchpad, document, error, onWriteSummary, pending, phase, notice }: {
   launchpad?: TodayLaunchpadWire | null;
   document?: ReactNode;
   error?: ReactNode;
   onWriteSummary?: () => void;
   pending?: boolean;
+  phase?: TodaySummaryPhase;
   notice?: ReactNode;
 }) {
   if (error !== undefined && error !== null) return <>{error}</>;
@@ -439,6 +465,7 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
       label={written ? REWRITE_SUMMARY : WRITE_SUMMARY}
       onWrite={onWriteSummary}
       pending={pending}
+      phase={phase}
       notice={notice}
     />
   );
@@ -467,7 +494,20 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
       </div>
     );
   }
-  return <div className={styles.document}>{document}{trigger}</div>;
+  /*
+   * The trigger comes BEFORE the report, and only in this branch.
+   *
+   * A written report is the long thing on this page — it is the whole main
+   * column and then some — so a control below it is a control the reader has to
+   * scroll past the entire document to find, and its caption is an explanation
+   * that arrives after the thing it was meant to introduce. Above, both land
+   * before the reading starts.
+   *
+   * The vacant branch keeps the other order on purpose: there the sentence
+   * "nothing written today yet" is the headline, and the trigger is the answer
+   * to it.
+   */
+  return <div className={styles.document}>{trigger}{document}</div>;
 }
 
 /**
@@ -481,30 +521,46 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
  * honest shape for "this composition has no trigger", which is what the
  * feature's own suites pass.
  */
-function SummaryTrigger({ label, onWrite, pending, notice }: {
+function SummaryTrigger({ label, onWrite, pending, phase, notice }: {
   label: string;
   onWrite?: () => void;
   pending?: boolean;
+  phase?: TodaySummaryPhase;
   notice?: ReactNode;
 }) {
   if (onWrite === undefined) return null;
   const busy = pending === true;
   return (
     <div className={styles.summaryTrigger}>
-      <button
-        type="button"
-        data-nc-action="tertiary"
-        className={styles.moreButton}
-        // Disabled only while a request is actually in flight, so a double
-        // click cannot send two. Not a general "can you press this?" gate:
-        // whether there is anything to summarise is the server's answer.
-        disabled={busy}
-        aria-busy={busy}
-        onClick={onWrite}
-      >
-        {busy ? 'Writing\u2026' : label}
-      </button>
-      {notice !== undefined && notice !== null && <>{notice}</>}
+      <p className={styles.summaryCaption}>{SUMMARY_CAPTION}</p>
+      <div className={styles.summaryRow}>
+        {/*
+          `data-nc-action="secondary"` \u2014 the app's existing framed-but-quiet
+          tier (\u00a74.1), not a button drawn in this module.
+
+          It was `tertiary` plus `.moreButton`, which is the disclosure recipe:
+          11px, no border, no fill. Owner read it as a phrase rather than as
+          something to press, and asked for a grey rounded button. `secondary`
+          is that button and it already exists \u2014 border, radius and chip fill
+          from base.css \u2014 so taking it costs no new geometry and keeps
+          `[data-nc-action]` the single vocabulary \u00a79's gate measures. `primary`
+          is the one tier that would take the accent and compete with the
+          report, which is the opposite of what was asked for.
+        */}
+        <button
+          type="button"
+          data-nc-action="secondary"
+          // Disabled only while a request is actually in flight, so a double
+          // click cannot send two. Not a general "can you press this?" gate:
+          // whether there is anything to summarise is the server's answer.
+          disabled={busy}
+          aria-busy={busy}
+          onClick={onWrite}
+        >
+          {busy ? (phase === 'preparing' ? PREPARING_LABEL : WRITING_LABEL) : label}
+        </button>
+        {notice !== undefined && notice !== null && <>{notice}</>}
+      </div>
     </div>
   );
 }

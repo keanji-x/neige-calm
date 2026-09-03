@@ -133,7 +133,26 @@ around it stays interface-sized. Running is ambience and lives in the panel.
 - **INV-TODAYDOC-001** — the page load only *resolves* (`GET /api/today/launchpad`).
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
   `planner-harness-start` operation, so it must never be on this path; it belongs
-  to an explicit action. There is no such action yet.
+  to an explicit action. **The trigger is that action, since 2026-09-03.**
+
+  It used to say "there is no such action yet", and that sentence is why this
+  page could reach a state with no way out: `POST /api/today/summary` refuses a
+  day with no activity *before* the step that would create the launchpad
+  (INV-TODAYDOC-007), and the Conversations `+` is withheld until a launchpad
+  exists — so a quiet day left the route with no launchpad, no way to make one,
+  and an empty Conversations module for good. Observed on the preview instance.
+
+  So a press with no launchpad runs `ensure` first, then the summary. What the
+  invariant forbids is unchanged and is the part that was always load-bearing:
+  a wait on codex on the **render** path, which would make Today unopenable
+  whenever codex is down. A press is not a render. The endpoint's own guarantee
+  is unchanged too — see INV-TODAYDOC-007 below for the line between them —
+  and the reasoning, with its cost, is written out on
+  `useTodaySummaryMutation` in `app/providers/queries.ts`.
+
+  Both halves are pinned in `app/router/today-document.test.tsx`: no write of
+  any kind during a page load, and `ensure` on a press when — and only when —
+  there is no launchpad.
 - **INV-TODAYDOC-002** — **`null` is data; any failure is an error.** A failed
   read is rendered as an error and the empty state is suppressed: a 5xx that
   degrades into "nothing written today" tells the reader their day was empty
@@ -186,6 +205,21 @@ around it stays interface-sized. Running is ambience and lives in the panel.
   window itself and refuses an empty one without creating a conversation or
   sending a message (INV-TODAYDOC-007). The refusal comes back as
   `summaryNotice` and reads as a fact about the day, not as an error.
+
+  **INV-TODAYDOC-007 is a property of that endpoint, and it still holds
+  exactly.** `POST /api/today/summary`, refused, creates nothing — its step 2
+  runs before its step 3 for that reason, and no line of the handler changed.
+  What the press adds in front of it, on a workspace with no launchpad, is a
+  separate `ensure` the user asked for; the workspace it materializes is
+  attributable to that request rather than left behind by a refusal. The cost,
+  stated rather than argued away: on a genuinely empty day the first press does
+  create a workspace and start a harness before the refusal comes back. It is
+  paid once, and it is what makes the route escapable at all.
+
+  The button says what it does before it is pressed ("an agent reads today's
+  activity and writes it up here"), and while a press is in flight it names the
+  step it is on — preparing the workspace is the slow half and does not get to
+  be described as writing.
 - **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
   reason for putting it above the document, so an uncapped list would not be a
   cosmetic problem — it would falsify the layout's justification. The overflow
@@ -243,9 +277,12 @@ Consequences worth knowing before "fixing" one of them:
   navigation would land the reader on a track that no list of theirs contains.
 - **The `+` is offered**, because there is now a single track to attach a
   conversation to. `TodayRoute` withholds it on one condition, `launchpadTrackId
-  === ''`: with no launchpad the way to get a track is
-  `POST /api/today/launchpad/ensure`, a write that waits on codex and that
-  INV-TODAYDOC-001 keeps off this page.
+  === ''`: with no launchpad there is no track to attach to, and minting one is
+  `POST /api/today/launchpad/ensure` — a write that waits on codex, which this
+  `+` is not the place for. It stays withheld, and that is no longer a dead end:
+  the document's trigger runs `ensure` on a press (INV-TODAYDOC-001 above), so
+  there is a reachable route to a launchpad and the `+` does not have to be a
+  second one.
 - **A cross-track index is gone from here, and is not lost.** Owner's plan is a
   card of its own holding everything about one track; it has its own issue. Do
   not squeeze it back into this module.

@@ -63,6 +63,8 @@ const INITIAL_BODY = '<!-- 报告维护契约: 当下快照，每次 REWRITE -->
   + '# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n';
 const SECTION_HEADINGS = ['概要', '待你定', '已完成', '决策'] as const;
 const EMPTY_COPY = 'Nothing written today yet.';
+/** The trigger's label before a report exists. */
+const WRITE_LABEL = 'Write today’s progress';
 
 function reportCard(body: string) {
   return {
@@ -97,14 +99,19 @@ type Case = Readonly<{
   detail?: DetailMode;
   /** What `POST /api/today/summary` answers; a 200 by default. */
   summary?: ApiTransportResponse;
+  /** What `POST /api/today/launchpad/ensure` answers; a 201 by default. */
+  ensure?: ApiTransportResponse;
 }>;
 
-function renderToday({ resolve, body, detail = 'seeded', summary }: Case) {
+function renderToday({ resolve, body, detail = 'seeded', summary, ensure }: Case) {
   const requests: ApiRequest[] = [];
   const detailOk = () => ok({ track: launchpadTrack, cards: [reportCard(body)], overlays: [] });
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
+      if (request.path === '/api/today/launchpad/ensure') {
+        return Promise.resolve(ensure ?? { status: 201, statusText: 'Created', body: { track_id: 'lp' } });
+      }
       if (request.path === '/api/today/summary') {
         return Promise.resolve(summary ?? ok({ track_id: 'lp', card_id: 'conv-1' }));
       }
@@ -187,6 +194,65 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     // No launchpad means no track to read either.
     expect(requests.map((request) => request.path)).not.toContain('/api/tracks/lp');
+  });
+
+  /*
+   * The other half of the invariant, and the half that did not exist until now.
+   *
+   * INV-TODAYDOC-001 keeps `ensure` off the *render* path, because it waits on
+   * a harness start and Today must open with codex down. It does not
+   * forbid the write — its own wording reserved it for "an explicit action",
+   * and this press is that action. Without it a workspace with no activity
+   * today can never acquire a launchpad at all: `POST /api/today/summary`
+   * refuses an empty day *before* the step that would create one, and the
+   * Conversations `+` is withheld until one exists, so every door on the page
+   * stays shut.
+   *
+   * Stated as both halves in one case on purpose: "no write on load" and "a
+   * write on press" is the shape of the invariant now, and either assertion
+   * alone reads as the whole rule and is not.
+   */
+  it('bootstraps the launchpad on an explicit press, and never before one', async () => {
+    const { requests } = renderToday({ resolve: noLaunchpad(), body: INITIAL_BODY });
+    await screen.findByText(EMPTY_COPY);
+    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
+
+    await userEvent.click(screen.getByRole('button', { name: WRITE_LABEL }));
+    await waitFor(() => {
+      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
+        .toEqual(['/api/today/launchpad/ensure', '/api/today/summary']);
+    });
+  });
+
+  /* And not when there already is one: `ensure` is idempotent, but a press that
+     re-ran it would put a harness wait in front of every summary on a page that
+     already has a launchpad to write into. */
+  it('does not bootstrap when the launchpad already exists', async () => {
+    const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
+    await screen.findByText(EMPTY_COPY);
+    await userEvent.click(screen.getByRole('button', { name: WRITE_LABEL }));
+    await waitFor(() => {
+      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
+    });
+    expect(requests.map((request) => request.path)).not.toContain('/api/today/launchpad/ensure');
+  });
+
+  /* A press that cannot start the harness says so, in the vocabulary of the
+     step that failed — not "the agent service is not available" about a summary
+     that was never attempted, and above all not silence after a long wait. */
+  it('says what happened when the bootstrap itself fails', async () => {
+    const { requests } = renderToday({
+      resolve: noLaunchpad(), body: INITIAL_BODY,
+      ensure: { status: 503, statusText: 'Service Unavailable', body: { error: 'Shared codex app-server not running' } },
+    });
+    await screen.findByText(EMPTY_COPY);
+    await userEvent.click(screen.getByRole('button', { name: WRITE_LABEL }));
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((alert) => alert.textContent?.includes('Shared codex app-server not running'))).toBe(true);
+    expect(alerts.some((alert) => alert.textContent?.includes('workspace could not be started'))).toBe(true);
+    // The summary was never attempted, so nothing may claim it refused.
+    expect(requests.map((request) => request.path)).not.toContain('/api/today/summary');
+    expect(screen.queryByText('Nothing has happened in this workspace today yet.')).toBeNull();
   });
 
   it('treats a 404 as a failure, not as an empty day', async () => {
@@ -278,7 +344,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
  * which cannot do anything is worse than none. This is the other half.
  */
 describe('#1253 D5 the write-today’s-progress trigger', () => {
-  const WRITE = 'Write today’s progress';
+  const WRITE = WRITE_LABEL;
   const REWRITE = 'Rewrite today’s progress';
 
   it('posts to the summary endpoint, and to nothing else', async () => {

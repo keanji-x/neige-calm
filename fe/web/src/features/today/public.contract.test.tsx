@@ -372,6 +372,44 @@ describe('#1253 D5 the document’s trigger', () => {
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
+  /*
+   * The control is a button in the app's own vocabulary, and it says what it
+   * does before it is pressed.
+   *
+   * Both halves are owner feedback on the 4140 preview: the control read as a
+   * phrase rather than as something pressable (it was `tertiary` plus the
+   * 11px borderless disclosure recipe), and its label alone did not say who
+   * acts or where the result lands. `secondary` is the existing framed-but-
+   * quiet tier — asserted by name, because a button drawn locally in
+   * `today.module.css` is exactly the drift §9's `[data-nc-action]` gate
+   * exists to catch, and it would still look right.
+   */
+  it('is a secondary action carrying a caption for what it does', () => {
+    render(<TodayPage
+      {...props}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
+      onWriteSummary={() => undefined}
+    />);
+    const button = screen.getByRole('button', { name: WRITE });
+    expect(button.getAttribute('data-nc-action')).toBe('secondary');
+    expect(screen.getByText('An agent reads today’s activity and writes it up here.')).toBeTruthy();
+  });
+
+  /* The slow half of a first press is `ensure`, not the summary, and the
+     control names the step it is on rather than describing the wrong one for
+     however long a harness takes to come up. */
+  it('names the step in flight while the launchpad is being prepared', () => {
+    render(<TodayPage
+      {...props}
+      launchpad={null}
+      onWriteSummary={() => undefined}
+      summaryPending
+      summaryPhase="preparing"
+    />);
+    expect(screen.getByRole('button', { name: 'Preparing today’s workspace…' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Writing…' })).toBeNull();
+  });
+
   /* In flight the control says so and cannot fire again — one press, one
      request, however fast the user is. */
   it('is inert while a request is in flight', async () => {

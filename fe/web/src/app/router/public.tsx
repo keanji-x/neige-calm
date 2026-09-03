@@ -28,7 +28,7 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { TodayPage } from '../../features/today/public.tsx';
-import { todaySummaryFailure } from '../../../../core/domain/today.ts';
+import { todayLaunchpadEnsureFailure, todaySummaryFailure } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
@@ -1467,13 +1467,19 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * here — arrives as an error and is rendered as one (INV-TODAYDOC-002).
    */
   const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
+  const launchpad = launchpadQuery.data;
+  const launchpadTrackId = launchpad?.track_id ?? '';
   /*
-   * #1253 D5 — the trigger. `POST /api/today/summary`, no body and no prompt.
+   * #1253 D5 — the trigger. `POST /api/today/summary`, no body and no prompt,
+   * preceded by `POST /api/today/launchpad/ensure` when there is no launchpad
+   * to write into.
    *
-   * It is a mutation on an explicit action and nowhere near the page load:
-   * the endpoint bootstraps the launchpad internally, which materializes a
-   * workspace and waits on a `planner-harness-start` (INV-TODAYDOC-001 is about
-   * keeping exactly that off the render path).
+   * It is a mutation on an explicit action and nowhere near the page load,
+   * which is the whole of INV-TODAYDOC-001: both requests wait on a
+   * harness start, and what the invariant forbids is that wait being on
+   * the render path, where codex being down would make Today unopenable. The
+   * hook carries the long note on why an explicit press is the "explicit
+   * action" the invariant was reserving `ensure` for, and on what it costs.
    *
    * A success does not refresh the document here. The agent's write arrives
    * later as `track.report_edited`, which the event bridge turns into
@@ -1481,10 +1487,17 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * would only fetch the OLD one, and it would hide a broken invalidation
    * chain behind a lucky refresh.
    */
-  const summary = useTodaySummaryMutation(transport, unauthorized);
+  const summary = useTodaySummaryMutation(transport, unauthorized, launchpadTrackId !== '');
   const summaryNotice = useMemo(() => {
     if (summary.failure === null) return undefined;
-    const classified = todaySummaryFailure(summary.failure);
+    /* Which endpoint refused decides which vocabulary reads it. Handing an
+       `ensure` failure to `todaySummaryFailure` would word a workspace that
+       could not be started as a summary that could not be written, and the one
+       code that matters there — `today_summary_no_activity` — cannot come from
+       `ensure` at all. */
+    const classified = summary.failedStep === 'prepare'
+      ? todayLaunchpadEnsureFailure(summary.failure)
+      : todaySummaryFailure(summary.failure);
     /* "Nothing happened today" is data, not a malfunction, so it is not an
        alert: `role="alert"` interrupts a screen-reader user for something they
        asked about and got a straight answer to. The other two are failures and
@@ -1492,9 +1505,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     return classified.kind === 'no-activity'
       ? <span data-nc-role="hint">{classified.message}</span>
       : <span role="alert" data-nc-role="hint">{classified.message}</span>;
-  }, [summary.failure]);
-  const launchpad = launchpadQuery.data;
-  const launchpadTrackId = launchpad?.track_id ?? '';
+  }, [summary.failure, summary.failedStep]);
   /*
    * ── The Conversations module (#1341) ─────────────────────────────────────
    *
@@ -1709,6 +1720,10 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         : undefined}
       onWriteSummary={summary.write}
       summaryPending={summary.pending}
+      /* `'prepare'` is `ensure`, which waits on a harness start and is the slow
+         half of a first press; the button says which step it is on rather than
+         "Writing…" for all of it. */
+      summaryPhase={summary.step === 'prepare' ? 'preparing' : summary.step === 'write' ? 'writing' : undefined}
       summaryNotice={summaryNotice}
     />
     <ConfirmDialog

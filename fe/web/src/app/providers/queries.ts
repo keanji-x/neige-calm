@@ -34,7 +34,7 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  todayLaunchpadOperation, todaySummaryOperation,
+  todayLaunchpadEnsureOperation, todayLaunchpadOperation, todaySummaryOperation,
   type TodayLaunchpadWire, type TodaySummaryWire,
 } from '../../../../core/domain/today.ts';
 import {
@@ -494,12 +494,14 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
 }
 
 /**
- * The Today trigger (#1253 D5), as one mutation.
+ * The Today trigger (#1253 D5), as one mutation — of one request, or of two
+ * when the launchpad has to be created first (see the note on the hook).
  *
  * `failure` is handed back as an `ApiFailure` rather than as a sentence,
- * because the wording is `core/domain/today`'s job: `todaySummaryFailure`
- * matches on the machine-readable `code` there, where it is unit-testable and
- * away from React.
+ * because the wording is `core/domain/today`'s job: `todaySummaryFailure` and
+ * `todayLaunchpadEnsureFailure` match on the machine-readable `code` and status
+ * there, where they are unit-testable and away from React. `failedStep` is how
+ * the caller knows which of the two to ask.
  *
  * **`onSuccess` deliberately does not touch the document's keys.** A 200 means
  * the message was enqueued, not that the agent has written anything — the write
@@ -520,20 +522,113 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  * most would not have been it. Without that guard the document tests in
  * `app/router` could pass on a refetch from here instead of on the invalidation
  * policy they exist to pin.
+ *
+ * `['today-launchpad']` on the prepare path is the one addition, it is asserted
+ * by the same equality test on its own case, and `onSettled` below says why the
+ * two are not the same refetch.
  */
+/**
+ * Which request the trigger is on. `'prepare'` exists only when there was no
+ * launchpad to write into; `'write'` is always the last step.
+ */
+export type TodaySummaryStep = 'prepare' | 'write';
+
 export type TodaySummaryMutation = Readonly<{
   write: () => void;
   pending: boolean;
+  /** The step in flight, or `null` when nothing is. */
+  step: TodaySummaryStep | null;
   failure: ApiFailure | null;
+  /** Which step the current `failure` came from; `null` when there is none. */
+  failedStep: TodaySummaryStep | null;
 }>;
 
+/**
+ * ── The press may create the launchpad first, and why that is not a way round
+ *    INV-TODAYDOC-007 ──────────────────────────────────────────────────────
+ *
+ * Both of Today's doors used to be locked shut against each other on a quiet
+ * day. `POST /api/today/summary` refuses a day with no activity **having
+ * created nothing** — that is INV-TODAYDOC-007, and the server's step 2 runs
+ * before its step 3 precisely so a refusal materialises no workspace. The
+ * launchpad is created at that step 3. And the Conversations module's `+` is
+ * withheld while there is no launchpad. So: no activity today ⇒ no launchpad
+ * ever ⇒ every door on this page shut, and the module permanently empty.
+ * Observed on the preview instance, where `GET /api/today/launchpad` answered
+ * `null` indefinitely.
+ *
+ * So when there is no launchpad the press runs `ensure` first.
+ *
+ * **The endpoint's invariant is untouched, and it is worth being exact about
+ * what moved.** INV-TODAYDOC-007 is a property of `POST /api/today/summary`:
+ * *that* request, refused, leaves nothing behind. It still does — not a line of
+ * the handler changes, and its ordering is still what makes the guarantee true.
+ * What changed is who calls what, and with which intent: a deliberate press on
+ * a control captioned "an agent reads today's activity and writes it up here"
+ * is a request to set Today up and write it, and the workspace it materialises
+ * is attributable to the `ensure` the user asked for, not to a refusal that
+ * quietly left one behind.
+ *
+ * The distinction that carries this is **press versus page load**, which is the
+ * distinction INV-TODAYDOC-001 was drawing all along: `ensure` waits on codex,
+ * so on the render path it makes Today unopenable whenever codex is down, and
+ * that — not the write itself — is what the invariant forbids. Its own wording
+ * says `ensure` "belongs to an explicit action"; there simply was no such
+ * action yet. This is it.
+ *
+ * The residual cost, stated rather than argued away: on a genuinely empty day
+ * the first press does now leave a workspace and a started harness behind
+ * before the refusal comes back. That is the price of the launchpad existing at
+ * all, it is paid once, and it is paid on a press rather than on every load.
+ */
 export function useTodaySummaryMutation(
-  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel, hasLaunchpad: boolean,
 ): TodaySummaryMutation {
   const client = useQueryClient();
+  /*
+   * The step most recently entered, not a second copy of the mutation's state.
+   * Nothing runs after a throw, so when `mutation.error` is set this is where
+   * it was thrown; while pending it is what is on the wire.
+   *
+   * `null` means "nothing has entered a step yet", and it is read through
+   * `hasLaunchpad` rather than seeded from it — a value seeded at mount would
+   * still say `'prepare'` for a page whose resolve landed a launchpad after the
+   * first render, and the button would show the wrong label for the frame
+   * between `mutate()` and `mutationFn`'s first line.
+   */
+  const [step, setStep] = useState<TodaySummaryStep | null>(null);
+  const entered: TodaySummaryStep = step ?? (hasLaunchpad ? 'write' : 'prepare');
   const mutation = useMutation({
-    mutationFn: (): Promise<TodaySummaryWire> =>
-      runOperation(transport, todaySummaryOperation(), unauthorized),
+    mutationFn: async (): Promise<{ wire: TodaySummaryWire; prepared: boolean }> => {
+      const prepared = !hasLaunchpad;
+      if (prepared) {
+        setStep('prepare');
+        await runOperation(transport, todayLaunchpadEnsureOperation(), unauthorized);
+      }
+      setStep('write');
+      return { wire: await runOperation(transport, todaySummaryOperation(), unauthorized), prepared };
+    },
+    /*
+     * **`onSettled`, not `onSuccess`, and only on the prepare path.**
+     *
+     * `ensure` answers 503 when the launchpad exists but its harness would not
+     * start, so a failed press can still have created the very thing the
+     * resolve reports on. Refetching only on success would leave the page
+     * saying "no launchpad" about a launchpad that is now there, and the `+`
+     * withheld with it.
+     *
+     * This is not the refetch `today-summary-write.contract.test.tsx` forbids.
+     * That one is about the *document* keys after a summary: a 200 there means
+     * the message was enqueued, so re-reading the report fetches the old one
+     * and hides a broken invalidation chain behind a lucky refresh. Here the
+     * resolve's answer has genuinely changed, and it changed because of a
+     * request this hook made. It is also confined to the prepare path, so the
+     * document tests — which all run against an existing launchpad — see the
+     * same single invalidation they always did.
+     */
+    onSettled: () => {
+      if (!hasLaunchpad) void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
+    },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.trackConversationsPrefix() });
     },
@@ -541,7 +636,9 @@ export function useTodaySummaryMutation(
   return {
     write: () => { mutation.mutate(); },
     pending: mutation.isPending,
+    step: mutation.isPending ? entered : null,
     failure: mutation.error instanceof ApiError ? mutation.error.failure : null,
+    failedStep: mutation.error === null ? null : entered,
   };
 }
 

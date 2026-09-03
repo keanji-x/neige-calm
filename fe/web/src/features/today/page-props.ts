@@ -51,6 +51,9 @@ export type TrackRowRenderer = (
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
 ) => ReactNode;
 
+/** Which step of the summary trigger is currently in flight. */
+export type TodaySummaryPhase = 'preparing' | 'writing';
+
 export type TodayPageProps = Readonly<{
   tracks: readonly Track[];
   areas: readonly Area[];
@@ -102,6 +105,11 @@ export type TodayPageProps = Readonly<{
   onWriteSummary?: () => void;
   /** The trigger is in flight: the control says so and does not fire again. */
   summaryPending?: boolean;
+  /**
+   * Which step is in flight. Preparing materialises a missing launchpad and
+   * may wait on its harness; writing submits the summary request itself.
+   */
+  summaryPhase?: TodaySummaryPhase;
   /**
    * What the last trigger said, when it did not simply work — already worded
    * and rendered by the composition layer, the same way `launchpadError` is.
@@ -225,6 +233,10 @@ export const TODAY_VIEWPORT_LEDGER = Object.freeze({
   summaryPending: Object.freeze({
     render: false,
     why: 'Only ever read to put the write-progress trigger in its busy state, and that trigger is not drawn.',
+  } as const),
+  summaryPhase: Object.freeze({
+    render: false,
+    why: 'Only labels the desktop write-progress trigger while it is busy; that trigger is not drawn on a phone.',
   } as const),
   summaryNotice: Object.freeze({
     render: false,
