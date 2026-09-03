@@ -80,6 +80,11 @@ use utoipa::OpenApi;
         crate::routes::area_folders::resolve_path,
         // ---- tracks ----
         crate::routes::track_templates::list_track_templates,
+        crate::routes::track_recipes::list_recipes,
+        crate::routes::track_recipes::get_recipe,
+        crate::routes::track_recipes::create_recipe,
+        crate::routes::track_recipes::update_recipe,
+        crate::routes::track_recipes::delete_recipe,
         // ---- track conversations (#1189) ----
         crate::routes::track_conversations::list_track_conversations,
         crate::routes::track_conversations::create_track_conversation,
@@ -182,6 +187,9 @@ use utoipa::OpenApi;
         BacklinkQuote,
         TrackBacklinksResponse,
         crate::routes::track_templates::TrackTemplate,
+        calm_types::model::TrackRecipe,
+        crate::routes::track_recipes::CreateRecipeBody,
+        crate::routes::track_recipes::UpdateRecipeBody,
         crate::routes::track_templates::TrackTemplateTask,
         TrackFsCardMeta,
         TrackFsRunStatus,

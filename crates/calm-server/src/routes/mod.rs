@@ -26,6 +26,7 @@ pub mod threads;
 pub mod today;
 pub mod today_summary;
 pub mod track_conversations;
+pub mod track_recipes;
 pub mod track_report_blocks;
 pub mod track_templates;
 pub mod tracks;
@@ -62,6 +63,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(tracks::router())
         .merge(track_conversations::router())
         .merge(track_report_blocks::router())
+        .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())
         .merge(overlays::router())
