@@ -28,7 +28,13 @@ test('the application routes are reachable through the real kernel', async ({ pa
   createdAreaIds.push(area.id);
   const track = await createTrack(request, area.id);
   const routes = [
-    { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
+    /* #1253 — Today is anchored on the calendar's week nav, not on
+       `data-nc-page-title`: Today's title is the date, formatted through
+       `toLocaleDateString`, so a text match there would be a match on the
+       browser's locale and on whatever today happens to be. `Previous week`
+       is the calendar module's own control, it exists on no other route, and
+       it is named the same way the new-track composer below is. */
+    { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
     { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
     /* #1211 — the new-track page is a route like the others, so it belongs in
        the reachability sweep: this is what would catch it failing to render at
