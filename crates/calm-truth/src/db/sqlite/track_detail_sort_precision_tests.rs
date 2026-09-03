@@ -77,6 +77,7 @@ async fn seed_track_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<S
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

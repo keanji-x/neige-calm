@@ -128,6 +128,8 @@ fn track_min() -> Track {
         purpose: None,
         template_input: None,
         terminal_at: None,
+        recipe_id: None,
+        recipe_revision: None,
         workspace: TrackWorkspace::default(),
         created_at: 1000,
         updated_at: 2000,
@@ -204,6 +206,12 @@ golden_test!(
                 path: "/tmp/golden-track".into(),
                 frozen_at: Some(444),
             },
+            // #1292 S3 — populated on purpose, and only here. The other three
+            // `track.updated` goldens pin these as `null`, which proves they
+            // are emitted but not that they carry a value. This is the one
+            // case that pins the populated wire shape of both.
+            recipe_id: Some("recipe-01".into()),
+            recipe_revision: Some(7),
             ..track_min()
         },
         Some("planner says hi".into()),

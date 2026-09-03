@@ -39,6 +39,8 @@ describe('TrackInfoViewer', () => {
           archived_at: new Date('2026-06-10T10:00:00Z').getTime(),
           pinned_at: new Date('2026-06-10T11:55:00Z').getTime(),
           terminal_at: null,
+          recipe_id: null,
+          recipe_revision: null,
           created_at: 0,
           updated_at: 0,
         }}
@@ -79,6 +81,8 @@ describe('TrackInfoViewer', () => {
           archived_at: null,
           pinned_at: null,
           terminal_at: null,
+          recipe_id: null,
+          recipe_revision: null,
           created_at: 0,
           updated_at: 0,
         }}

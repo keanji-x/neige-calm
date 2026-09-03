@@ -184,6 +184,21 @@ const trackObjectSchema = z.object({
    */
   terminal_at: z.number().nullable().default(null),
   /**
+   * #1292 S3 — the user recipe this track was instantiated from, and that
+   * recipe's `revision` at create time. Server-owned provenance: the kernel
+   * reads both from the `track_recipes` row inside the create tx, never from
+   * the request body. Both are `null` together for tracks that came from
+   * anywhere else; the DB CHECK in migration 0085 makes half a provenance
+   * unrepresentable, so the pair is effectively all-or-nothing even though
+   * the two zod fields are independent.
+   *
+   * Defaulted to `null` for the same reason `template_id` above is: pre-#1292
+   * `track.updated` replays carry no key, and mirrors `#[serde(default)]` on
+   * `Track.recipe_id` / `Track.recipe_revision`.
+   */
+  recipe_id: z.string().nullable().default(null),
+  recipe_revision: z.number().nullable().default(null),
+  /**
    * #1147 S1 (design D1) — the typed workspace. `cwd` above is a projection
    * of `workspace.path`; the kernel writes both from one value.
    *

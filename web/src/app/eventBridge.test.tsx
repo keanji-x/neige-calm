@@ -344,6 +344,8 @@ describe('EventBridge', () => {
         purpose: null,
         template_input: null,
         terminal_at: null,
+        recipe_id: null,
+        recipe_revision: null,
         pinned_at: null,
         created_at: 1,
         updated_at: 2,

@@ -40,6 +40,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

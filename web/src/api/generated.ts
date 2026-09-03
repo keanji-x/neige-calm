@@ -2406,6 +2406,28 @@ export interface components {
             plugin_scope?: string | null;
             /** @description Server-owned structural marker. Public track creation cannot set this. */
             purpose?: string | null;
+            /**
+             * @description The user recipe ([`TrackRecipe`]) this track was instantiated from.
+             *
+             *     Deliberately not `template_id`: that field is resolved against running
+             *     plugins' manifests to recover a bound template descriptor, and a recipe
+             *     has no manifest to match, so a recipe id there would make every
+             *     recipe-created track report a resolution failure for an entirely normal
+             *     situation. It is recorded on the track rather than derived because
+             *     instantiation is a value copy — once the recipe is edited or deleted
+             *     there is nothing left to derive the origin from.
+             *
+             *     May name a recipe that no longer exists. That is not a broken link to
+             *     repair: it is the truthful answer to "where did this come from".
+             */
+            recipe_id?: string | null;
+            /**
+             * Format: int64
+             * @description The recipe's `revision` at the moment this track was created. Frozen:
+             *     later edits to the recipe bump the recipe's revision and leave this
+             *     alone, which is what makes it identify a version rather than a row.
+             */
+            recipe_revision?: number | null;
             /** Format: double */
             sort: number;
             /**

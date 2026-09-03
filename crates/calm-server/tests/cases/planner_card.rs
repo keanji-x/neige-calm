@@ -338,6 +338,8 @@ async fn planner_card_can_emit_track_updated_via_enforce_role() {
             purpose: None,
             template_input: None,
             terminal_at: None,
+            recipe_id: None,
+            recipe_revision: None,
             workspace: Default::default(),
             created_at: 0,
             updated_at: 0,
@@ -417,6 +419,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     },
                     None,
                     &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
                     &calm_server::track_area_cache::TrackAreaCache::new(),
                 )
                 .await?;
@@ -586,6 +589,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                     },
                     None,
                     &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
                     &wcc_for_tx,
                 )
                 .await?;

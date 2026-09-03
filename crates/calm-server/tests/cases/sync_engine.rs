@@ -168,6 +168,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                     },
                     None,
                     &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
                     &calm_server::track_area_cache::TrackAreaCache::new(),
                 )
                 .await?;
@@ -341,6 +342,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                     },
                     None,
                     &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
                     &calm_server::track_area_cache::TrackAreaCache::new(),
                 )
                 .await?;
@@ -460,6 +462,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         },
                         None,
                         &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        None,
                         &calm_server::track_area_cache::TrackAreaCache::new(),
                     )
                     .await?;
@@ -535,6 +538,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         },
                         None,
                         &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        None,
                         &calm_server::track_area_cache::TrackAreaCache::new(),
                     )
                     .await?;
@@ -674,6 +678,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                             },
                             None,
                             &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                            None,
                             &calm_server::track_area_cache::TrackAreaCache::new(),
                         )
                         .await?;

@@ -270,6 +270,12 @@ impl ProviderAdapter for ChildTrackAdapter {
             },
             None,
             &plan,
+            // #1292 S3 — a child track is spawned by its parent's plan, not
+            // instantiated from a user recipe. A parent that was itself made
+            // from one deliberately does not pass its origin down: the child's
+            // report is the parent's task goal, so a recipe id here would claim
+            // the child carries content it never got.
+            None,
             &self.track_area_cache,
         )
         .await?;
@@ -599,6 +605,7 @@ mod tests {
             },
             None,
             &TrackWorkspacePlan::AttachedFromCwd,
+            None,
             repo.track_area_cache(),
         )
         .await
@@ -854,6 +861,7 @@ mod tests {
             },
             None,
             &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
+            None,
             repo.track_area_cache(),
         )
         .await
@@ -994,6 +1002,7 @@ mod tests {
             },
             None,
             &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
+            None,
             repo.track_area_cache(),
         )
         .await
@@ -1186,6 +1195,7 @@ mod tests {
             },
             None,
             &TrackWorkspacePlan::AttachedFromCwd,
+            None,
             repo.track_area_cache(),
         )
         .await

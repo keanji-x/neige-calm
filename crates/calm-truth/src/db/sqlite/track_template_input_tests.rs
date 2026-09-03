@@ -40,6 +40,7 @@ async fn track_create_round_trips_template_input() {
         },
         Some("area-chat"),
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
@@ -60,6 +61,7 @@ async fn track_create_round_trips_template_input() {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

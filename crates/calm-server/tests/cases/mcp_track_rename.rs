@@ -160,6 +160,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
             new_track,
             purpose,
             &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+            None,
             &cache,
         )
         .await

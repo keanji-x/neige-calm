@@ -1,5 +1,5 @@
 {
-  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597).",
+  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null).",
   "wire": {
     "ev": "track.updated",
     "data": {
@@ -23,7 +23,9 @@
       },
       "created_at": 1000,
       "updated_at": 2000,
-      "agent_message": "planner says hi"
+      "agent_message": "planner says hi",
+      "recipe_id": "recipe-01",
+      "recipe_revision": 7
     }
   }
 }

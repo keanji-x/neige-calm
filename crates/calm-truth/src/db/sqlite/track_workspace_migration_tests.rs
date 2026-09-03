@@ -173,6 +173,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
@@ -308,6 +309,7 @@ async fn track_update_tx_leaves_the_workspace_alone() {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
@@ -380,6 +382,7 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

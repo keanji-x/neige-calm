@@ -131,7 +131,7 @@ pub use task_projection::{
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
 pub use track::{
-    AttachedInheritedPath, TrackWorkspacePlan, track_create_tx, track_delete_tx,
+    AttachedInheritedPath, TrackRecipeOrigin, TrackWorkspacePlan, track_create_tx, track_delete_tx,
     track_require_leaf_tx, track_update_tx,
 };
 pub use track_recipe::track_recipe_get_tx;

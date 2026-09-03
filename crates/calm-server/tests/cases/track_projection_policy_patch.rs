@@ -167,6 +167,11 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "workspace_kind",
     "workspace_path",
     "workspace_frozen_at",
+    // #1292 S3 — migration 0085. Which user recipe this track was built from
+    // and at which revision of it. Both NULL unless the track came from one;
+    // a cross-column CHECK refuses one without the other.
+    "recipe_id",
+    "recipe_revision",
 ];
 
 type PersistedTrackEvent = (

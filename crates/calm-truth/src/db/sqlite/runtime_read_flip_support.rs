@@ -98,6 +98,7 @@ pub(super) async fn create_card_in_tx(
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
@@ -211,6 +212,7 @@ pub(super) async fn seed_terminal_runtime(
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
@@ -276,6 +278,7 @@ pub(super) async fn seed_codex_terminal_card(
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
