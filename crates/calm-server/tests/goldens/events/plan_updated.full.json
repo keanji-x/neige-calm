@@ -3,7 +3,7 @@
   "wire": {
     "ev": "plan.updated",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "changed_keys": [
         "t1",
         "t2"

@@ -3,7 +3,7 @@
 //! single place that decides which claim *covers* a given path.
 //!
 //! **Issue #275.** Both resolvers (`GET /api/areas/resolve` and the
-//! wave-create owner scan) used to carry their own copy of the covering
+//! track-create owner scan) used to carry their own copy of the covering
 //! scan, and they disagreed: one took a longest-prefix tiebreak, the
 //! other took the first row in `ORDER BY path ASC`. That only mattered
 //! because overlapping rows were reachable: the conflict scan ran on one
@@ -57,7 +57,7 @@ pub fn is_descendant_of(parent: &str, candidate: &str) -> bool {
 /// ancestor of (or equal to) it.
 ///
 /// **The one covering-scan rule.** `GET /api/areas/resolve` and the
-/// wave-create owner scan both call this so they can never disagree
+/// track-create owner scan both call this so they can never disagree
 /// about which area owns a cwd (#275). No tiebreak: overlapping claims
 /// are impossible because every writer classifies overlap and inserts
 /// inside one `BEGIN IMMEDIATE` transaction (see
@@ -113,9 +113,9 @@ pub fn classify_conflict(existing: &[AreaFolder], normalized: &str) -> Option<Fo
 ///
 /// **Why this exists.** The atomic claim writer makes overlap
 /// unreachable *going forward* (#275), but databases created before it
-/// landed can already hold overlapping rows: the wave-attach path's
+/// landed can already hold overlapping rows: the track-attach path's
 /// in-tx insert was gated on the request flag alone, never on the scan
-/// result, so an area claiming `/a` plus a wave with `cwd = "/a/b",
+/// result, so an area claiming `/a` plus a track with `cwd = "/a/b",
 /// attach_folder = true` minted an overlapping `/a/b` row from ordinary
 /// single-threaded HTTP. [`find_owner`] resolves such a table by
 /// iteration order, which silently picks a *different* owner than the
@@ -174,7 +174,7 @@ mod tests {
     /// #1147 S3 — the edges nothing was pinning.
     ///
     /// This got written because the slice's fixture migration replaced the one
-    /// route-level test that fed `cwd: "/"` through `POST /api/waves` (the
+    /// route-level test that fed `cwd: "/"` through `POST /api/tracks` (the
     /// system-area case, which can no longer use `/` now that an attached
     /// target must be an existing Git work tree). Rather than force a fixture
     /// back onto a path that cannot work, the boundary is pinned here, where it

@@ -55,7 +55,7 @@ use tokio::sync::broadcast;
 // definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::event::{
     ArtifactRef, EditAuthor, Event, EventMetadata, EventScope, SYNC_EVENT_VERSION,
-    WaveUpdatedPayload, topics,
+    TrackUpdatedPayload, topics,
 };
 
 /// Capacity of the broadcast channel. If a subscriber lags more than this,
@@ -97,7 +97,7 @@ pub struct BroadcastEnvelope {
     /// Used by `replay::spawn_session_recorder` so `RECORD_SESSION` traces
     /// preserve real attribution.
     pub actor: ActorId,
-    /// "Home scope" — which area/wave/card this event belongs to. PR3+
+    /// "Home scope" — which area/track/card this event belongs to. PR3+
     /// filter and route on this without re-parsing the event payload.
     /// Replay-path envelopes for pre-PR2 rows (NULL `scope_*` columns)
     /// fall back to `EventScope::System`.
@@ -230,7 +230,7 @@ impl EventBus {
 /// matching logic; the dispatcher (`crate::dispatcher`) is the only
 /// consumer today.
 ///
-/// The filter combines a scope predicate (where in the area→wave→card
+/// The filter combines a scope predicate (where in the area→track→card
 /// tree we care about) with an optional kind predicate (which event
 /// variants we care about). The kind check runs first because it's
 /// cheap (single string compare against the persisted kind tag).
@@ -243,9 +243,9 @@ pub struct SubscribeFilter {
     pub scope: SubscribeScope,
     /// When true, a scope predicate matches *that scope and any
     /// strictly-narrower scope* (e.g. `Area(c)` with `descendants =
-    /// true` matches `Area{c}`, `Wave{area=c,...}`, and
+    /// true` matches `Area{c}`, `Track{area=c,...}`, and
     /// `Card{area=c,...}`). When false, only exact equality matches —
-    /// e.g. `Area(c)` matches the area-level event but not any wave
+    /// e.g. `Area(c)` matches the area-level event but not any track
     /// under it. The dispatcher uses `true` so a `*.worker_requested`
     /// emitted from any spec card scope (Card) routes upward.
     pub include_descendants: bool,
@@ -255,29 +255,29 @@ pub struct SubscribeFilter {
     pub kinds: Option<Vec<String>>,
 }
 
-/// What part of the area→wave→card tree (and which envelopes-without-
+/// What part of the area→track→card tree (and which envelopes-without-
 /// a-tree-position) a [`SubscribeFilter`] cares about. Distinct from
-/// [`EventScope`] because we need wildcard variants (`AnyWave`,
+/// [`EventScope`] because we need wildcard variants (`AnyTrack`,
 /// `AnyCard`, `Any`) the persisted-event type doesn't need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscribeScope {
     /// Match envelopes with `EventScope::System` exactly.
     System,
-    /// Match an exact area (or any wave/card under it when
+    /// Match an exact area (or any track/card under it when
     /// `include_descendants = true`).
     Area(crate::ids::AreaId),
-    /// Match an exact wave (or any card under it when
+    /// Match an exact track (or any card under it when
     /// `include_descendants = true`).
-    Wave(crate::ids::WaveId),
+    Track(crate::ids::TrackId),
     /// Match an exact card. `include_descendants` is meaningless here
     /// (cards have no children in the sync-engine hierarchy) but the
     /// filter still honors the flag uniformly — true or false, only
     /// the exact card matches.
     Card(crate::ids::CardId),
-    /// Match any wave-scoped envelope. With `include_descendants =
+    /// Match any track-scoped envelope. With `include_descendants =
     /// true`, also matches any card-scoped envelope (a card scope is a
-    /// descendant of *some* wave).
-    AnyWave,
+    /// descendant of *some* track).
+    AnyTrack,
     /// Match any card-scoped envelope.
     AnyCard,
     /// Match every envelope — equivalent to today's `subscribe()`
@@ -306,7 +306,7 @@ impl SubscribeFilter {
 
         // 2. Scope predicate. Each variant of SubscribeScope decides
         //    its own match logic; `include_descendants` widens the
-        //    Area/Wave variants to also accept narrower scopes.
+        //    Area/Track variants to also accept narrower scopes.
         match &self.scope {
             SubscribeScope::Any => true,
             SubscribeScope::System => matches!(envelope.scope, EventScope::System),
@@ -317,16 +317,16 @@ impl SubscribeFilter {
                     matches!(&envelope.scope, EventScope::Area { area } if area == c)
                 }
             }
-            SubscribeScope::Wave(w) => {
+            SubscribeScope::Track(w) => {
                 if self.include_descendants {
-                    envelope.scope.wave_id() == Some(w)
+                    envelope.scope.track_id() == Some(w)
                 } else {
-                    matches!(&envelope.scope, EventScope::Wave { wave, .. } if wave == w)
+                    matches!(&envelope.scope, EventScope::Track { track, .. } if track == w)
                 }
             }
             SubscribeScope::Card(card) => envelope.scope.card_id() == Some(card),
-            SubscribeScope::AnyWave => match &envelope.scope {
-                EventScope::Wave { .. } => true,
+            SubscribeScope::AnyTrack => match &envelope.scope {
+                EventScope::Track { .. } => true,
                 EventScope::Card { .. } => self.include_descendants,
                 _ => false,
             },
@@ -348,7 +348,7 @@ impl Default for EventBus {
 #[cfg(test)]
 mod filter_tests {
     use super::*;
-    use crate::ids::{AreaId, CardId, WaveId};
+    use crate::ids::{AreaId, CardId, TrackId};
 
     fn env(scope: EventScope, ev: Event) -> BroadcastEnvelope {
         BroadcastEnvelope {
@@ -360,10 +360,10 @@ mod filter_tests {
         }
     }
 
-    fn card_added(card: &str, wave: &str) -> Event {
+    fn card_added(card: &str, track: &str) -> Event {
         Event::CardAdded(crate::model::Card {
             id: CardId::from(card),
-            wave_id: WaveId::from(wave),
+            track_id: TrackId::from(track),
             title: None,
             kind: "terminal".into(),
             sort: 1.0,
@@ -396,13 +396,13 @@ mod filter_tests {
     fn card_scope() -> EventScope {
         EventScope::Card {
             card: CardId::from("k"),
-            wave: WaveId::from("w"),
+            track: TrackId::from("w"),
             area: AreaId::from("c"),
         }
     }
-    fn wave_scope() -> EventScope {
-        EventScope::Wave {
-            wave: WaveId::from("w"),
+    fn track_scope() -> EventScope {
+        EventScope::Track {
+            track: TrackId::from("w"),
             area: AreaId::from("c"),
         }
     }
@@ -421,7 +421,7 @@ mod filter_tests {
         };
         assert!(f.matches(&env(EventScope::System, codex_req())));
         assert!(f.matches(&env(area_scope(), card_added("c1", "w"))));
-        assert!(f.matches(&env(wave_scope(), card_added("c1", "w"))));
+        assert!(f.matches(&env(track_scope(), card_added("c1", "w"))));
         assert!(f.matches(&env(card_scope(), task_failed())));
     }
 
@@ -473,8 +473,8 @@ mod filter_tests {
             kinds: None,
         };
         assert!(exact.matches(&env(area_scope(), codex_req())));
-        // No descendants: a wave under this area is out.
-        assert!(!exact.matches(&env(wave_scope(), codex_req())));
+        // No descendants: a track under this area is out.
+        assert!(!exact.matches(&env(track_scope(), codex_req())));
         assert!(!exact.matches(&env(card_scope(), codex_req())));
 
         let desc = SubscribeFilter {
@@ -483,34 +483,34 @@ mod filter_tests {
             kinds: None,
         };
         assert!(desc.matches(&env(area_scope(), codex_req())));
-        assert!(desc.matches(&env(wave_scope(), codex_req())));
+        assert!(desc.matches(&env(track_scope(), codex_req())));
         assert!(desc.matches(&env(card_scope(), codex_req())));
         // Different area out of scope.
-        let other = EventScope::Wave {
-            wave: WaveId::from("w2"),
+        let other = EventScope::Track {
+            track: TrackId::from("w2"),
             area: AreaId::from("c2"),
         };
         assert!(!desc.matches(&env(other, codex_req())));
     }
 
     #[test]
-    fn scope_wave_exact_vs_descendants() {
+    fn scope_track_exact_vs_descendants() {
         let exact = SubscribeFilter {
-            scope: SubscribeScope::Wave(WaveId::from("w")),
+            scope: SubscribeScope::Track(TrackId::from("w")),
             include_descendants: false,
             kinds: None,
         };
-        assert!(exact.matches(&env(wave_scope(), codex_req())));
+        assert!(exact.matches(&env(track_scope(), codex_req())));
         assert!(!exact.matches(&env(card_scope(), codex_req())));
 
         let desc = SubscribeFilter {
-            scope: SubscribeScope::Wave(WaveId::from("w")),
+            scope: SubscribeScope::Track(TrackId::from("w")),
             include_descendants: true,
             kinds: None,
         };
-        assert!(desc.matches(&env(wave_scope(), codex_req())));
+        assert!(desc.matches(&env(track_scope(), codex_req())));
         assert!(desc.matches(&env(card_scope(), codex_req())));
-        // Area-only scope: no wave -> out.
+        // Area-only scope: no track -> out.
         assert!(!desc.matches(&env(area_scope(), codex_req())));
     }
 
@@ -524,30 +524,30 @@ mod filter_tests {
         assert!(f.matches(&env(card_scope(), codex_req())));
         let other = EventScope::Card {
             card: CardId::from("k2"),
-            wave: WaveId::from("w"),
+            track: TrackId::from("w"),
             area: AreaId::from("c"),
         };
         assert!(!f.matches(&env(other, codex_req())));
-        assert!(!f.matches(&env(wave_scope(), codex_req())));
+        assert!(!f.matches(&env(track_scope(), codex_req())));
     }
 
     #[test]
     fn scope_anywave_with_and_without_descendants() {
         let no_desc = SubscribeFilter {
-            scope: SubscribeScope::AnyWave,
+            scope: SubscribeScope::AnyTrack,
             include_descendants: false,
             kinds: None,
         };
-        assert!(no_desc.matches(&env(wave_scope(), codex_req())));
+        assert!(no_desc.matches(&env(track_scope(), codex_req())));
         assert!(!no_desc.matches(&env(card_scope(), codex_req())));
         assert!(!no_desc.matches(&env(area_scope(), codex_req())));
 
         let desc = SubscribeFilter {
-            scope: SubscribeScope::AnyWave,
+            scope: SubscribeScope::AnyTrack,
             include_descendants: true,
             kinds: None,
         };
-        assert!(desc.matches(&env(wave_scope(), codex_req())));
+        assert!(desc.matches(&env(track_scope(), codex_req())));
         assert!(desc.matches(&env(card_scope(), codex_req())));
         assert!(!desc.matches(&env(area_scope(), codex_req())));
     }
@@ -560,7 +560,7 @@ mod filter_tests {
             kinds: None,
         };
         assert!(f.matches(&env(card_scope(), codex_req())));
-        assert!(!f.matches(&env(wave_scope(), codex_req())));
+        assert!(!f.matches(&env(track_scope(), codex_req())));
         assert!(!f.matches(&env(EventScope::System, codex_req())));
     }
 

@@ -9,7 +9,7 @@
 //! Field-level validation details (key regex, kind vocabulary, gate
 //! shape, cycle paths, …) are pinned by the unit tests inside
 //! `tools/plan.rs`; this file covers shim zero-write behavior, cancel
-//! semantics, role gating, list projection, and the #644 `WavePatch` fields.
+//! semantics, role gating, list projection, and the #644 `TrackPatch` fields.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,21 +18,21 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{AreaId, CardId, WaveId};
+use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::{
     TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT, plan_cancel_after_pre_read_for_test,
 };
-use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
+use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewWave, TaskStatus, WaveLifecycle, WavePatch, now_ms,
+    CardRole, NewArea, NewCard, NewTrack, TaskStatus, TrackLifecycle, TrackPatch, now_ms,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 
 struct Boot {
@@ -40,7 +40,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
     area_id: AreaId,
-    wave_id: WaveId,
+    track_id: TrackId,
     spec_card_id: CardId,
     worker_card_id: CardId,
     report_card_id: CardId,
@@ -61,8 +61,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "initial".into(),
@@ -77,7 +77,7 @@ async fn boot() -> Boot {
         .unwrap();
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -87,7 +87,7 @@ async fn boot() -> Boot {
         .unwrap();
     let worker_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -97,33 +97,33 @@ async fn boot() -> Boot {
         .unwrap();
     let report_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
-            kind: "wave-report".into(),
+            kind: "track-report".into(),
             sort: Some(-1.0),
-            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
         })
         .await
         .unwrap();
 
-    // PR-C activated rule 6 and new waves default `require_task_gates
+    // PR-C activated rule 6 and new tracks default `require_task_gates
     // = 1` (migration 0041 DB DEFAULT) — most of this suite plans
-    // ungated codex tasks, so the boot wave opts out. The complete
+    // ungated codex tasks, so the boot track opts out. The complete
     // report-block admission matrix lives in task_projection_acceptance.
-    repo.wave_update(
-        wave.id.as_str(),
-        WavePatch {
+    repo.track_update(
+        track.id.as_str(),
+        TrackPatch {
             require_task_gates: Some(false),
             ..Default::default()
         },
     )
     .await
-    .expect("boot wave opts out of rule 6");
+    .expect("boot track opts out of rule 6");
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
-    // #1189 §3.6 — the recorder gate resolves session → card → {role, wave}
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    // #1189 §3.6 — the recorder gate resolves session → card → {role, track}
     // with a live `cards` read, so the spec card must be persisted as Spec
     // and not merely cached that way (`Repo::card_create` mints Worker).
     crate::support::mcp::set_persisted_card_role(
@@ -132,11 +132,11 @@ async fn boot() -> Boot {
         CardRole::Spec,
     )
     .await;
-    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
     card_role_cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
-        wave.id.clone(),
+        track.id.clone(),
     );
     seed_runtime_session(
         &sqlx_repo,
@@ -145,11 +145,11 @@ async fn boot() -> Boot {
         "spec-thread",
     )
     .await;
-    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
-        .bind(wave.id.as_str())
+    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(track.id.as_str())
         .execute(sqlx_repo.pool())
         .await
-        .expect("mark spec session as wave root");
+        .expect("mark spec session as track root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -159,15 +159,15 @@ async fn boot() -> Boot {
     .await;
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: repo
+        track_vcs: repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -183,7 +183,7 @@ async fn boot() -> Boot {
         registry,
         repo,
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         report_card_id: report_card.id,
@@ -233,7 +233,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "spec-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
@@ -245,23 +245,23 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Worker,
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "worker-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
 
-async fn set_wave_lifecycle(boot: &Boot, lifecycle: WaveLifecycle) {
+async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 lifecycle: Some(lifecycle),
                 ..Default::default()
             },
         )
         .await
-        .expect("set test wave lifecycle");
+        .expect("set test track lifecycle");
 }
 
 /// Direct SQL escape hatch for states the PR-A tool surface cannot
@@ -282,7 +282,7 @@ async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
         .await
         .unwrap()
         .expect("report card");
-    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+    let report: TrackReportPayload = serde_json::from_value(report.payload).unwrap();
     call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -293,13 +293,13 @@ async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
     .expect("task block write")
 }
 
-/// Count surviving `tasks` rows for the boot wave directly — after a
-/// wave/area delete the repo read path would trivially return empty, so
+/// Count surviving `tasks` rows for the boot track directly — after a
+/// track/area delete the repo read path would trivially return empty, so
 /// orphan detection must go to the table.
 async fn task_row_count(boot: &Boot) -> i64 {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE wave_id = ?1")
-        .bind(boot.wave_id.as_str())
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE track_id = ?1")
+        .bind(boot.track_id.as_str())
         .fetch_one(&pool)
         .await
         .expect("count tasks");
@@ -354,17 +354,17 @@ async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// migration 0041 + WavePatch fields
+// migration 0041 + TrackPatch fields
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
+async fn migration_0041_new_track_defaults_gates_on_and_budget_null() {
     let boot = boot().await;
-    // The boot wave opts out of rule 6 for the rest of the suite —
-    // assert the DB DEFAULT on a FRESH wave instead.
+    // The boot track opts out of rule 6 for the rest of the suite —
+    // assert the DB DEFAULT on a FRESH track instead.
     let fresh = boot
         .repo
-        .wave_create(calm_server::model::NewWave {
+        .track_create(calm_server::model::NewTrack {
             template_input: None,
             area_id: boot.area_id.clone(),
             title: "defaults".into(),
@@ -376,17 +376,17 @@ async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("fresh wave");
+        .expect("fresh track");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let (require_gates, budget): (i64, Option<i64>) =
-        sqlx::query_as("SELECT require_task_gates, task_budget FROM waves WHERE id = ?1")
+        sqlx::query_as("SELECT require_task_gates, task_budget FROM tracks WHERE id = ?1")
             .bind(fresh.id.as_str())
             .fetch_one(&pool)
             .await
-            .expect("read wave policy columns");
+            .expect("read track policy columns");
     assert_eq!(
         require_gates, 1,
-        "post-migration waves default require_task_gates = 1 via the DB DEFAULT"
+        "post-migration tracks default require_task_gates = 1 via the DB DEFAULT"
     );
     assert_eq!(
         budget, None,
@@ -395,12 +395,12 @@ async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
 }
 
 #[tokio::test]
-async fn wave_patch_persists_task_budget_and_require_task_gates() {
+async fn track_patch_persists_task_budget_and_require_task_gates() {
     let boot = boot().await;
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 task_budget: Some(Some(3)),
                 require_task_gates: Some(false),
                 ..Default::default()
@@ -411,8 +411,8 @@ async fn wave_patch_persists_task_budget_and_require_task_gates() {
 
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let (require_gates, budget): (i64, Option<i64>) =
-        sqlx::query_as("SELECT require_task_gates, task_budget FROM waves WHERE id = ?1")
-            .bind(boot.wave_id.as_str())
+        sqlx::query_as("SELECT require_task_gates, task_budget FROM tracks WHERE id = ?1")
+            .bind(boot.track_id.as_str())
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -422,9 +422,9 @@ async fn wave_patch_persists_task_budget_and_require_task_gates() {
     // `Some(None)` clears the budget back to the kernel default; an
     // omitted field leaves the other column alone.
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 task_budget: Some(None),
                 ..Default::default()
             },
@@ -432,8 +432,8 @@ async fn wave_patch_persists_task_budget_and_require_task_gates() {
         .await
         .unwrap();
     let (require_gates, budget): (i64, Option<i64>) =
-        sqlx::query_as("SELECT require_task_gates, task_budget FROM waves WHERE id = ?1")
-            .bind(boot.wave_id.as_str())
+        sqlx::query_as("SELECT require_task_gates, task_budget FROM tracks WHERE id = ?1")
+            .bind(boot.track_id.as_str())
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -482,7 +482,7 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
 #[tokio::test]
 async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
 
     let mut rx = boot.ctx.events.subscribe();
@@ -498,7 +498,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
 
     let row = boot
         .repo
-        .task_get(&format!("{}:a", boot.wave_id.as_str()))
+        .task_get(&format!("{}:a", boot.track_id.as_str()))
         .await
         .unwrap()
         .unwrap();
@@ -538,7 +538,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
 #[tokio::test]
 async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_updated() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     call_tool(
         &boot,
@@ -563,18 +563,18 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
     // Row untouched, lifecycle applied.
     let row = boot
         .repo
-        .task_get(&format!("{}:a", boot.wave_id.as_str()))
+        .task_get(&format!("{}:a", boot.track_id.as_str()))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(serde_json::to_value(row.status).unwrap(), json!("canceled"));
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
 
     // Lifecycle events land; `plan.updated` is suppressed (nothing in
     // the plan changed, a retry must not re-trigger the scheduler).
@@ -582,7 +582,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, Event::WaveLifecycleChanged { .. })),
+            .any(|e| matches!(e, Event::TrackLifecycleChanged { .. })),
         "lifecycle event missing: {events:?}"
     );
     assert!(
@@ -594,7 +594,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
 }
 
 /// Review round 3 (#656 F2): re-cancel of an already-`canceled` task
-/// with a `lifecycle` equal to the wave's current state is a fully
+/// with a `lifecycle` equal to the track's current state is a fully
 /// idempotent retry — success, zero events — instead of falling into
 /// the tx where the 0-row flip plus the same-state lifecycle would
 /// produce an empty event batch (rejected by `write_with_actor_events`
@@ -602,7 +602,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
 #[tokio::test]
 async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     let args =
         json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" });
@@ -610,7 +610,7 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
         .await
         .expect("first cancel with lifecycle ok");
 
-    // Retry the exact same call: row already `canceled`, wave already
+    // Retry the exact same call: row already `canceled`, track already
     // `dispatching`.
     let mut rx = boot.ctx.events.subscribe();
     let out = call_tool(&boot, TOOL_PLAN_CANCEL, spec_identity(&boot), args)
@@ -620,18 +620,18 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
 
     let row = boot
         .repo
-        .task_get(&format!("{}:a", boot.wave_id.as_str()))
+        .task_get(&format!("{}:a", boot.track_id.as_str()))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(serde_json::to_value(row.status).unwrap(), json!("canceled"));
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
 
     let events = drain_events(&mut rx).await;
     assert!(
@@ -643,7 +643,7 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
 #[tokio::test]
 async fn cancel_in_flight_task_refused_with_409_text() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
 
     for status in ["dispatched", "running", "verifying"] {
@@ -675,13 +675,13 @@ async fn cancel_in_flight_task_refused_with_409_text() {
 #[tokio::test]
 async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advance() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(
         &boot,
         json!({ "key": "race", "kind": "codex", "goal": "g" }),
     )
     .await;
-    let task_id = format!("{}:race", boot.wave_id);
+    let task_id = format!("{}:race", boot.track_id);
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let task_id_for_hook = task_id.clone();
     let mut rx = boot.ctx.events.subscribe();
@@ -711,12 +711,12 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
     assert!(row.finished_at_ms.is_none());
     assert_eq!(
         boot.repo
-            .wave_get(boot.wave_id.as_str())
+            .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
             .lifecycle,
-        WaveLifecycle::Planning
+        TrackLifecycle::Planning
     );
     assert!(
         drain_events(&mut rx).await.is_empty(),
@@ -727,7 +727,7 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
 #[tokio::test]
 async fn cancel_terminal_or_unknown_task_rejected() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     exec_sql(&boot, "UPDATE tasks SET status = 'done' WHERE key = 'a'").await;
 
@@ -755,13 +755,13 @@ async fn cancel_terminal_or_unknown_task_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// delete cleanup — `tasks` has no FK to `waves` (review F1, #656)
+// delete cleanup — `tasks` has no FK to `tracks` (review F1, #656)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn wave_delete_removes_plan_rows() {
+async fn track_delete_removes_plan_rows() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     write_task_block(
         &boot,
@@ -771,20 +771,20 @@ async fn wave_delete_removes_plan_rows() {
     assert_eq!(task_row_count(&boot).await, 2);
 
     boot.repo
-        .wave_delete(boot.wave_id.as_str())
+        .track_delete(boot.track_id.as_str())
         .await
-        .expect("wave delete");
+        .expect("track delete");
     assert_eq!(
         task_row_count(&boot).await,
         0,
-        "wave delete must not orphan plan rows"
+        "track delete must not orphan plan rows"
     );
 }
 
 #[tokio::test]
 async fn area_delete_removes_plan_rows() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     assert_eq!(task_row_count(&boot).await, 1);
 
@@ -806,7 +806,7 @@ async fn area_delete_removes_plan_rows() {
 #[tokio::test]
 async fn list_returns_plan_shape_without_gate_commands() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(
         &boot,
         json!({ "key": "a", "kind": "codex", "goal": "g",

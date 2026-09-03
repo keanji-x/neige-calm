@@ -4,7 +4,7 @@
     "ev": "card.deleted",
     "data": {
       "id": "card-01",
-      "wave_id": "wave-01"
+      "track_id": "track-01"
     }
   }
 }

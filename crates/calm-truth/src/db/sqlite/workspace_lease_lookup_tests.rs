@@ -1,8 +1,8 @@
-use super::{SqlxRepo, area_create_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, track_create_tx};
 use crate::db::RepoRead;
-use crate::model::{NewArea, NewWave, RequestTheme, now_ms};
+use crate::model::{NewArea, NewTrack, RequestTheme, now_ms};
 
-async fn seed_wave(repo: &SqlxRepo) -> String {
+async fn seed_track(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
     let area = area_create_tx(
         &mut tx,
@@ -14,9 +14,9 @@ async fn seed_wave(repo: &SqlxRepo) -> String {
     )
     .await
     .expect("create area");
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: "workspace lease lookup".into(),
@@ -28,34 +28,34 @@ async fn seed_wave(repo: &SqlxRepo) -> String {
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
-    .expect("create wave");
+    .expect("create track");
     tx.commit().await.expect("commit seed tx");
-    wave.id.to_string()
+    track.id.to_string()
 }
 
 async fn insert_workspace_lease(
     repo: &SqlxRepo,
     lease_id: &str,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     path: &str,
     state: &str,
     created_at_ms: i64,
 ) {
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms, released_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, NULL)"#,
     )
     .bind(lease_id)
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(path)
     .bind(state)
     .bind("workspace-lease-lookup-test")
@@ -69,13 +69,13 @@ async fn insert_workspace_lease(
 #[tokio::test]
 async fn workspace_lease_for_card_returns_only_held_leases() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
-    let wave_id = seed_wave(&repo).await;
+    let track_id = seed_track(&repo).await;
 
     insert_workspace_lease(
         &repo,
         "lease-releasing-only",
         "card-releasing-only",
-        &wave_id,
+        &track_id,
         "/tmp/lease-releasing-only",
         "releasing",
         100,
@@ -93,7 +93,7 @@ async fn workspace_lease_for_card_returns_only_held_leases() {
         &repo,
         "lease-held-older",
         "card-held-with-newer-releasing",
-        &wave_id,
+        &track_id,
         "/tmp/lease-held-older",
         "held",
         200,
@@ -103,7 +103,7 @@ async fn workspace_lease_for_card_returns_only_held_leases() {
         &repo,
         "lease-releasing-newer",
         "card-held-with-newer-releasing",
-        &wave_id,
+        &track_id,
         "/tmp/lease-releasing-newer",
         "releasing",
         300,

@@ -12,11 +12,11 @@ import { fileURLToPath } from 'node:url';
  *  resolves the right cargo manifest. */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-/** Default fixture used when `NEIGE_FIXTURE` is unset. The wave-grid layout
+/** Default fixture used when `NEIGE_FIXTURE` is unset. The track-grid layout
  *  trace is the only curated fixture in tree as of slice 5; if more land,
  *  this default stays put so existing tests don't silently re-target. */
 export const DEFAULT_FIXTURE =
-  'crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json';
+  'crates/calm-server/tests/fixtures/events/track-grid-layout-trace.events.json';
 
 /** Port the replay server binds. Hard-coded to a non-standard value so it
  *  doesn't collide with a developer's `make dev` (which owns 4041). */

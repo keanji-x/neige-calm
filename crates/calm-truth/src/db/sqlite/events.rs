@@ -10,16 +10,16 @@ use super::SqlxRepo;
 use super::begin_immediate_tx;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::{
-    RepoEventWrite, WaveEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
+    RepoEventWrite, TrackEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
     WriteWithEventsFn,
 };
 use crate::decision_gate::DecisionGate;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, WaveId};
+use crate::ids::{ActorId, TrackId};
 use crate::model::*;
-use crate::wave_area_cache::WaveAreaCache;
-use crate::wave_vcs;
+use crate::track_area_cache::TrackAreaCache;
+use crate::track_vcs;
 
 impl SqlxRepo {
     /// **Private.** The raw events-table insert. Lives off the trait per
@@ -37,7 +37,7 @@ impl SqlxRepo {
     ///   * `scope` is decomposed into the four `events.scope_*` columns added
     ///     in migration 0007. `EventScope::System` writes `scope_kind='system'`
     ///     with NULL ancestor cols; the other variants populate whatever
-    ///     prefix of the area → wave → card chain they carry.
+    ///     prefix of the area → track → card chain they carry.
     async fn event_append_in_tx(
         tx: &mut Transaction<'_, Sqlite>,
         actor: &ActorId,
@@ -52,12 +52,12 @@ impl SqlxRepo {
         let at = now_ms();
         let scope_kind = scope.kind();
         let scope_area = scope.area_id().map(|c| c.as_str());
-        let scope_wave = scope.wave_id().map(|w| w.as_str());
+        let scope_track = scope.track_id().map(|w| w.as_str());
         let scope_card = scope.card_id().map(|c| c.as_str());
         let row = sqlx::query(
             r#"INSERT INTO events (
                    kind, payload, actor, at, correlation, event_version,
-                   scope_kind, scope_area, scope_wave, scope_card
+                   scope_kind, scope_area, scope_track, scope_card
                )
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                RETURNING id"#,
@@ -70,7 +70,7 @@ impl SqlxRepo {
         .bind(SYNC_EVENT_VERSION)
         .bind(scope_kind)
         .bind(scope_area)
-        .bind(scope_wave)
+        .bind(scope_track)
         .bind(scope_card)
         .fetch_one(&mut **tx)
         .await?;
@@ -107,14 +107,14 @@ pub async fn append_decision_event_in_tx<G: DecisionGate + ?Sized>(
 ) -> Result<i64> {
     gate.decide(tx, actor, scope, event).await?.into_result()?;
     let event_id = SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?;
-    if let Some(wave_id) = scope.wave_id() {
-        wave_vcs::commit_in_tx(
+    if let Some(track_id) = scope.track_id() {
+        track_vcs::commit_in_tx(
             tx,
-            wave_id,
+            track_id,
             actor,
             event_id,
             event,
-            wave_vcs::MANIFEST_SCHEMA_VERSION,
+            track_vcs::MANIFEST_SCHEMA_VERSION,
         )
         .await?;
     }
@@ -134,14 +134,14 @@ pub async fn append_decision_events_in_tx<G: DecisionGate + ?Sized>(
         gate.decide(tx, actor, scope, event).await?.into_result()?;
         event_ids.push(SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?);
     }
-    if let (Some(wave_id), Some(event_id)) = (scope.wave_id(), event_ids.last()) {
-        wave_vcs::commit_events_in_tx(
+    if let (Some(track_id), Some(event_id)) = (scope.track_id(), event_ids.last()) {
+        track_vcs::commit_events_in_tx(
             tx,
-            wave_id,
+            track_id,
             actor,
             *event_id,
             events,
-            wave_vcs::MANIFEST_SCHEMA_VERSION,
+            track_vcs::MANIFEST_SCHEMA_VERSION,
         )
         .await?;
     }
@@ -207,14 +207,14 @@ impl RepoEventWrite for SqlxRepo {
                     return Err(e);
                 }
             };
-        if let Some(wave_id) = scope.wave_id()
-            && let Err(e) = wave_vcs::commit_in_tx(
+        if let Some(track_id) = scope.track_id()
+            && let Err(e) = track_vcs::commit_in_tx(
                 &mut tx,
-                wave_id,
+                track_id,
                 &actor,
                 event_id,
                 &event,
-                wave_vcs::MANIFEST_SCHEMA_VERSION,
+                track_vcs::MANIFEST_SCHEMA_VERSION,
             )
             .await
         {
@@ -265,9 +265,9 @@ impl RepoEventWrite for SqlxRepo {
         }
         // PR3 (#136) — authorization gate, per event. The cache is
         // already write-through for any role insert the closure
-        // performed, so a wave-create-with-spec-card batch can mint
+        // performed, so a track-create-with-spec-card batch can mint
         // the spec card in the closure and immediately have its
-        // role visible to the `WaveUpdated` enforce_role call below.
+        // role visible to the `TrackUpdated` enforce_role call below.
         for (scope, event) in &events {
             if let Err(violation) = crate::decision_gate::enforce_role_resolving_session(
                 &mut tx,
@@ -294,24 +294,24 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        let mut wave_events = HashMap::<WaveId, (i64, Vec<Event>)>::new();
+        let mut track_events = HashMap::<TrackId, (i64, Vec<Event>)>::new();
         for ((scope, event), event_id) in events.iter().zip(event_ids.iter()) {
-            if let Some(wave_id) = scope.wave_id() {
-                let entry = wave_events
-                    .entry(wave_id.clone())
+            if let Some(track_id) = scope.track_id() {
+                let entry = track_events
+                    .entry(track_id.clone())
                     .or_insert_with(|| (*event_id, Vec::new()));
                 entry.0 = *event_id;
                 entry.1.push(event.clone());
             }
         }
-        for (wave_id, (event_id, events_for_wave)) in &wave_events {
-            if let Err(e) = wave_vcs::commit_events_in_tx(
+        for (track_id, (event_id, events_for_track)) in &track_events {
+            if let Err(e) = track_vcs::commit_events_in_tx(
                 &mut tx,
-                wave_id,
+                track_id,
                 &actor,
                 *event_id,
-                events_for_wave,
-                wave_vcs::MANIFEST_SCHEMA_VERSION,
+                events_for_track,
+                track_vcs::MANIFEST_SCHEMA_VERSION,
             )
             .await
             {
@@ -383,13 +383,13 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        let mut wave_events = HashMap::<WaveId, (i64, Option<ActorId>, Vec<Event>)>::new();
+        let mut track_events = HashMap::<TrackId, (i64, Option<ActorId>, Vec<Event>)>::new();
         for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
-            if let Some(wave_id) = scope.wave_id() {
-                let entry = wave_events
-                    .entry(wave_id.clone())
+            if let Some(track_id) = scope.track_id() {
+                let entry = track_events
+                    .entry(track_id.clone())
                     .or_insert_with(|| (*event_id, Some(actor.clone()), Vec::new()));
-                // Commit author is exact only for a single-actor wave batch; mixed actor batches
+                // Commit author is exact only for a single-actor track batch; mixed actor batches
                 // are stored as NULL so the diff renderer leaves them unattributed.
                 entry.0 = *event_id;
                 if !matches!(&entry.1, Some(existing) if existing == actor) {
@@ -398,14 +398,14 @@ impl RepoEventWrite for SqlxRepo {
                 entry.2.push(event.clone());
             }
         }
-        for (wave_id, (event_id, author, events_for_wave)) in &wave_events {
-            if let Err(e) = wave_vcs::commit_events_with_author_in_tx(
+        for (track_id, (event_id, author, events_for_track)) in &track_events {
+            if let Err(e) = track_vcs::commit_events_with_author_in_tx(
                 &mut tx,
-                wave_id,
+                track_id,
                 author.as_ref(),
                 *event_id,
-                events_for_wave,
-                wave_vcs::MANIFEST_SCHEMA_VERSION,
+                events_for_track,
+                track_vcs::MANIFEST_SCHEMA_VERSION,
             )
             .await
             {
@@ -433,7 +433,7 @@ impl RepoEventWrite for SqlxRepo {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
-        wave_area_cache: &WaveAreaCache,
+        track_area_cache: &TrackAreaCache,
         event: Event,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
@@ -450,7 +450,7 @@ impl RepoEventWrite for SqlxRepo {
             &event,
             &scope,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
         )
         .await
         {
@@ -465,14 +465,14 @@ impl RepoEventWrite for SqlxRepo {
                     return Err(e);
                 }
             };
-        if let Some(wave_id) = scope.wave_id()
-            && let Err(e) = wave_vcs::commit_in_tx(
+        if let Some(track_id) = scope.track_id()
+            && let Err(e) = track_vcs::commit_in_tx(
                 &mut tx,
-                wave_id,
+                track_id,
                 &actor,
                 event_id,
                 &event,
-                wave_vcs::MANIFEST_SCHEMA_VERSION,
+                track_vcs::MANIFEST_SCHEMA_VERSION,
             )
             .await
         {
@@ -541,12 +541,12 @@ impl RepoEventWrite for SqlxRepo {
             u32,            // event_version
             Option<String>, // scope_kind
             Option<String>, // scope_area
-            Option<String>, // scope_wave
+            Option<String>, // scope_track
             Option<String>, // scope_card
         );
         let rows: Vec<ScopeRow> = sqlx::query_as(
             r#"SELECT id, kind, payload, event_version,
-                      scope_kind, scope_area, scope_wave, scope_card
+                      scope_kind, scope_area, scope_track, scope_card
                FROM events
                WHERE id > ?1
                ORDER BY id ASC
@@ -613,12 +613,12 @@ impl RepoEventWrite for SqlxRepo {
         Ok((n, max_id))
     }
 
-    async fn events_for_wave(
+    async fn events_for_track(
         &self,
-        wave_id: &str,
+        track_id: &str,
         kinds: &[&str],
         since_id: Option<i64>,
-    ) -> Result<Vec<WaveEvent>> {
+    ) -> Result<Vec<TrackEvent>> {
         if kinds.is_empty() {
             return Ok(Vec::new());
         }
@@ -631,17 +631,17 @@ impl RepoEventWrite for SqlxRepo {
             i64,            // at
             Option<String>, // scope_kind
             Option<String>, // scope_area
-            Option<String>, // scope_wave
+            Option<String>, // scope_track
             Option<String>, // scope_card
         );
 
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"SELECT id, kind, payload, actor, at,
-                      scope_kind, scope_area, scope_wave, scope_card
+                      scope_kind, scope_area, scope_track, scope_card
                FROM events
-               WHERE scope_wave = "#,
+               WHERE scope_track = "#,
         );
-        query.push_bind(wave_id);
+        query.push_bind(track_id);
         if let Some(since_id) = since_id {
             query.push(" AND id > ");
             query.push_bind(since_id);
@@ -662,7 +662,7 @@ impl RepoEventWrite for SqlxRepo {
                 Err(e) => {
                     tracing::error!(
                         id, kind = %kind, error = %e,
-                        "events_for_wave: skipping row with malformed payload JSON",
+                        "events_for_track: skipping row with malformed payload JSON",
                     );
                     continue;
                 }
@@ -672,7 +672,7 @@ impl RepoEventWrite for SqlxRepo {
                 Err(e) => {
                     tracing::error!(
                         id, kind = %kind, error = %e,
-                        "events_for_wave: skipping row with malformed actor JSON",
+                        "events_for_track: skipping row with malformed actor JSON",
                     );
                     continue;
                 }
@@ -684,7 +684,7 @@ impl RepoEventWrite for SqlxRepo {
                 scard.as_deref(),
             );
             match Event::from_kind_and_payload(&kind, payload) {
-                Ok(event) => out.push(WaveEvent {
+                Ok(event) => out.push(TrackEvent {
                     id,
                     at,
                     actor,
@@ -694,7 +694,7 @@ impl RepoEventWrite for SqlxRepo {
                 Err(e) => {
                     tracing::error!(
                         id, kind = %kind, error = %e,
-                        "events_for_wave: skipping row that no longer matches Event enum",
+                        "events_for_track: skipping row that no longer matches Event enum",
                     );
                 }
             }

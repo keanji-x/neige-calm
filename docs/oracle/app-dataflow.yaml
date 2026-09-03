@@ -468,7 +468,7 @@
     收到 `_replay_complete` 控制帧时必须执行一次**无 queryKey 的全量** `invalidateQueries()`。
   why: >
     重连的历史窗口播完后，断线期间漂移的乐观状态需要一次防御性收敛；
-    逐事件 dispatcher 会漏掉（例如某个 card overlay 所属 wave detail 当下没加载）的边界情况由它兜底。
+    逐事件 dispatcher 会漏掉（例如某个 card overlay 所属 track detail 当下没加载）的边界情况由它兜底。
     TanStack 会批处理实际 refetch，所以代价很低。
   source: web/src/app/eventBridge.tsx:206-217
   authoritative_test: web/src/app/eventBridge.test.tsx:491
@@ -614,10 +614,10 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.updated` / `wave.lifecycle_changed` 必须失效四个面：所属 area 的 wave 列表、
-    该 wave 的 detail、该 wave 的 wave-files、以及全局 `['waves-range']`。
+    `track.updated` / `track.lifecycle_changed` 必须失效四个面：所属 area 的 track 列表、
+    该 track 的 detail、该 track 的 track-files、以及全局 `['tracks-range']`。
   why: >
-    wave 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
+    track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
     少一个就出现某一处静默陈旧。
   source: web/src/app/invalidationPolicies.ts:108-113,137-150
   authoritative_test: web/src/app/eventBridge.test.tsx:318
@@ -632,10 +632,10 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.deleted` 必须失效 area 的 wave 列表 + wave overlay 快照 + `['waves-range']`，
-    并且必须 **removeQueries** 掉该 wave 的 detail（而不是仅 invalidate）。
+    `track.deleted` 必须失效 area 的 track 列表 + track overlay 快照 + `['tracks-range']`，
+    并且必须 **removeQueries** 掉该 track 的 detail（而不是仅 invalidate）。
   why: >
-    已删除的 wave detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
+    已删除的 track detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
     继续作为 placeholder 上色。
   source: web/src/app/invalidationPolicies.ts:140-147; web/src/app/eventBridge.tsx:252-253
   authoritative_test: NONE
@@ -651,14 +651,14 @@
   family: app-invalidation-policy
   statement: >
     card overlay（`overlay.set` / `overlay.deleted` 且 entity_kind === 'card'）必须通过
-    扫描已加载的 `['wave', *]` cache 反查拥有该 card 的 wave；查不到时必须静默跳过，
+    扫描已加载的 `['track', *]` cache 反查拥有该 card 的 track；查不到时必须静默跳过，
     不得报错也不得广播失效。
   why: >
-    kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
-    没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
+    kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
+    没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:270-289
-  authoritative_test: fe/web/src/app/events/wave-lookup.test.ts:7
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:270-289
+  authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -670,11 +670,11 @@
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    wave 文件与报告派生事件的降级链必须是：优先用 payload 的 `wave_id` →
-    否则用 `card_id` 反查所属 wave → 都没有则同时失效**全部** `['wave-files']`
-    与 `['wave-report']` 前缀。
+    track 文件与报告派生事件的降级链必须是：优先用 payload 的 `track_id` →
+    否则用 `card_id` 反查所属 track → 都没有则同时失效**全部** `['track-files']`
+    与 `['track-report']` 前缀。
   why: >
-    runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 wave 文件派生；反查失败时宁可
+    runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 track 文件派生；反查失败时宁可
     宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
   source: fe/core/events/invalidation-plan.ts:46-73
   authoritative_test: fe/core/events/invalidation-plan.test.ts:67; fe/core/events/invalidation-plan.contract.test.ts:36
@@ -690,10 +690,10 @@
   family: app-invalidation-policy
   statement: >
     `runtime.started` / `runtime.status_changed` / `runtime.superseded` 必须同时失效
-    所属 wave detail、`['overlays','card']` 与该 wave 的 wave-files。
+    所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:191-199,236-238; fe/web/src/app/events/wave-lookup.ts:7-17
+  source: fe/core/events/invalidation-plan.ts:191-199,236-238; fe/web/src/app/events/track-lookup.ts:7-17
   authoritative_test: fe/core/events/invalidation-plan.test.ts:44
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -706,13 +706,13 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.report_edited` 必须同时失效该 wave 的 wave-files、`wave-report`、全局
-    `['wave-backlinks']`，以及（#1253 PR2）`['today-launchpad']` 与该 wave 的
-    `['wave', id]`。
+    `track.report_edited` 必须同时失效该 track 的 track-files、`track-report`、全局
+    `['track-backlinks']`，以及（#1253 PR2）`['today-launchpad']` 与该 track 的
+    `['track', id]`。
   why: >
-    策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
-    所以反链只能整片失效，不能按 wave 收窄。
-    后两个键是 Today 文档的刷新链：`['wave', id]` 是文档本身被读出的键，
+    策略 reason 明写："报告编辑改变 track 文件投影，并且可能改变**任意** track 的反链"，
+    所以反链只能整片失效，不能按 track 收窄。
+    后两个键是 Today 文档的刷新链：`['track', id]` 是文档本身被读出的键，
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
@@ -729,7 +729,7 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `terminal.deleted` 必须失效 wave-files 投影。
+    `terminal.deleted` 必须失效 track-files 投影。
   why: >
     `cards/<id>/runtime.json` 投影里含终端 runtime 状态；回收一个 terminal 会让该投影过期。
   source: web/src/app/invalidationPolicies.ts:199-203
@@ -1005,7 +1005,7 @@
   why: >
     issue #581：v3 前端可以挂在 v2 后端上（isCompatible 只查 frontend >= minWebCompatVersion）。
     没有这层重映射，帧会通过 eventVersion gate、推进 cursor，然后被 zod 当未知帧静默丢弃，
-    丢掉本该触发的 wave-files 失效。注释注明：下一次 compat 版本跳跃时删除。
+    丢掉本该触发的 track-files 失效。注释注明：下一次 compat 版本跳跃时删除。
   source: web/src/api/events.ts:73-97,476
   authoritative_test: NONE
   owner_slice: systems/events-transport/stream
@@ -1344,7 +1344,7 @@
     `hooks/useTodayTerminal.ts` 的卡片创建路径，必须在点击时直接读
     `document.documentElement.dataset.theme`，**禁止**改用 `useTheme()`。
   why: >
-    issue #177：在这些组件里订阅 ThemeContext 会让每次主题翻转都重渲染 wave 子树，
+    issue #177：在这些组件里订阅 ThemeContext 会让每次主题翻转都重渲染 track 子树，
     触发 TanStack Router `<Match>` 的 Suspense 边界，remount 活着的 XtermView 并抹掉它的
     `pendingThemeRef`。ThemeProvider 同步把 `resolved` 镜像到 `<html data-theme>`，
     所以这个读取始终是当前值。**这条例外与主规则同等重要** —— 重写时最容易被"统一成
@@ -1434,7 +1434,7 @@
     引用仍是自己时才 delete。
   why: >
     issue #177 的 Playwright 仪器：e2e 需要在**不导航**的前提下翻主题 ——
-    导航会卸载被观测的 wave 页 XtermView，整个观测就失效了。生产用户不应看到该全局。
+    导航会卸载被观测的 track 页 XtermView，整个观测就失效了。生产用户不应看到该全局。
   source: web/src/app/theme.tsx:180-195
   authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme
@@ -1565,7 +1565,7 @@
   kind: invariant
   family: app-router
   statement: >
-    area / wave 路由的 loader 必须**非阻塞**地 prime 缓存（`void ... .catch(() => {})`），
+    area / track 路由的 loader 必须**非阻塞**地 prime 缓存（`void ... .catch(() => {})`），
     不得 await，路由必须立即 commit。
   why: >
     选择反馈（URL commit + 侧栏高亮）要即时；页面组件自己负责短暂的页内 loading 态。
@@ -1584,7 +1584,7 @@
   kind: invariant
   family: app-router
   statement: >
-    index 路由只 prefetch areas 列表；area → waves 的扇出必须保持惰性（页面内 `useQueries`）。
+    index 路由只 prefetch areas 列表；area → tracks 的扇出必须保持惰性（页面内 `useQueries`）。
   why: >
     在 loader 里扇出会让一个慢 area 阻塞整个日历。
   source: web/src/app/router.tsx:90-99,184-189
@@ -1600,12 +1600,12 @@
   kind: invariant
   family: app-router
   statement: >
-    WaveComponent 必须把"detail 缺失"与"detail 存在但 `detail.wave.id !== waveId`"
-    都当作"本 wave 加载中"渲染 `null`；只有 settled miss（无 data 且非 loading/fetching）
+    TrackComponent 必须把"detail 缺失"与"detail 存在但 `detail.track.id !== trackId`"
+    都当作"本 track 加载中"渲染 `null`；只有 settled miss（无 data 且非 loading/fetching）
     才渲染 MissingShell。
   why: >
-    非阻塞 loader 先 commit URL，`detailQ.data` 可能是上一个 wave 的 keepPreviousData
-    占位；不做 id 比对就会在新 wave 的 URL 下画出上一个 wave。
+    非阻塞 loader 先 commit URL，`detailQ.data` 可能是上一个 track 的 keepPreviousData
+    占位；不做 id 比对就会在新 track 的 URL 下画出上一个 track。
   source: web/src/app/router.tsx:318-331
   authoritative_test: NONE
   owner_slice: app/router
@@ -1619,7 +1619,7 @@
   kind: capability
   family: app-router
   statement: >
-    area 列表仍在加载时，AreaComponent / WaveComponent 必须渲染 `null` 而不是
+    area 列表仍在加载时，AreaComponent / TrackComponent 必须渲染 `null` 而不是
     MissingShell；只有 settled 的"找不到"才显示 MissingShell。
   why: >
     硬刷新 `/area/:id` 可能在缓存 prime 前落到这里；不判 isLoading 就会闪一次
@@ -1748,7 +1748,7 @@
   kind: invariant
   family: app-router
   statement: >
-    `createFromEntry` 成功后必须显式 `invalidateQueries(waveDetail(waveId))`，
+    `createFromEntry` 成功后必须显式 `invalidateQueries(trackDetail(trackId))`，
     不得只依赖 WS 事件回灌。
   why: >
     创建是用户发起的同步动作，等 WS 往返会让新卡片出现有可感知延迟；
@@ -1817,7 +1817,7 @@
   kind: capability
   family: app-router
   statement: >
-    四条路由页面组件（Today / Area / Wave / Settings）必须按需 lazy 加载，
+    四条路由页面组件（Today / Area / Track / Settings）必须按需 lazy 加载，
     由 CalmApp 的单一 `<Suspense>` 兜底；loader 与 JS 下载并行。
   why: >
     入口 chunk 只带 shell + 路由接线；loader 并行跑，懒 chunk resolve 时数据已 prime，
@@ -1838,7 +1838,7 @@
     卡片槽位适配失败时必须降级成 `kind: 'unknown'` 槽位（保留 id / kernelKind / sort /
     deletable），不得丢弃该卡片。
   why: >
-    未知 kind 的卡片仍要占位并显示"这里有东西但我不认识"，静默丢弃会让 wave 看起来少东西。
+    未知 kind 的卡片仍要占位并显示"这里有东西但我不认识"，静默丢弃会让 track 看起来少东西。
   source: web/src/app/router.tsx:339-362
   authoritative_test: NONE
   owner_slice: app/router
@@ -1870,11 +1870,11 @@
   kind: capability
   family: app-router
   statement: >
-    Today 页必须用工作区级 wave overlay 快照（`['overlays','wave']`）喂给 adaptWave，
-    使侧栏的 "waiting on you" / "running" 指示对**每个** wave 都准确，而不只是已打开的那个。
+    Today 页必须用工作区级 track overlay 快照（`['overlays','track']`）喂给 adaptTrack，
+    使侧栏的 "waiting on you" / "running" 指示对**每个** track 都准确，而不只是已打开的那个。
   why: >
-    只用 wave detail 的 overlay 会让未打开的 wave 状态永远为空；
-    eventBridge 在 overlay.set/.deleted 以及 wave/area 删除时失效该快照
+    只用 track detail 的 overlay 会让未打开的 track 状态永远为空；
+    eventBridge 在 overlay.set/.deleted 以及 track/area 删除时失效该快照
     （kernel 可能不级联单个事件）。
   source: web/src/app/router.tsx:191-212
   authoritative_test: NONE
@@ -1889,9 +1889,9 @@
   kind: capability
   family: app-router
   statement: >
-    area 重命名 / area 删除 / wave 删除 / wave 重命名 / wave pin 的失败必须
+    area 重命名 / area 删除 / track 删除 / track 重命名 / track pin 的失败必须
     `console.warn` 后吞掉（不冒泡崩页面）；area 删除成功后必须跳 Today，
-    wave 删除成功后必须跳所属 area。
+    track 删除成功后必须跳所属 area。
   why: >
     这些是用户发起的可容错操作，失败时页面必须保持可用；成功后当前 URL 指向的实体
     已不存在，必须导航走，否则会落到 MissingShell。

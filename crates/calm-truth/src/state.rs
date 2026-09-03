@@ -1,17 +1,17 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::model::CardRole;
-use crate::wave_area_cache::WaveAreaCache;
-use calm_types::ids::{AreaId, CardId, WaveId};
+use crate::track_area_cache::TrackAreaCache;
+use calm_types::ids::{AreaId, CardId, TrackId};
 
 /// Write-surface cache slice used by the truth write entrance.
 #[derive(Clone)]
 pub struct WriteContext {
     role_cache: CardRoleCache,
-    area_cache: WaveAreaCache,
+    area_cache: TrackAreaCache,
 }
 
 impl WriteContext {
-    pub fn new(role_cache: CardRoleCache, area_cache: WaveAreaCache) -> Self {
+    pub fn new(role_cache: CardRoleCache, area_cache: TrackAreaCache) -> Self {
         Self {
             role_cache,
             area_cache,
@@ -22,8 +22,8 @@ impl WriteContext {
         self.role_cache.get(card_id)
     }
 
-    pub fn verify_area(&self, wave_id: &WaveId) -> Option<AreaId> {
-        self.area_cache.area_of(wave_id)
+    pub fn verify_area(&self, track_id: &TrackId) -> Option<AreaId> {
+        self.area_cache.area_of(track_id)
     }
 
     #[deprecated(
@@ -38,7 +38,7 @@ impl WriteContext {
         since = "0.1.0",
         note = "use WriteContext::verify_role / verify_area; raw getters survive only for legacy db chain glue"
     )]
-    pub fn area_cache(&self) -> &WaveAreaCache {
+    pub fn area_cache(&self) -> &TrackAreaCache {
         &self.area_cache
     }
 }

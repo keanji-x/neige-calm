@@ -125,18 +125,18 @@ pub async fn handle_initialize(
     //    session. The persisted event actor is session-shaped (#770 HP1-b:
     //    `to_actor_id` keys on `session_id`); this lookup supplies role,
     //    card_id, and area_id for MCP `require_role` gating, `Principal`,
-    //    and wave/card resolution, not for actor minting.
+    //    and track/card resolution, not for actor minting.
     let card = repo
         .card_identity_get_by_session(session.id.as_str())
         .await
         .map_err(|e| RpcError::internal(format!("session-bound card lookup: {e}")))?
         .ok_or_else(token_not_recognized)?;
-    if card.wave_id != session.wave_id {
+    if card.track_id != session.track_id {
         return Err(token_not_recognized());
     }
     let principal = Principal::Agent {
         session_id: WorkerSessionId::from(session.id.as_str()),
-        wave_id: session.wave_id.clone(),
+        track_id: session.track_id.clone(),
         area_id: card.area_id.clone(),
     };
     let card_identity = CardIdentity {
@@ -144,7 +144,7 @@ pub async fn handle_initialize(
         role: card.role,
         provider: agent_provider_from_worker_provider(session.provider),
         session_id: session.id.as_str().to_string(),
-        wave_id: Some(session.wave_id.as_str().to_string()),
+        track_id: Some(session.track_id.as_str().to_string()),
         area_id: card.area_id.as_str().to_string(),
     };
     debug_assert_eq!(card_identity.to_principal(), Some(principal));

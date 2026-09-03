@@ -8,7 +8,7 @@
 //     Asserting all three in a single render with timing-sensitive
 //     intermediate cache reads is verbose enough to deserve its own scope.
 //   - It pins the rollback contract: the slice that landed optimistic
-//     renames (Wave 3.L) is easy to silently break by reshaping the
+//     renames (Track 3.L) is easy to silently break by reshaping the
 //     `previous` snapshot or forgetting the `onError` arm.
 //
 // Pattern (matches TanStack Query's own optimistic tests):
@@ -26,14 +26,14 @@ import type { ReactNode } from 'react';
 
 vi.mock('./calm', () => ({
   listAreas: vi.fn(),
-  wavesInArea: vi.fn(),
-  getWaveDetail: vi.fn(),
+  tracksInArea: vi.fn(),
+  getTrackDetail: vi.fn(),
   createArea: vi.fn(),
   updateArea: vi.fn(),
   deleteArea: vi.fn(),
-  createWave: vi.fn(),
-  updateWave: vi.fn(),
-  deleteWave: vi.fn(),
+  createTrack: vi.fn(),
+  updateTrack: vi.fn(),
+  deleteTrack: vi.fn(),
   createCard: vi.fn(),
   updateCard: vi.fn(),
   deleteCard: vi.fn(),

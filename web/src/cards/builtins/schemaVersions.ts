@@ -12,7 +12,7 @@
 //
 // Reads use the helper below: missing field is `1`, since every kind
 // started at version `1` — rows written before the field existed (or by
-// a v1 writer) can only be v1. `wave-report` is at v2 since #960 PR2;
+// a v1 writer) can only be v1. `track-report` is at v2 since #960 PR2;
 // its reader only rejects versions above the supported constant — v1 and
 // v2 rows share the same optional-blocks parser. v3 adds the document-wide
 // `docRev` optimistic-concurrency anchor for whole-document report writes.
@@ -25,9 +25,9 @@ export const CODEX_PAYLOAD_SCHEMA_VERSION = 1;
 export const SPEC_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "claude"` card payloads. */
 export const CLAUDE_PAYLOAD_SCHEMA_VERSION = 1;
-/** `schemaVersion` for `kind: "wave-report"` card payloads (issue #229 PR B;
+/** `schemaVersion` for `kind: "track-report"` card payloads (issue #229 PR B;
  *  v2 adds the `blocks` array; v3 adds `docRev` — issue #979). */
-export const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION = 3;
+export const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION = 3;
 /** `schemaVersion` for `kind: "status"` overlay payloads. */
 export const OVERLAY_STATUS_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "progress"` overlay payloads. */
@@ -48,7 +48,7 @@ export const OVERLAY_VIEW_MODE_SCHEMA_VERSION = 1;
  * field is absent or not a number — every kind started at version `1`
  * and writers have stamped the field ever since, so an absent field can
  * only mean a v1-era row; absent-as-1 stays unambiguous even now that
- * `wave-report` is at v2 (#960 PR2 — v2 writers always stamp `2`).
+ * `track-report` is at v2 (#960 PR2 — v2 writers always stamp `2`).
  *
  * Migrators (if any kind ever needs an in-place upgrade) will live here.
  */

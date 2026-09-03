@@ -4,7 +4,7 @@
 // The kernel deliberately does no URL syntax work: its `input_schema` checks
 // field *shapes* (`repo` is a string, `issue_number` an integer) and nothing
 // else, so `repo` / `issue_number` must be structured at the entry surface.
-// This is that derivation, and it is the whole reason the new-wave page asks
+// This is that derivation, and it is the whole reason the new-track page asks
 // for one URL instead of three fields.
 //
 // A parallel parser exists in the legacy frontend. It is deliberately NOT
@@ -16,7 +16,7 @@
 // Accepted (deliberately narrow, fail-closed):
 //   * `https://github.com/<owner>/<repo>/issues/<n>` — github.com only.
 //     Enterprise hosts are rejected: the shipped template drives `gh` against
-//     github.com, so an enterprise URL would create a wave whose repo
+//     github.com, so an enterprise URL would create a track whose repo
 //     cross-check can never pass.
 //   * Scheme and host match case-insensitively (RFC 3986 makes both
 //     case-insensitive) and normalize to lowercase. The path is NOT

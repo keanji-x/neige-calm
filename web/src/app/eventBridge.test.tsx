@@ -9,8 +9,8 @@
 //
 // The 'event variants we care about (one assertion per dispatch arm):
 //   - area.updated      → invalidate ['areas']
-//   - wave.updated      → invalidate ['waves', area_id] AND ['wave', id]
-//   - card.added        → invalidate ['wave', wave_id]
+//   - track.updated      → invalidate ['tracks', area_id] AND ['track', id]
+//   - card.added        → invalidate ['track', track_id]
 //   - plugin.state      → no invalidation (no plugin query yet)
 //
 // Unknown events shouldn't reach the dispatcher at all because the WS layer
@@ -113,12 +113,12 @@ function wrap(client: QueryClient) {
   };
 }
 
-function seedWaveDetailWithCard(client: QueryClient, waveId: string, cardId: string) {
-  client.setQueryData(['wave', waveId], {
-    wave: {
-      id: waveId,
+function seedTrackDetailWithCard(client: QueryClient, trackId: string, cardId: string) {
+  client.setQueryData(['track', trackId], {
+    track: {
+      id: trackId,
       area_id: 'area_1',
-      title: 'Wave',
+      title: 'Track',
       sort: 0,
       archived_at: null,
       pinned_at: null,
@@ -131,7 +131,7 @@ function seedWaveDetailWithCard(client: QueryClient, waveId: string, cardId: str
     cards: [
       {
         id: cardId,
-        wave_id: waveId,
+        track_id: trackId,
         kind: 'terminal',
         sort: 0,
         payload: {},
@@ -315,7 +315,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('wave.updated invalidates both the area list and the wave detail', () => {
+  it('track.updated invalidates both the area list and the track detail', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -325,17 +325,17 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'wave.updated',
+      ev: 'track.updated',
       data: {
-        id: 'wave_1',
+        id: 'track_1',
         area_id: 'area_1',
         title: 'Hello',
         sort: 0,
         archived_at: null,
         workspace: { kind: 'attached' as const, path: '/repo', frozen_at: 1 },
-        // Issue #145 — `lifecycle` is now part of the wave wire shape.
+        // Issue #145 — `lifecycle` is now part of the track wire shape.
         lifecycle: 'draft',
-        // Issue #250 PR 2 — cwd + terminal_at are part of the Wave
+        // Issue #250 PR 2 — cwd + terminal_at are part of the Track
         // wire shape. The bridge doesn't care about either today;
         // future calendar/terminal-stamp subscribers will read them.
         cwd: '',
@@ -351,15 +351,15 @@ describe('EventBridge', () => {
     });
     // Two invalidations, one per affected key. We don't care about ordering
     // — the bridge fires both, and TanStack Query coalesces refetches.
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves', 'area_1'] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['tracks', 'area_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track', 'track_1'] });
     cleanup();
   });
 
   it('card_added_with_terminal_id_invalidates_immediately', () => {
     // #13 contract: a single `card.added` carrying the final payload
     // (terminal_id stamped by the atomic-create endpoint) MUST invalidate
-    // the owning wave detail synchronously — no debounce window, no
+    // the owning track detail synchronously — no debounce window, no
     // suppression. EventBridge calls `qc.invalidateQueries` directly in
     // the dispatch path; we don't need fake timers here.
     const client = makeClient();
@@ -374,7 +374,7 @@ describe('EventBridge', () => {
       ev: 'card.added',
       data: {
         id: 'card_1',
-        wave_id: 'wave_42',
+        track_id: 'track_42',
         kind: 'terminal',
         sort: 0,
         payload: { terminal_id: 't_x', schemaVersion: 1 },
@@ -385,13 +385,13 @@ describe('EventBridge', () => {
       },
     });
     // The invalidate was synchronous — assert directly, no timer advance.
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_42'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track', 'track_42'] });
     cleanup();
   });
 
-  it('runtime.started invalidates owning wave detail, card overlays, and wave files', () => {
+  it('runtime.started invalidates owning track detail, card overlays, and track files', () => {
     const client = makeClient();
-    seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
+    seedTrackDetailWithCard(client, 'track_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
     render(
@@ -409,17 +409,17 @@ describe('EventBridge', () => {
         status: 'starting',
       },
     });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track', 'track_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-files', 'wave_1'],
+      queryKey: ['track-files', 'track_1'],
     });
     cleanup();
   });
 
-  it('runtime.status_changed invalidates owning wave detail, card overlays, and wave files', () => {
+  it('runtime.status_changed invalidates owning track detail, card overlays, and track files', () => {
     const client = makeClient();
-    seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
+    seedTrackDetailWithCard(client, 'track_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
     render(
@@ -436,17 +436,17 @@ describe('EventBridge', () => {
         new_status: 'running',
       },
     });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track', 'track_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-files', 'wave_1'],
+      queryKey: ['track-files', 'track_1'],
     });
     cleanup();
   });
 
-  it('runtime.superseded invalidates owning wave detail, card overlays, and wave files', () => {
+  it('runtime.superseded invalidates owning track detail, card overlays, and track files', () => {
     const client = makeClient();
-    seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
+    seedTrackDetailWithCard(client, 'track_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
     render(
@@ -462,10 +462,10 @@ describe('EventBridge', () => {
         card_id: 'card_runtime',
       },
     });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track', 'track_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-files', 'wave_1'],
+      queryKey: ['track-files', 'track_1'],
     });
     cleanup();
   });
@@ -526,12 +526,12 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('wave-fs projection events invalidate wave file queries', () => {
+  it('track-fs projection events invalidate track file queries', () => {
     // The report sidebar reads kernel-projected files. These events may
     // otherwise be consumed directly by card-topic listeners or the
     // dispatcher, but runs/* and cards/* hook views derive from them.
     const client = makeClient();
-    seedWaveDetailWithCard(client, 'wave_1', 'card_worker');
+    seedTrackDetailWithCard(client, 'track_1', 'card_worker');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
     render(
@@ -551,7 +551,7 @@ describe('EventBridge', () => {
             payload: { transcript: 'done' },
           },
         },
-        queryKey: ['wave-files', 'wave_1'],
+        queryKey: ['track-files', 'track_1'],
       },
       {
         ev: {
@@ -563,7 +563,7 @@ describe('EventBridge', () => {
             payload: { transcript: 'done' },
           },
         },
-        queryKey: ['wave-files', 'wave_1'],
+        queryKey: ['track-files', 'track_1'],
       },
       {
         ev: {
@@ -574,7 +574,7 @@ describe('EventBridge', () => {
             context: null,
           },
         },
-        queryKey: ['wave-files'],
+        queryKey: ['track-files'],
       },
       {
         ev: {
@@ -584,7 +584,7 @@ describe('EventBridge', () => {
             cmd: 'echo ok',
           },
         },
-        queryKey: ['wave-files'],
+        queryKey: ['track-files'],
       },
       {
         ev: {
@@ -595,7 +595,7 @@ describe('EventBridge', () => {
             artifacts: [],
           },
         },
-        queryKey: ['wave-files'],
+        queryKey: ['track-files'],
       },
       {
         ev: {
@@ -605,7 +605,7 @@ describe('EventBridge', () => {
             reason: 'boom',
           },
         },
-        queryKey: ['wave-files'],
+        queryKey: ['track-files'],
       },
     ];
 
@@ -614,7 +614,7 @@ describe('EventBridge', () => {
       expect(() => fakeStream.emit(ev)).not.toThrow();
       expect(invalidate).toHaveBeenCalledWith({ queryKey });
       expect(invalidate).toHaveBeenCalledWith({
-        queryKey: queryKey[1] ? ['wave-report', queryKey[1]] : ['wave-report'],
+        queryKey: queryKey[1] ? ['track-report', queryKey[1]] : ['track-report'],
       });
     }
 
@@ -623,13 +623,13 @@ describe('EventBridge', () => {
 
   it.each([
     ['task.dispatched', {
-      idempotency_key: 'idem-dispatched', kind: 'codex', wave_id: 'wave_1',
+      idempotency_key: 'idem-dispatched', kind: 'codex', track_id: 'track_1',
     }],
     ['task.gate_result', {
       task_id: 'task_1', idempotency_key: 'idem-gate', passed: true,
-      log_tail: '', log_path: '/tmp/gate.log', attempt: 1, wave_id: 'wave_1',
+      log_tail: '', log_path: '/tmp/gate.log', attempt: 1, track_id: 'track_1',
     }],
-  ] as const)('%s invalidates the owning wave report exactly', (eventKind, data) => {
+  ] as const)('%s invalidates the owning track report exactly', (eventKind, data) => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -637,7 +637,7 @@ describe('EventBridge', () => {
 
     fakeStream.emit({ ev: eventKind, data } as unknown as WireEvent);
 
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-report', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track-report', 'track_1'] });
     cleanup();
   });
 
@@ -647,7 +647,7 @@ describe('EventBridge', () => {
       task_id: 'task_1', idempotency_key: 'idem-gate', passed: true,
       log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
     }],
-  ] as const)('%s broadly invalidates reports when its wave cannot be resolved', (eventKind, data) => {
+  ] as const)('%s broadly invalidates reports when its track cannot be resolved', (eventKind, data) => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -655,11 +655,11 @@ describe('EventBridge', () => {
 
     fakeStream.emit({ ev: eventKind, data } as WireEvent);
 
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-report'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track-report'] });
     cleanup();
   });
 
-  it('hook events fall back to broad wave-file invalidation without cached ownership', () => {
+  it('hook events fall back to broad track-file invalidation without cached ownership', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -679,16 +679,16 @@ describe('EventBridge', () => {
         },
       }),
     ).not.toThrow();
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-files'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['track-files'] });
     cleanup();
   });
 
   // Compile-time exhaustiveness evidence for PR #479 PR4:
-  // Temporarily delete the `invalidationPolicies['wave.report_edited']` row
+  // Temporarily delete the `invalidationPolicies['track.report_edited']` row
   // and run `npm run typecheck`. `definePolicies<T extends { [K in EventKind]:
   // InvalidationPolicy<K> }>` must make tsc reject the table with:
-  // "Property 'wave.report_edited' is missing in type ... but required in type ..."
-  it('wave.report_edited invalidates wave file and structured report queries', () => {
+  // "Property 'track.report_edited' is missing in type ... but required in type ..."
+  it('track.report_edited invalidates track file and structured report queries', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -699,9 +699,9 @@ describe('EventBridge', () => {
     );
     expect(() =>
       fakeStream.emit({
-        ev: 'wave.report_edited',
+        ev: 'track.report_edited',
         data: {
-          wave_id: 'wave_1',
+          track_id: 'track_1',
           card_id: 'card_report',
           author: 'spec',
           edit_id: 'edit_1',
@@ -713,13 +713,13 @@ describe('EventBridge', () => {
       }),
     ).not.toThrow();
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-files', 'wave_1'],
+      queryKey: ['track-files', 'track_1'],
     });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-report', 'wave_1'],
+      queryKey: ['track-report', 'track_1'],
     });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-backlinks'],
+      queryKey: ['track-backlinks'],
     });
     cleanup();
   });
@@ -739,7 +739,7 @@ describe('EventBridge', () => {
         data: {
           runtime_id: 'runtime_2',
           card_id: 'card_spec',
-          wave_id: 'wave_1',
+          track_id: 'track_1',
           cleared_item_count: 12,
           cleared_params_bytes: 3400,
           card_age_ms_at_clear: 86400000,
@@ -765,7 +765,7 @@ describe('EventBridge', () => {
         data: {
           runtime_id: 'runtime_2',
           card_id: 'card_spec',
-          wave_id: 'wave_1',
+          track_id: 'track_1',
           char_count: 9,
         },
       }),
@@ -774,7 +774,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('claude.hook without cached ownership invalidates all wave-file queries', () => {
+  it('claude.hook without cached ownership invalidates all track-file queries', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -795,7 +795,7 @@ describe('EventBridge', () => {
       }),
     ).not.toThrow();
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ['wave-files'],
+      queryKey: ['track-files'],
     });
     cleanup();
   });

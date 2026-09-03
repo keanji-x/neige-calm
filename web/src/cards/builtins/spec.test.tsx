@@ -10,7 +10,7 @@ import {
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
     id: 'card_spec_1',
-    wave_id: 'wave_1',
+    track_id: 'track_1',
     kind: 'codex',
     sort: 0,
     payload: {

@@ -62,7 +62,7 @@ Astryx's built-in registry only. That set has 26 semantic names and none of them
 is "network" or "appearance", so each nav entry takes the nearest available
 sense and says so where it is chosen (`externalLink` for traffic leaving the
 machine, `viewColumns` for how the app is painted, `copy` for the thing a new
-wave is copied from, `wrench` for tooling, `info` for read-only facts). The app
+track is copied from, `wrench` for tooling, `info` for read-only facts). The app
 deliberately does not draw one-off glyphs for this.
 
 ## Sections and routes
@@ -167,23 +167,23 @@ values before the bag has landed.
 ## Templates are read only (#1300 S1)
 
 There is **no Templates section here**. #1230 added one — a list plus a
-per-template editor writing through `PUT /api/wave-templates/{id}` — and #1300
+per-template editor writing through `PUT /api/track-templates/{id}` — and #1300
 removed both.
 
-The editor had no storage of its own. A template was a hidden wave in the system
-area, so "save a template" was an ordinary wave-report write, and #1300 removes
-that hidden wave because it is the last production path on which the kernel
+The editor had no storage of its own. A template was a hidden track in the system
+area, so "save a template" was an ordinary track-report write, and #1300 removes
+that hidden track because it is the last production path on which the kernel
 writes a report as `EditAuthor::User`. The editor went with its storage.
 
 Its ceiling is worth recording, because it is what a replacement has to beat:
-the tasks lived in a wave report, so `wave_report_edit_guard` (#1179) governed
+the tasks lived in a track report, so `track_report_edit_guard` (#1179) governed
 them — a task `key` was immutable for the life of its block, and a live task
 could only leave as a tombstone that every later fork then copied. So the editor
 could reword and append, never rename, delete or reorder. Making templates
-editable again needs its own persistence model and version semantics, not a wave
+editable again needs its own persistence model and version semantics, not a track
 borrowed as template storage.
 
-Templates are still **listed**: `GET /api/wave-templates` feeds the New wave
+Templates are still **listed**: `GET /api/track-templates` feeds the New track
 picker, and that read is unchanged.
 
 ## Accessibility contract

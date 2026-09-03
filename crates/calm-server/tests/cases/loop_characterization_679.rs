@@ -15,9 +15,9 @@
 //!   1. `catch_up_push` with persisted `task.completed` / `task.failed`
 //!      envelopes → exact `Observation` content + push-cursor advance +
 //!      watermark dedup (the existing `spec_harness_dual_run_filter` test
-//!      only covers `wave.report_edited` through this path).
+//!      only covers `track.report_edited` through this path).
 //!   2. A live worker-actor `task.failed` push is **observation-only**:
-//!      it must not touch the wave lifecycle and must not append events
+//!      it must not touch the track lifecycle and must not append events
 //!      (T2 precursor: observation delivery leaves the event log
 //!      unchanged). The Working→Reviewing fallback exists ONLY on the
 //!      dispatcher's own spawn-failure path (pinned by
@@ -25,7 +25,7 @@
 //!   3. AiSpec-authored task events never push back into the harness
 //!      (anti-feedback-loop), asserted at the live transport level.
 //!   4. The dead-worker stall: a worker that spawns successfully and then
-//!      never reports leaves the wave parked in `Working` forever — no
+//!      never reports leaves the track parked in `Working` forever — no
 //!      kernel-side convergence event of any kind is produced.
 
 use std::path::PathBuf;
@@ -47,10 +47,10 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, SpecHarness,
     SpecHarnessParams,
 };
-use calm_server::ids::{ActorId, AreaId, WaveId};
+use calm_server::ids::{ActorId, AreaId, TrackId};
 use calm_server::model::{
-    Card, CardRole, NewArea, NewCard, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
-    WavePatch, new_id, now_ms,
+    Card, CardRole, NewArea, NewCard, NewTrack, Task, TaskKind, TaskStatus, TrackLifecycle,
+    TrackPatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -65,7 +65,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use calm_truth_test_harness::FakeProvider;
 use calm_types::worker::{
     ExitEvidence, ExitSource, Liveness, LivenessTag, SessionMode, WorkerContract,
@@ -83,8 +83,8 @@ struct LoopFixture {
     /// Live bus the dispatcher subscribes to.
     events: EventBus,
     role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
-    wave_id: WaveId,
+    track_area_cache: TrackAreaCache,
+    track_id: TrackId,
     area_id: AreaId,
     spec_card: Card,
     worker_card: Card,
@@ -106,8 +106,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: tag.into(),
@@ -121,15 +121,15 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         .await
         .unwrap();
     let role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    wave_area_cache.insert(wave.id.clone(), area.id.clone());
+    let track_area_cache = TrackAreaCache::new();
+    track_area_cache.insert(track.id.clone(), area.id.clone());
 
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -145,7 +145,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -200,13 +200,13 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     let (harness, obs_rx) = SpecHarness::run_unstarted_for_test(
         SpecHarnessParams {
             runtime_id: runtime_id.clone(),
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             card_id: spec_card.id.clone(),
             thread_id: Some(thread_id),
             repo: repo_dyn.clone(),
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
-            wave_area_cache: WaveAreaCache::new(),
+            track_area_cache: TrackAreaCache::new(),
             daemon: daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,
@@ -217,7 +217,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn,
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
+        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
             data_dir: std::env::temp_dir().join(format!("neige-loop-pin-{tag}")),
@@ -236,8 +236,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         repo,
         events,
         role_cache,
-        wave_area_cache,
-        wave_id: wave.id,
+        track_area_cache,
+        track_id: track.id,
         area_id: area.id,
         spec_card,
         worker_card,
@@ -251,14 +251,14 @@ impl LoopFixture {
     fn worker_scope(&self) -> EventScope {
         EventScope::Card {
             card: self.worker_card.id.clone(),
-            wave: self.wave_id.clone(),
+            track: self.track_id.clone(),
             area: self.area_id.clone(),
         }
     }
 
-    fn wave_scope(&self) -> EventScope {
-        EventScope::Wave {
-            wave: self.wave_id.clone(),
+    fn track_scope(&self) -> EventScope {
+        EventScope::Track {
+            track: self.track_id.clone(),
             area: self.area_id.clone(),
         }
     }
@@ -274,7 +274,7 @@ impl LoopFixture {
                 None,
                 &cold_bus,
                 &self.role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 event,
             )
             .await
@@ -290,30 +290,30 @@ impl LoopFixture {
                 None,
                 &self.events,
                 &self.role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 event,
             )
             .await
             .unwrap()
     }
 
-    /// Lifecycle-bearing events persisted for this wave (`wave.lifecycle_changed`
-    /// / `wave.updated`) plus any task terminal events. Used to assert the
+    /// Lifecycle-bearing events persisted for this track (`track.lifecycle_changed`
+    /// / `track.updated`) plus any task terminal events. Used to assert the
     /// push path appends nothing.
-    async fn wave_audit_events(&self) -> Vec<Event> {
+    async fn track_audit_events(&self) -> Vec<Event> {
         self.repo
             .events_since(0, i64::MAX)
             .await
             .unwrap()
             .into_iter()
             .filter_map(|(_id, _version, scope, event)| {
-                if scope.wave_id() != Some(&self.wave_id) {
+                if scope.track_id() != Some(&self.track_id) {
                     return None;
                 }
                 matches!(
                     event,
-                    Event::WaveLifecycleChanged { .. }
-                        | Event::WaveUpdated(_)
+                    Event::TrackLifecycleChanged { .. }
+                        | Event::TrackUpdated(_)
                         | Event::TaskCompleted { .. }
                         | Event::TaskFailed { .. }
                 )
@@ -365,7 +365,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     // never above the initial 0 cursor — pinned as "only real persisted ids
     // push".
     fx.dispatcher
-        .catch_up_push(fx.wave_id.clone(), completed.clone(), 0)
+        .catch_up_push(fx.track_id.clone(), completed.clone(), 0)
         .await;
     assert!(
         fx.obs_rx.try_recv().is_err(),
@@ -383,7 +383,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         )
         .await;
     fx.dispatcher
-        .catch_up_push(fx.wave_id.clone(), completed.clone(), completed_id)
+        .catch_up_push(fx.track_id.clone(), completed.clone(), completed_id)
         .await;
     let delivery = fx
         .obs_rx
@@ -413,7 +413,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         )
         .await;
     fx.dispatcher
-        .catch_up_push(fx.wave_id.clone(), failed.clone(), failed_id)
+        .catch_up_push(fx.track_id.clone(), failed.clone(), failed_id)
         .await;
     let delivery = fx
         .obs_rx
@@ -436,7 +436,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     // Redelivery of an already-delivered envelope (id <= cursor) is a
     // silent dedup: no observation, cursor unchanged.
     fx.dispatcher
-        .catch_up_push(fx.wave_id.clone(), completed, completed_id)
+        .catch_up_push(fx.track_id.clone(), completed, completed_id)
         .await;
     assert!(
         fx.obs_rx.try_recv().is_err(),
@@ -456,7 +456,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
 // ---------------------------------------------------------------------------
 
 /// A worker-actor `task.failed` arriving on the live bus is delivered to the
-/// spec harness as an observation and does NOTHING else: no wave lifecycle
+/// spec harness as an observation and does NOTHING else: no track lifecycle
 /// change (the dispatcher's Working→Reviewing fallback fires only on its own
 /// spawn failures) and no new rows in the event log (T2 precursor —
 /// observation delivery leaves the event count unchanged). A subsequent
@@ -466,10 +466,10 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
 async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_push_back() {
     let mut fx = loop_fixture("live-task-failed").await;
     fx.repo
-        .wave_update(
-            fx.wave_id.as_str(),
-            WavePatch {
-                lifecycle: Some(WaveLifecycle::Working),
+        .track_update(
+            fx.track_id.as_str(),
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Working),
                 ..Default::default()
             },
         )
@@ -503,22 +503,22 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
         failed_id
     );
 
-    // Observation-only: the wave lifecycle is untouched and the event log
+    // Observation-only: the track lifecycle is untouched and the event log
     // contains exactly the one task.failed we persisted — the push path
     // appended nothing (no lifecycle fallback, no echo events).
-    let wave = fx
+    let track = fx
         .repo
-        .wave_get(fx.wave_id.as_str())
+        .track_get(fx.track_id.as_str())
         .await
         .unwrap()
-        .expect("wave exists");
+        .expect("track exists");
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
-        "a worker-reported task.failed must NOT auto-promote the wave; \
+        track.lifecycle,
+        TrackLifecycle::Working,
+        "a worker-reported task.failed must NOT auto-promote the track; \
          only the dispatcher's own spawn-failure path does"
     );
-    let audit = fx.wave_audit_events().await;
+    let audit = fx.track_audit_events().await;
     assert_eq!(
         audit.len(),
         1,
@@ -534,7 +534,7 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
     let spec_self_id = fx
         .persist_live(
             ActorId::AiSpec(fx.spec_card.id.clone()),
-            fx.wave_scope(),
+            fx.track_scope(),
             task_completed("spec-self-echo", json!({"ok": true})),
         )
         .await;
@@ -643,7 +643,7 @@ impl ProviderAdapter for SilentSpawnAdapter {
 /// A worker whose spawn succeeds but which never produces
 /// `task.completed` / `task.failed` is now converged by the reaper once the
 /// worker session is durably observed as exited: the session terminalizes,
-/// the kernel emits one `task.failed`, and the wave parks at `Reviewing`.
+/// the kernel emits one `task.failed`, and the track parks at `Reviewing`.
 #[tokio::test]
 async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -655,8 +655,8 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "dead-worker".into(),
@@ -672,13 +672,13 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let events = EventBus::new();
     let role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&role_cache).await.unwrap();
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
-    repo.wave_update(
-        wave.id.as_str(),
-        WavePatch {
-            lifecycle: Some(WaveLifecycle::Dispatching),
+    repo.track_update(
+        track.id.as_str(),
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Dispatching),
             ..Default::default()
         },
     )
@@ -686,11 +686,11 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     .unwrap();
 
     let key = "dead-worker-pin";
-    let task_id = format!("{}:{key}", wave.id.as_str());
+    let task_id = format!("{}:{key}", track.id.as_str());
     let now = now_ms();
     let task = Task {
         id: task_id.clone(),
-        wave_id: wave.id.as_str().to_string(),
+        track_id: track.id.as_str().to_string(),
         key: key.into(),
         kind: TaskKind::Terminal,
         goal: "worker-that-never-reports".into(),
@@ -721,11 +721,11 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         .await
         .unwrap();
 
-    // The dead worker's card exists in the wave (the projection a real
+    // The dead worker's card exists in the track (the projection a real
     // spawn would have left behind) — it just never reports anything.
     let worker_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -733,7 +733,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         })
         .await
         .unwrap();
-    role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+    role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
 
     let spawned = Arc::new(tokio::sync::Notify::new());
     let operation_repo = Arc::new(SqlxOperationRepo::new(
@@ -766,7 +766,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let dispatcher = Dispatcher::spawn_with_operation_runtime(
         repo.clone(),
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
+        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-loop-pin-dead-worker"),
@@ -779,7 +779,10 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     );
 
     let mut rx = events.subscribe();
-    dispatcher.scheduler().schedule_wave(wave.id.clone()).await;
+    dispatcher
+        .scheduler()
+        .schedule_track(track.id.clone())
+        .await;
 
     // Positive sync points: the worker "spawn" ran, and the dispatcher
     // promoted Dispatching → Working first.
@@ -791,10 +794,10 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     while Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Ok(env)) => {
-                if let Event::WaveLifecycleChanged { id, from, to, .. } = &env.event
-                    && id == &wave.id
-                    && *from == WaveLifecycle::Dispatching
-                    && *to == WaveLifecycle::Working
+                if let Event::TrackLifecycleChanged { id, from, to, .. } = &env.event
+                    && id == &track.id
+                    && *from == TrackLifecycle::Dispatching
+                    && *to == TrackLifecycle::Working
                 {
                     saw_working = true;
                     break;
@@ -829,7 +832,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         &mut tx,
         WorkerSession {
             id: session_id.clone(),
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             provider: WorkerProviderKind::Terminal,
             mode: SessionMode::Ephemeral,
             contract: WorkerContract::Executor,
@@ -875,7 +878,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         repo.clone(),
         registry,
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
+        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
     );
     reaper_on_boot();
     reaper.sweep_all().await;
@@ -886,7 +889,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let mut failed_events = Vec::new();
     let mut lifecycle_changes = Vec::new();
     for (id, _version, scope, event) in rows {
-        if scope.wave_id() != Some(&wave.id) {
+        if scope.track_id() != Some(&track.id) {
             continue;
         }
         match event {
@@ -909,7 +912,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
             } if idempotency_key == task_id => {
                 panic!("dead-worker reaper must not emit task.completed")
             }
-            Event::WaveLifecycleChanged { from, to, .. } => {
+            Event::TrackLifecycleChanged { from, to, .. } => {
                 lifecycle_changes.push((from, to));
             }
             _ => {}
@@ -937,7 +940,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     }
     assert_eq!(
         lifecycle_changes,
-        vec![(WaveLifecycle::Working, WaveLifecycle::Reviewing)],
+        vec![(TrackLifecycle::Working, TrackLifecycle::Reviewing)],
         "exactly one reaper lifecycle event: Working → Reviewing"
     );
 
@@ -958,12 +961,12 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     assert_eq!(session.exit_code, Some(-1));
 
     let parked = repo
-        .wave_get(wave.id.as_str())
+        .track_get(track.id.as_str())
         .await
         .unwrap()
-        .expect("wave exists");
-    assert_eq!(parked.lifecycle, WaveLifecycle::Reviewing);
-    let cards = repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+        .expect("track exists");
+    assert_eq!(parked.lifecycle, TrackLifecycle::Reviewing);
+    let cards = repo.cards_by_track(track.id.as_str()).await.unwrap();
     assert!(
         cards.iter().any(|c| c.id == worker_card.id),
         "dead-worker convergence does not reap the worker card"

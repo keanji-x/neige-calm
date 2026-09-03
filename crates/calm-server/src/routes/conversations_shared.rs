@@ -1,6 +1,6 @@
 //! The parts of "mint a conversation on its first message" that are identical
-//! for an area chat (`area_conversations`) and a wave assistant
-//! (`wave_conversations`).
+//! for an area chat (`area_conversations`) and a track assistant
+//! (`track_conversations`).
 //!
 //! Shared rather than copied because these are the four-arm retry contract's
 //! moving parts. Two divergent copies of `retryable_operation_key` would mean
@@ -10,7 +10,7 @@
 //!
 //! What is deliberately NOT here: the derived ids (`crate::conversation_keys`,
 //! one namespace per flavour) and the list predicates (an area chat is a
-//! `worker`/`plain_chat` card, a wave assistant is an `assistant` card, and
+//! `worker`/`plain_chat` card, a track assistant is an `assistant` card, and
 //! collapsing those would be the bug G3 is about).
 
 use sha2::{Digest, Sha256};
@@ -120,8 +120,8 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// set before or after the send and would be wrong in one direction either way
 /// (double send, or a silently swallowed message).
 ///
-/// Both scope columns are bound: `scope_wave` is indexed (`0007`), so the scan
-/// is bounded by one wave rather than by every conversation in the DB.
+/// Both scope columns are bound: `scope_track` is indexed (`0007`), so the scan
+/// is bounded by one track rather than by every conversation in the DB.
 ///
 /// Durability premise, and it is a premise not a nice-to-have:
 /// `harness.user_message.enqueued` is **not** in `EVENTS_PRUNE_KINDS`
@@ -134,7 +134,7 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// change, this read must move to a marker that cannot be pruned.
 pub(crate) async fn user_message_already_enqueued(
     w: &WorkerState,
-    wave_id: &str,
+    track_id: &str,
     card_id: &str,
 ) -> Result<bool> {
     let pool = w
@@ -145,11 +145,11 @@ pub(crate) async fn user_message_already_enqueued(
         r#"SELECT 1
              FROM events
             WHERE kind = 'harness.user_message.enqueued'
-              AND scope_wave = ?1
+              AND scope_track = ?1
               AND scope_card = ?2
             LIMIT 1"#,
     )
-    .bind(wave_id)
+    .bind(track_id)
     .bind(card_id)
     .fetch_optional(&pool)
     .await?;

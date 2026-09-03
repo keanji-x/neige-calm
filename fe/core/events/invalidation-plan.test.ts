@@ -15,15 +15,15 @@ import { invalidationPlanFor } from './invalidation-plan.js';
  *
  * The three `runtime.*` kinds joined the original four in #1189 §5.5: a row's
  * `state` comes from `worker_sessions.state`, and those are the events that
- * write it. `wave.lifecycle_changed` is the near miss that must stay out — it
- * changes a wave, not a session row, and the sessions it ends announce
+ * write it. `track.lifecycle_changed` is the near miss that must stay out — it
+ * changes a track, not a session row, and the sessions it ends announce
  * themselves as `runtime.superseded`, which is already in this list.
  *
  * `harness.item.added` is a KNOWN and DELIBERATE gap, not an omission. It does
  * change what these lists show: the event's producer records the item and then
  * calls `persist_snapshot` (`harness/run_loop.rs`), which bumps
  * `worker_sessions.updated_at_ms` — and both lists are ordered by that column
- * (`routes/wave_conversations.rs`, mirrored by `conversation.ts`'s sort on
+ * (`routes/track_conversations.rs`, mirrored by `conversation.ts`'s sort on
  * `updatedAt`). So two concurrent sessions where the older one keeps producing
  * items without a phase change will have server-side order that the cache does
  * not, until the next phase or runtime event.
@@ -58,26 +58,26 @@ describe('invalidation plan behavior', () => {
     });
   });
 
-  it('invalidates all four wave projections for wave updates', () => {
-    expect(invalidationPlanFor(event({ ev: 'wave.updated', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
-      invalidate: [['waves', 'area', 'c1'], ['wave', 'w1'], ['wave-files', 'w1'], ['waves-range']],
+  it('invalidates all four track projections for track updates', () => {
+    expect(invalidationPlanFor(event({ ev: 'track.updated', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
+      invalidate: [['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range']],
       remove: [],
       writeThrough: [],
     });
   });
 
-  it('removes deleted wave detail after invalidating its remaining projections', () => {
-    expect(invalidationPlanFor(event({ ev: 'wave.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
-      invalidate: [['waves', 'area', 'c1'], ['overlays', 'wave'], ['waves-range']],
-      remove: [['wave', 'w1']],
+  it('removes deleted track detail after invalidating its remaining projections', () => {
+    expect(invalidationPlanFor(event({ ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
+      invalidate: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range']],
+      remove: [['track', 'w1']],
       writeThrough: [],
     });
   });
 
   it('invalidates card mutations immediately without suppression or debounce state', () => {
-    expect(invalidationPlanFor(event({ ev: 'card.added', data: { wave_id: 'w1' } }))).toEqual({
+    expect(invalidationPlanFor(event({ ev: 'card.added', data: { track_id: 'w1' } }))).toEqual({
       invalidate: [
-        ['wave', 'w1'], ['wave-files', 'w1'], ['area-conversations'], ['wave-conversations', 'w1'],
+        ['track', 'w1'], ['track-files', 'w1'], ['area-conversations'], ['track-conversations', 'w1'],
       ],
       remove: [],
       writeThrough: [],
@@ -85,39 +85,39 @@ describe('invalidation plan behavior', () => {
   });
 
   /*
-   * The wave list is keyed BY WAVE, and that is the assertion — not "a
-   * wave-conversations key is present somewhere".
+   * The track list is keyed BY TRACK, and that is the assertion — not "a
+   * track-conversations key is present somewhere".
    *
-   * `GET /api/waves/{wave_id}/conversations` is per-wave (#1189 §4.1), so the
-   * query it backs is `['wave-conversations', waveId]`. Dropping the id here to
+   * `GET /api/tracks/{track_id}/conversations` is per-track (#1189 §4.1), so the
+   * query it backs is `['track-conversations', trackId]`. Dropping the id here to
    * copy the area list's bare prefix would still invalidate the right query, by
    * prefix match, and every "contains the key" assertion would stay green while
-   * every open wave refetched its list on every runtime tick of every other
-   * wave. The area list is a prefix because its id is genuinely unrecoverable;
+   * every open track refetched its list on every runtime tick of every other
+   * track. The area list is a prefix because its id is genuinely unrecoverable;
    * this one's is right there in the event.
    */
   it.each([
-    ['card.added', { wave_id: 'wave-1' }],
-    ['card.updated', { wave_id: 'wave-1' }],
-    ['harness.phase.changed', { card_id: 'card-1', wave_id: 'wave-1' }],
-    ['harness.user_message.enqueued', { card_id: 'card-1', wave_id: 'wave-1' }],
+    ['card.added', { track_id: 'track-1' }],
+    ['card.updated', { track_id: 'track-1' }],
+    ['harness.phase.changed', { card_id: 'card-1', track_id: 'track-1' }],
+    ['harness.user_message.enqueued', { card_id: 'card-1', track_id: 'track-1' }],
     ['runtime.started', { card_id: 'card-1' }],
     ['runtime.status_changed', { card_id: 'card-1' }],
     ['runtime.superseded', { card_id: 'card-1' }],
-  ] as const)('keys the wave conversation list by its own wave for %s', (ev, data) => {
-    const keys = invalidationPlanFor(event({ ev, data }), { findWaveOwningCard: () => 'wave-1' })
-      .invalidate.filter((key) => key[0] === 'wave-conversations');
-    expect(keys).toEqual([['wave-conversations', 'wave-1']]);
+  ] as const)('keys the track conversation list by its own track for %s', (ev, data) => {
+    const keys = invalidationPlanFor(event({ ev, data }), { findTrackOwningCard: () => 'track-1' })
+      .invalidate.filter((key) => key[0] === 'track-conversations');
+    expect(keys).toEqual([['track-conversations', 'track-1']]);
   });
 
   it('resolves runtime projections through card ownership', () => {
     expect(invalidationPlanFor(
       event({ ev: 'runtime.started', data: { card_id: 'card-1' } }),
-      { findWaveOwningCard: () => 'wave-1' },
+      { findTrackOwningCard: () => 'track-1' },
     )).toEqual({
       invalidate: [
-        ['wave', 'wave-1'], ['overlays', 'card'], ['wave-files', 'wave-1'], ['wave-report', 'wave-1'],
-        ['area-conversations'], ['wave-conversations', 'wave-1'],
+        ['track', 'track-1'], ['overlays', 'card'], ['track-files', 'track-1'], ['track-report', 'track-1'],
+        ['area-conversations'], ['track-conversations', 'track-1'],
       ],
       remove: [],
       writeThrough: [],
@@ -126,28 +126,28 @@ describe('invalidation plan behavior', () => {
 
   /*
    * An unresolvable card falls back to the bare prefix rather than dropping the
-   * key: "some wave's list may have changed" is true and cheap (an invalidated
+   * key: "some track's list may have changed" is true and cheap (an invalidated
    * key with no active observer only marks entries stale), whereas dropping it
    * would leave a genuinely open list stale forever.
    */
-  it('falls back to the wave-conversations prefix when card ownership is unknown', () => {
+  it('falls back to the track-conversations prefix when card ownership is unknown', () => {
     expect(invalidationPlanFor(
       event({ ev: 'runtime.status_changed', data: { card_id: 'card-1' } }),
-      { findWaveOwningCard: () => null },
+      { findTrackOwningCard: () => null },
     )).toEqual({
       invalidate: [
-        ['overlays', 'card'], ['wave-files'], ['wave-report'],
-        ['area-conversations'], ['wave-conversations'],
+        ['overlays', 'card'], ['track-files'], ['track-report'],
+        ['area-conversations'], ['track-conversations'],
       ],
       remove: [],
       writeThrough: [],
     });
   });
 
-  it('silently omits a card-overlay wave detail when ownership is unknown', () => {
+  it('silently omits a card-overlay track detail when ownership is unknown', () => {
     expect(invalidationPlanFor(
       event({ ev: 'overlay.set', data: { entity_kind: 'card', entity_id: 'card-1' } }),
-      { findWaveOwningCard: () => null },
+      { findTrackOwningCard: () => null },
     )).toEqual({
       invalidate: [['overlays', 'card']],
       remove: [],
@@ -155,55 +155,55 @@ describe('invalidation plan behavior', () => {
     });
   });
 
-  it('uses wave_id, then card ownership, then the broad wave-files prefix', () => {
-    const context = { findWaveOwningCard: (cardId: string) => cardId === 'card-1' ? 'wave-1' : null };
+  it('uses track_id, then card ownership, then the broad track-files prefix', () => {
+    const context = { findTrackOwningCard: (cardId: string) => cardId === 'card-1' ? 'track-1' : null };
     const ev = 'codex.worker_requested';
-    expect(invalidationPlanFor(event({ ev, data: { wave_id: 'direct' } }), context).invalidate)
-      .toEqual([['wave-files', 'direct'], ['wave-report', 'direct']]);
+    expect(invalidationPlanFor(event({ ev, data: { track_id: 'direct' } }), context).invalidate)
+      .toEqual([['track-files', 'direct'], ['track-report', 'direct']]);
     expect(invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } }), context).invalidate)
-      .toEqual([['wave-files', 'wave-1'], ['wave-report', 'wave-1']]);
+      .toEqual([['track-files', 'track-1'], ['track-report', 'track-1']]);
     expect(invalidationPlanFor(event({ ev, data: {} }), context).invalidate)
-      .toEqual([['wave-files'], ['wave-report']]);
+      .toEqual([['track-files'], ['track-report']]);
   });
 
   /*
-   * A hook resolves the same wave the same way — it just stops at the
+   * A hook resolves the same track the same way — it just stops at the
    * workspace. It fires roughly twice per tool call per running worker and
    * writes no `tasks` row, so paying a whole-document report projection for it
    * bought a value that could not have changed. The ladder is asserted again
-   * here so "no report key" cannot be confused with "no wave resolution".
+   * here so "no report key" cannot be confused with "no track resolution".
    */
-  it.each(['codex.hook', 'claude.hook'] as const)('resolves a wave for %s but stops at wave-files', (ev) => {
-    const context = { findWaveOwningCard: (cardId: string) => cardId === 'card-1' ? 'wave-1' : null };
-    expect(invalidationPlanFor(event({ ev, data: { wave_id: 'direct' } }), context).invalidate)
-      .toEqual([['wave-files', 'direct']]);
+  it.each(['codex.hook', 'claude.hook'] as const)('resolves a track for %s but stops at track-files', (ev) => {
+    const context = { findTrackOwningCard: (cardId: string) => cardId === 'card-1' ? 'track-1' : null };
+    expect(invalidationPlanFor(event({ ev, data: { track_id: 'direct' } }), context).invalidate)
+      .toEqual([['track-files', 'direct']]);
     expect(invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } }), context).invalidate)
-      .toEqual([['wave-files', 'wave-1']]);
+      .toEqual([['track-files', 'track-1']]);
     expect(invalidationPlanFor(event({ ev, data: {} }), context).invalidate)
-      .toEqual([['wave-files']]);
+      .toEqual([['track-files']]);
   });
 
   it('invalidates terminal runtime projection through card ownership', () => {
     expect(invalidationPlanFor(
       event({ ev: 'terminal.deleted', data: { card_id: 'card-1' } }),
-      { findWaveOwningCard: () => 'wave-1' },
-    ).invalidate).toEqual([['wave-files', 'wave-1'], ['wave-report', 'wave-1']]);
+      { findTrackOwningCard: () => 'track-1' },
+    ).invalidate).toEqual([['track-files', 'track-1'], ['track-report', 'track-1']]);
   });
 
   it('plans each harness event against the projections it can change', () => {
     const planned = (ev: WireEvent['ev']) => invalidationPlanFor(
-      event({ ev, data: { card_id: 'card-1', wave_id: 'wave-1' } }),
+      event({ ev, data: { card_id: 'card-1', track_id: 'track-1' } }),
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
     expect(planned('harness.phase.changed')).toEqual([
-      ['spec-run', 'card-1'], ['area-conversations'], ['wave-conversations', 'wave-1'],
+      ['spec-run', 'card-1'], ['area-conversations'], ['track-conversations', 'track-1'],
     ]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['spec-run', 'card-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
       ['harness-items', 'card-1'], ['spec-run', 'card-1'],
-      ['area-conversations'], ['wave-conversations', 'wave-1'],
+      ['area-conversations'], ['track-conversations', 'track-1'],
     ]);
   });
 
@@ -215,7 +215,7 @@ describe('invalidation plan behavior', () => {
    * `expected` side is the hand-kept list above, and the point is that the two
    * are maintained separately.
    */
-  it.each(['area-conversations', 'wave-conversations'] as const)(
+  it.each(['area-conversations', 'track-conversations'] as const)(
     'refetches the %s list from exactly the seven session-writing kinds',
     (root) => {
       const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);

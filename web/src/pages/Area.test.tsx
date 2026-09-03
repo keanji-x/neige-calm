@@ -1,6 +1,6 @@
 // Tests for the keyboard-entry rename path on AreaPage (slice 3 of #56).
 //
-// Mirrors `Wave.test.tsx`: the EditableTitle in AreaPage shares the same
+// Mirrors `Track.test.tsx`: the EditableTitle in AreaPage shares the same
 // keyboard contract (Enter / F2 → edit; Escape / Enter → exit + focus
 // restore) but renders as a styled <h1> instead of a plain span.
 
@@ -10,13 +10,13 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as api from '../api/calm';
 import { AreaPage } from './Area';
-import type { Area, Wave } from '../types';
+import type { Area, Track } from '../types';
 
 function makeArea(): Area {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9' };
 }
 
-function makeWave(overrides: Partial<Wave> = {}): Wave {
+function makeTrack(overrides: Partial<Track> = {}): Track {
   return {
     id: 'w1',
     areaId: 'c1',
@@ -42,7 +42,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onRenameArea={() => {}}
       />,
@@ -68,7 +68,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
       />,
     );
@@ -82,7 +82,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onRenameArea={() => {}}
       />,
@@ -100,7 +100,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onRenameArea={() => {}}
       />,
@@ -117,7 +117,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onRenameArea={onRename}
       />,
@@ -141,7 +141,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onRenameArea={onRename}
       />,
@@ -176,7 +176,7 @@ describe('AreaPage EditableTitle keyboard entry', () => {
 //   - Area × button (DeleteButton) → onDeleteArea. Pattern A: dialog
 //     stays open while the async delete is in flight, Confirm is
 //     disabled mid-await.
-//   - Per-row × on a WaveRow → onDeleteWave. Pattern B: dialog closes
+//   - Per-row × on a TrackRow → onDeleteTrack. Pattern B: dialog closes
 //     on Confirm, parent's promise resolves out-of-band.
 //
 // We deliberately don't re-test Cancel-safe default focus, Esc routing,
@@ -191,7 +191,7 @@ describe('AreaPage delete-area ConfirmDialog (Pattern A)', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onDeleteArea={() => {}}
       />,
@@ -213,7 +213,7 @@ describe('AreaPage delete-area ConfirmDialog (Pattern A)', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onDeleteArea={onDeleteArea}
       />,
@@ -231,7 +231,7 @@ describe('AreaPage delete-area ConfirmDialog (Pattern A)', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onDeleteArea={onDeleteArea}
       />,
@@ -256,7 +256,7 @@ describe('AreaPage delete-area ConfirmDialog (Pattern A)', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[]}
+        tracks={[]}
         onGo={() => {}}
         onDeleteArea={onDeleteArea}
       />,
@@ -282,187 +282,187 @@ describe('AreaPage delete-area ConfirmDialog (Pattern A)', () => {
   });
 });
 
-describe('AreaPage delete-wave ConfirmDialog (Pattern B)', () => {
-  it('clicking the row × opens a ConfirmDialog with the wave title in the body', async () => {
+describe('AreaPage delete-track ConfirmDialog (Pattern B)', () => {
+  it('clicking the row × opens a ConfirmDialog with the track title in the body', async () => {
     const user = userEvent.setup();
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ title: 'Ship checkout' })]}
+        tracks={[makeTrack({ title: 'Ship checkout' })]}
         onGo={() => {}}
-        onDeleteWave={() => {}}
+        onDeleteTrack={() => {}}
       />,
     );
-    expect(screen.queryByRole('dialog', { name: 'Delete wave?' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Delete track?' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
+    const dialog = screen.getByRole('dialog', { name: 'Delete track?' });
     expect(dialog).toBeInTheDocument();
-    expect(dialog).toHaveTextContent('Delete wave "Ship checkout"?');
-    expect(within(dialog).getByRole('button', { name: 'Delete wave' })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Delete track "Ship checkout"?');
+    expect(within(dialog).getByRole('button', { name: 'Delete track' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
   });
 
-  it('Cancel closes the dialog without invoking onDeleteWave', async () => {
+  it('Cancel closes the dialog without invoking onDeleteTrack', async () => {
     const user = userEvent.setup();
-    const onDeleteWave = vi.fn();
+    const onDeleteTrack = vi.fn();
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ title: 'Ship checkout' })]}
+        tracks={[makeTrack({ title: 'Ship checkout' })]}
         onGo={() => {}}
-        onDeleteWave={onDeleteWave}
+        onDeleteTrack={onDeleteTrack}
       />,
     );
     await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
+    const dialog = screen.getByRole('dialog', { name: 'Delete track?' });
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog', { name: 'Delete wave?' })).toBeNull();
-    expect(onDeleteWave).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Delete track?' })).toBeNull();
+    expect(onDeleteTrack).not.toHaveBeenCalled();
   });
 
-  it('Confirm closes the dialog and invokes onDeleteWave with the wave id', async () => {
+  it('Confirm closes the dialog and invokes onDeleteTrack with the track id', async () => {
     const user = userEvent.setup();
-    const onDeleteWave = vi.fn();
+    const onDeleteTrack = vi.fn();
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ id: 'w-checkout', title: 'Ship checkout' })]}
+        tracks={[makeTrack({ id: 'w-checkout', title: 'Ship checkout' })]}
         onGo={() => {}}
-        onDeleteWave={onDeleteWave}
+        onDeleteTrack={onDeleteTrack}
       />,
     );
     await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
-    await user.click(within(dialog).getByRole('button', { name: 'Delete wave' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete track?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Delete track' }));
     // Pattern B: dialog closes immediately on Confirm; parent's promise
     // resolves on its own time.
-    expect(screen.queryByRole('dialog', { name: 'Delete wave?' })).toBeNull();
-    expect(onDeleteWave).toHaveBeenCalledTimes(1);
-    expect(onDeleteWave).toHaveBeenCalledWith('w-checkout');
+    expect(screen.queryByRole('dialog', { name: 'Delete track?' })).toBeNull();
+    expect(onDeleteTrack).toHaveBeenCalledTimes(1);
+    expect(onDeleteTrack).toHaveBeenCalledWith('w-checkout');
   });
 
-  it('reopening after Cancel targets the most recently clicked wave', async () => {
+  it('reopening after Cancel targets the most recently clicked track', async () => {
     const user = userEvent.setup();
-    const onDeleteWave = vi.fn();
+    const onDeleteTrack = vi.fn();
     render(
       <AreaPage
         area={makeArea()}
-        waves={[
-          makeWave({ id: 'w-a', title: 'Ship checkout' }),
-          makeWave({ id: 'w-b', title: 'Migrate auth', lifecycle: 'working' }),
+        tracks={[
+          makeTrack({ id: 'w-a', title: 'Ship checkout' }),
+          makeTrack({ id: 'w-b', title: 'Migrate auth', lifecycle: 'working' }),
         ]}
         onGo={() => {}}
-        onDeleteWave={onDeleteWave}
+        onDeleteTrack={onDeleteTrack}
       />,
     );
     // First flow: open + Cancel.
     await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
     await user.click(
-      within(screen.getByRole('dialog', { name: 'Delete wave?' })).getByRole('button', {
+      within(screen.getByRole('dialog', { name: 'Delete track?' })).getByRole('button', {
         name: 'Cancel',
       }),
     );
-    expect(onDeleteWave).not.toHaveBeenCalled();
+    expect(onDeleteTrack).not.toHaveBeenCalled();
 
-    // Second flow: open on the OTHER wave + Confirm. The description
-    // should now reflect the new wave's title, and the id passed to
-    // onDeleteWave should be the new wave's id.
+    // Second flow: open on the OTHER track + Confirm. The description
+    // should now reflect the new track's title, and the id passed to
+    // onDeleteTrack should be the new track's id.
     await user.click(screen.getByRole('button', { name: 'Delete "Migrate auth"' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
-    expect(dialog).toHaveTextContent('Delete wave "Migrate auth"?');
-    await user.click(within(dialog).getByRole('button', { name: 'Delete wave' }));
-    expect(onDeleteWave).toHaveBeenCalledTimes(1);
-    expect(onDeleteWave).toHaveBeenCalledWith('w-b');
+    const dialog = screen.getByRole('dialog', { name: 'Delete track?' });
+    expect(dialog).toHaveTextContent('Delete track "Migrate auth"?');
+    await user.click(within(dialog).getByRole('button', { name: 'Delete track' }));
+    expect(onDeleteTrack).toHaveBeenCalledTimes(1);
+    expect(onDeleteTrack).toHaveBeenCalledWith('w-b');
   });
 });
 
-describe('AreaPage pin button on wave rows', () => {
-  it('renders no pin button when onPinWave is not provided', () => {
+describe('AreaPage pin button on track rows', () => {
+  it('renders no pin button when onPinTrack is not provided', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave()]}
+        tracks={[makeTrack()]}
         onGo={() => {}}
       />,
     );
-    expect(screen.queryByRole('button', { name: /pin wave/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /unpin wave/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pin track/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /unpin track/i })).toBeNull();
   });
 
-  it('renders a "Pin wave" button when onPinWave is provided and wave is unpinned', () => {
+  it('renders a "Pin track" button when onPinTrack is provided and track is unpinned', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ pinnedAt: null })]}
+        tracks={[makeTrack({ pinnedAt: null })]}
         onGo={() => {}}
-        onPinWave={() => {}}
+        onPinTrack={() => {}}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Pin wave' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Pin track' })).toBeTruthy();
   });
 
-  it('renders an "Unpin wave" button when the wave is already pinned', () => {
+  it('renders an "Unpin track" button when the track is already pinned', () => {
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ pinnedAt: 1000 })]}
+        tracks={[makeTrack({ pinnedAt: 1000 })]}
         onGo={() => {}}
-        onPinWave={() => {}}
+        onPinTrack={() => {}}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Unpin wave' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Unpin track' })).toBeTruthy();
   });
 
-  it('calls onPinWave(id, true) when Pin wave is clicked', async () => {
+  it('calls onPinTrack(id, true) when Pin track is clicked', async () => {
     const user = userEvent.setup();
-    const onPinWave = vi.fn();
+    const onPinTrack = vi.fn();
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ id: 'w-area', pinnedAt: null })]}
+        tracks={[makeTrack({ id: 'w-area', pinnedAt: null })]}
         onGo={() => {}}
-        onPinWave={onPinWave}
+        onPinTrack={onPinTrack}
       />,
     );
-    await user.click(screen.getByRole('button', { name: 'Pin wave' }));
-    expect(onPinWave).toHaveBeenCalledWith('w-area', true);
+    await user.click(screen.getByRole('button', { name: 'Pin track' }));
+    expect(onPinTrack).toHaveBeenCalledWith('w-area', true);
   });
 
-  it('calls onPinWave(id, false) when Unpin wave is clicked', async () => {
+  it('calls onPinTrack(id, false) when Unpin track is clicked', async () => {
     const user = userEvent.setup();
-    const onPinWave = vi.fn();
+    const onPinTrack = vi.fn();
     render(
       <AreaPage
         area={makeArea()}
-        waves={[makeWave({ id: 'w-area', pinnedAt: 9000 })]}
+        tracks={[makeTrack({ id: 'w-area', pinnedAt: 9000 })]}
         onGo={() => {}}
-        onPinWave={onPinWave}
+        onPinTrack={onPinTrack}
       />,
     );
-    await user.click(screen.getByRole('button', { name: 'Unpin wave' }));
-    expect(onPinWave).toHaveBeenCalledWith('w-area', false);
+    await user.click(screen.getByRole('button', { name: 'Unpin track' }));
+    expect(onPinTrack).toHaveBeenCalledWith('w-area', false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// NewWaveDialog variant switch — issue #891 slice ③ (live design
+// NewTrackDialog variant switch — issue #891 slice ③ (live design
 // exploration: "Workflow" <select> with the base-select themed drawer;
 // supersedes the r3 radio rows).
 //
 // The dialog hosts a labeled "Workflow" select above NewTaskForm:
-// "None" (value `task`, default — plain wave, no workflow) and "Issue
-// dev" (value `issue-dev`, workflow-bound wave). Options carry rich
+// "None" (value `task`, default — plain track, no workflow) and "Issue
+// dev" (value `issue-dev`, workflow-bound track). Options carry rich
 // content (name + muted description span), so option accessible names
 // include the description text — locators match on the leading name.
 // The dialog itself has NO visible title row — it's named via
-// aria-label ("New wave") only. The form is exercised in
+// aria-label ("New track") only. The form is exercised in
 // NewTaskForm.issueDev.test.tsx; here we pin the dialog-level wiring —
 // default option, switch → issue-dev fields appear, switch back →
 // they're gone.
 // ---------------------------------------------------------------------------
 
-describe('AreaPage NewWaveDialog variant switch (#891)', () => {
-  async function openNewWaveDialog() {
+describe('AreaPage NewTrackDialog variant switch (#891)', () => {
+  async function openNewTrackDialog() {
     vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup();
     const qc = new QueryClient({
@@ -472,14 +472,14 @@ describe('AreaPage NewWaveDialog variant switch (#891)', () => {
       <QueryClientProvider client={qc}>
         <AreaPage
           area={makeArea()}
-          waves={[]}
+          tracks={[]}
           onGo={() => {}}
-          onWaveCreated={() => {}}
+          onTrackCreated={() => {}}
         />
       </QueryClientProvider>,
     );
-    await user.click(screen.getByRole('button', { name: 'New wave' }));
-    const dialog = await screen.findByRole('dialog', { name: 'New wave' });
+    await user.click(screen.getByRole('button', { name: 'New track' }));
+    const dialog = await screen.findByRole('dialog', { name: 'New track' });
     return { user, dialog };
   }
 
@@ -491,7 +491,7 @@ describe('AreaPage NewWaveDialog variant switch (#891)', () => {
   }
 
   it('opens on the plain "None" template with the select visible, and no visible title row', async () => {
-    const { dialog } = await openNewWaveDialog();
+    const { dialog } = await openNewTrackDialog();
     const select = templateSelect(dialog);
     expect(select.value).toBe('task');
     // Both templates are offered as options (extensibility seam:
@@ -504,17 +504,17 @@ describe('AreaPage NewWaveDialog variant switch (#891)', () => {
       within(select).getByRole('option', { name: /^Issue dev/ }),
     ).toHaveValue('issue-dev');
     // Signoff round 2: the dialog reads as one cohesive card — no
-    // visible "New wave" title row (and no head × button); the name
+    // visible "New track" title row (and no head × button); the name
     // lives on the dialog's aria-label (already asserted by the
-    // findByRole in openNewWaveDialog).
-    expect(within(dialog).queryByText('New wave')).toBeNull();
+    // findByRole in openNewTrackDialog).
+    expect(within(dialog).queryByText('New track')).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull();
     // Plain form, no issue-dev fields.
     expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
   });
 
   it('selecting Issue dev shows the issue-dev form; selecting None restores the plain form', async () => {
-    const { user, dialog } = await openNewWaveDialog();
+    const { user, dialog } = await openNewTrackDialog();
     await user.selectOptions(templateSelect(dialog), 'issue-dev');
     expect(within(dialog).getByLabelText(/github issue url/i)).toBeInTheDocument();
     expect(
@@ -528,7 +528,7 @@ describe('AreaPage NewWaveDialog variant switch (#891)', () => {
   });
 
   it('focuses the variant-appropriate first field: title on open, URL input after selecting Issue dev, title again after selecting None', async () => {
-    const { user, dialog } = await openNewWaveDialog();
+    const { user, dialog } = await openNewTrackDialog();
     // Dialog's initial-focus pass lands on the task variant's first
     // field — the title textarea (via the shared initialFieldRef).
     await waitFor(() => {
@@ -555,7 +555,7 @@ describe('AreaPage NewWaveDialog variant switch (#891)', () => {
   });
 
   it('a manual title edit latches against re-prefill; switching variant (remount) un-latches', async () => {
-    const { user, dialog } = await openNewWaveDialog();
+    const { user, dialog } = await openNewTrackDialog();
     await user.selectOptions(templateSelect(dialog), 'issue-dev');
     const title = () =>
       within(dialog).getByLabelText(/task description/i) as HTMLTextAreaElement;

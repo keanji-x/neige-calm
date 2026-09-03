@@ -107,7 +107,7 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
         wf::seed_card_and_runtime(&repo, "card-delete-preserves-flow", Some("thread-delete")).await;
     let card_id = seed.card.id.to_string();
     let runtime_id = seed.runtime.id.clone();
-    let wave_id = seed.card.wave_id.as_str().to_string();
+    let track_id = seed.card.track_id.as_str().to_string();
 
     let rows = [
         ("user_message", r#"{"text":"first"}"#, 1_i64),
@@ -119,7 +119,7 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
             &mut tx,
             Some(&card_id),
             Some(&runtime_id),
-            Some(&wave_id),
+            Some(&track_id),
             Some(&runtime_id),
             kind,
             payload,

@@ -6,7 +6,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -27,8 +27,8 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "thread map".into(),
@@ -54,7 +54,7 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -64,17 +64,17 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
     let app = axum::Router::new()
         .merge(routes::router())
         .with_state(state);
-    (app, repo, wave.id.to_string())
+    (app, repo, track.id.to_string())
 }
 
-async fn create_card(repo: &SqlxRepo, wave_id: &str, role: CardRole) -> String {
+async fn create_card(repo: &SqlxRepo, track_id: &str, role: CardRole) -> String {
     let cache = CardRoleCache::new();
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave_id.into(),
+            track_id: track_id.into(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -133,8 +133,8 @@ async fn get(app: axum::Router, thread_id: &str) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn resolve_card_for_thread_prefers_runtime_mapping() {
-    let (app, repo, wave_id) = fresh().await;
-    let card_id = create_card(&repo, &wave_id, CardRole::Worker).await;
+    let (app, repo, track_id) = fresh().await;
+    let card_id = create_card(&repo, &track_id, CardRole::Worker).await;
     bind_runtime_thread(&repo, &card_id, "thread-runtime").await;
 
     let (status, body) = get(app, "thread-runtime").await;
@@ -142,13 +142,13 @@ async fn resolve_card_for_thread_prefers_runtime_mapping() {
     assert_eq!(body["thread_id"], "thread-runtime");
     assert_eq!(body["card_id"], card_id);
     assert_eq!(body["role"], "worker");
-    assert_eq!(body["wave_id"], wave_id);
+    assert_eq!(body["track_id"], track_id);
 }
 
 #[tokio::test]
 async fn resolve_card_for_thread_returns_mapping() {
-    let (app, repo, wave_id) = fresh().await;
-    let card_id = create_card(&repo, &wave_id, CardRole::Worker).await;
+    let (app, repo, track_id) = fresh().await;
+    let card_id = create_card(&repo, &track_id, CardRole::Worker).await;
     bind_runtime_thread(&repo, &card_id, "thread-hit").await;
 
     let (status, body) = get(app, "thread-hit").await;
@@ -159,15 +159,15 @@ async fn resolve_card_for_thread_returns_mapping() {
 
 #[tokio::test]
 async fn resolve_card_for_thread_404s_for_missing_thread() {
-    let (app, _repo, _wave_id) = fresh().await;
+    let (app, _repo, _track_id) = fresh().await;
     let (status, body) = get(app, "missing-thread").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body:?}");
 }
 
 #[tokio::test]
 async fn resolve_card_for_thread_preserves_role() {
-    let (app, repo, wave_id) = fresh().await;
-    let card_id = create_card(&repo, &wave_id, CardRole::Worker).await;
+    let (app, repo, track_id) = fresh().await;
+    let card_id = create_card(&repo, &track_id, CardRole::Worker).await;
     bind_runtime_thread(&repo, &card_id, "thread-worker").await;
 
     let (status, body) = get(app, "thread-worker").await;
@@ -176,12 +176,12 @@ async fn resolve_card_for_thread_preserves_role() {
 }
 
 #[tokio::test]
-async fn resolve_card_for_thread_preserves_wave_id() {
-    let (app, repo, wave_id) = fresh().await;
-    let card_id = create_card(&repo, &wave_id, CardRole::Spec).await;
+async fn resolve_card_for_thread_preserves_track_id() {
+    let (app, repo, track_id) = fresh().await;
+    let card_id = create_card(&repo, &track_id, CardRole::Spec).await;
     bind_runtime_thread(&repo, &card_id, "thread-spec").await;
 
     let (status, body) = get(app, "thread-spec").await;
     assert_eq!(status, StatusCode::OK, "body={body:?}");
-    assert_eq!(body["wave_id"], wave_id);
+    assert_eq!(body["track_id"], track_id);
 }

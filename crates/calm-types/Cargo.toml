@@ -1,7 +1,7 @@
 # calm-types — the shared vocabulary crate (issue #679, PR1).
 #
 # Bottom of the crate DAG: ids, entities/DTOs, the Event wire enum, the
-# wave-lifecycle edge table, and the new WorkerSession/Principal vocabulary.
+# track-lifecycle edge table, and the new WorkerSession/Principal vocabulary.
 # Everything — old calm-server code and the new greenfield crates — speaks
 # these types.
 #

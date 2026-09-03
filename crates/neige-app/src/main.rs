@@ -1779,7 +1779,7 @@ fn warn_missing_spawn_tools(path_env: &str) {
     for tool in ["codex", "claude", "git"] {
         if !path_has_executable(path_env, tool) {
             eprintln!(
-                "warning: {tool} not found on PATH ({path_env}); waves using {tool} will fail to start"
+                "warning: {tool} not found on PATH ({path_env}); tracks using {tool} will fail to start"
             );
         }
     }

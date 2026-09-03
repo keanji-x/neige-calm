@@ -11,7 +11,7 @@ import styles from './panel-card.module.css';
  * that — `PanelModule` alone needs two different targets — so each channel is
  * its own named, **opt-in** prop.
  *
- * **Opt-in, and that is load-bearing.** The wave page renders `Referenced by`
+ * **Opt-in, and that is load-bearing.** The track page renders `Referenced by`
  * and `Conversations` through `PanelModule` too, and those are not row modules.
  * Marking unconditionally would put four `data-nc-module` elements in a tree
  * whose view model has two, and the module-layer bijection would go red against

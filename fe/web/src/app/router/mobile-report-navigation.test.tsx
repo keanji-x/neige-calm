@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /*
- * #1191 §2 end to end: the real `AppShell`, the real wave route, a real router
+ * #1191 §2 end to end: the real `AppShell`, the real track route, a real router
  * and a real memory history — no mocked `useGo`, no AppShell stand-in.
  *
  * That is the point. `responsive.contract.test.tsx` mocks
@@ -11,7 +11,7 @@
  * Back to `?from=` and the shell's sheets, the dock's visibility to the shell's
  * derived secondary flag — and a stub on either side would prove none of it.
  *
- * The pattern is `wave-cards-panel.test.tsx` + `read-fallbacks.contract.test.tsx`:
+ * The pattern is `track-cards-panel.test.tsx` + `read-fallbacks.contract.test.tsx`:
  * `createAppRouter` + `router.update({ history: createMemoryHistory(...) })`.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -27,15 +27,15 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-/* A second area with no waves: the drill-in the shell must *replace*, not
+/* A second area with no tracks: the drill-in the shell must *replace*, not
    inherit, when a report hands it the area to return to. */
 const OTHER_AREA = { id: 'c2', name: 'Second', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = {
+const TRACK = {
   id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
 const CARD = {
-  id: 'card-term', wave_id: 'w1', kind: 'terminal', title: 'Build log', sort: 1,
+  id: 'card-term', track_id: 'w1', kind: 'terminal', title: 'Build log', sort: 1,
   payload: {}, deletable: true, created_at: 1, updated_at: 2,
 };
 /*
@@ -44,7 +44,7 @@ const CARD = {
  * `openReportAnchor`, and neither had a URL assertion anywhere before.
  */
 const REPORT_CARD = {
-  id: 'card-report', wave_id: 'w1', kind: 'wave-report', title: 'Report card', sort: 2,
+  id: 'card-report', track_id: 'w1', kind: 'track-report', title: 'Report card', sort: 2,
   deletable: false, created_at: 1, updated_at: 2,
   payload: {
     schemaVersion: 3,
@@ -67,10 +67,10 @@ function setup(path: string) {
   const transport: ApiTransportPort = {
     send(request) {
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA, OTHER_AREA]));
-      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([WAVE]));
-      if (request.path === '/api/areas/c2/waves') return Promise.resolve(ok([]));
-      if (request.path === '/api/waves/w1') return Promise.resolve(ok({ wave: WAVE, cards: [CARD, REPORT_CARD], overlays: [] }));
-      if (request.path === '/api/waves/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
+      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
+      if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
+      if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, cards: [CARD, REPORT_CARD], overlays: [] }));
+      if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       return Promise.resolve(ok([]));
     },
   };
@@ -90,7 +90,7 @@ const dock = () => document.querySelector('nav[aria-label="Primary"]');
 const mobilePanel = () => document.querySelector('[data-nc-mobile-page]');
 
 /** The report's own three-dot menu — the control the focus contract returns to. */
-const waveActions = () => screen.getByRole('button', { name: 'Wave actions' });
+const trackActions = () => screen.getByRole('button', { name: 'Track actions' });
 
 /*
  * The dock is `inert` + `aria-hidden` whenever a secondary page is showing, so
@@ -113,7 +113,7 @@ function dockButton(label: string): HTMLElement {
 }
 
 async function openPanelFromMenu(label: string): Promise<void> {
-  await userEvent.click(await screen.findByRole('button', { name: 'Wave actions' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions' }));
   await userEvent.click(await screen.findByRole('menuitem', { name: label }));
 }
 
@@ -166,58 +166,58 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('the mobile report panel is the URL (#1191 §2.4)', () => {
   it('opens through ?panel= and puts focus in the panel container', async () => {
-    const router = setup('/wave/w1');
+    const router = setup('/track/w1');
     await openPanelFromMenu('Cards');
 
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?panel=cards'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
     expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
     // §2.5 — the panel container takes focus, not whatever the menu left behind.
     await waitFor(() => { expect(document.activeElement).toBe(mobilePanel()); });
   });
 
   it('closes back to the report and returns focus to the three-dot menu', async () => {
-    const router = setup('/wave/w1');
+    const router = setup('/track/w1');
     await openPanelFromMenu('Cards');
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?panel=cards'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     /*
      * The opener, not the document body. Closing removes the control the click
      * landed on, so without an explicit restore focus falls to `<body>` and a
      * keyboard reader has to Tab in from the top of the page again.
      */
-    await waitFor(() => { expect(document.activeElement).toBe(waveActions()); });
+    await waitFor(() => { expect(document.activeElement).toBe(trackActions()); });
   });
 
   it('lands focus in the panel on a cold-start deep link', async () => {
-    setup('/wave/w1?panel=tasks');
+    setup('/track/w1?panel=tasks');
     expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeTruthy();
     // Nobody clicked anything: the first render is already inside the panel.
     await waitFor(() => { expect(document.activeElement).toBe(mobilePanel()); });
   });
 
   it('answers the hardware Back button, focus included', async () => {
-    const router = setup('/wave/w1');
+    const router = setup('/track/w1');
     await openPanelFromMenu('Cards');
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?panel=cards'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
 
     // A POP, not a click — the panel state is nowhere but the URL, so this is
     // the whole of "the reader pressed Back".
     router.history.back();
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(mobilePanel()?.getAttribute('data-nc-mobile-page')).toBe('closed');
-    await waitFor(() => { expect(document.activeElement).toBe(waveActions()); });
+    await waitFor(() => { expect(document.activeElement).toBe(trackActions()); });
   });
 
   it('takes the panel away when the reader walks off the report', async () => {
-    const router = setup('/wave/w1?panel=cards');
+    const router = setup('/track/w1?panel=cards');
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Back to Pages' }));
     // The sheet is a different layer of the app; leaving the report layer drops
     // the report's panel (§2.1).
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
   });
 
@@ -227,7 +227,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
    * `closePanel` earns its `back()` branch; the shell's "walking off the report"
    * exit used to be an unconditional `replace`, and `replace` does not merge
    * with the entry before it. Every open-then-leave cycle therefore left one
-   * more `/wave/w1` on the stack, and the reader had to press hardware Back
+   * more `/track/w1` on the stack, and the reader had to press hardware Back
    * once per cycle to see anything change.
    *
    * The gesture is a real one and every press lands on a visible control: the
@@ -240,15 +240,15 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
    * step, so nothing but the stack depth can tell the two behaviours apart.
    */
   it('does not stack a duplicate report entry each time the reader leaves the panel for a sheet', async () => {
-    const router = setup('/wave/w1');
-    await screen.findByRole('button', { name: 'Wave actions' });
+    const router = setup('/track/w1');
+    await screen.findByRole('button', { name: 'Track actions' });
     expect(router.history.length).toBe(1);
 
     for (let cycle = 0; cycle < 3; cycle += 1) {
       await openPanelFromMenu('Cards');
-      await waitFor(() => { expect(href(router)).toBe('/wave/w1?panel=cards'); });
+      await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
       await userEvent.click(screen.getByRole('button', { name: 'Back to Pages' }));
-      await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
+      await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
       expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
       fireEvent.keyDown(document, { key: 'Escape' });
       expect(screen.queryByRole('dialog', { name: 'Pages' })).toBeNull();
@@ -265,43 +265,43 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
   /*
    * §1.4's row for the Outline / TASKS anchor: `panel` cleared, `from` kept,
    * hash written. Both rows are the same `openReportAnchor`, and until now the
-   * decision had *no* URL coverage anywhere — swapping it for a `goSameWave`
+   * decision had *no* URL coverage anywhere — swapping it for a `goSameTrack`
    * that preserves `?panel=` left the whole suite green.
    */
   it('sends an outline entry to the block anchor and clears ?panel=', async () => {
-    const router = setup('/wave/w1?panel=outline&from=area');
+    const router = setup('/track/w1?panel=outline&from=area');
     // Scoped to the sheet: the desktop report rail draws the very same outline,
     // and it is the mobile panel's copy whose landing is under test.
     const panel = await waitFor(() => { const found = mobilePanel(); expect(found).not.toBeNull(); return found!; });
     await userEvent.click(await within(panel as HTMLElement).findByRole('button', { name: /Findings/ }));
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=area#b-1-h1'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area#b-1-h1'); });
   });
 
   it('sends a TASKS entry to the block anchor and clears ?panel=', async () => {
-    const router = setup('/wave/w1?panel=tasks&from=area');
+    const router = setup('/track/w1?panel=tasks&from=area');
     const panel = await waitFor(() => { const found = mobilePanel(); expect(found).not.toBeNull(); return found!; });
     await userEvent.click(await within(panel as HTMLElement).findByRole('button', { name: /ship-it/ }));
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=area#b-task'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area#b-task'); });
   });
 });
 
 describe('the shell derives whether a secondary page is showing (#1191 §2.1)', () => {
   it('hides the dock on the report, shows it over a sheet, and hides it again inside an area', async () => {
-    setup('/wave/w1?from=area');
-    // On the report: the wave route with no sheet open — the first OR branch.
+    setup('/track/w1?from=area');
+    // On the report: the track route with no sheet open — the first OR branch.
     await waitFor(() => { expect(dock()?.getAttribute('aria-hidden')).toBe('true'); });
 
     // `?from=area` is the only thing that decides this label; there is no
     // stored report source any more (§1.2).
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Waves' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to Tracks' }));
     expect(screen.getByRole('dialog', { name: 'Areas' })).toBeTruthy();
-    // Restored straight into the wave's own area, derived — never a stored id.
+    // Restored straight into the track's own area, derived — never a stored id.
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
 
     /*
      * ── The §0.4 reference case ────────────────────────────────────────────
-     * The pathname is still `/wave/w1`, and the Areas sheet is drilled into a
-     * area. The disproven ternary — `onWaveRoute ? section === null : …` —
+     * The pathname is still `/track/w1`, and the Areas sheet is drilled into a
+     * area. The disproven ternary — `onTrackRoute ? section === null : …` —
      * returns `false` from its first branch here and never reaches the area
      * condition at all, so the dock reappears on top of a secondary page. Two
      * conditions OR'd is what keeps this hidden.
@@ -318,7 +318,7 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
    * reopen wherever they last were.
    */
   it('sends the dock’s Areas press to the area root list, never to the last drill-in', async () => {
-    // Today, not a report: the wave route is a secondary page on its own, and
+    // Today, not a report: the track route is a secondary page on its own, and
     // this sequence has to be one a reader can perform with the dock in view.
     setup('/');
     await waitFor(() => dockButton('Areas'));
@@ -340,7 +340,7 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
   });
 
   it('defaults a report with no ?from= back to Pages', async () => {
-    setup('/wave/w1');
+    setup('/track/w1');
     await userEvent.click(await screen.findByRole('button', { name: 'Back to Pages' }));
     expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
   });
@@ -355,23 +355,23 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
     fireEvent.keyDown(document, { key: 'Escape' });
 
     // A report reached from an area hands back its *own* area (§1.2, derived
-    // from `wave.areaId`), which has to win over whatever the sheet still held.
+    // from `track.areaId`), which has to win over whatever the sheet still held.
     await userEvent.click(dockButton('Areas'));
     await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
     await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Waves' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to Tracks' }));
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Second' })).toBeNull();
   });
 
-  it('writes ?from= when a sheet is what opened the wave', async () => {
+  it('writes ?from= when a sheet is what opened the track', async () => {
     const router = setup('/');
     await waitFor(() => dockButton('Areas'));
     await userEvent.click(dockButton('Areas'));
     screen.getByRole('dialog', { name: 'Areas' });
     await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
     await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=area'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area'); });
     // The report is a secondary page whatever the closed sheet still remembers.
     expect(dock()?.getAttribute('aria-hidden')).toBe('true');
   });
@@ -380,15 +380,15 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
 
 /*
  * `?panel=` is a compact-only concept, and above the breakpoint it is not
- * harmless: `WavePage` derives `mobilePanelOpen` from the prop alone and puts
+ * harmless: `TrackPage` derives `mobilePanelOpen` from the prop alone and puts
  * `inert` + `aria-hidden` on the *desktop* panel surface, whose mobile
  * counterpart is `display: none` there. The result is a panel that is fully
  * visible and completely unreachable — the failure mode a11y tests exist for.
  */
-describe('a desktop viewport never lets ?panel= disable the wave panel', () => {
+describe('a desktop viewport never lets ?panel= disable the track panel', () => {
   it('keeps the desktop panel in the accessibility tree for a shared ?panel= link', async () => {
     stubViewport(false);
-    const router = setup('/wave/w1?panel=cards');
+    const router = setup('/track/w1?panel=cards');
 
     // A role query is exactly the right instrument: `inert` + `aria-hidden`
     // take the surface out of the accessibility tree, so this heading — the
@@ -399,19 +399,19 @@ describe('a desktop viewport never lets ?panel= disable the wave panel', () => {
        an unanchored match finds both. The row is what this case is about. */
     expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
     // And the URL stops claiming a state this viewport cannot be in.
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
   });
 
   it('drops ?panel= when the reader widens the window with the panel open', async () => {
     const viewport = stubViewport(true);
-    const router = setup('/wave/w1?panel=cards');
+    const router = setup('/track/w1?panel=cards');
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
-    expect(href(router)).toBe('/wave/w1?panel=cards');
+    expect(href(router)).toBe('/track/w1?panel=cards');
 
     viewport.widen();
 
     // `replace`, not a push: widening a window is not a place to go Back to.
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
+    await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(router.history.length).toBe(1);
     /* `^` anchors the query to the row itself: the CARDS row now has a delete
        sibling whose accessible name also carries the card's title (#1231), and

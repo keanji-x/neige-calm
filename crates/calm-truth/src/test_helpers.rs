@@ -1,6 +1,6 @@
 use crate::db::sqlite::SqlxRepo;
 use crate::error::{Result, TruthError};
-use crate::ids::WaveId;
+use crate::ids::TrackId;
 use crate::worker::WorkerSessionId;
 
 pub async fn delete_event_for_test(repo: &SqlxRepo, id: i64) -> Result<()> {
@@ -11,18 +11,18 @@ pub async fn delete_event_for_test(repo: &SqlxRepo, id: i64) -> Result<()> {
     Ok(())
 }
 
-pub async fn set_wave_root_session_for_test(
+pub async fn set_track_root_session_for_test(
     repo: &SqlxRepo,
-    wave: &WaveId,
+    track: &TrackId,
     root: Option<&WorkerSessionId>,
 ) -> Result<()> {
-    let result = sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+    let result = sqlx::query("UPDATE tracks SET root_session_id = ?1 WHERE id = ?2")
         .bind(root.map(WorkerSessionId::as_str))
-        .bind(wave.as_str())
+        .bind(track.as_str())
         .execute(repo.pool())
         .await?;
     if result.rows_affected() == 0 {
-        return Err(TruthError::NotFound(format!("wave {wave}")));
+        return Err(TruthError::NotFound(format!("track {track}")));
     }
     Ok(())
 }

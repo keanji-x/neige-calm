@@ -19,7 +19,7 @@ test('loads the calm shell, bootstraps Today, then navigates into a new area', a
 
   // The "Today" nav button is always present (and is the default route).
   // Scope by the sidebar's top <nav aria-label="Sidebar navigation"> so a
-  // seed/test that produces a "Waiting on you" wave titled "Today" doesn't
+  // seed/test that produces a "Waiting on you" track titled "Today" doesn't
   // collide with this button on accessible name. See Sidebar.tsx +
   await expect(
     page
@@ -30,7 +30,7 @@ test('loads the calm shell, bootstraps Today, then navigates into a new area', a
   // Bootstrap anchor for issue #175: after the Today page paints,
   // `useTodayTerminal` writes the resolved card id into localStorage.
   // Wait for that to land — it's the signal that the system area +
-  // wave + terminal card all exist, even though none of them shows up
+  // track + terminal card all exist, even though none of them shows up
   // in the sidebar surface.
   await expect
     .poll(

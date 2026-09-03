@@ -7,11 +7,11 @@
 //
 // Mapping (kept in sync with `api/schemas.ts` event variants):
 //   area.updated / area.deleted   → invalidate ['areas']
-//   wave.updated                  → invalidate ['waves', area_id] + ['wave', id]
-//   wave.deleted                  → invalidate ['waves', area_id], drop ['wave', id]
-//   card.added / .updated         → invalidate ['wave', wave_id]
-//   card.deleted                  → invalidate ['wave', wave_id]
-//   overlay.set / .deleted        → invalidate the affected wave detail AND
+//   track.updated                  → invalidate ['tracks', area_id] + ['track', id]
+//   track.deleted                  → invalidate ['tracks', area_id], drop ['track', id]
+//   card.added / .updated         → invalidate ['track', track_id]
+//   card.deleted                  → invalidate ['track', track_id]
+//   overlay.set / .deleted        → invalidate the affected track detail AND
 //                                    the global ['overlays', entity_kind]
 //                                    snapshot used by the Sidebar
 //   plugin.state                  → no-op (no plugin list query yet)
@@ -28,18 +28,18 @@
 //
 // `overlay.{set,deleted}` is the only mildly tricky case: the kernel
 // addresses overlays by `entity_kind` + `entity_id`, so for card overlays
-// we don't know which wave to invalidate from the event payload alone. We
-// inspect already-cached wave details to find the one that owns the card,
-// matching the strategy `useKernel` used pre-migration. If no wave is
-// loaded, the overlay just sits in the kernel until a wave detail refetch
-// picks it up — the user can't see a card overlay change for a wave
+// we don't know which track to invalidate from the event payload alone. We
+// inspect already-cached track details to find the one that owns the card,
+// matching the strategy `useKernel` used pre-migration. If no track is
+// loaded, the overlay just sits in the kernel until a track detail refetch
+// picks it up — the user can't see a card overlay change for a track
 // they're not on, so this is harmless.
 
 import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { sharedEventStream, type EventMeta } from '../api/events';
 import { dlog } from '../util/debug';
-import type { KernelWaveDetail, WireEvent } from '../api/wire';
+import type { KernelTrackDetail, WireEvent } from '../api/wire';
 import {
   invalidationPolicies,
   type InvalidationContext,
@@ -210,7 +210,7 @@ export function EventBridge({ syncEventVersion }: EventBridgeProps) {
     // any optimistic state that drifted during the disconnected window
     // converges. Cheap (TanStack batches the actual refetches), and
     // catches edge cases that the per-event dispatcher above would miss
-    // (e.g. a card overlay whose wave detail isn't loaded right now).
+    // (e.g. a card overlay whose track detail isn't loaded right now).
     const offReplay = stream.onReplayComplete(() => {
       dlog('eventBridge', 'RX _replay_complete — running defensive batch invalidate');
       void queryClient.invalidateQueries();
@@ -241,7 +241,7 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
 
   const ctx: InvalidationContext = {
     qc,
-    findWaveOwningCard: (id) => findWaveOwningCard(qc, id) ?? null,
+    findTrackOwningCard: (id) => findTrackOwningCard(qc, id) ?? null,
   };
 
   if (policy.apply) policy.apply(ev as never, ctx);
@@ -253,16 +253,16 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
   for (const k of remove) qc.removeQueries({ queryKey: k });
 }
 
-/** Search the loaded `['wave', *]` query data for a wave detail that
+/** Search the loaded `['track', *]` query data for a track detail that
  *  contains a card with this id. Returns the first hit, or undefined. */
-function findWaveOwningCard(qc: QueryClient, cardId: string): string | undefined {
-  const entries = qc.getQueriesData<KernelWaveDetail>({ queryKey: ['wave'] });
+function findTrackOwningCard(qc: QueryClient, cardId: string): string | undefined {
+  const entries = qc.getQueriesData<KernelTrackDetail>({ queryKey: ['track'] });
   for (const [key, detail] of entries) {
     if (!detail) continue;
     if (detail.cards.some((c) => c.id === cardId)) {
-      // key is ['wave', waveId]
-      const waveId = key[1];
-      if (typeof waveId === 'string') return waveId;
+      // key is ['track', trackId]
+      const trackId = key[1];
+      if (typeof trackId === 'string') return trackId;
     }
   }
   return undefined;

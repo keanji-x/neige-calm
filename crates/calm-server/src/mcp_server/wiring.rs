@@ -102,7 +102,7 @@ mod tests {
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
     use crate::db::sqlite::{SqlxRepo, card_create_with_id_tx};
-    use crate::model::{CardRole, NewArea, NewCard, NewWave, new_id};
+    use crate::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 
     #[test]
     fn card_mcp_env_emits_per_card_keys_in_order() {
@@ -161,8 +161,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
                 title: "wiring-mcp-token".into(),
@@ -182,7 +182,7 @@ mod tests {
             &mut tx,
             card_id.clone(),
             NewCard {
-                wave_id: wave.id,
+                track_id: track.id,
                 title: None,
                 kind: "codex".into(),
                 sort: None,

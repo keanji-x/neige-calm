@@ -14,7 +14,7 @@
 //!     Distinguishes "same kernel, pid recycled" from "host rebooted —
 //!     every prior pid is dead".
 //!
-//! Background: the create-wave / takeover path used to gate
+//! Background: the create-track / takeover path used to gate
 //! `signal_process_group(pgid, …)` on
 //! [`spec_appserver::socket_owned_by_appserver`] — a
 //! `UnixStream::connect` to the per-card socket path. That's better

@@ -181,7 +181,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // production users never see the global. Exposes a driver the e2e
   // regression spec (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
   // uses to flip the theme WITHOUT navigating to the Settings page —
-  // navigation would unmount any wave-page XtermView under test and
+  // navigation would unmount any track-page XtermView under test and
   // defeat the whole observation.
   useEffect(() => {
     if (typeof window === 'undefined') return;

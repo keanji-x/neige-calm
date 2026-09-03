@@ -1,0 +1,32 @@
+{
+  "description": "track.report_edited with the #955 plugin author arm: author=\"plugin\" (bare lowercase, same encoding family as spec/user/kernel) plus the sibling author_plugin_id carrying the submitter. The min golden pins the old-row replay path (field absent => None); this one pins the populated shape the accept transaction emits.",
+  "wire": {
+    "ev": "track.report_edited",
+    "data": {
+      "track_id": "track-01",
+      "card_id": "card-01",
+      "author": "plugin",
+      "author_plugin_id": "dev.neige.invest",
+      "edit_id": "edit-0003",
+      "summary_before": "s",
+      "summary_after": "s",
+      "body_before": "old body",
+      "body_after": "proposed body",
+      "agent_message": null
+    }
+  },
+  "canonical": {
+    "ev": "track.report_edited",
+    "data": {
+      "track_id": "track-01",
+      "card_id": "card-01",
+      "author": "plugin",
+      "author_plugin_id": "dev.neige.invest",
+      "edit_id": "edit-0003",
+      "summary_before": "s",
+      "summary_after": "s",
+      "body_before": "old body",
+      "body_after": "proposed body"
+    }
+  }
+}

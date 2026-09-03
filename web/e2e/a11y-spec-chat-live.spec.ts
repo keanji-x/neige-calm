@@ -11,20 +11,20 @@
 
 import { test, expect } from '@playwright/test';
 
-import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
+import { createUserArea, createTrackInArea, resetReplayServer } from './helpers/reset';
 import { forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 import { getEventTrace } from './helpers/trace';
 
 test.describe('spec chat live phase updates', () => {
-  let waveId: string;
+  let trackId: string;
   let specCardId: string;
 
   test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
     const area = await createUserArea(request, 'AtlasSpecLive');
-    const wave = await createWaveInArea(request, area.id, 'Spec live test');
-    waveId = wave.id;
-    specCardId = await getSpecCardId(request, waveId);
+    const track = await createTrackInArea(request, area.id, 'Spec live test');
+    trackId = track.id;
+    specCardId = await getSpecCardId(request, trackId);
   });
 
   test('phase forces update the conversation UI live and pin the WS wire shape', async ({
@@ -35,7 +35,7 @@ test.describe('spec chat live phase updates', () => {
     // (`GET /spec/run` answers `{phase: null}`), so the chip sits on the
     // overlay-derived 'Starting' fallback. Everything after this point
     // arrives over the live WS stream.
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await page.goto(`/calm/track/${trackId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec live test' }),
     ).toBeVisible();

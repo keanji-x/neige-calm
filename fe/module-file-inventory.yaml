@@ -64,7 +64,7 @@
 
 # Feature domains are the closed §4 set; each prefix contains its public entry,
 # colocated behavior/contract tests, render components, and *.module.css files.
-- { path: fe/web/src/features/wave, type: directory, owner: features/wave, readonly: false, basis: "architecture §2/§4; INV-DUP-009" }
+- { path: fe/web/src/features/track, type: directory, owner: features/track, readonly: false, basis: "architecture §2/§4; INV-DUP-009" }
 - { path: fe/web/src/features/area, type: directory, owner: features/area, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
 - { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }

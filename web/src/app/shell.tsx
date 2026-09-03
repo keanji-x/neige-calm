@@ -4,10 +4,10 @@
 // shuttled kernel state from CalmApp's `useKernel` down to the route
 // components via React context. That moved when `useKernel` was
 // replaced by TanStack Query hooks: every page now reads kernel data
-// directly through `useAreasQuery` / `useWavesByAreaQuery` /
-// `useWaveDetailQuery`, so there's nothing left to share.
+// directly through `useAreasQuery` / `useTracksByAreaQuery` /
+// `useTrackDetailQuery`, so there's nothing left to share.
 //
-// What stays here: `MissingShell`, the "the area/wave you navigated to
+// What stays here: `MissingShell`, the "the area/track you navigated to
 // no longer exists" fallback. It's rendered by the route components in
 // `router.tsx` when a param resolves to nothing.
 

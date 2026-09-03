@@ -5,17 +5,17 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
-import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
+import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { TodayPage, type ScheduledEvent } from './public.tsx';
 
 import type { TodayPageProps } from './public.tsx';
 
-// A stand-in, not the real WaveRow: `features/today` may not import a sibling
+// A stand-in, not the real TrackRow: `features/today` may not import a sibling
 // domain, and these suites are about Today's own bucketing and layout. The real
 // row has its own tests, and `app/router` is where the two are composed.
-const renderWaveRow: TodayPageProps['renderWaveRow'] = (wave, options) => (
+const renderTrackRow: TodayPageProps['renderTrackRow'] = (track, options) => (
   <span data-nc-role="row" data-nc-state={options.variant === 'panel' ? 'selected' : undefined}>
-    {options.hourLabel}{wave.title}
+    {options.hourLabel}{track.title}
   </span>
 );
 
@@ -27,9 +27,9 @@ function area(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
 }
 
-function wave(overrides: Partial<Wave> = {}): Wave {
+function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -37,39 +37,39 @@ function wave(overrides: Partial<Wave> = {}): Wave {
 }
 
 describe('INV-TODAY-002 the scheduled-event seam', () => {
-  it('renders live wave activity while the scheduled list is empty', () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW} />);
-    expect(screen.getByRole('complementary').textContent).toContain('Open wave');
+  it('renders live track activity while the scheduled list is empty', () => {
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
+    expect(screen.getByRole('complementary').textContent).toContain('Open track');
     expect(screen.queryByText('Nothing scheduled.')).toBeNull();
   });
 
   it('keeps both sources in the same agenda instead of letting either take over', () => {
     // A scheduling plugin has not landed, so production always passes an empty
     // list. Feeding a synthetic event through the seam is the only way to prove
-    // the branch still exists and still co-exists with wave activity — deleting
+    // the branch still exists and still co-exists with track activity — deleting
     // it as "dead code" is exactly the regression this locks.
-    const scheduled = wave({ id: 'w2', title: 'Scheduled wave', createdAt: NOW - 10 * 86_400_000, terminalAt: NOW - 9 * 86_400_000 });
-    const events: ScheduledEvent[] = [{ wave: scheduled, date: new Date(NOW), hour: 15 }];
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
+    const scheduled = track({ id: 'w2', title: 'Scheduled track', createdAt: NOW - 10 * 86_400_000, terminalAt: NOW - 9 * 86_400_000 });
+    const events: ScheduledEvent[] = [{ track: scheduled, date: new Date(NOW), hour: 15 }];
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
 
     const agenda = screen.getByRole('complementary').textContent ?? '';
-    expect(agenda).toContain('Scheduled wave');
-    expect(agenda).toContain('Open wave');
+    expect(agenda).toContain('Scheduled track');
+    expect(agenda).toContain('Open track');
   });
 
   it('shows the empty state only when both sources are empty', () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} areas={[area()]} nowMs={NOW} />);
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByText('Nothing scheduled.')).toBeTruthy();
   });
 
-  it('counts a wave once when both sources carry it', () => {
-    // The day cell shows how many waves a day holds, so double-counting is the
-    // failure this locks: one wave present in both sources must read as 1.
-    const shared = wave({ id: 'w1' });
-    const events: ScheduledEvent[] = [{ wave: shared, date: new Date(NOW), hour: 9 }];
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[shared]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
+  it('counts a track once when both sources carry it', () => {
+    // The day cell shows how many tracks a day holds, so double-counting is the
+    // failure this locks: one track present in both sources must read as 1.
+    const shared = track({ id: 'w1' });
+    const events: ScheduledEvent[] = [{ track: shared, date: new Date(NOW), hour: 9 }];
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[shared]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
     // Both the drawn glyph and the accessible name say one, not two.
-    const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 wave' });
+    const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 track' });
     expect(today.querySelector('[data-nc-day-count]')?.textContent).toBe('1');
   });
 });
@@ -85,11 +85,11 @@ describe('INV-A11Y-061 navigation shape', () => {
    * so anything this file could render is a stand-in defined at the top of this
    * file. A test that builds a button and then asserts a button is proof of
    * nothing. The row's own shape is locked against the real component in
-   * `features/wave/row/public.test.tsx`.
+   * `features/track/row/public.test.tsx`.
    */
   it('emits no native link anywhere on the surface', () => {
     const { container } = render(
-      <TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW} />,
+      <TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />,
     );
     expect(container.querySelectorAll('a').length).toBe(0);
   });
@@ -111,8 +111,8 @@ const EMPTY_COPY = 'Nothing written today yet.';
 describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () => {
   it('renders the empty state for a report nobody has written', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
@@ -125,8 +125,8 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 
   it('renders the document once the server says the report has content', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByText("the day's report")).toBeTruthy();
@@ -135,7 +135,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 
   it('treats a 404 as the empty state rather than an error', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={null} launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
@@ -146,7 +146,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     // flashing the second one while the first is true is how a page teaches
     // people to distrust it.
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
@@ -162,12 +162,12 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
      * inside the empty-state paragraph" (that paragraph is a `<p>` with one
      * text node, so querying it for a button is null whatever production does)
      * and not as a label regex either — "Generate", "Run" or a Chinese label
-     * would walk straight past one. The workspace is seeded with no waves so
+     * would walk straight past one. The workspace is seeded with no tracks so
      * the column holds only the document region and the terminal placeholder,
      * neither of which has a control today.
      */
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
     const empty = screen.getByText(EMPTY_COPY);
@@ -184,7 +184,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state', () => {
   it('shows the failure and suppresses the empty state', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={undefined}
       launchpadDocument={DOCUMENT}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
@@ -197,8 +197,8 @@ describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state'
 describe('#1253 D7 the status bar comes before the document', () => {
   it('puts the waiting rows above the document in the main column', () => {
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
     const main = within(container).getByText('Waiting on you');
@@ -212,17 +212,17 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
    * D7 puts the status bar above the document *because* its height does not
    * depend on the workspace, and that is the whole justification for the
    * order. `waiting` has no natural bound, so without a cap the justification
-   * is false — a review found it false at 100 blocked waves, with the report
+   * is false — a review found it false at 100 blocked tracks, with the report
    * pushed off the first screen.
    */
-  const manyWaiting = Array.from({ length: 100 }, (_, index) => wave({
+  const manyWaiting = Array.from({ length: 100 }, (_, index) => track({
     id: `blocked-${index}`, title: `Blocked ${index}`, lifecycle: 'blocked',
   }));
 
   it('caps the waiting rows so the document cannot be pushed down', () => {
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={manyWaiting} areas={[area()]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      renderTrackRow={renderTrackRow} tracks={manyWaiting} areas={[area()]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
     const waitingLabel = within(container).getByText('Waiting on you');
@@ -234,13 +234,13 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
     expect(screen.getByRole('banner').textContent).toContain('100waiting');
   });
 
-  it('keeps every waiting wave reachable behind the control', async () => {
+  it('keeps every waiting track reachable behind the control', async () => {
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={manyWaiting} areas={[area()]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      renderTrackRow={renderTrackRow} tracks={manyWaiting} areas={[area()]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
-    /* Scoped to the status bar, because a waiting wave whose lifespan overlaps
+    /* Scoped to the status bar, because a waiting track whose lifespan overlaps
        the selected day also shows on the calendar agenda — so an unscoped
        `queryByText` would be answered by the panel and prove nothing about the
        cap. RUNNING and RECENT both exclude anything already counted as
@@ -257,8 +257,8 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
 
   it('draws no control when the waiting list already fits', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={manyWaiting.slice(0, 5)} areas={[area()]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      renderTrackRow={renderTrackRow} tracks={manyWaiting.slice(0, 5)} areas={[area()]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.queryByRole('button', { name: /more waiting/ })).toBeNull();
@@ -268,15 +268,15 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
 describe('#1253 the first-run page still owns a document', () => {
   /*
    * `areas` is the USER-visible list: #175 filters the system area out of
-   * `GET /api/areas`, and the launchpad wave lives in the system area. So
-   * "no waves and no areas" is a perfectly ordinary state for a workspace
+   * `GET /api/areas`, and the launchpad track lives in the system area. So
+   * "no tracks and no areas" is a perfectly ordinary state for a workspace
    * whose only content is the day's report — and the early return for it used
    * to drop the document and the resolve failure alike.
    */
   it('renders the report on a workspace with no user areas', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[]} areas={[]} nowMs={NOW}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByText('Nothing here yet.')).toBeTruthy();
@@ -285,7 +285,7 @@ describe('#1253 the first-run page still owns a document', () => {
 
   it('surfaces a failed resolve on a workspace with no user areas', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[]} areas={[]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
     />);
     expect(screen.getByRole('alert').textContent).toContain('boom');
@@ -296,7 +296,7 @@ describe('#1253 D5 the document’s trigger', () => {
   const WRITE = 'Write today’s progress';
   const REWRITE = 'Rewrite today’s progress';
   const props = {
-    renderWaveRow, waves: [wave()], areas: [area()], nowMs: NOW,
+    renderTrackRow, tracks: [track()], areas: [area()], nowMs: NOW,
     launchpadDocument: <p>the day&apos;s report</p>,
   } as const;
 
@@ -309,7 +309,7 @@ describe('#1253 D5 the document’s trigger', () => {
    * endpoint lives in `app/router`.
    */
   it('renders nothing when no trigger was supplied', () => {
-    render(<TodayPage {...props} launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }} />);
+    render(<TodayPage {...props} launchpad={{ track_id: 'lp', report_has_noninitial_content: false }} />);
     expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
     expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
   });
@@ -327,7 +327,7 @@ describe('#1253 D5 the document’s trigger', () => {
     const pressed: string[] = [];
     const { rerender } = render(<TodayPage
       {...props}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       onWriteSummary={() => pressed.push('empty')}
     />);
     await userEvent.click(screen.getByRole('button', { name: WRITE }));
@@ -335,7 +335,7 @@ describe('#1253 D5 the document’s trigger', () => {
 
     rerender(<TodayPage
       {...props}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       onWriteSummary={() => pressed.push('rerun')}
     />);
     await userEvent.click(screen.getByRole('button', { name: REWRITE }));
@@ -349,7 +349,7 @@ describe('#1253 D5 the document’s trigger', () => {
     const pressed: string[] = [];
     render(<TodayPage
       {...props}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       onWriteSummary={() => pressed.push('again')}
       summaryPending
     />);
@@ -364,7 +364,7 @@ describe('#1253 D5 the document’s trigger', () => {
   it('shows the trigger’s answer without replacing the report', () => {
     render(<TodayPage
       {...props}
-      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       onWriteSummary={() => undefined}
       summaryNotice={<span>Nothing has happened in this workspace today yet.</span>}
     />);

@@ -14,10 +14,10 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 afterEach(cleanup);
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-it('requires the shared confirmation before deleting a Today panel wave', async () => {
+it('requires the shared confirmation before deleting a Today panel track', async () => {
   const requests: ApiRequest[] = [];
   let deleted = false;
-  const wave = {
+  const track = {
     id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: Date.now() - 1000, updated_at: Date.now(),
   };
@@ -26,7 +26,7 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: deleted ? [] : [wave] });
+    if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: deleted ? [] : [track] });
     if (request.method === 'DELETE') deleted = true;
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
   } };
@@ -39,9 +39,9 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
 
   await screen.findByRole('complementary');
   await userEvent.click(await within(screen.getByRole('complementary')).findByRole('button', { name: 'Delete Risky' }));
-  expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Delete this track?' })).toBeTruthy();
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete Risky' })).toBeNull());
   expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
@@ -49,14 +49,14 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
 
 it('requires the shared confirmation before deleting from the AreaRoute panel', async () => {
   const requests: ApiRequest[] = [];
-  const wave = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  const track = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
+    if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -68,7 +68,7 @@ it('requires the shared confirmation before deleting from the AreaRoute panel', 
   /*
    * Scoped to the panel, like the Today case above, because the *page* holds two
    * buttons by this name: the AreaRoute panel's row and the sidebar's listing of
-   * the same wave. An unscoped `findByRole` resolves on the first poll at which
+   * the same track. An unscoped `findByRole` resolves on the first poll at which
    * exactly one exists and throws once both do, so what it was really asserting
    * was that the two subtrees settle in different frames — measured on
    * `origin/main` with a 200ms wait after the first match: two matches. Any
@@ -78,32 +78,32 @@ it('requires the shared confirmation before deleting from the AreaRoute panel', 
   const panel = await screen.findByRole('complementary');
   await userEvent.click(await within(panel).findByRole('button', { name: 'Delete Risky' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
 });
 
 it('does not navigate on a delete success that arrives after cancellation', async () => {
   let resolveDelete!: (response: ApiTransportResponse) => void;
-  const wave = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  const track = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     if (request.method === 'DELETE') return new Promise((resolve) => { resolveDelete = resolve; });
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
-    if (request.path === '/api/waves/w1') return Promise.resolve({ status: 200, statusText: 'OK', body: { wave, cards: [], overlays: [] } });
+    if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
+    if (request.path === '/api/tracks/w1') return Promise.resolve({ status: 200, statusText: 'OK', body: { track, cards: [], overlays: [] } });
     if (request.path === '/api/settings') return Promise.resolve({ status: 200, statusText: 'OK', body: {} });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/wave/w1'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await screen.findByRole('button', { name: 'Delete wave Risky' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Delete track Risky' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   await userEvent.click(screen.getByRole('button', { name: 'Account menu for You' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
@@ -118,7 +118,7 @@ it('does not navigate on an area delete success that arrives after cancellation'
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+    if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -137,18 +137,18 @@ it('does not navigate on an area delete success that arrives after cancellation'
   expect(router.state.location.pathname).toBe('/area/c1');
 });
 
-it('round-trips an encoded wave id through useGo, TanStack history, and useRouteParam', async () => {
+it('round-trips an encoded track id through useGo, TanStack history, and useRouteParam', async () => {
   const requests: ApiRequest[] = [];
-  const waveId = 'a/b %';
-  const wave = { id: waveId, area_id: 'c1', title: 'Encoded wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  const trackId = 'a/b %';
+  const track = { id: trackId, area_id: 'c1', title: 'Encoded track', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
-    if (request.path.includes('/api/waves/')) return Promise.resolve({ status: 200, statusText: 'OK', body: { wave, cards: [], overlays: [] } });
+    if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
+    if (request.path.includes('/api/tracks/')) return Promise.resolve({ status: 200, statusText: 'OK', body: { track, cards: [], overlays: [] } });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -158,11 +158,11 @@ it('round-trips an encoded wave id through useGo, TanStack history, and useRoute
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   const rail = await screen.findByRole('navigation', { name: 'Workspace' });
-  await userEvent.click(await within(rail).findByText('Encoded wave'));
+  await userEvent.click(await within(rail).findByText('Encoded track'));
   // TanStack normalises %20 back to a space in memory history while retaining
   // the escapes that delimit the segment; useRouteParam still restores all of it.
-  expect(router.state.location.pathname).toBe('/wave/a%2Fb %25');
-  expect(within(rail).getByRole('button', { name: /Wave Encoded wave/ }).getAttribute('aria-current')).toBe('page');
-  await screen.findByRole('button', { name: 'Rename wave' });
+  expect(router.state.location.pathname).toBe('/track/a%2Fb %25');
+  expect(within(rail).getByRole('button', { name: /Track Encoded track/ }).getAttribute('aria-current')).toBe('page');
+  await screen.findByRole('button', { name: 'Rename track' });
   expect(requests.some((request) => request.path.includes('a%2Fb%20%25'))).toBe(true);
 });

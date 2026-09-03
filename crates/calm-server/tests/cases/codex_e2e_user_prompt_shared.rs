@@ -11,7 +11,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -58,8 +58,8 @@ async fn user_prompt_card_first_turn_true_binary() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "e2e-user-prompt".into(),
@@ -100,7 +100,7 @@ async fn user_prompt_card_first_turn_true_binary() {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -118,7 +118,7 @@ async fn user_prompt_card_first_turn_true_binary() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/waves/{}/codex-cards", wave.id))
+                .uri(format!("/api/tracks/{}/codex-cards", track.id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({

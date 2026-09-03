@@ -32,7 +32,7 @@ use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
 /// Build an `EventScope` for an overlay write keyed by `(entity_kind, entity_id)`.
-/// Missing card / wave rows surface as `EventScope::System` rather than
+/// Missing card / track rows surface as `EventScope::System` rather than
 /// `NotFound` — overlay writes against a deleted entity are legal (the row
 /// just becomes a tombstone).
 pub(crate) async fn overlay_scope(
@@ -52,11 +52,11 @@ pub(crate) async fn overlay_scope(
 ///
 ///   * **`entity_kind`** — `view` and `system` hold kernel projections that
 ///     the kernel reads back as fact. A `kernel/view/template` row decides
-///     whether the scheduler dispatches a wave's tasks at all
+///     whether the scheduler dispatches a track's tasks at all
 ///     (`scheduler::…` admission and its in-claim backstop), whether a spec
-///     harness may start, and whether the wave appears in `GET /api/waves`.
+///     harness may start, and whether the track appears in `GET /api/tracks`.
 ///     Before this gate, any client with a session could POST that row onto
-///     a *running* wave and silently strand it — dispatch stops and the wave
+///     a *running* track and silently strand it — dispatch stops and the track
 ///     vanishes from the list, with nothing in the UI to say why.
 ///   * **`plugin_id`** — `"kernel"` is the namespace `card_fsm` stamps on
 ///     its own rows precisely so they are "unambiguously kernel-owned". A
@@ -72,7 +72,7 @@ pub(crate) async fn overlay_scope(
 /// never reveals whether its payload would have parsed.
 ///
 /// Kernel-internal writers are unaffected: they call `overlay_upsert_tx`
-/// directly (wave structure creation, `card_fsm`, `child_wave_adapter`) and
+/// directly (track structure creation, `card_fsm`, `child_track_adapter`) and
 /// never traverse this router.
 fn ensure_overlay_write_allowed(plugin_id: &str, entity_kind: &str) -> Result<()> {
     if plugin_id == KERNEL_OVERLAY_PLUGIN_ID {
@@ -102,7 +102,7 @@ pub struct OverlayQuery {
     pub entity_kind: String,
     /// Optional. When omitted, returns every overlay of `entity_kind`
     /// across the workspace — the sidebar uses this form to render
-    /// accurate per-wave status without fetching each wave's detail.
+    /// accurate per-track status without fetching each track's detail.
     pub entity_id: Option<String>,
 }
 
@@ -143,11 +143,11 @@ pub(crate) async fn list_overlays(
 /// returns `None`) are passed through untouched: the kernel has no schema
 /// for them and explicitly opts out of any version policy on their payloads.
 ///
-/// Visibility note: `pub(super)` so `routes::waves::get_wave_detail` can apply
-/// the same guard to overlays returned alongside the wave row. The reviewer of
-/// PR #214 (issue #198 concern 4 follow-up) flagged that `GET /api/waves/{id}`
+/// Visibility note: `pub(super)` so `routes::tracks::get_track_detail` can apply
+/// the same guard to overlays returned alongside the track row. The reviewer of
+/// PR #214 (issue #198 concern 4 follow-up) flagged that `GET /api/tracks/{id}`
 /// is the primary read path the frontend uses to render status/progress/eta/
-/// now overlays on a wave's detail view, and a future-`schemaVersion` row
+/// now overlays on a track's detail view, and a future-`schemaVersion` row
 /// would sail through that route while being correctly filtered out of
 /// `GET /api/overlays`. We keep the route-level filter co-located here so
 /// both HTTP call-sites share one implementation without expanding the
@@ -227,7 +227,7 @@ pub(crate) async fn delete_overlay(
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
     // #1297: deleting a kernel-authored row is the second half of the forge
-    // — mark a wave as a template, act, then remove the evidence.
+    // — mark a track as a template, act, then remove the evidence.
     ensure_overlay_write_allowed(&b.plugin_id, &b.entity_kind)?;
     let scope = overlay_scope(s.repo.as_ref(), &b.entity_kind, &b.entity_id).await?;
     let (_unit, _id) = write_with_event_typed(

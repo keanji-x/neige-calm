@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ReportBlock } from '../cards/builtins/wave-report';
+import type { ReportBlock } from '../cards/builtins/track-report';
 import { deriveOutline } from './report-outline';
 
 function prose(id: string, markdown: string): ReportBlock {

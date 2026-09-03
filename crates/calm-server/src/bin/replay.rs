@@ -16,7 +16,7 @@
 //! The boot + seed pipeline is shared with `tests/replay_fixtures.rs`
 //! via `calm_server::replay`. The binary mounts the full app router
 //! (REST + WS) on top of the seeded repo so `curl /api/areas`, `curl
-//! /api/waves`, etc. all work against the playback state.
+//! /api/tracks`, etc. all work against the playback state.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,13 +25,13 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use calm_server::auth::{AuthConfig, AuthState, DEFAULT_DISPLAY_NAME};
-use calm_server::db::sqlite::{SqlxRepo, wave_update_tx};
+use calm_server::db::sqlite::{SqlxRepo, track_update_tx};
 use calm_server::db::write_with_events_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{WaveLifecycle, WavePatch};
+use calm_server::model::{TrackLifecycle, TrackPatch};
 use calm_server::replay;
-use calm_server::wave_lifecycle::validate_transition;
+use calm_server::track_lifecycle::validate_transition;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -240,7 +240,10 @@ async fn run_serve(
     };
     let dev_routes = axum::Router::new()
         .route("/dev/reset", post(dev_reset))
-        .route("/dev/force-wave-lifecycle", post(dev_force_wave_lifecycle))
+        .route(
+            "/dev/force-track-lifecycle",
+            post(dev_force_track_lifecycle),
+        )
         .route("/dev/force-spec-phase", post(dev_force_spec_phase))
         .with_state(dev_state);
     // Issue #189 — the production `main.rs` mounts an auth router
@@ -320,7 +323,7 @@ async fn run_serve(
 //
 // Why this exists: the Playwright `a11y` project spawns one replay
 // binary that serves every test in the suite. Without a reset hook,
-// per-test mutations (new waves, new cards, rename edits, view-mode
+// per-test mutations (new tracks, new cards, rename edits, view-mode
 // toggles, …) accumulate across tests in the same run, which makes
 // previously-green specs flake when their predicates collide with
 // state seeded by an earlier spec. The endpoint reseeds the in-memory
@@ -342,9 +345,9 @@ struct DevResetState {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     fixture: Arc<replay::Fixture>,
-    /// Shared app state used by `/dev/force-wave-lifecycle` so the
+    /// Shared app state used by `/dev/force-track-lifecycle` so the
     /// forced transition writes through the same `write_with_events_typed`
-    /// path as `routes::waves::update_wave` — same caches, same event bus,
+    /// path as `routes::tracks::update_track` — same caches, same event bus,
     /// same role-gate enforcement.
     app: calm_server::state::AppState,
 }
@@ -387,22 +390,22 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
 }
 
 // ---------------------------------------------------------------------------
-// `POST /dev/force-wave-lifecycle` — dev-only, `--serve` mode only.
+// `POST /dev/force-track-lifecycle` — dev-only, `--serve` mode only.
 //
 // Issue #269 P1 — the spec daemon does NOT run in the replay binary
 // (`DaemonClient::new_stub()` + `CodexClient::new_stub()`), so the spec-
 // only lifecycle progressions (`planning → dispatching → working →
 // reviewing → done`) can never happen organically in an a11y / replay
-// run. The Playwright wave-lifecycle suite needs to drive those edges
-// to assert the kernel's terminal_at stamp + WaveLifecycleChanged
+// run. The Playwright track-lifecycle suite needs to drive those edges
+// to assert the kernel's terminal_at stamp + TrackLifecycleChanged
 // event behavior end-to-end.
 //
 // This handler stamps the transition as `ActorId::Kernel`, which
-// `wave_lifecycle::actor_kind` classifies as `SpecAgent`. The same
+// `track_lifecycle::actor_kind` classifies as `SpecAgent`. The same
 // `validate_transition` + `write_with_events_typed` pipeline as
-// `routes::waves::update_wave` runs — illegal edges (e.g. draft →
+// `routes::tracks::update_track` runs — illegal edges (e.g. draft →
 // done) still reject with 403, and a successful transition emits the
-// same paired `WaveLifecycleChanged` + `WaveUpdated` events on the bus
+// same paired `TrackLifecycleChanged` + `TrackUpdated` events on the bus
 // that the production path emits. The only thing this endpoint changes
 // is **who** drives the edge, not whether the edge is legal.
 //
@@ -416,20 +419,20 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
 
 #[derive(Debug, Deserialize)]
 struct ForceLifecycleBody {
-    wave_id: String,
-    to: WaveLifecycle,
+    track_id: String,
+    to: TrackLifecycle,
 }
 
-async fn dev_force_wave_lifecycle(
+async fn dev_force_track_lifecycle(
     State(s): State<DevResetState>,
     axum::Json(body): axum::Json<ForceLifecycleBody>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
-    // Read the existing row outside the tx — `update_wave` does the same
+    // Read the existing row outside the tx — `update_track` does the same
     // (area_id is immutable so a cross-tx read is safe).
     let existing = s
         .app
         .repo
-        .wave_get(&body.wave_id)
+        .track_get(&body.track_id)
         .await
         .map_err(|e| internal_err(e.into()))?
         .ok_or_else(|| {
@@ -437,7 +440,7 @@ async fn dev_force_wave_lifecycle(
                 StatusCode::NOT_FOUND,
                 axum::Json(serde_json::json!({
                     "ok": false,
-                    "error": format!("wave {} not found", body.wave_id),
+                    "error": format!("track {} not found", body.track_id),
                 })),
             )
         })?;
@@ -448,7 +451,7 @@ async fn dev_force_wave_lifecycle(
 
     // Run the same validator as the production route — illegal kernel
     // transitions (e.g. `draft → done`) still reject so this endpoint
-    // can't be used to put the wave into an impossible state.
+    // can't be used to put the track into an impossible state.
     if let Err(e) = validate_transition(from, to, &actor) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -462,27 +465,27 @@ async fn dev_force_wave_lifecycle(
     }
 
     // Idempotent same-state: short-circuit without emitting any events
-    // (mirrors `update_wave`'s same-state shortcut). Return the existing
+    // (mirrors `update_track`'s same-state shortcut). Return the existing
     // row so the test can still inspect `terminal_at` etc.
     if from == to {
         return Ok(axum::Json(serde_json::json!({
             "ok": true,
-            "wave": existing,
+            "track": existing,
             "emitted_events": 0i32,
         })));
     }
 
-    let scope = EventScope::Wave {
-        wave: existing.id.clone(),
+    let scope = EventScope::Track {
+        track: existing.id.clone(),
         area: existing.area_id.clone(),
     };
     let area_id_for_event = existing.area_id.clone();
-    let wave_id_for_event = existing.id.clone();
-    let wave_id_for_tx = body.wave_id.clone();
+    let track_id_for_event = existing.id.clone();
+    let track_id_for_tx = body.track_id.clone();
 
-    let patch = WavePatch {
+    let patch = TrackPatch {
         lifecycle: Some(to),
-        ..WavePatch::default()
+        ..TrackPatch::default()
     };
 
     let result = write_with_events_typed(
@@ -495,12 +498,12 @@ async fn dev_force_wave_lifecycle(
             let scope = scope.clone();
             let patch = patch.clone();
             Box::pin(async move {
-                let wave = wave_update_tx(tx, &wave_id_for_tx, patch).await?;
+                let track = track_update_tx(tx, &track_id_for_tx, patch).await?;
                 let events: Vec<(EventScope, Event)> = vec![
                     (
                         scope.clone(),
-                        Event::WaveLifecycleChanged {
-                            id: wave_id_for_event.clone(),
+                        Event::TrackLifecycleChanged {
+                            id: track_id_for_event.clone(),
                             area_id: area_id_for_event.clone(),
                             from,
                             to,
@@ -509,22 +512,22 @@ async fn dev_force_wave_lifecycle(
                     ),
                     (
                         scope,
-                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
-                            wave.clone(),
+                        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+                            track.clone(),
                             None,
                         )),
                     ),
                 ];
-                Ok((wave, events))
+                Ok((track, events))
             })
         },
     )
     .await;
 
     match result {
-        Ok((wave, ids)) => Ok(axum::Json(serde_json::json!({
+        Ok((track, ids)) => Ok(axum::Json(serde_json::json!({
             "ok": true,
-            "wave": wave,
+            "track": track,
             "emitted_events": ids.len(),
         }))),
         Err(e) => Err((
@@ -543,7 +546,7 @@ async fn dev_force_wave_lifecycle(
 // Issue #682 PR-1 — the spec harness FSM can never progress organically in
 // a replay run: the shared codex app-server is a stub (`is_running()` ==
 // false), so the `spec-harness-start` operation submitted by `POST
-// /api/waves` fails at validate and the spec card sits with no runtime row
+// /api/tracks` fails at validate and the spec card sits with no runtime row
 // and no registered harness (Step-0 probe, pinned by
 // `tests/replay_force_spec_phase.rs`). Playwright e2e for SpecCurrentRun
 // (#676 Stop-chip seed path, #657 typing indicator) needs to drive

@@ -6,7 +6,7 @@ use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessSnapshot, HookKind, Observation, SpecHarness, SpecHarnessParams,
 };
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{CardId, TrackId};
 use calm_server::model::new_id;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 
@@ -17,13 +17,13 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> SpecHarness {
     let (harness, _rx) = SpecHarness::run_unstarted_for_test(
         SpecHarnessParams {
             runtime_id: new_id(),
-            wave_id: WaveId::from("wave-backpressure"),
+            track_id: TrackId::from("track-backpressure"),
             card_id: CardId::from("card-backpressure"),
             thread_id: Some("thread-backpressure".into()),
             repo: repo_dyn,
             events: EventBus::new(),
             card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-            wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+            track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
             daemon,
             config: HarnessConfig::default(),
             snapshot,
@@ -36,7 +36,7 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> SpecHarness {
 fn worker_hook_stop(idempotency_key: impl Into<String>) -> Observation {
     let idempotency_key = idempotency_key.into();
     Observation::WorkerHookStop {
-        wave_id: WaveId::from("wave-backpressure"),
+        track_id: TrackId::from("track-backpressure"),
         card_id: CardId::from(format!("worker-{idempotency_key}")),
         kind: HookKind::CodexStop,
         idempotency_key,
@@ -44,12 +44,12 @@ fn worker_hook_stop(idempotency_key: impl Into<String>) -> Observation {
 }
 
 #[tokio::test]
-async fn wave_goal_backpressure_keeps_queue_bounded_and_last_text() {
+async fn track_goal_backpressure_keeps_queue_bounded_and_last_text() {
     let harness = harness_from_snapshot(HarnessSnapshot::initial(0, vec![])).await;
     for i in 0..1000 {
         harness
             .observe_for_test(
-                Observation::WaveGoal {
+                Observation::TrackGoal {
                     text: format!("g{i}"),
                 },
                 None,
@@ -61,7 +61,7 @@ async fn wave_goal_backpressure_keeps_queue_bounded_and_last_text() {
     assert!(pending.len() <= 256, "pending len = {}", pending.len());
     assert!(matches!(
         pending.last(),
-        Some(Observation::WaveGoal { text }) if text == "g999"
+        Some(Observation::TrackGoal { text }) if text == "g999"
     ));
 }
 
@@ -76,7 +76,7 @@ async fn full_hard_queue_drops_new_soft_observations() {
     for i in 0..300 {
         harness
             .observe_for_test(
-                Observation::WaveGoal {
+                Observation::TrackGoal {
                     text: format!("soft-{i}"),
                 },
                 None,
@@ -128,7 +128,7 @@ async fn full_hard_queue_then_incoming_hard_drops_new() {
 #[tokio::test]
 async fn full_soft_queue_incoming_hard_preserves_hard_and_evicts_oldest_soft() {
     let observations = (0..256)
-        .map(|i| Observation::WaveGoal {
+        .map(|i| Observation::TrackGoal {
             text: format!("soft-{i}"),
         })
         .collect();
@@ -153,13 +153,13 @@ async fn full_soft_queue_incoming_hard_preserves_hard_and_evicts_oldest_soft() {
     assert!(
         !pending
             .iter()
-            .any(|obs| matches!(obs, Observation::WaveGoal { text } if text == "soft-0")),
+            .any(|obs| matches!(obs, Observation::TrackGoal { text } if text == "soft-0")),
         "oldest soft must be evicted: {pending:?}"
     );
     assert!(
         pending
             .iter()
-            .any(|obs| matches!(obs, Observation::WaveGoal { text } if text == "soft-1")),
+            .any(|obs| matches!(obs, Observation::TrackGoal { text } if text == "soft-1")),
         "newer soft observations should be retained: {pending:?}"
     );
 }
@@ -207,7 +207,7 @@ async fn restored_worker_hook_stops_seed_recent_hook_dedupe_cache() {
 #[tokio::test]
 async fn oversized_snapshot_keeps_newest_pending_queue_tail() {
     let observations = (0..300)
-        .map(|i| Observation::WaveGoal {
+        .map(|i| Observation::TrackGoal {
             text: format!("g{i}"),
         })
         .collect::<Vec<_>>();
@@ -221,11 +221,11 @@ async fn oversized_snapshot_keeps_newest_pending_queue_tail() {
     assert_eq!(restored.pending_envelope_ids.len(), 256);
     assert!(matches!(
         restored.pending_queue.first(),
-        Some(Observation::WaveGoal { text }) if text == "g44"
+        Some(Observation::TrackGoal { text }) if text == "g44"
     ));
     assert!(matches!(
         restored.pending_queue.last(),
-        Some(Observation::WaveGoal { text }) if text == "g299"
+        Some(Observation::TrackGoal { text }) if text == "g299"
     ));
     assert_eq!(restored.pending_envelope_ids.first(), Some(&Some(44)));
     assert_eq!(restored.pending_envelope_ids.last(), Some(&Some(299)));

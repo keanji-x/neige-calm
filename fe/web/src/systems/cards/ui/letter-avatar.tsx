@@ -1,5 +1,5 @@
 // Copied from web/src/cards/LetterAvatar.tsx. Class names are load-bearing
-// for the calm.css rules ported into styles/wave-grid.css.
+// for the calm.css rules ported into styles/track-grid.css.
 
 const ICON_PALETTE_SIZE = 8;
 

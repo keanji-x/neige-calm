@@ -47,7 +47,7 @@ Gate result 同样是独立类别：它推进 `verifying`，但不借用 worker 
 - CAS task 状态；
 - 必要的 worker session/runtime 投影；
 - task event；
-- wave lifecycle 推进或阻断原因。
+- track lifecycle 推进或阻断原因。
 
 事务提交后才 broadcast。任何 best-effort liveness stamp 都不能成为终结正确性的前置条件。
 
@@ -79,7 +79,7 @@ Reaper 处理“worker 已经死了，无法自己报告”的情况。它可以
 
 需要 gate 的任务，worker 成功只推进到 `verifying`。只有 gate outcome 可以从 `verifying` 进入 `done | failed`。
 
-Spec verdict 不能跳过 gate；迟到 worker success 也不能把 gate failure 改回 done。Wave lifecycle 的完成推进发生在最终 gate 事务，而不是 worker 自报事务。
+Spec verdict 不能跳过 gate；迟到 worker success 也不能把 gate failure 改回 done。Track lifecycle 的完成推进发生在最终 gate 事务，而不是 worker 自报事务。
 
 ## 不变量
 

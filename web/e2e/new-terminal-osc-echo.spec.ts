@@ -65,7 +65,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 /** Read and concatenate the rendered buffer text of EVERY xterm-backed
  *  card on the page via the test-only `__xtermDumps__` registry (keyed
- *  by terminalId). A wave auto-mints a codex spec card alongside the
+ *  by terminalId). A track auto-mints a codex spec card alongside the
  *  AddPanel New-terminal card; reading all buffers means the assertion
  *  catches an echo in any of them. The codex card enables DECSET 1004
  *  and consumes the OSC reply silently, so only the shell terminal (ZLE
@@ -110,7 +110,7 @@ function assertNoOscEcho(dump: string, when: string): void {
   }
 }
 
-// Multi-step real-server flow (area → wave → New terminal → daemon
+// Multi-step real-server flow (area → track → New terminal → daemon
 // spawn → theme toggles). The default 30s budget is tight once the
 // `make dev` Vite server is compiling lazy chunks on a cold cache; 60s
 // gives the first run room.
@@ -142,38 +142,38 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
   await areaBtn.click();
   await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
-  // Step 2 — create a wave in this area via the kernel REST API (same
+  // Step 2 — create a track in this area via the kernel REST API (same
   // shortcut as new-terminal-card.spec.ts). `theme` is a required
-  // NewWave field (#177); dark sentinel mirrors DARK_THEME_RGB.
+  // NewTrack field (#177); dark sentinel mirrors DARK_THEME_RGB.
   const areaId = new URL(page.url()).pathname.split('/').pop()!;
-  const waveTitle = `E2E osc-echo ${Date.now()}`;
-  const waveRes = await page.request.post('/api/waves', {
+  const trackTitle = `E2E osc-echo ${Date.now()}`;
+  const trackRes = await page.request.post('/api/tracks', {
     data: {
       area_id: areaId,
-      title: waveTitle,
+      title: trackTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about OSC echo through the terminal card, not
-      // working directories. See `helpers/reset.ts::createWaveInArea`
+      // working directories. See `helpers/reset.ts::createTrackInArea`
       // for why the invented `/tmp/playwright-area-<id>` attached path
       // was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
   });
-  if (!waveRes.ok()) {
-    const body = await waveRes.text().catch(() => '<unreadable>');
+  if (!trackRes.ok()) {
+    const body = await trackRes.text().catch(() => '<unreadable>');
     throw new Error(
-      `POST /api/waves → ${waveRes.status()} ${waveRes.statusText()}: ${body}`,
+      `POST /api/tracks → ${trackRes.status()} ${trackRes.statusText()}: ${body}`,
     );
   }
-  const wave = (await waveRes.json()) as { id: string };
-  await page.goto(`/calm/wave/${wave.id}?testMounts=1`);
-  await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
+  const track = (await trackRes.json()) as { id: string };
+  await page.goto(`/calm/track/${track.id}?testMounts=1`);
+  await expect(page).toHaveURL(/\/calm\/track\/[^/]+\?testMounts=1$/);
   await expect(
-    page.getByText(waveTitle, { exact: false }).first(),
+    page.getByText(trackTitle, { exact: false }).first(),
   ).toBeVisible();
 
-  // Step 3 — wave-create auto-mints a spec card. Post-#510 PR-del the
+  // Step 3 — track-create auto-mints a spec card. Post-#510 PR-del the
   // spec card is a chat panel (no XtermView), so we just record how many
   // xterm dump hooks exist now (likely 0) and Step 4's terminal card add
   // will be the "+1" we look for.

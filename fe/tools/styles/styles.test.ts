@@ -352,17 +352,17 @@ describe('P8b2 forward style gates', () => {
   });
 
   it('requires every CSS Module to declare its owning layer', () => {
-    expect(auditModuleLayer(read('module-layer/negative.module.css'), 'web/src/features/wave/bad.module.css'))
-      .toEqual(['web/src/features/wave/bad.module.css: unlayered selector: .unlayered']);
-    expect(auditModuleLayer('@layer features { .local {} }', 'web/src/features/wave/good.module.css')).toEqual([]);
+    expect(auditModuleLayer(read('module-layer/negative.module.css'), 'web/src/features/track/bad.module.css'))
+      .toEqual(['web/src/features/track/bad.module.css: unlayered selector: .unlayered']);
+    expect(auditModuleLayer('@layer features { .local {} }', 'web/src/features/track/good.module.css')).toEqual([]);
     expect(auditModuleLayer('@layer ui { .local {} }', 'web/src/ui/dialog/good.module.css')).toEqual([]);
-    const nestedUi = 'web/src/features/wave/ui/toolbar.module.css';
+    const nestedUi = 'web/src/features/track/ui/toolbar.module.css';
     expect(auditModuleLayer(read('module-layer/nested-ui-negative.module.css'), nestedUi))
       .toContain(`${nestedUi}: unknown layer ui`);
     expect(auditModuleLayer(read('module-layer/nested-ui-positive.module.css'), nestedUi)).toEqual([]);
     for (const layer of ['systems', 'core']) {
-      const nestedOwner = layer === 'core' ? 'core/wave/ui/toolbar.module.css'
-        : `web/src/${layer}/wave/ui/toolbar.module.css`;
+      const nestedOwner = layer === 'core' ? 'core/track/ui/toolbar.module.css'
+        : `web/src/${layer}/track/ui/toolbar.module.css`;
       expect(auditModuleLayer('@layer ui { .local {} }', nestedOwner), layer)
         .toEqual([`${nestedOwner}: CSS Module must live below ui/, features/, or app/`]);
     }
@@ -404,7 +404,7 @@ describe('P8b2 forward style gates', () => {
   it('rejects an unlayered rule in an ordinary non-module stylesheet', () => {
     const fixtureRoot = resolve(fixtures, 'repository/non-module-negative');
     expect(auditStyleRepository(fixtureRoot)).toContain(
-      'web/src/features/wave/legacy.css: unlayered selector: button',
+      'web/src/features/track/legacy.css: unlayered selector: button',
     );
   });
 

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
 use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
-use calm_types::wave_report::ReportBlock;
+use calm_types::track_report::ReportBlock;
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
@@ -17,7 +17,7 @@ use crate::db::sqlite::mark_context_material_tx;
 use crate::db::{Repo, write_in_tx_typed, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::EventBus;
-use crate::ids::{ActorId, WaveId};
+use crate::ids::{ActorId, TrackId};
 use crate::model::now_ms;
 use crate::state::WriteContext;
 
@@ -76,7 +76,7 @@ pub enum ResolveError {
     RootAbsent,
     RootTombstoned,
     DuplicateLiveKey,
-    ReferencedWaveAbsent(String),
+    ReferencedTrackAbsent(String),
     ReferencedBlockAbsent(String),
     ReportAbsent(String),
     CrossArea(String),
@@ -91,7 +91,7 @@ impl ResolveError {
             Self::RootAbsent => "root_absent",
             Self::RootTombstoned => "root_tombstoned",
             Self::DuplicateLiveKey => "duplicate_live_key",
-            Self::ReferencedWaveAbsent(_) => "referenced_wave_absent",
+            Self::ReferencedTrackAbsent(_) => "referenced_track_absent",
             Self::ReferencedBlockAbsent(_) => "referenced_block_absent",
             Self::ReportAbsent(_) => "report_absent",
             Self::CrossArea(_) => "cross_area",
@@ -293,19 +293,19 @@ impl TaskContextMonitor {
 
     pub async fn resolve_closure(
         &self,
-        task_wave_id: &str,
+        task_track_id: &str,
         root_block_id: &str,
     ) -> std::result::Result<FrozenClosure, ResolveError> {
-        self.resolve_from_root(task_wave_id, root_block_id).await
+        self.resolve_from_root(task_track_id, root_block_id).await
     }
 
     pub async fn resolve_task_closure(
         &self,
-        task_wave_id: &str,
+        task_track_id: &str,
         task_key: &str,
     ) -> std::result::Result<FrozenClosure, ResolveError> {
         let mut doc_revs = BTreeMap::new();
-        let (_, blocks) = self.report_snapshot(task_wave_id, &mut doc_revs).await?;
+        let (_, blocks) = self.report_snapshot(task_track_id, &mut doc_revs).await?;
         let mut live = Vec::new();
         let mut tombstoned = false;
         for value in blocks {
@@ -317,7 +317,7 @@ impl TaskContextMonitor {
                     == Some(task_key)
             {
                 let block: ReportBlock = serde_json::from_value(value)
-                    .map_err(|_| ResolveError::MalformedStoredReport(task_wave_id.into()))?;
+                    .map_err(|_| ResolveError::MalformedStoredReport(task_track_id.into()))?;
                 if block
                     .payload
                     .get("tombstone")
@@ -339,43 +339,43 @@ impl TaskContextMonitor {
             [] => return Err(ResolveError::RootAbsent),
             _ => return Err(ResolveError::DuplicateLiveKey),
         };
-        self.resolve_from_root_with_revs(task_wave_id, &root, doc_revs)
+        self.resolve_from_root_with_revs(task_track_id, &root, doc_revs)
             .await
     }
 
     async fn resolve_from_root(
         &self,
-        task_wave_id: &str,
+        task_track_id: &str,
         root_block_id: &str,
     ) -> std::result::Result<FrozenClosure, ResolveError> {
-        self.resolve_from_root_with_revs(task_wave_id, root_block_id, BTreeMap::new())
+        self.resolve_from_root_with_revs(task_track_id, root_block_id, BTreeMap::new())
             .await
     }
 
     async fn resolve_from_root_with_revs(
         &self,
-        task_wave_id: &str,
+        task_track_id: &str,
         root_block_id: &str,
         mut doc_revs: BTreeMap<String, u64>,
     ) -> std::result::Result<FrozenClosure, ResolveError> {
-        let task_wave = self
+        let task_track = self
             .repo
-            .wave_get(task_wave_id)
+            .track_get(task_track_id)
             .await
             .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
-            .ok_or_else(|| ResolveError::ReferencedWaveAbsent(task_wave_id.into()))?;
+            .ok_or_else(|| ResolveError::ReferencedTrackAbsent(task_track_id.into()))?;
         let system_area = self
             .repo
             .area_get_system()
             .await
             .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
             .map(|c| c.id.to_string());
-        let mut queue = VecDeque::from([(task_wave_id.to_string(), root_block_id.to_string(), 0)]);
+        let mut queue = VecDeque::from([(task_track_id.to_string(), root_block_id.to_string(), 0)]);
         let mut visited = BTreeSet::new();
         let mut refs = Vec::new();
         let mut truncated = false;
-        while let Some((wave_id, block_id, depth)) = queue.pop_front() {
-            if !visited.insert((wave_id.clone(), block_id.clone())) {
+        while let Some((track_id, block_id, depth)) = queue.pop_front() {
+            if !visited.insert((track_id.clone(), block_id.clone())) {
                 continue;
             }
             if refs.len() == MAX_REF_NODES {
@@ -384,19 +384,19 @@ impl TaskContextMonitor {
             }
             let is_root = depth == 0;
             let (area_id, block) = self
-                .load_block(&wave_id, &block_id, is_root, &mut doc_revs)
+                .load_block(&track_id, &block_id, is_root, &mut doc_revs)
                 .await?;
-            if area_id != task_wave.area_id.as_str()
+            if area_id != task_track.area_id.as_str()
                 && system_area.as_deref() != Some(area_id.as_str())
             {
-                return Err(ResolveError::CrossArea(format!("{wave_id}#{block_id}")));
+                return Err(ResolveError::CrossArea(format!("{track_id}#{block_id}")));
             }
-            refs.push(context_ref(&wave_id, &block, is_root));
-            for (dst_wave, dst_block) in block_links(&block)? {
+            refs.push(context_ref(&track_id, &block, is_root));
+            for (dst_track, dst_block) in block_links(&block)? {
                 if depth == MAX_REF_DEPTH {
                     truncated = true;
                 } else {
-                    queue.push_back((dst_wave, dst_block, depth + 1));
+                    queue.push_back((dst_track, dst_block, depth + 1));
                 }
             }
         }
@@ -415,48 +415,48 @@ impl TaskContextMonitor {
 
     async fn report_snapshot(
         &self,
-        wave_id: &str,
+        track_id: &str,
         doc_revs: &mut BTreeMap<String, u64>,
     ) -> std::result::Result<(String, Vec<serde_json::Value>), ResolveError> {
-        let wave = self
+        let track = self
             .repo
-            .wave_get(wave_id)
+            .track_get(track_id)
             .await
             .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
-            .ok_or_else(|| ResolveError::ReferencedWaveAbsent(wave_id.into()))?;
+            .ok_or_else(|| ResolveError::ReferencedTrackAbsent(track_id.into()))?;
         let cards = self
             .repo
-            .cards_by_wave(wave_id)
+            .cards_by_track(track_id)
             .await
             .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?;
         let report = cards
             .into_iter()
-            .find(|card| card.kind == "wave-report")
-            .ok_or_else(|| ResolveError::ReportAbsent(wave_id.into()))?;
+            .find(|card| card.kind == "track-report")
+            .ok_or_else(|| ResolveError::ReportAbsent(track_id.into()))?;
         let doc_rev = report
             .payload
             .get("docRev")
             .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| ResolveError::MalformedStoredReport(wave_id.into()))?;
-        // Fence baseline is captured before the first block in this wave is decoded.
-        doc_revs.entry(wave_id.into()).or_insert(doc_rev);
+            .ok_or_else(|| ResolveError::MalformedStoredReport(track_id.into()))?;
+        // Fence baseline is captured before the first block in this track is decoded.
+        doc_revs.entry(track_id.into()).or_insert(doc_rev);
         let values = report
             .payload
             .get("blocks")
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
-        Ok((wave.area_id.to_string(), values))
+        Ok((track.area_id.to_string(), values))
     }
 
     async fn load_block(
         &self,
-        wave_id: &str,
+        track_id: &str,
         block_id: &str,
         is_root: bool,
         doc_revs: &mut BTreeMap<String, u64>,
     ) -> std::result::Result<(String, ReportBlock), ResolveError> {
-        let (area, blocks) = self.report_snapshot(wave_id, doc_revs).await?;
+        let (area, blocks) = self.report_snapshot(track_id, doc_revs).await?;
         let value = blocks
             .into_iter()
             .find(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(block_id))
@@ -464,18 +464,18 @@ impl TaskContextMonitor {
                 if is_root {
                     ResolveError::RootAbsent
                 } else {
-                    ResolveError::ReferencedBlockAbsent(format!("{wave_id}#{block_id}"))
+                    ResolveError::ReferencedBlockAbsent(format!("{track_id}#{block_id}"))
                 }
             })?;
         let block = serde_json::from_value(value)
-            .map_err(|_| ResolveError::MalformedStoredReport(wave_id.into()))?;
+            .map_err(|_| ResolveError::MalformedStoredReport(track_id.into()))?;
         Ok((area, block))
     }
 
-    async fn refs_match(&self, task_wave_id: &str, refs: &[TaskContextRef]) -> RefsMatch {
-        let task_wave = match self.repo.wave_get(task_wave_id).await {
-            Ok(Some(wave)) => wave,
-            Ok(None) => return RefsMatch::Mismatch(Vec::new(), "referenced_wave_absent"),
+    async fn refs_match(&self, task_track_id: &str, refs: &[TaskContextRef]) -> RefsMatch {
+        let task_track = match self.repo.track_get(task_track_id).await {
+            Ok(Some(track)) => track,
+            Ok(None) => return RefsMatch::Mismatch(Vec::new(), "referenced_track_absent"),
             Err(error) => return RefsMatch::Retryable(error.to_string()),
         };
         let system = match self.repo.area_get_system().await {
@@ -486,7 +486,7 @@ impl TaskContextMonitor {
             let mut ignored_doc_revs = BTreeMap::new();
             let loaded = self
                 .load_block(
-                    frozen.wave_id.as_str(),
+                    frozen.track_id.as_str(),
                     &frozen.block_id,
                     frozen.is_root,
                     &mut ignored_doc_revs,
@@ -501,7 +501,7 @@ impl TaskContextMonitor {
                 Err(error) => {
                     return RefsMatch::Mismatch(
                         vec![TaskContextChangedRef {
-                            wave_id: frozen.wave_id.clone(),
+                            track_id: frozen.track_id.clone(),
                             block_id: frozen.block_id.clone(),
                             from_rev: frozen.rev,
                             from_hash: frozen.hash.clone(),
@@ -511,12 +511,12 @@ impl TaskContextMonitor {
                     );
                 }
             };
-            if area != task_wave.area_id.as_str()
+            if area != task_track.area_id.as_str()
                 && system.as_ref().map(|c| c.id.as_str()) != Some(area.as_str())
             {
                 return RefsMatch::Mismatch(
                     vec![TaskContextChangedRef {
-                        wave_id: frozen.wave_id.clone(),
+                        track_id: frozen.track_id.clone(),
                         block_id: frozen.block_id.clone(),
                         from_rev: frozen.rev,
                         from_hash: frozen.hash.clone(),
@@ -525,14 +525,14 @@ impl TaskContextMonitor {
                     "cross_area",
                 );
             }
-            let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
-            if current.wave_id != frozen.wave_id
+            let current = context_ref(frozen.track_id.as_str(), &block, frozen.is_root);
+            if current.track_id != frozen.track_id
                 || current.block_id != frozen.block_id
                 || current.hash != frozen.hash
             {
                 return RefsMatch::Mismatch(
                     vec![TaskContextChangedRef {
-                        wave_id: frozen.wave_id.clone(),
+                        track_id: frozen.track_id.clone(),
                         block_id: frozen.block_id.clone(),
                         from_rev: frozen.rev,
                         to_rev: current.rev,
@@ -546,11 +546,11 @@ impl TaskContextMonitor {
         RefsMatch::Same
     }
 
-    pub async fn detect_wave_edit(&self, dst_wave_id: &str) -> Result<()> {
-        let rows = self.repo.task_contexts_by_dst_wave(dst_wave_id).await?;
+    pub async fn detect_track_edit(&self, dst_track_id: &str) -> Result<()> {
+        let rows = self.repo.task_contexts_by_dst_track(dst_track_id).await?;
         let mut stale_rows = self
             .repo
-            .stale_task_contexts_by_dst_wave(dst_wave_id)
+            .stale_task_contexts_by_dst_track(dst_track_id)
             .await?;
         let fanout = rows.len().saturating_add(stale_rows.len());
         self.metrics
@@ -574,7 +574,7 @@ impl TaskContextMonitor {
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
             {
-                match self.refs_match(&row.wave_id, &refs).await {
+                match self.refs_match(&row.track_id, &refs).await {
                     RefsMatch::Mismatch(changed, variant) => {
                         self.metrics.record_context_resolve_failure(variant);
                         Some((changed, variant))
@@ -591,11 +591,11 @@ impl TaskContextMonitor {
                 Some((Vec::new(), "frozen reference set is missing or malformed"))
             };
             if let Some((changed_refs, rationale)) = verdict {
-                self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
+                self.mark_material(row.task_id, row.track_id, changed_refs, rationale)
                     .await?;
             }
         }
-        let cursor_scope = format!("event:{dst_wave_id}");
+        let cursor_scope = format!("event:{dst_track_id}");
         self.rotate_stale_rows(&cursor_scope, &mut stale_rows);
         let stale_count = stale_rows.len();
         for row in stale_rows.into_iter().take(MAX_RERESOLVE_FANOUT) {
@@ -691,7 +691,7 @@ impl TaskContextMonitor {
                     }
                     Some(refs) => {
                         verified += refs.len();
-                        match self.refs_match(&row.wave_id, &refs).await {
+                        match self.refs_match(&row.track_id, &refs).await {
                             RefsMatch::Same => {
                                 self.clear_verify_failures(&row.task_id).await?;
                                 None
@@ -704,7 +704,7 @@ impl TaskContextMonitor {
                                 self.metrics
                                     .record_context_resolve_failure("storage_unavailable");
                                 if self
-                                    .record_verify_failure(&row.task_id, &row.wave_id)
+                                    .record_verify_failure(&row.task_id, &row.track_id)
                                     .await?
                                 {
                                     tracing::warn!(task_id=%row.task_id, %error, "task context verification failed three consecutive sweeps; marking material");
@@ -718,7 +718,7 @@ impl TaskContextMonitor {
             };
             if let Some((changed_refs, rationale)) = verdict {
                 hits += 1;
-                self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
+                self.mark_material(row.task_id, row.track_id, changed_refs, rationale)
                     .await?;
             }
         }
@@ -796,9 +796,9 @@ impl TaskContextMonitor {
     }
 
     /// Returns true when this retryable failure crossed the escalation limit.
-    async fn record_verify_failure(&self, task_id: &str, wave_id: &str) -> Result<bool> {
+    async fn record_verify_failure(&self, task_id: &str, track_id: &str) -> Result<bool> {
         let task_id = task_id.to_string();
-        let wave_id = wave_id.to_string();
+        let track_id = track_id.to_string();
         let failures: Option<i64> = write_in_tx_typed(self.repo.as_ref(), {
             let task_id = task_id.clone();
             move |tx| {
@@ -817,7 +817,7 @@ impl TaskContextMonitor {
         if escalated {
             self.mark_material(
                 task_id,
-                wave_id,
+                track_id,
                 Vec::new(),
                 "three consecutive context verification failures",
             )
@@ -841,7 +841,7 @@ impl TaskContextMonitor {
                 .record_restore_deferred("malformed_frozen_context");
             return Ok(false);
         };
-        match self.refs_match(&row.wave_id, &refs).await {
+        match self.refs_match(&row.track_id, &refs).await {
             RefsMatch::Mismatch(_, variant) => {
                 self.metrics.record_restore_deferred(variant);
                 return Ok(false);
@@ -855,7 +855,7 @@ impl TaskContextMonitor {
         }
 
         let task_id = row.task_id;
-        let wave_id = row.wave_id;
+        let track_id = row.track_id;
         let result = write_with_actor_events_typed(
             self.repo.as_ref(),
             None,
@@ -863,7 +863,7 @@ impl TaskContextMonitor {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let events = restore_context_tx(tx, &task_id, &wave_id).await?;
+                    let events = restore_context_tx(tx, &task_id, &track_id).await?;
                     Ok(((true,), events))
                 })
             },
@@ -888,7 +888,7 @@ impl TaskContextMonitor {
     async fn mark_material(
         &self,
         task_id: String,
-        wave_id: String,
+        track_id: String,
         changed_refs: Vec<TaskContextChangedRef>,
         rationale: &'static str,
     ) -> Result<()> {
@@ -900,14 +900,14 @@ impl TaskContextMonitor {
             move |tx| {
                 Box::pin(async move {
                     if rationale == CONTENT_CHANGED_RATIONALE
-                        && let Some(task) = frozen_task_tx(tx, &task_id, &wave_id).await?
+                        && let Some(task) = frozen_task_tx(tx, &task_id, &track_id).await?
                         && current_context_evidence_tx(tx, &task).await?
                             == CurrentContextEvidence::Equal
                     {
                         return Err(CalmError::Conflict(MATERIAL_VERDICT_OBSOLETE.into()));
                     }
                     let events =
-                        mark_context_material_tx(tx, &task_id, &wave_id, changed_refs, rationale)
+                        mark_context_material_tx(tx, &task_id, &track_id, changed_refs, rationale)
                             .await?;
                     let changed = !events.is_empty();
                     Ok(((changed,), events))
@@ -936,7 +936,7 @@ type FrozenTaskDbRow = (String, String, String, Option<String>, i64, i64, i64);
 
 struct FrozenTaskTx {
     task_id: String,
-    wave_id: String,
+    track_id: String,
     task_key: String,
     status: String,
     area_id: String,
@@ -956,15 +956,15 @@ enum CurrentContextEvidence {
 async fn frozen_task_tx(
     tx: &mut Transaction<'_, Sqlite>,
     task_id: &str,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<Option<FrozenTaskTx>> {
     let row: Option<FrozenTaskDbRow> = sqlx::query_as(
         "SELECT t.key,t.status,w.area_id,t.claim_context_json,\
          t.context_closure_truncated,t.decl_ready,t.decl_released_by_user \
-         FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
+         FROM tasks t JOIN tracks w ON w.id=t.track_id WHERE t.id=?1 AND t.track_id=?2",
     )
     .bind(task_id)
-    .bind(wave_id)
+    .bind(track_id)
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.map(
@@ -978,7 +978,7 @@ async fn frozen_task_tx(
             decl_released_by_user,
         )| FrozenTaskTx {
             task_id: task_id.into(),
-            wave_id: wave_id.into(),
+            track_id: track_id.into(),
             task_key,
             status,
             area_id,
@@ -1009,10 +1009,10 @@ async fn current_context_evidence_tx(
     let mut saw_root = false;
     for frozen in refs {
         let report: Option<(String, String)> = sqlx::query_as(
-            "SELECT w.area_id,c.payload FROM waves w \
-             JOIN cards c ON c.wave_id=w.id AND c.kind='wave-report' WHERE w.id=?1",
+            "SELECT w.area_id,c.payload FROM tracks w \
+             JOIN cards c ON c.track_id=w.id AND c.kind='track-report' WHERE w.id=?1",
         )
-        .bind(frozen.wave_id.as_str())
+        .bind(frozen.track_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
         let Some((current_area, payload)) = report else {
@@ -1022,7 +1022,7 @@ async fn current_context_evidence_tx(
             return Ok(CurrentContextEvidence::Mismatch);
         }
         let Ok(report) =
-            serde_json::from_str::<calm_types::wave_report::WaveReportPayload>(&payload)
+            serde_json::from_str::<calm_types::track_report::TrackReportPayload>(&payload)
         else {
             return Ok(CurrentContextEvidence::Mismatch);
         };
@@ -1034,8 +1034,8 @@ async fn current_context_evidence_tx(
         else {
             return Ok(CurrentContextEvidence::Mismatch);
         };
-        let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
-        if current.wave_id != frozen.wave_id
+        let current = context_ref(frozen.track_id.as_str(), &block, frozen.is_root);
+        if current.track_id != frozen.track_id
             || current.block_id != frozen.block_id
             || current.hash != frozen.hash
         {
@@ -1073,9 +1073,9 @@ async fn current_context_evidence_tx(
 async fn restore_context_tx(
     tx: &mut Transaction<'_, Sqlite>,
     task_id: &str,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
-    let Some(task) = frozen_task_tx(tx, task_id, wave_id).await? else {
+    let Some(task) = frozen_task_tx(tx, task_id, track_id).await? else {
         return Err(CalmError::Conflict(RESTORE_NOT_ELIGIBLE.into()));
     };
     if !matches!(task.status.as_str(), "dispatched" | "running" | "verifying") {
@@ -1091,11 +1091,11 @@ async fn restore_context_tx(
         }
     }
     let changed = sqlx::query(
-        "UPDATE tasks SET context_stale_at_ms=NULL WHERE id=?1 AND wave_id=?2 \
+        "UPDATE tasks SET context_stale_at_ms=NULL WHERE id=?1 AND track_id=?2 \
          AND context_stale_at_ms IS NOT NULL",
     )
     .bind(task_id)
-    .bind(wave_id)
+    .bind(track_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();
@@ -1104,12 +1104,12 @@ async fn restore_context_tx(
     }
     Ok(vec![(
         ActorId::Kernel,
-        EventScope::Wave {
-            wave: WaveId::from(task.wave_id.as_str()),
+        EventScope::Track {
+            track: TrackId::from(task.track_id.as_str()),
             area: task.area_id.into(),
         },
         Event::TaskContextAdvanced {
-            wave_id: WaveId::from(task.wave_id.as_str()),
+            track_id: TrackId::from(task.track_id.as_str()),
             task_key: task.task_key,
             task_id: task.task_id,
             changed_refs: Vec::new(),
@@ -1128,14 +1128,14 @@ fn restore_deferred_reason(message: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn context_ref(wave_id: &str, block: &ReportBlock, is_root: bool) -> TaskContextRef {
+pub(crate) fn context_ref(track_id: &str, block: &ReportBlock, is_root: bool) -> TaskContextRef {
     let content = if is_root {
         task_root_projection(&block.payload)
     } else {
         flat_text(block)
     };
     TaskContextRef {
-        wave_id: WaveId::from(wave_id),
+        track_id: TrackId::from(track_id),
         block_id: block.id.clone(),
         rev: i64::from(block.rev),
         hash: format!("{:x}", Sha256::digest(content.as_bytes())),
@@ -1166,16 +1166,16 @@ fn block_links(block: &ReportBlock) -> std::result::Result<Vec<(String, String)>
             let raw = value
                 .as_str()
                 .ok_or_else(|| ResolveError::InvalidReference(value.to_string()))?;
-            let (wave, block) = parse_destination(raw)
+            let (track, block) = parse_destination(raw)
                 .filter(|(_, block)| block.is_some())
                 .ok_or_else(|| ResolveError::InvalidReference(raw.into()))?;
-            links.push((wave, block.expect("filtered Some")));
+            links.push((track, block.expect("filtered Some")));
         }
     }
     for text in scannable_text_fields(&block.kind, &block.payload) {
         for link in scan_links(text).links {
             if let Some(block) = link.dst_block_id {
-                links.push((link.dst_wave_id, block));
+                links.push((link.dst_track_id, block));
             }
         }
     }
@@ -1195,8 +1195,8 @@ mod tests {
 
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
     use crate::db::{Repo, ServerRepoSyncDomainRawExt};
-    use crate::model::{NewArea, NewCard, NewWave, RequestTheme};
-    use calm_types::wave_report::WaveReportPayload;
+    use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
+    use calm_types::track_report::TrackReportPayload;
 
     async fn seed_restore_transaction_fixture(
         status: &str,
@@ -1211,8 +1211,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
                 title: format!("restore-guard-{status}"),
@@ -1237,22 +1237,22 @@ mod tests {
                 "declared_by": "spec",
             }),
         };
-        let frozen = context_ref(wave.id.as_str(), &root, true);
+        let frozen = context_ref(track.id.as_str(), &root, true);
         let report_card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
-                kind: "wave-report".into(),
+                track_id: track.id.clone(),
+                kind: "track-report".into(),
                 sort: None,
-                payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+                payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
                 title: None,
             })
             .await
             .unwrap();
-        let task_id = format!("{}:terminal", wave.id);
+        let task_id = format!("{}:terminal", track.id);
         let pool = repo.sqlite_pool().unwrap();
         sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
             .bind(
-                serde_json::to_string(&WaveReportPayload {
+                serde_json::to_string(&TrackReportPayload {
                     schema_version: 3,
                     doc_rev: 1,
                     summary: String::new(),
@@ -1267,7 +1267,7 @@ mod tests {
             .unwrap();
         sqlx::query(
             "INSERT INTO tasks \
-             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+             (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
               declared_by,claim_context_json,context_stale_at_ms,\
               context_closure_truncated,decl_ready,decl_released_by_user,\
               context_verify_failures,spawn,created_at_ms,updated_at_ms) \
@@ -1275,7 +1275,7 @@ mod tests {
                      'spec',?4,?5,0,1,0,0,'in-wave',1,1)",
         )
         .bind(&task_id)
-        .bind(wave.id.as_str())
+        .bind(track.id.as_str())
         .bind(status)
         .bind(serde_json::to_string(&vec![frozen]).unwrap())
         .bind(stale_at_ms)
@@ -1283,8 +1283,8 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_wave) \
-             VALUES('task.context_advanced',?1,'kernel',1,12,'wave',?2)",
+            "INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_track) \
+             VALUES('task.context_advanced',?1,'kernel',1,12,'track',?2)",
         )
         .bind(
             serde_json::json!({
@@ -1294,11 +1294,11 @@ mod tests {
             })
             .to_string(),
         )
-        .bind(wave.id.as_str())
+        .bind(track.id.as_str())
         .execute(&pool)
         .await
         .unwrap();
-        (repo, wave.id.to_string(), task_id)
+        (repo, track.id.to_string(), task_id)
     }
 
     #[test]
@@ -1320,11 +1320,11 @@ mod tests {
 
     #[tokio::test]
     async fn restore_transaction_rejects_terminal_candidate_even_if_called_directly() {
-        let (repo, wave_id, task_id) = seed_restore_transaction_fixture("failed", Some(1)).await;
+        let (repo, track_id, task_id) = seed_restore_transaction_fixture("failed", Some(1)).await;
         let pool = repo.sqlite_pool().unwrap();
 
         let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        let error = restore_context_tx(&mut tx, &task_id, &wave_id)
+        let error = restore_context_tx(&mut tx, &task_id, &track_id)
             .await
             .expect_err("the transaction guard must reject a terminal row from any caller");
         assert!(
@@ -1346,10 +1346,10 @@ mod tests {
 
     #[tokio::test]
     async fn restore_update_rejects_a_fresh_candidate_even_after_equal_evidence() {
-        let (repo, wave_id, task_id) = seed_restore_transaction_fixture("running", None).await;
+        let (repo, track_id, task_id) = seed_restore_transaction_fixture("running", None).await;
         let pool = repo.sqlite_pool().unwrap();
         let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        let error = restore_context_tx(&mut tx, &task_id, &wave_id)
+        let error = restore_context_tx(&mut tx, &task_id, &track_id)
             .await
             .expect_err("the conditional update must reject a row that is no longer stale");
         assert!(

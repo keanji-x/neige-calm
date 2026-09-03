@@ -34,7 +34,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{
-    CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewWave, new_id, now_ms,
+    CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewTrack, new_id, now_ms,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{
@@ -65,7 +65,7 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -75,7 +75,7 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
     (state, concrete)
 }
 
-/// Seed an area + wave + terminal-kind card with a terminal row and active
+/// Seed an area + track + terminal-kind card with a terminal row and active
 /// terminal runtime. Returns the (card_id, terminal_id) pair.
 async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, String) {
     let area = state
@@ -87,9 +87,9 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
         })
         .await
         .unwrap();
-    let wave = state
+    let track = state
         .raw_repo()
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -105,7 +105,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
     let card = state
         .raw_repo()
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -165,9 +165,9 @@ async fn seed_shared_spec_pair(
         })
         .await
         .unwrap();
-    let wave = state
+    let track = state
         .raw_repo()
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -187,7 +187,7 @@ async fn seed_shared_spec_pair(
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "/tmp".into(),
@@ -238,9 +238,9 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         })
         .await
         .unwrap();
-    let wave = state
+    let track = state
         .raw_repo()
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -260,7 +260,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "/tmp".into(),

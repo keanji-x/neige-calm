@@ -19,7 +19,7 @@ describe('FILE_VIEWER_CARD_ENTRY', () => {
    * A row with no usable `path` is not a degraded file card — there is nothing
    * for it to show. Refusing it puts the card in the board's `unknown` branch,
    * which draws a head with a delete on it; claiming it would draw a viewer
-   * pointed at nothing, with no way out but deleting the wave.
+   * pointed at nothing, with no way out but deleting the track.
    */
   it('refuses a row whose payload carries no usable path', () => {
     for (const payload of [null, undefined, {}, { path: '' }, { path: 7 }, 'x', { path: null }]) {
@@ -36,7 +36,7 @@ describe('FILE_VIEWER_CARD_ENTRY', () => {
   });
 
   /*
-   * `generic` is what routes this kind through `POST /api/waves/:id/cards`
+   * `generic` is what routes this kind through `POST /api/tracks/:id/cards`
    * rather than an endpoint of its own — correct precisely because the card
    * owns no runtime for the kernel to spawn. `registerCard` also refuses a
    * generic entry without an exact claim, since the claim is what supplies the

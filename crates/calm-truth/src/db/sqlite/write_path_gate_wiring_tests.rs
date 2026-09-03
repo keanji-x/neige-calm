@@ -1,15 +1,15 @@
-use super::{SqlxRepo, area_create_tx, card_create_with_id_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, card_create_with_id_tx, track_create_tx};
 use crate::db::RepoEventWrite;
 use crate::error::CalmError;
 use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, AreaId, CardId, WaveId};
-use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
+use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme};
 use crate::state::WriteContext;
 use serde_json::json;
 
 struct WorkerCardHome {
     card: CardId,
-    wave: WaveId,
+    track: TrackId,
     area: AreaId,
 }
 
@@ -25,9 +25,9 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
     )
     .await
     .expect("create area");
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: format!("hp1-b-i {label}"),
@@ -39,16 +39,16 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
-    .expect("create wave");
+    .expect("create track");
     let card = card_create_with_id_tx(
         &mut tx,
         format!("card-hp1-b-i-{label}"),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -64,7 +64,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
 
     WorkerCardHome {
         card: card.id,
-        wave: wave.id,
+        track: track.id,
         area: area.id,
     }
 }
@@ -72,7 +72,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
 fn card_scope(home: &WorkerCardHome) -> EventScope {
     EventScope::Card {
         card: home.card.clone(),
-        wave: home.wave.clone(),
+        track: home.track.clone(),
         area: home.area.clone(),
     }
 }
@@ -94,7 +94,7 @@ async fn card_actor_write_path_allows_self_scope_and_denies_out_of_scope() {
     let bus = EventBus::new();
     let write = WriteContext::new(
         repo.card_role_cache().clone(),
-        repo.wave_area_cache().clone(),
+        repo.track_area_cache().clone(),
     );
     let actor = ActorId::AiCodex(own.card.clone());
 
@@ -114,7 +114,7 @@ async fn card_actor_write_path_allows_self_scope_and_denies_out_of_scope() {
 
     let denied_scope = EventScope::Card {
         card: own.card.clone(),
-        wave: other.wave.clone(),
+        track: other.track.clone(),
         area: other.area.clone(),
     };
     let denied_event = codex_hook(&own.card, "hp1-b-i-deny");
@@ -131,7 +131,7 @@ async fn card_actor_write_path_allows_self_scope_and_denies_out_of_scope() {
         .expect_err("out-of-scope card actor write should be forbidden");
     match denied {
         CalmError::Forbidden(message) => {
-            assert!(message.contains("scope.wave mismatch"), "{message}");
+            assert!(message.contains("scope.track mismatch"), "{message}");
         }
         other => panic!("expected Forbidden, got {other:?}"),
     }

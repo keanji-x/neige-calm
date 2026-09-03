@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test.setTimeout(90_000);
 
-async function createWave(page: Page): Promise<{ id: string; title: string }> {
+async function createTrack(page: Page): Promise<{ id: string; title: string }> {
   const suffix = Date.now();
   const areaRes = await page.request.post('/api/areas', {
     data: { name: `E2E wheel area ${suffix}`, color: '#6a8' },
@@ -13,32 +13,32 @@ async function createWave(page: Page): Promise<{ id: string; title: string }> {
   }
   const area = (await areaRes.json()) as { id: string };
   const title = `E2E wheel edge ${suffix}`;
-  const waveRes = await page.request.post('/api/waves', {
+  const trackRes = await page.request.post('/api/tracks', {
     data: {
       area_id: area.id,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about wheel mode, not working directories. See
-      // `helpers/reset.ts::createWaveInArea` for why the invented
+      // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-wheel-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
   });
-  if (!waveRes.ok()) {
-    throw new Error(`POST /api/waves failed: ${waveRes.status()}`);
+  if (!trackRes.ok()) {
+    throw new Error(`POST /api/tracks failed: ${trackRes.status()}`);
   }
-  const wave = (await waveRes.json()) as { id: string };
-  return { id: wave.id, title };
+  const track = (await trackRes.json()) as { id: string };
+  return { id: track.id, title };
 }
 
 async function openFreshTerminal(page: Page): Promise<Locator> {
   await page.goto('/calm/', { waitUntil: 'domcontentloaded' });
-  const wave = await createWave(page);
-  await page.goto(`/calm/wave/${wave.id}?testMounts=1`, {
+  const track = await createTrack(page);
+  await page.goto(`/calm/track/${track.id}?testMounts=1`, {
     waitUntil: 'domcontentloaded',
   });
-  await expect(page.getByText(wave.title, { exact: false }).first()).toBeVisible();
+  await expect(page.getByText(track.title, { exact: false }).first()).toBeVisible();
 
   const add = page
     .getByRole('button', { name: /^\s*\+?\s*add(\s|$)/i })

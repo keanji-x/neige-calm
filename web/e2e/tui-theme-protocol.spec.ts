@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from '@playwright/test';
 import { LIGHT_THEME_RGB, DARK_THEME_RGB } from '../src/api/themeRgb';
-import { seedWaveViewMode } from './helpers/reset';
+import { seedTrackViewMode } from './helpers/reset';
 
 type ThemeName = 'light' | 'dark' | 'system';
 type XtermDumps = Record<string, () => string>;
@@ -90,36 +90,36 @@ test.describe.serial('tui theme protocol', () => {
     await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
     const areaId = new URL(page.url()).pathname.split('/').pop()!;
-    const waveTitle = `E2E tui-theme ${Date.now()}`;
-    const waveRes = await page.request.post('/api/waves', {
+    const trackTitle = `E2E tui-theme ${Date.now()}`;
+    const trackRes = await page.request.post('/api/tracks', {
       data: {
         area_id: areaId,
-        title: waveTitle,
+        title: trackTitle,
         // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
         // This spec is about the OSC theme protocol, not working
         // directories (the terminal card below still passes its own
         // `cwd: '/tmp'`, which is a real directory inside the kernel).
-        // See `helpers/reset.ts::createWaveInArea` for why the invented
+        // See `helpers/reset.ts::createTrackInArea` for why the invented
         // `/tmp/playwright-area-<id>` attached path was never valid.
         theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
       },
       headers: { 'content-type': 'application/json' },
     });
-    if (!waveRes.ok()) {
-      const body = await waveRes.text().catch(() => '<unreadable>');
+    if (!trackRes.ok()) {
+      const body = await trackRes.text().catch(() => '<unreadable>');
       throw new Error(
-        `POST /api/waves -> ${waveRes.status()} ${waveRes.statusText()}: ${body}`,
+        `POST /api/tracks -> ${trackRes.status()} ${trackRes.statusText()}: ${body}`,
       );
     }
-    const wave = (await waveRes.json()) as { id: string };
-    await seedWaveViewMode(page.request, wave.id, 'grid');
-    await page.goto(`/calm/wave/${wave.id}?testMounts=1`);
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
+    const track = (await trackRes.json()) as { id: string };
+    await seedTrackViewMode(page.request, track.id, 'grid');
+    await page.goto(`/calm/track/${track.id}?testMounts=1`);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+\?testMounts=1$/);
     await expect(
-      page.getByText(waveTitle, { exact: false }).first(),
+      page.getByText(trackTitle, { exact: false }).first(),
     ).toBeVisible();
     // Post-#510 PR-del: spec card is a chat panel (no XtermView). The
-    // terminal-card created below is the first xterm-view in the wave.
+    // terminal-card created below is the first xterm-view in the track.
     const beforeIds = await terminalDumpIds(page);
     const dumpsBeforeAdd = await terminalDumpCount(page);
     await setTheme(page, 'light');
@@ -129,7 +129,7 @@ test.describe.serial('tui theme protocol', () => {
       '../fixtures/test-tui-theme.py',
     );
     const cardRes = await page.request.post(
-      `/api/waves/${wave.id}/terminal-cards`,
+      `/api/tracks/${track.id}/terminal-cards`,
       {
         data: {
           program: `python3 '${absFixturePath}'`,
@@ -197,46 +197,46 @@ test.describe.serial('tui theme protocol', () => {
     expect(finalTheme.fg).toBe(hex(LIGHT_THEME_RGB.fg));
     expect(finalTheme.bg).toBe(hex(LIGHT_THEME_RGB.bg));
 
-    // Anchor D - Bug B regression guard. The wave-switch remount must
+    // Anchor D - Bug B regression guard. The track-switch remount must
     // reclaim Owner after WS close; fixed by e8d85122.
     // Invariants pinned:
     //   1. useTheme() is read at mount in cards/builtins/terminal.tsx.
     //   2. RenderPlane is registry-scoped (terminal_renderer/mod.rs:206),
     //      so the daemon's persisted set_default_colors survives WS reconnect.
-    const waveBRes = await page.request.post('/api/waves', {
+    const trackBRes = await page.request.post('/api/tracks', {
       data: {
         area_id: areaId,
-        title: `E2E tui-theme wave-B ${Date.now()}`,
-        // #1147 S3 — no `cwd` (see wave A above). The `-B` suffix on
-        // the old cwd existed only to keep this second wave in the
-        // same area from colliding with wave A's claim on
+        title: `E2E tui-theme track-B ${Date.now()}`,
+        // #1147 S3 — no `cwd` (see track A above). The `-B` suffix on
+        // the old cwd existed only to keep this second track in the
+        // same area from colliding with track A's claim on
         // `area_folders.UNIQUE(path)`; with no claim there is no
         // collision to dodge.
         theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
       },
       headers: { 'content-type': 'application/json' },
     });
-    if (!waveBRes.ok()) {
-      const body = await waveBRes.text().catch(() => '<unreadable>');
+    if (!trackBRes.ok()) {
+      const body = await trackBRes.text().catch(() => '<unreadable>');
       throw new Error(
-        `POST /api/waves (wave B) -> ${waveBRes.status()} ${waveBRes.statusText()}: ${body}`,
+        `POST /api/tracks (track B) -> ${trackBRes.status()} ${trackBRes.statusText()}: ${body}`,
       );
     }
-    const waveB = (await waveBRes.json()) as { id: string };
-    await seedWaveViewMode(page.request, waveB.id, 'grid');
+    const trackB = (await trackBRes.json()) as { id: string };
+    await seedTrackViewMode(page.request, trackB.id, 'grid');
 
-    // Confirm wave A's terminal dump is currently mounted before navigating.
+    // Confirm track A's terminal dump is currently mounted before navigating.
     const beforeSwitchPresent = await page.evaluate((id) => {
       const w = window as unknown as { __xtermDumps__?: XtermDumps };
       return typeof w.__xtermDumps__?.[id] === 'function';
     }, terminalId);
     expect(beforeSwitchPresent).toBe(true);
 
-    // Navigate to wave B; wave A's XtermView for terminalId unmounts and
+    // Navigate to track B; track A's XtermView for terminalId unmounts and
     // its __xtermDumps__ entry disappears - proves the React fiber really
     // tore down rather than staying hidden.
-    await page.goto(`/calm/wave/${waveB.id}?testMounts=1`);
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
+    await page.goto(`/calm/track/${trackB.id}?testMounts=1`);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+\?testMounts=1$/);
     await page.waitForFunction(
       (id) => {
         const w = window as unknown as { __xtermDumps__?: XtermDumps };
@@ -246,13 +246,13 @@ test.describe.serial('tui theme protocol', () => {
       { timeout: 10_000 },
     );
 
-    // On wave B, flip to dark - the "user changed theme while away" case.
+    // On track B, flip to dark - the "user changed theme while away" case.
     await setTheme(page, 'dark');
 
-    // Navigate back to wave A. The terminal card remounts; a fresh
+    // Navigate back to track A. The terminal card remounts; a fresh
     // XtermView fiber re-registers a dump fn under the same terminalId.
-    await page.goto(`/calm/wave/${wave.id}?testMounts=1`);
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
+    await page.goto(`/calm/track/${track.id}?testMounts=1`);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+\?testMounts=1$/);
     await page.waitForFunction(
       (id) => {
         const w = window as unknown as { __xtermDumps__?: XtermDumps };

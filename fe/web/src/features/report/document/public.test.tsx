@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { ReportBlock, WaveReport } from '../../../../../core/domain/report.ts';
+import type { ReportBlock, TrackReport } from '../../../../../core/domain/report.ts';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
 
@@ -11,11 +11,11 @@ afterEach(cleanup);
 const EMPTY = <p>Nothing yet.</p>;
 
 /** A v1 report: flat body, no blocks and therefore no anchors. */
-function flat(body: string): WaveReport {
+function flat(body: string): TrackReport {
   return { summary: '', body, blocks: null };
 }
 
-function blocked(...blocks: ReportBlock[]): WaveReport {
+function blocked(...blocks: ReportBlock[]): TrackReport {
   return { summary: '', body: '', blocks };
 }
 
@@ -39,7 +39,7 @@ describe('ReportDocument', () => {
   });
 
   it('renders H1 as a section heading below the page title, never as an h1', () => {
-    // The page title is the wave's name in the header. A document that emitted
+    // The page title is the track's name in the header. A document that emitted
     // its own h1 would give the page two, which is the heading-order failure
     // axe reports and the reason this maps depth 1 to h2.
     const { container } = render(<ReportDocument report={flat('# Goal\n\nBody text.')} empty={EMPTY} />);
@@ -96,7 +96,7 @@ describe('ReportDocument', () => {
       );
       expect(container.querySelectorAll('a').length).toBe(0);
       screen.getByRole('button', { name: 'the model' }).click();
-      expect(onOpenLink).toHaveBeenCalledWith({ waveId: 'w-2', blockId: 'b-3' });
+      expect(onOpenLink).toHaveBeenCalledWith({ trackId: 'w-2', blockId: 'b-3' });
     });
 
     // Without a handler there is nowhere for the citation to go, and a button
@@ -131,7 +131,7 @@ describe('ReportDocument', () => {
    * ── The reference appendix ───────────────────────────────────────────────
    *
    * The report is meant to be a deliverable and was not reading as one:
-   * measured on a real wave, 8141 characters of body across 11 blocks, of which
+   * measured on a real track, 8141 characters of body across 11 blocks, of which
    * the prose a reader takes away was ~700 and seven `task` blocks — worker
    * prompts, acceptance criteria, gate shell commands — were the rest, set
    * between the paragraphs that were the actual conclusions.
@@ -275,7 +275,7 @@ describe('ReportDocument', () => {
         .toContain('2 tasks');
     });
 
-    /* §6.1 — a section with zero rows is not rendered. A wave that declared no
+    /* §6.1 — a section with zero rows is not rendered. A track that declared no
        tasks has no machinery to account for, and a permanent empty appendix
        would make the ordinary case look like a gap. */
     it('is absent, not empty, when the report declares no tasks', () => {
@@ -364,10 +364,10 @@ describe('ReportDocument', () => {
    * this is where the contract leak shows up first, cheaply, in jsdom.
    */
   describe('a document that carries its own maintenance contract (#1185)', () => {
-    /* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+    /* The kernel's own bytes, read off `crates/calm-types/src/track_report_*.md`
        — not a transcription. A hand-written fixture would prove this front end
        hides *a* comment; only the shipped text proves it hides *the* one every
-       wave is born with.
+       track is born with.
 
        Read in `beforeAll`, not at module scope: `kernel-initial-body.ts`
        promises it never touches the filesystem at import time, and a

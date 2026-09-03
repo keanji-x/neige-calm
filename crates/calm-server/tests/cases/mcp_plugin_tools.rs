@@ -14,7 +14,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewPlugin, NewTrack, now_ms};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -35,7 +35,7 @@ const SECRET_NAME: &str = "plugin.dev.echo_secret";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
 const COLLIDING_EXPOSED_NAME: &str = "plugin.dev_echo.do.thing";
-// #891 slice ④ fixtures — a trusted plugin owning a template, plus a wave
+// #891 slice ④ fixtures — a trusted plugin owning a template, plus a track
 // bound to that template. NOT the shipped git-forge manifest: the id merely
 // reuses the default trusted id so no env mutation is needed.
 const TEMPLATE_ID: &str = "tool-visibility-flow";
@@ -57,10 +57,10 @@ struct Fixture {
     trusted_plugin_id: String,
     /// `plugin.<trusted_plugin_id>_wf.tool`.
     trusted_exposed_name: String,
-    /// Worker card token/thread minted in the template-bound wave.
+    /// Worker card token/thread minted in the template-bound track.
     bound_raw_token: String,
     bound_thread_id: String,
-    /// #1189 — Assistant card token/thread minted in the UNBOUND wave, so
+    /// #1189 — Assistant card token/thread minted in the UNBOUND track, so
     /// plugin scope allows every running plugin and the only thing left
     /// between the caller and the plugin is `PLUGIN_TOOL_ROLES`.
     assistant_raw_token: String,
@@ -106,12 +106,12 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
         !names.iter().any(|name| name == SECRET_NAME),
         "undeclared plugin tool leaked into tools/list: {names:?}"
     );
-    // #891 slice ④ regression pin — an UNBOUND wave keeps the historical
+    // #891 slice ④ regression pin — an UNBOUND track keeps the historical
     // union of every running plugin's tools, including the trusted
     // template-owning plugin.
     assert!(
         names.iter().any(|name| name == &fx.trusted_exposed_name),
-        "unbound wave must see the union incl. the trusted plugin tool: {names:?}"
+        "unbound track must see the union incl. the trusted plugin tool: {names:?}"
     );
     let running_ids = fx.plugin_host.running_plugin_ids().await;
     assert!(
@@ -229,7 +229,7 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
 /// that constant would turn none of the other #1189 tests red.
 ///
 /// This is that counterexample: a real running plugin tool, an Assistant
-/// token in the UNBOUND wave (so plugin scope allows it and the role gate
+/// token in the UNBOUND track (so plugin scope allows it and the role gate
 /// is the only thing left), called on the wire by name. The worker control
 /// below proves the tool is genuinely reachable — otherwise the refusal
 /// could be scope or existence wearing a role-shaped message.
@@ -266,7 +266,7 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
         "the refusal must be the *role* decision, not scope/arguments: {refused:#?}"
     );
 
-    // Control: same tool, same wave, a Worker token — routes and answers.
+    // Control: same tool, same track, a Worker token — routes and answers.
     let (mut worker_rd, mut worker_wr) = connect(&fx.socket_path).await;
     handshake(&mut worker_rd, &mut worker_wr, &fx.raw_token).await;
     send_frame(
@@ -282,7 +282,7 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
     let routed = recv_frame(&mut worker_rd).await;
     assert!(
         routed.get("error").is_none(),
-        "the same plugin tool must be reachable for a worker in the same wave: {routed:#?}"
+        "the same plugin tool must be reachable for a worker in the same track: {routed:#?}"
     );
     assert_eq!(routed["result"]["isError"], false);
 
@@ -297,11 +297,11 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
         .expect("stop trusted template plugin");
 }
 
-/// #891 slice ④ — a wave bound to a template sees ONLY the owning plugin's
+/// #891 slice ④ — a track bound to a template sees ONLY the owning plugin's
 /// tools (plus kernel `calm.*`) on discovery, and dispatch to another
 /// plugin's tool is refused with the same `-32601` an unknown tool gets.
 #[tokio::test]
-async fn bound_wave_scopes_plugin_tools_to_template_owner() {
+async fn bound_track_scopes_plugin_tools_to_template_owner() {
     let fx = boot_fixture().await;
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.bound_raw_token).await;
@@ -313,23 +313,23 @@ async fn bound_wave_scopes_plugin_tools_to_template_owner() {
     let names = tool_names_from_response(&list);
     assert!(
         names.iter().any(|name| name == &fx.trusted_exposed_name),
-        "owning plugin tool missing from bound wave tools/list: {names:?}"
+        "owning plugin tool missing from bound track tools/list: {names:?}"
     );
     assert!(
         names.iter().any(|name| name.starts_with("calm.")),
-        "kernel calm.* tools must stay visible to a bound wave: {names:?}"
+        "kernel calm.* tools must stay visible to a bound track: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name == EXPOSED_NAME),
-        "other plugin's tool leaked into bound wave tools/list: {names:?}"
+        "other plugin's tool leaked into bound track tools/list: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name == COLLIDING_EXPOSED_NAME),
-        "other plugin's tool leaked into bound wave tools/list: {names:?}"
+        "other plugin's tool leaked into bound track tools/list: {names:?}"
     );
 
     // Discovery without a threadId on the card-bound connection resolves the
-    // same wave through the bound card — same filtered result.
+    // same track through the bound card — same filtered result.
     send_frame(
         &mut wr,
         json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {} }),
@@ -369,7 +369,7 @@ async fn bound_wave_scopes_plugin_tools_to_template_owner() {
     let rejected = recv_frame(&mut rd).await;
     assert_eq!(
         rejected["error"]["code"], -32601,
-        "bound wave calling another plugin's tool must be method-not-found: {rejected:#?}"
+        "bound track calling another plugin's tool must be method-not-found: {rejected:#?}"
     );
 
     // Dispatch to the owning plugin's tool still routes.
@@ -397,7 +397,7 @@ async fn bound_wave_scopes_plugin_tools_to_template_owner() {
         })
     );
 
-    // Fail-closed: stop the owning plugin — the bound wave loses ALL plugin
+    // Fail-closed: stop the owning plugin — the bound track loses ALL plugin
     // tools (other running plugins are not widened back in); calm.* stays.
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
@@ -414,7 +414,7 @@ async fn bound_wave_scopes_plugin_tools_to_template_owner() {
         !names_after_stop
             .iter()
             .any(|name| name.starts_with("plugin.")),
-        "bound wave with stopped owner must see zero plugin tools: {names_after_stop:?}"
+        "bound track with stopped owner must see zero plugin tools: {names_after_stop:?}"
     );
     assert!(
         names_after_stop
@@ -461,12 +461,12 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
 
     let unknown_plugin_tool = "plugin.dev.echo_no.such.tool";
     let unknown_bare_tool = "no.such.tool";
-    // EXPOSED_NAME exists and is callable by an unbound wave, but the bound
-    // wave's scope is Only(trusted owner) — so for the bound thread it is
+    // EXPOSED_NAME exists and is callable by an unbound track, but the bound
+    // track's scope is Only(trusted owner) — so for the bound thread it is
     // the "exists but cross-plugin / out of scope" probe.
     let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
 
-    // Column 1 — valid threadId (template-bound wave): every rejection is
+    // Column 1 — valid threadId (template-bound track): every rejection is
     // the one shared -32601 construction; the only difference is the
     // caller's own requested name echoed back.
     for (idx, name) in names.iter().enumerate() {
@@ -640,7 +640,7 @@ async fn boot_fixture() -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let events = EventBus::new();
 
     let trusted_plugin_id = configured_trusted_plugin_id();
@@ -652,8 +652,8 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-plugin-tools".into(),
@@ -665,11 +665,11 @@ async fn boot_fixture() -> Fixture {
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
-    // #891 slice ④ / #1110 S4 — a second wave scoped to the trusted plugin.
+        .expect("create track");
+    // #891 slice ④ / #1110 S4 — a second track scoped to the trusted plugin.
     // Direct repo create (route validation is out of scope here).
-    let bound_wave = repo
-        .wave_create(NewWave {
+    let bound_track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-plugin-tools-bound".into(),
@@ -681,29 +681,29 @@ async fn boot_fixture() -> Fixture {
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create bound wave");
-    repo.seed_wave_area_cache(&wave_area_cache)
+        .expect("create bound track");
+    repo.seed_track_area_cache(&track_area_cache)
         .await
-        .expect("seed wave/area cache");
+        .expect("seed track/area cache");
 
     let (raw_token, thread_id) = mint_card_with_thread(
         &sqlx_repo,
         &card_role_cache,
-        wave.id.clone(),
+        track.id.clone(),
         CardRole::Worker,
     )
     .await;
     let (bound_raw_token, bound_thread_id) = mint_card_with_thread(
         &sqlx_repo,
         &card_role_cache,
-        bound_wave.id.clone(),
+        bound_track.id.clone(),
         CardRole::Worker,
     )
     .await;
     let (assistant_raw_token, assistant_thread_id) = mint_card_with_thread(
         &sqlx_repo,
         &card_role_cache,
-        wave.id.clone(),
+        track.id.clone(),
         CardRole::Assistant,
     )
     .await;
@@ -714,7 +714,7 @@ async fn boot_fixture() -> Fixture {
         plugins_dir.clone(),
         plugins_data_dir.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         &trusted_plugin_id,
     )
     .await;
@@ -739,7 +739,7 @@ async fn boot_fixture() -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -783,11 +783,11 @@ fn configured_trusted_plugin_id() -> String {
         .unwrap_or_else(|| "dev.neige.git-forge".to_string())
 }
 
-/// Mint a card in `role` (+ MCP token + attributed codex thread) in `wave_id`.
+/// Mint a card in `role` (+ MCP token + attributed codex thread) in `track_id`.
 async fn mint_card_with_thread(
     sqlx_repo: &Arc<SqlxRepo>,
     card_role_cache: &CardRoleCache,
-    wave_id: calm_server::ids::WaveId,
+    track_id: calm_server::ids::TrackId,
     role: CardRole,
 ) -> (String, String) {
     let card_id = calm_server::model::new_id();
@@ -798,7 +798,7 @@ async fn mint_card_with_thread(
         card_id.clone(),
         &runtime_id,
         None,
-        wave_id,
+        track_id,
         None,
         None,
         "/workspace".into(),
@@ -899,7 +899,7 @@ async fn boot_plugin_host(
         registry_builder.with(colliding_manifest, Some(colliding_install_dir.clone()));
 
     // #891 slice ④ — trusted stub plugin owning TEMPLATE_ID and exposing one
-    // tool, so bound-wave scoping has an "owning plugin" to resolve.
+    // tool, so bound-track scoping has an "owning plugin" to resolve.
     let trusted_install_dir = plugins_dir.join(trusted_plugin_id);
     let trusted_bin_dir = trusted_install_dir.join("bin");
     std::fs::create_dir_all(&trusted_bin_dir).expect("create trusted plugin bin dir");

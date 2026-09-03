@@ -21,7 +21,7 @@ describe('ConfirmDialog rendering', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         description="This cannot be undone."
         onConfirm={() => {}}
         onCancel={() => {}}
@@ -30,7 +30,7 @@ describe('ConfirmDialog rendering', () => {
 
     // Dialog accessible name comes from the title prop (inherited from
     // Dialog's `aria-label`).
-    expect(screen.getByRole('dialog', { name: 'Delete wave' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Delete track' })).toBeTruthy();
     expect(screen.getByText('This cannot be undone.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeTruthy();
@@ -56,7 +56,7 @@ describe('ConfirmDialog rendering', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={() => {}}
         onCancel={() => {}}
       />,
@@ -87,7 +87,7 @@ describe('ConfirmDialog rendering', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={() => {}}
         onCancel={() => {}}
       />,
@@ -102,7 +102,7 @@ describe('ConfirmDialog rendering', () => {
     render(
       <ConfirmDialog
         open={false}
-        title="Delete wave"
+        title="Delete track"
         onConfirm={() => {}}
         onCancel={() => {}}
       />,
@@ -116,7 +116,7 @@ describe('ConfirmDialog rendering', () => {
     const { rerender } = render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={() => {}}
         onCancel={() => {}}
       />,
@@ -128,7 +128,7 @@ describe('ConfirmDialog rendering', () => {
     rerender(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         confirmDisabled
         onConfirm={() => {}}
         onCancel={() => {}}

@@ -83,7 +83,7 @@ afterEach(() => { document.body.replaceChildren(); });
 
 function railConversation(): Conversation {
   return {
-    id: 'c1', waveId: 'w1', waveTitle: 'Ship the rewrite', title: null, kind: 'codex',
+    id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: 0, turns: 0,
   };
 }
@@ -239,7 +239,7 @@ function narrowsToFine(condition: string): boolean {
  * - **The engine half** — every enclosing condition put to `matchMedia`, since
  *   nesting is a conjunction — closes negations and lists, which no substring
  *   test survives. Measured on this context, all three of the forms a text test
- *   waves through are true: `not (pointer: fine)`, the list
+ *   tracks through are true: `not (pointer: fine)`, the list
  *   `(pointer: fine), (pointer: coarse)`, and the inner `(pointer: coarse)` of
  *   a pair whose outer text carries the needle. The list, swapped in for the
  *   stylesheet's one real fine block, left this case green with the rail fully

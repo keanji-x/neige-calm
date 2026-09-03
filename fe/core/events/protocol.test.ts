@@ -16,6 +16,6 @@ describe('event protocol behavior', () => {
 
   it('always publishes a since cursor and uses zero for cold starts', () => {
     expect(eventSubscriptionFrame(['*'], null)).toEqual({ sub: ['*'], since: 0 });
-    expect(eventSubscriptionFrame(['wave:w1'], 42)).toEqual({ sub: ['wave:w1'], since: 42 });
+    expect(eventSubscriptionFrame(['track:w1'], 42)).toEqual({ sub: ['track:w1'], since: 42 });
   });
 });

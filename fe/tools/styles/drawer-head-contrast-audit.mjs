@@ -4,7 +4,7 @@
  *
  * Requires a running preview, Playwright's Chromium, and a URL whose drawer is
  * already open with a representative real transcript long enough to scroll:
- *   node tools/styles/drawer-head-contrast-audit.mjs http://localhost:4173/waves/…
+ *   node tools/styles/drawer-head-contrast-audit.mjs http://localhost:4173/tracks/…
  *
  * For light and dark themes this samples 20 evenly spaced scroll positions.
  * At each position it hides the sticky head's title and buttons (leaving only

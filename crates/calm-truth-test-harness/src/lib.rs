@@ -24,7 +24,7 @@ use calm_truth::decision_gate::{
 use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::{ActorId, CardId};
-use calm_truth::model::{NewArea, NewCard, NewWave, RequestTheme, new_id, now_ms};
+use calm_truth::model::{NewArea, NewCard, NewTrack, RequestTheme, new_id, now_ms};
 use calm_truth::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepo,
     WorkerSessionState,
@@ -32,14 +32,14 @@ use calm_truth::session_projection_repo::{
 use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
 use calm_truth::test_helpers;
-use calm_truth::wave_area_cache::WaveAreaCache;
-use calm_types::ids::WaveId;
+use calm_truth::track_area_cache::TrackAreaCache;
+use calm_types::ids::TrackId;
 use calm_types::worker::{
     ExitEvidence, ExitInterpretation, ExitSource, Liveness, LivenessTag, SessionMode,
     WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
 };
 
-async fn seeded_repo() -> (SqlxRepo, WaveId) {
+async fn seeded_repo() -> (SqlxRepo, TrackId) {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open migrated sqlite repo");
@@ -51,8 +51,8 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
         })
         .await
         .expect("seed area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "truth conformance".into(),
@@ -64,18 +64,18 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
             theme: RequestTheme::default_dark(),
         })
         .await
-        .expect("seed wave");
-    (repo, wave.id)
+        .expect("seed track");
+    (repo, track.id)
 }
 
 fn write_context() -> WriteContext {
-    WriteContext::new(CardRoleCache::new(), WaveAreaCache::new())
+    WriteContext::new(CardRoleCache::new(), TrackAreaCache::new())
 }
 
-fn session(id: &str, wave_id: WaveId) -> WorkerSession {
+fn session(id: &str, track_id: TrackId) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
-        wave_id,
+        track_id,
         provider: WorkerProviderKind::Codex,
         mode: SessionMode::Resumable,
         contract: WorkerContract::Planner,
@@ -131,7 +131,7 @@ impl DecisionGate for DenyGate {
 
 #[derive(Debug)]
 struct DenyOnRoot {
-    wave_id: WaveId,
+    track_id: TrackId,
     caller_session_id: WorkerSessionId,
 }
 
@@ -147,12 +147,12 @@ impl DecisionGate for DenyOnRoot {
     where
         T: WriteTx + ?Sized + Send,
     {
-        let root = tx.read_wave_root_session_id(&self.wave_id).await?;
+        let root = tx.read_track_root_session_id(&self.track_id).await?;
         if root.as_ref() == Some(&self.caller_session_id) {
             Ok(GateDecision::Allow)
         } else {
             Ok(GateDecision::Deny(format!(
-                "session {} is not wave root",
+                "session {} is not track root",
                 self.caller_session_id
             )))
         }
@@ -163,10 +163,10 @@ pub async fn invariant_t1_decision_write_couples_state_and_event<G>(gate: Arc<G>
 where
     G: DecisionGate + 'static,
 {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let bus = EventBus::new();
     let write = write_context();
-    let state = session("ws-t1", wave_id);
+    let state = session("ws-t1", track_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
     let before = repo
@@ -208,8 +208,8 @@ where
 }
 
 pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
-    let (repo, wave_id) = seeded_repo().await;
-    let state = session("ws-t1-saga", wave_id);
+    let (repo, track_id) = seeded_repo().await;
+    let state = session("ws-t1-saga", track_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
     let before = repo
@@ -244,10 +244,10 @@ pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
 }
 
 pub async fn invariant_t1_denied_decision_rolls_back_state_and_event() {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let bus = EventBus::new();
     let write = write_context();
-    let state = session("ws-t1-denied", wave_id);
+    let state = session("ws-t1-denied", track_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
     let before = repo
@@ -283,21 +283,21 @@ pub async fn invariant_t1_denied_decision_rolls_back_state_and_event() {
     assert_eq!(after.len(), before);
 }
 
-pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
-    let (repo, wave_id) = seeded_repo().await;
+pub async fn invariant_t1_gate_can_read_track_root_inside_tx() {
+    let (repo, track_id) = seeded_repo().await;
     let bus = EventBus::new();
     let write = write_context();
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
     let root_id = WorkerSessionId::from("ws-root");
-    let root_state = session(root_id.as_str(), wave_id.clone());
+    let root_state = session(root_id.as_str(), track_id.clone());
 
     write_in_tx_typed(&repo, move |tx| {
         Box::pin(async move { session_insert_tx(tx, root_state).await })
     })
     .await
     .expect("seed root session");
-    test_helpers::set_wave_root_session_for_test(&repo, &wave_id, Some(&root_id))
+    test_helpers::set_track_root_session_for_test(&repo, &track_id, Some(&root_id))
         .await
         .expect("set root session");
 
@@ -306,9 +306,9 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
         .await
         .expect("event count")
         .len();
-    let denied_state = session("ws-root-denied", wave_id.clone());
+    let denied_state = session("ws-root-denied", track_id.clone());
     let denied_gate = DenyOnRoot {
-        wave_id: wave_id.clone(),
+        track_id: track_id.clone(),
         caller_session_id: WorkerSessionId::from("ws-not-root"),
     };
     let denied = commit_decision(
@@ -324,7 +324,7 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
     )
     .await;
     assert!(
-        matches!(denied, Err(TruthError::Forbidden(ref reason)) if reason == "session ws-not-root is not wave root"),
+        matches!(denied, Err(TruthError::Forbidden(ref reason)) if reason == "session ws-not-root is not track root"),
         "expected root gate deny, got {denied:?}"
     );
     assert!(
@@ -341,9 +341,9 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
         before
     );
 
-    let allowed_state = session("ws-root-allowed", wave_id.clone());
+    let allowed_state = session("ws-root-allowed", track_id.clone());
     let allowed_gate = DenyOnRoot {
-        wave_id,
+        track_id,
         caller_session_id: root_id,
     };
     let (_inserted, event_id) = commit_decision(
@@ -376,10 +376,10 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
 }
 
 pub async fn invariant_t2_observation_writes_can_skip_events() {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let card = repo
         .card_create(NewCard {
-            wave_id,
+            track_id,
             title: None,
             kind: "plugin:test:worker".into(),
             sort: None,
@@ -454,11 +454,11 @@ pub async fn invariant_t3_state_is_not_fold_events<G>(gate: Arc<G>)
 where
     G: DecisionGate + 'static,
 {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let bus = EventBus::new();
     let write = write_context();
     let session_id = WorkerSessionId::from("ws-t3");
-    let state = session(session_id.as_str(), wave_id);
+    let state = session(session_id.as_str(), track_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
     let event = conformance_event("t3");
@@ -598,8 +598,8 @@ pub async fn t1_denied_decision_rolls_back_state_and_event() {
     invariant_t1_denied_decision_rolls_back_state_and_event().await;
 }
 
-pub async fn t1_gate_can_read_wave_root_inside_tx() {
-    invariant_t1_gate_can_read_wave_root_inside_tx().await;
+pub async fn t1_gate_can_read_track_root_inside_tx() {
+    invariant_t1_gate_can_read_track_root_inside_tx().await;
 }
 
 pub async fn t2_observation_writes_can_skip_events() {
@@ -633,7 +633,7 @@ fn provider_session(kind: &str, mode: SessionMode) -> WorkerSession {
     };
     WorkerSession {
         id: WorkerSessionId::from("ws-provider-conformance"),
-        wave_id: WaveId("wave-provider-conformance".into()),
+        track_id: TrackId("track-provider-conformance".into()),
         provider,
         mode,
         contract: WorkerContract::Planner,

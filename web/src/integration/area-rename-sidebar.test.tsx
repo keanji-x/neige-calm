@@ -41,14 +41,14 @@ import type { ReactNode } from 'react';
 // one of these. We control the resolutions per-test.
 vi.mock('../api/calm', () => ({
   listAreas: vi.fn(),
-  wavesInArea: vi.fn(),
-  getWaveDetail: vi.fn(),
+  tracksInArea: vi.fn(),
+  getTrackDetail: vi.fn(),
   createArea: vi.fn(),
   updateArea: vi.fn(),
   deleteArea: vi.fn(),
-  createWave: vi.fn(),
-  updateWave: vi.fn(),
-  deleteWave: vi.fn(),
+  createTrack: vi.fn(),
+  updateTrack: vi.fn(),
+  deleteTrack: vi.fn(),
   createCard: vi.fn(),
   updateCard: vi.fn(),
   deleteCard: vi.fn(),
@@ -125,10 +125,10 @@ function SidebarHost({ route }: { route: Route }) {
   const areasQ = useAreasQuery();
   const kernelAreas = (areasQ.data ?? []).filter((c) => c.kind === 'user');
   const areas: Area[] = kernelAreas.map(adaptArea);
-  // The "waves" prop is required by Sidebar. Pass an empty array — the
-  // rename path is independent of wave state, and the area-nav button
+  // The "tracks" prop is required by Sidebar. Pass an empty array — the
+  // rename path is independent of track state, and the area-nav button
   // text (the surface this test asserts) renders from `areas` alone.
-  return <Sidebar areas={areas} waves={[]} route={route} onGo={() => {}} />;
+  return <Sidebar areas={areas} tracks={[]} route={route} onGo={() => {}} />;
 }
 
 function Renamer({
@@ -286,7 +286,7 @@ describe('Issue #288 — area rename propagates to sidebar', () => {
           {targetArea && (
             <AreaPage
               area={targetArea}
-              waves={[]}
+              tracks={[]}
               onGo={() => {}}
               onRenameArea={async (id, name) => {
                 await update.mutateAsync({ id, body: { name } });

@@ -15,12 +15,12 @@ fn remove_workspace_dir_if_exists_treats_missing_as_success() {
 async fn acquire_workspace_lease_anchors_under_git_root_without_creating_leaf() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
@@ -35,7 +35,7 @@ async fn acquire_workspace_lease_anchors_under_git_root_without_creating_leaf() 
     assert!(target.path.starts_with(&target.repo_root));
 
     let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     assert_eq!(lease.path, target.path_string());
@@ -54,19 +54,19 @@ async fn acquire_workspace_lease_anchors_under_git_root_without_creating_leaf() 
 async fn worktree_mode_workspace_leased_is_not_ready_until_worktree_provisioned() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .unwrap();
     let (lease, leased) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -82,7 +82,7 @@ async fn worktree_mode_workspace_leased_is_not_ready_until_worktree_provisioned(
 
     provision_workspace_worktree(&target).unwrap();
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let scope = workspace_scope_tx(&mut tx, &card_id, &wave_id)
+    let scope = workspace_scope_tx(&mut tx, &card_id, &track_id)
         .await
         .unwrap();
     append_workspace_events_tx(
@@ -91,7 +91,7 @@ async fn worktree_mode_workspace_leased_is_not_ready_until_worktree_provisioned(
             ActorId::KernelDispatcher,
             scope,
             Event::WorktreeProvisioned {
-                wave_id: WaveId::from(wave_id.clone()),
+                track_id: TrackId::from(track_id.clone()),
                 card_id: CardId::from(card_id.clone()),
                 path: target.path_string(),
             },
@@ -109,14 +109,14 @@ async fn worktree_mode_workspace_leased_is_not_ready_until_worktree_provisioned(
 }
 
 #[tokio::test]
-async fn workspace_lease_target_rejects_non_git_wave_cwd_without_rows() {
+async fn workspace_lease_target_rejects_non_git_track_cwd_without_rows() {
     let tmp = tempfile::tempdir().unwrap();
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let err = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
@@ -133,10 +133,10 @@ async fn workspace_lease_target_rejects_non_git_wave_cwd_without_rows() {
 }
 
 #[tokio::test]
-async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_wave_cwd() {
+async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
     let tmp = tempfile::tempdir().unwrap();
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
-    let path = plain_workspace_lease_path_for(&wave_id, &card_id).unwrap();
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
+    let path = plain_workspace_lease_path_for(&track_id, &card_id).unwrap();
     assert!(
         !path.is_absolute(),
         "plain workspace lease path is legacy-relative"
@@ -144,7 +144,7 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_wave_cwd() {
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let (lease, _event) =
-        acquire_plain_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &path)
+        acquire_plain_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &path)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -167,8 +167,8 @@ fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
     init_git_repo(tmp.path());
     let target = WorkspaceLeaseTarget {
         repo_root: tmp.path().to_path_buf(),
-        path: tmp.path().join(".claude/worktrees/wave-a/card-a"),
-        branch: workspace_slice_branch_for("wave-a", "card-a").unwrap(),
+        path: tmp.path().join(".claude/worktrees/track-a/card-a"),
+        branch: workspace_slice_branch_for("track-a", "card-a").unwrap(),
     };
 
     provision_workspace_worktree(&target).unwrap();
@@ -194,8 +194,8 @@ fn workspace_worktree_provision_excludes_root_from_base_status() {
     init_git_repo(tmp.path());
     let target = WorkspaceLeaseTarget {
         repo_root: tmp.path().to_path_buf(),
-        path: tmp.path().join(".claude/worktrees/wave-clean/card-clean"),
-        branch: workspace_slice_branch_for("wave-clean", "card-clean").unwrap(),
+        path: tmp.path().join(".claude/worktrees/track-clean/card-clean"),
+        branch: workspace_slice_branch_for("track-clean", "card-clean").unwrap(),
     };
 
     provision_workspace_worktree(&target).unwrap();
@@ -221,8 +221,8 @@ fn workspace_worktree_provision_recreates_stale_registered_worktree() {
     init_git_repo(tmp.path());
     let target = WorkspaceLeaseTarget {
         repo_root: tmp.path().to_path_buf(),
-        path: tmp.path().join(".claude/worktrees/wave-stale/card-stale"),
-        branch: workspace_slice_branch_for("wave-stale", "card-stale").unwrap(),
+        path: tmp.path().join(".claude/worktrees/track-stale/card-stale"),
+        branch: workspace_slice_branch_for("track-stale", "card-stale").unwrap(),
     };
 
     provision_workspace_worktree(&target).unwrap();
@@ -264,8 +264,8 @@ fn workspace_worktree_provision_clears_stale_unregistered_non_empty_dir() {
         repo_root: tmp.path().to_path_buf(),
         path: tmp
             .path()
-            .join(".claude/worktrees/wave-unregistered/card-unregistered"),
-        branch: workspace_slice_branch_for("wave-unregistered", "card-unregistered").unwrap(),
+            .join(".claude/worktrees/track-unregistered/card-unregistered"),
+        branch: workspace_slice_branch_for("track-unregistered", "card-unregistered").unwrap(),
     };
     std::fs::create_dir_all(&target.path).unwrap();
     std::fs::write(target.path.join("stale.txt"), "partial worktree add\n").unwrap();
@@ -298,26 +298,26 @@ fn workspace_worktree_provision_clears_stale_unregistered_non_empty_dir() {
 }
 
 #[tokio::test]
-async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree() {
+async fn workspace_worktree_provision_resolves_exclude_for_linked_track_worktree() {
     let tmp = tempfile::tempdir().unwrap();
     let primary = tmp.path().join("primary");
     init_git_repo(&primary);
-    let linked = tmp.path().join("linked-wave");
+    let linked = tmp.path().join("linked-track");
     let linked_str = linked.to_str().unwrap();
     run_git(
         &primary,
-        ["worktree", "add", "-b", "linked-wave", linked_str],
+        ["worktree", "add", "-b", "linked-track", linked_str],
     );
     assert!(
         linked.join(".git").is_file(),
         "linked worktree .git is a gitdir file"
     );
 
-    let (repo, wave_id, card_id) = lease_fixture(&linked).await;
+    let (repo, track_id, card_id) = lease_fixture(&linked).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
@@ -328,7 +328,7 @@ async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree(
         linked.canonicalize().unwrap()
     );
     let (_lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -339,7 +339,7 @@ async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree(
     assert_eq!(
         git_stdout(&linked, ["status", "--short", "--untracked-files=all"]),
         "",
-        "linked wave worktree must stay clean after provisioning"
+        "linked track worktree must stay clean after provisioning"
     );
     let exclude_path = git_exclude_path(&linked).unwrap();
     assert_eq!(
@@ -372,19 +372,19 @@ async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree(
 async fn card_release_preserves_worktree_branch_and_emits_no_removed_event() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .unwrap();
     let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -423,19 +423,19 @@ async fn card_release_preserves_worktree_branch_and_emits_no_removed_event() {
 async fn rollback_removes_worktree_before_releasing_lease_row() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .unwrap();
     let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -476,19 +476,19 @@ async fn rollback_removes_worktree_before_releasing_lease_row() {
 async fn release_by_id_removes_artifact_before_workspace_released() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .unwrap();
     let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -528,22 +528,22 @@ async fn release_by_id_removes_artifact_before_workspace_released() {
 }
 
 #[tokio::test]
-async fn wave_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
+async fn track_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+    let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .unwrap();
     let (_lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -566,17 +566,17 @@ async fn wave_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
         .path()
         .join(".claude")
         .join("worktrees")
-        .join(&wave_id)
+        .join(&track_id)
         .join(plain_card_id);
     std::fs::create_dir_all(&plain_path).unwrap();
     std::fs::write(plain_path.join("leftover.txt"), "plain leftover\n").unwrap();
-    let plain_branch = workspace_slice_branch_for(&wave_id, plain_card_id).unwrap();
+    let plain_branch = workspace_slice_branch_for(&track_id, plain_card_id).unwrap();
     run_git(tmp.path(), ["branch", &plain_branch]);
-    let branch_only = workspace_slice_branch_for(&wave_id, "branch-only").unwrap();
+    let branch_only = workspace_slice_branch_for(&track_id, "branch-only").unwrap();
     run_git(tmp.path(), ["branch", &branch_only]);
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let release = release_workspace_leases_for_wave_tx(&mut tx, &wave_id)
+    let release = release_workspace_leases_for_track_tx(&mut tx, &track_id)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -585,40 +585,40 @@ async fn wave_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
         release.events.is_empty(),
         "released lease rows do not emit another workspace release"
     );
-    let sweep = release.sweep.expect("wave sweep plan");
+    let sweep = release.sweep.expect("track sweep plan");
     assert_eq!(
-        sweep_workspace_worktrees_for_wave_repo(&repo, &events, sweep.clone())
+        sweep_workspace_worktrees_for_track_repo(&repo, &events, sweep.clone())
             .await
             .unwrap(),
         2
     );
     assert!(
         !target.path.exists(),
-        "wave teardown sweeps preserved worktree paths"
+        "track teardown sweeps preserved worktree paths"
     );
     assert!(
         !plain_path.exists(),
-        "wave teardown sweeps leftover plain workspace dirs"
+        "track teardown sweeps leftover plain workspace dirs"
     );
     assert!(
         !git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
-        "wave teardown sweeps preserved slice branches"
+        "track teardown sweeps preserved slice branches"
     );
     assert!(
         !git_ref_exists(&target.repo_root, &format!("refs/heads/{plain_branch}")).unwrap(),
-        "wave teardown sweeps plain-dir slice branches"
+        "track teardown sweeps plain-dir slice branches"
     );
     assert!(
         !git_ref_exists(&target.repo_root, &format!("refs/heads/{branch_only}")).unwrap(),
-        "wave teardown sweeps branch-only slice branches"
+        "track teardown sweeps branch-only slice branches"
     );
     assert_eq!(event_kind_count(&repo, "worktree.removed").await, 2);
     assert_eq!(
-        sweep_workspace_worktrees_for_wave_repo(&repo, &events, sweep)
+        sweep_workspace_worktrees_for_track_repo(&repo, &events, sweep)
             .await
             .unwrap(),
         0,
-        "wave sweep is idempotent after paths are gone"
+        "track sweep is idempotent after paths are gone"
     );
     assert_eq!(
         event_kind_count(&repo, "worktree.removed").await,
@@ -628,24 +628,24 @@ async fn wave_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
 }
 
 #[tokio::test]
-async fn wave_sweep_uses_persisted_lease_paths_when_wave_cwd_is_deleted() {
+async fn track_sweep_uses_persisted_lease_paths_when_track_cwd_is_deleted() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
-    let wave_cwd = tmp.path().join("deleted-wave-cwd");
-    std::fs::create_dir_all(&wave_cwd).unwrap();
-    let (repo, wave_id, card_id) = lease_fixture(&wave_cwd).await;
+    let track_cwd = tmp.path().join("deleted-track-cwd");
+    std::fs::create_dir_all(&track_cwd).unwrap();
+    let (repo, track_id, card_id) = lease_fixture(&track_cwd).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let target = prepare_workspace_lease_target_tx(
         &mut tx,
-        &wave_id,
+        &track_id,
         &card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .unwrap();
     let (_lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &target)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -656,14 +656,14 @@ async fn wave_sweep_uses_persisted_lease_paths_when_wave_cwd_is_deleted() {
     release_workspace_lease_for_card_repo(&repo, &events, &card_id)
         .await
         .unwrap();
-    std::fs::remove_dir_all(&wave_cwd).unwrap();
+    std::fs::remove_dir_all(&track_cwd).unwrap();
     assert!(
-        git_repo_root_for_wave_cwd(&wave_id, wave_cwd.to_str().unwrap()).is_err(),
-        "test setup leaves wave.cwd unusable for git -C"
+        git_repo_root_for_track_cwd(&track_id, track_cwd.to_str().unwrap()).is_err(),
+        "test setup leaves track.cwd unusable for git -C"
     );
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let release = release_workspace_leases_for_wave_tx(&mut tx, &wave_id)
+    let release = release_workspace_leases_for_track_tx(&mut tx, &track_id)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -672,9 +672,9 @@ async fn wave_sweep_uses_persisted_lease_paths_when_wave_cwd_is_deleted() {
         release.events.is_empty(),
         "released lease rows do not emit another workspace release"
     );
-    let sweep = release.sweep.expect("wave sweep plan");
+    let sweep = release.sweep.expect("track sweep plan");
     assert_eq!(
-        sweep_workspace_worktrees_for_wave_repo(&repo, &events, sweep)
+        sweep_workspace_worktrees_for_track_repo(&repo, &events, sweep)
             .await
             .unwrap(),
         1
@@ -690,7 +690,7 @@ async fn wave_sweep_uses_persisted_lease_paths_when_wave_cwd_is_deleted() {
     assert_eq!(event_kind_count(&repo, "worktree.removed").await, 1);
 }
 
-async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String, String) {
+async fn lease_fixture(track_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String, String) {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
@@ -704,14 +704,14 @@ async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String,
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         &repo,
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "lease fixture".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -723,7 +723,7 @@ async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String,
     let card = crate::db::RepoSyncDomainRaw::card_create(
         &repo,
         crate::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -732,7 +732,7 @@ async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String,
     )
     .await
     .unwrap();
-    (repo, wave.id.to_string(), card.id.to_string())
+    (repo, track.id.to_string(), card.id.to_string())
 }
 
 async fn event_kind_count(repo: &crate::db::sqlite::SqlxRepo, kind: &str) -> i64 {

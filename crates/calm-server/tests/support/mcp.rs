@@ -10,7 +10,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::{BroadcastEnvelope, EventBus};
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -35,9 +35,9 @@ pub struct CardBoot {
     /// through THESE, not a private cache of its own, or the role gate
     /// will see a card with no role.
     pub card_role_cache: CardRoleCache,
-    pub wave_area_cache: calm_server::wave_area_cache::WaveAreaCache,
-    /// Home wave of the minted card(s).
-    pub wave_id: calm_server::ids::WaveId,
+    pub track_area_cache: calm_server::track_area_cache::TrackAreaCache,
+    /// Home track of the minted card(s).
+    pub track_id: calm_server::ids::TrackId,
     pub events: EventBus,
     pub card_id: String,
     /// Other card id tests may try to smuggle into tool args to prove the
@@ -53,11 +53,11 @@ pub struct CardBoot {
 
 /// Pin a card's **persisted** `cards.role` column.
 ///
-/// `Repo::card_create` mints everything that is not a `wave-report` as
+/// `Repo::card_create` mints everything that is not a `track-report` as
 /// `CardRole::Worker`, so a fixture that only writes the role into a
 /// `CardRoleCache` leaves the database disagreeing with the test's own
 /// story. That was harmless while every role check read the cache; #1189
-/// §3.6 made the recorder gate resolve session → card → `{role, wave}`
+/// §3.6 made the recorder gate resolve session → card → `{role, track}`
 /// with a live in-tx `cards` read, and a fixture whose "spec card" is
 /// persisted as a worker now denies for a reason the test never intended.
 ///
@@ -102,8 +102,8 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-test".into(),
@@ -128,7 +128,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         card_id.clone(),
         &runtime_id,
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -163,7 +163,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         other_card_id.clone(),
         &calm_server::model::new_id(),
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -184,12 +184,12 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
 
     let events = EventBus::new();
     let registry = build_default_registry();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -208,8 +208,8 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         repo,
         sqlx: sqlx_repo,
         card_role_cache,
-        wave_area_cache,
-        wave_id: wave.id.clone(),
+        track_area_cache,
+        track_id: track.id.clone(),
         events,
         card_id,
         other_card_id,

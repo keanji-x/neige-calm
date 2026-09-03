@@ -15,7 +15,7 @@ const NOW = 1_760_000_000_000;
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
-    id: 'c1', waveId: 'w1', waveTitle: 'Ship the rewrite', title: null, kind: 'codex',
+    id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: NOW, turns: 0,
     ...overrides,
   };

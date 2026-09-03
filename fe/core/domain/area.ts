@@ -1,4 +1,4 @@
-// Area: the workspace grouping a wave belongs to. Wire decode + the pure
+// Area: the workspace grouping a track belongs to. Wire decode + the pure
 // helpers every end shares. Platform-independent by construction — the
 // transport is injected at the call site (core/api/client.ts).
 
@@ -149,7 +149,7 @@ export function sortedAreaFolders(folders: readonly AreaFolder[]): AreaFolder[] 
 }
 
 /**
- * The structured body `POST /api/waves` answers a folder clash with (#275,
+ * The structured body `POST /api/tracks` answers a folder clash with (#275,
  * `area_folder_claim.rs`). It carries **no `error` key**, so the generic
  * failure normaliser in `core/api/client.ts` can only report the bare status
  * text — "Conflict" — and the reader is left with no idea which path or which
@@ -186,7 +186,7 @@ export function folderConflictMessage(conflict: FolderConflict, areaName: string
   switch (conflict.conflict_kind) {
     case 'descendant':
       return `That folder is already claimed by ${owner} (${conflict.conflict_path}). `
-        + 'Start the wave in that area, or pick a different folder.';
+        + 'Start the track in that area, or pick a different folder.';
     case 'ancestor':
       return `A narrower claim under ${conflict.conflict_path} (owned by ${owner}) blocks claiming `
         + 'this folder. Remove the inner claim first, or pick a different folder.';

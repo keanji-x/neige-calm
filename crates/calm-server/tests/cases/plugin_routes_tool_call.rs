@@ -1,5 +1,5 @@
 //! Integration tests for M3-mcp-apps **Slice M2**: the
-//! `POST /api/waves/:wave_id/cards` route's `via_tool_call` payload variant.
+//! `POST /api/tracks/:track_id/cards` route's `via_tool_call` payload variant.
 //!
 //! We boot a real `PluginHost`, install + spawn a `stub-plugin-toolcall`
 //! configured to return a deterministic `CallToolResult`, then drive the
@@ -25,7 +25,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -41,11 +41,11 @@ const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 // ---------------------------------------------------------------------------
 
 /// Test fixture: an `AppState` wired to a real `PluginHost`, an in-memory
-/// `SqlxRepo` pre-seeded with one area + one wave, and one installed `stub-toolcall`
+/// `SqlxRepo` pre-seeded with one area + one track, and one installed `stub-toolcall`
 /// plugin with configurable env vars (mode / resource_uri / structured).
 struct Fixture {
     state: AppState,
-    wave_id: String,
+    track_id: String,
     plugin_id: String,
     _tmp: tempfile::TempDir,
 }
@@ -79,8 +79,8 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "demo".into(),
@@ -143,7 +143,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
 
@@ -157,12 +157,12 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_area_cache — same rationale
+        None, // #234: track_area_cache — same rationale
     );
 
     Fixture {
         state,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         plugin_id: cfg.plugin_id.to_string(),
         _tmp: tmp,
     }
@@ -199,11 +199,11 @@ async fn body_to_json(resp: axum::http::Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-async fn post_create(app: axum::Router, wave_id: &str, body: Value) -> axum::http::Response<Body> {
+async fn post_create(app: axum::Router, track_id: &str, body: Value) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("POST")
-            .uri(format!("/api/waves/{wave_id}/cards"))
+            .uri(format!("/api/tracks/{track_id}/cards"))
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap(),
@@ -227,7 +227,7 @@ async fn via_tool_call_creates_card_with_ui_resource_uri() {
 
     let resp = post_create(
         app(fx.state.clone()),
-        &fx.wave_id,
+        &fx.track_id,
         json!({
             "via_tool_call": {
                 "plugin_id": fx.plugin_id,
@@ -241,14 +241,14 @@ async fn via_tool_call_creates_card_with_ui_resource_uri() {
     assert_eq!(resp.status(), StatusCode::CREATED, "expected 201 Created");
     let body = body_to_json(resp).await;
     assert_eq!(body["kind"], "ui://stub/status");
-    assert_eq!(body["wave_id"], fx.wave_id);
+    assert_eq!(body["track_id"], fx.track_id);
     assert_eq!(body["payload"], json!({ "msg": "hi" }));
 
     // Also confirm the row landed via the repo, not just echoed back.
     let cards = fx
         .state
         .repo
-        .cards_by_wave(&fx.wave_id)
+        .cards_by_track(&fx.track_id)
         .await
         .expect("list");
     assert_eq!(cards.len(), 1);
@@ -269,7 +269,7 @@ async fn via_tool_call_returns_422_when_meta_ui_resource_uri_absent() {
 
     let resp = post_create(
         app(fx.state.clone()),
-        &fx.wave_id,
+        &fx.track_id,
         json!({
             "via_tool_call": {
                 "plugin_id": fx.plugin_id,
@@ -288,7 +288,7 @@ async fn via_tool_call_returns_422_when_meta_ui_resource_uri_absent() {
     let cards = fx
         .state
         .repo
-        .cards_by_wave(&fx.wave_id)
+        .cards_by_track(&fx.track_id)
         .await
         .expect("list");
     assert!(cards.is_empty(), "no card should be created on 422 path");
@@ -307,7 +307,7 @@ async fn via_tool_call_returns_403_when_cards_create_not_granted() {
 
     let resp = post_create(
         app(fx.state.clone()),
-        &fx.wave_id,
+        &fx.track_id,
         json!({
             "via_tool_call": {
                 "plugin_id": fx.plugin_id,
@@ -325,7 +325,7 @@ async fn via_tool_call_returns_403_when_cards_create_not_granted() {
     let cards = fx
         .state
         .repo
-        .cards_by_wave(&fx.wave_id)
+        .cards_by_track(&fx.track_id)
         .await
         .expect("list");
     assert!(cards.is_empty());

@@ -268,7 +268,7 @@ fn task_payload_validates_every_field_and_unknown_fields() {
 }
 
 #[test]
-fn acceptance_4_missing_explicit_in_wave_and_null_spawn_normalize_identically() {
+fn acceptance_4_missing_explicit_in_track_and_null_spawn_normalize_identically() {
     let mut missing = valid_task();
     missing.as_object_mut().unwrap().remove("spawn");
     let explicit = valid_task();
@@ -278,7 +278,7 @@ fn acceptance_4_missing_explicit_in_wave_and_null_spawn_normalize_identically() 
         assert_eq!(validate_payload(KIND_TASK, payload), Ok(()));
     }
     let blocks = |payload: Value| {
-        vec![crate::wave_report::ReportBlock {
+        vec![crate::track_report::ReportBlock {
             id: "b_0001".into(),
             kind: KIND_TASK.into(),
             payload,
@@ -294,7 +294,7 @@ fn acceptance_4_missing_explicit_in_wave_and_null_spawn_normalize_identically() 
 }
 
 #[test]
-fn acceptance_23_sub_wave_rejects_claude_and_terminal_at_common_write_validation() {
+fn acceptance_23_sub_track_rejects_claude_and_terminal_at_common_write_validation() {
     for kind in ["claude", "terminal"] {
         let mut payload = valid_task();
         payload["kind"] = json!(kind);

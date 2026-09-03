@@ -27,7 +27,7 @@
   "events-driver-handmade-subscription": [
     "web/src/app/composition.test.tsx"
   ],
-  "app-adapter-drop-wave-invalidation": [
+  "app-adapter-drop-track-invalidation": [
     "web/src/app/events/event-bridge.contract.test.tsx",
     "web/src/app/events/query-invalidation-adapter.test.ts",
     "web/src/app/router/today-document.test.tsx"

@@ -51,16 +51,16 @@ export type ConversationRegistry = Readonly<{
    *
    * Carried beside the id rather than folded into it because the two questions
    * have different answers: every open request names a conversation, and only
-   * the one a just-created wave makes wants the caret — a reader who opened a
+   * the one a just-created track makes wants the caret — a reader who opened a
    * row from Today asked to *read* it.
    */
   requestedOpenFocusesComposer: boolean;
   requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
-  /* There is deliberately no "open the spec conversation of wave W" slot here
-     (#1211 S2). It was one, and a global slot cannot own that intent: the wave
+  /* There is deliberately no "open the spec conversation of track W" slot here
+     (#1211 S2). It was one, and a global slot cannot own that intent: the track
      the reader is leaving is still mounted when a create states it, and every
-     wave route body can read and clear a slot addressed to a different one.
+     track route body can read and clear a slot addressed to a different one.
      The intent now travels in the history entry the create navigates to —
      `app/router/navigation.ts`, `useSpecOpenIntent` — and reaches this
      registry only as the ordinary `requestOpen` the target route issues once

@@ -269,20 +269,20 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   'absolute', 'relative', 'static', 'fixed', 'sticky', 'block', 'inline', 'flex', 'grid', 'none',
   'auto', 'hidden', 'visible', 'top', 'left', 'right', 'bottom', 'center', 'start', 'end',
   // Domain words so pervasive in this repo that every candidate file contains them.
-  'card', 'cards', 'wave', 'waves', 'task', 'tasks', 'panel', 'panels', 'page', 'pages', 'user',
+  'card', 'cards', 'track', 'tracks', 'task', 'tasks', 'panel', 'panels', 'page', 'pages', 'user',
   'users', 'agent', 'agents', 'server', 'client', 'api', 'app', 'core', 'web', 'test', 'tests',
   // The same shape, found the hard way: each of these is a whole subsystem of this repo, so it occurs in
   // any file a statement about that subsystem could plausibly cite, and hitting it proves only that the
   // author cited a file from the right area — never that the cited *lines* carry the claim.
   //   `theme` / `themes`   — 89 sources: the theme token pipeline, every terminal theme, every fixture
-  //                          that builds a wave (`theme: { fg, bg }`). It is what made E2E-INV-INFRA-019
+  //                          that builds a track (`theme: { fg, bg }`). It is what made E2E-INV-INFRA-019
   //                          go green on a helper that sends a *valid* body, while that entry's statement
   //                          then claimed a body *missing* the field is rejected. (#1148 has since narrowed
   //                          the statement to the seed helper's own body literal, so it no longer claims the
   //                          rejection at all; the word stays on this list for the general reason above.)
   //   `terminal` / `terminals` — 110 sources: a card kind, a route segment, a CSS namespace.
   //   `codex`              — 105 sources: the agent backend's name, in imports, types and copy alike.
-  //   `area` / `areas`     — 110/61 sources: the top-level container every wave hangs off.
+  //   `area` / `areas`     — 110/61 sources: the top-level container every track hangs off.
   //   `report` / `reports` — 117 sources: a card kind, a page, a rail, an API noun.
   'theme', 'themes', 'terminal', 'terminals', 'codex', 'area', 'areas', 'report', 'reports',
 ]);
@@ -447,11 +447,11 @@ const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 const ANCHOR_PENDING_IDS: ReadonlySet<string> = new Set([
   'CAP-NEWTASK-029', 'E2E-CAP-ADDPANEL-005', 'E2E-CAP-ADDPANEL-007', 'E2E-CAP-CWD-005', 'E2E-CAP-DELETE-001',
   'E2E-CAP-RENAME-015', 'E2E-CAP-SYNC-009', 'E2E-CAP-TERMINAL-009', 'E2E-CAP-VIEWMODE-021',
-  'E2E-CAP-WAVECREATE-003', 'E2E-CAP-WAVECREATE-007', 'E2E-CAP-WAVECREATE-014', 'E2E-CAP-WAVECREATE-020',
+  'E2E-CAP-TRACKCREATE-003', 'E2E-CAP-TRACKCREATE-007', 'E2E-CAP-TRACKCREATE-014', 'E2E-CAP-TRACKCREATE-020',
   'E2E-INV-ADDPANEL-009', 'E2E-INV-DELETE-002', 'E2E-INV-DELETE-005', 'E2E-INV-INFRA-038',
   'E2E-INV-LIFECYCLE-012', 'E2E-INV-REPORT-008', 'E2E-INV-SPECCHAT-011', 'E2E-INV-TERMINAL-005',
-  'E2E-INV-TERMINAL-010', 'E2E-INV-TERMTHEME-003', 'E2E-INV-TERMTHEME-007', 'E2E-INV-WAVECREATE-006',
-  'E2E-INV-WAVECREATE-011', 'E2E-INV-WHEEL-002', 'E2E-INV-WHEEL-003', 'INV-CARD-128', 'INV-SPECCONVO-004',
+  'E2E-INV-TERMINAL-010', 'E2E-INV-TERMTHEME-003', 'E2E-INV-TERMTHEME-007', 'E2E-INV-TRACKCREATE-006',
+  'E2E-INV-TRACKCREATE-011', 'E2E-INV-WHEEL-002', 'E2E-INV-WHEEL-003', 'INV-CARD-128', 'INV-SPECCONVO-004',
 ]);
 const ANCHOR_PENDING_MAXIMUM = 30;
 const PENDING_NOTE = 'anchor-pending.json is not a baseline: these anchors are known to anchor nothing, '

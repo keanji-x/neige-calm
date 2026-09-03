@@ -7,10 +7,10 @@ use crate::validation::{
     OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
 };
 
-/// True when the kernel view/template overlay is present for `wave_id`.
-pub async fn wave_has_template_overlay_tx(
+/// True when the kernel view/template overlay is present for `track_id`.
+pub async fn track_has_template_overlay_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<bool> {
     let found: Option<i64> = sqlx::query_scalar(
         r#"SELECT 1 FROM overlays
@@ -22,7 +22,7 @@ pub async fn wave_has_template_overlay_tx(
     )
     .bind(OVERLAY_TEMPLATE_PLUGIN_ID)
     .bind(OVERLAY_TEMPLATE_ENTITY_KIND)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(OVERLAY_TEMPLATE_KIND)
     .fetch_optional(&mut **tx)
     .await?;
@@ -78,7 +78,7 @@ pub async fn overlay_delete_tx(
 }
 
 /// Drop every overlay row addressed at the given `(entity_kind, entity_id)`,
-/// across all `plugin_id`s and all `kind`s. Used by the card / wave / area
+/// across all `plugin_id`s and all `kind`s. Used by the card / track / area
 /// delete paths to keep the table from growing orphans; the `overlays`
 /// schema has no FK because SQLite can't express polymorphic ones.
 pub async fn overlay_delete_by_entity_tx(
@@ -95,29 +95,29 @@ pub async fn overlay_delete_by_entity_tx(
 }
 
 /// Drop every card-scoped overlay for cards still belonging to the given
-/// wave, in the caller's transaction. Race-safe replacement for "read
-/// cards_by_wave, loop, sweep" — the IN subquery sees the same DB state
-/// the subsequent `wave_delete_tx` cascade will see, so a card+overlay
+/// track, in the caller's transaction. Race-safe replacement for "read
+/// cards_by_track, loop, sweep" — the IN subquery sees the same DB state
+/// the subsequent `track_delete_tx` cascade will see, so a card+overlay
 /// created between an outside-tx snapshot and the txn commit is still
 /// caught.
-pub async fn overlay_delete_card_overlays_by_wave_tx(
+pub async fn overlay_delete_card_overlays_by_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<u64> {
     let res = sqlx::query(
         r#"DELETE FROM overlays
            WHERE entity_kind = 'card'
-             AND entity_id IN (SELECT id FROM cards WHERE wave_id = ?1)"#,
+             AND entity_id IN (SELECT id FROM cards WHERE track_id = ?1)"#,
     )
-    .bind(wave_id)
+    .bind(track_id)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())
 }
 
-/// Drop every card-scoped and wave-scoped (`'wave'` + `'view'`) overlay
+/// Drop every card-scoped and track-scoped (`'track'` + `'view'`) overlay
 /// under the area, in the caller's transaction. Same race-safe shape as
-/// `overlay_delete_card_overlays_by_wave_tx`. Caller still needs to
+/// `overlay_delete_card_overlays_by_track_tx`. Caller still needs to
 /// sweep `('area', area_id)` separately — plugins may address overlays
 /// at the area kind.
 pub async fn overlay_delete_subtree_by_area_tx(
@@ -131,7 +131,7 @@ pub async fn overlay_delete_subtree_by_area_tx(
            WHERE entity_kind = 'card'
              AND entity_id IN (
                SELECT c.id FROM cards c
-               JOIN waves w ON w.id = c.wave_id
+               JOIN tracks w ON w.id = c.track_id
                WHERE w.area_id = ?1
              )"#,
     )
@@ -139,14 +139,14 @@ pub async fn overlay_delete_subtree_by_area_tx(
     .execute(&mut **tx)
     .await?
     .rows_affected();
-    let waves = sqlx::query(
+    let tracks = sqlx::query(
         r#"DELETE FROM overlays
-           WHERE entity_kind IN ('wave', 'view')
-             AND entity_id IN (SELECT id FROM waves WHERE area_id = ?1)"#,
+           WHERE entity_kind IN ('track', 'view')
+             AND entity_id IN (SELECT id FROM tracks WHERE area_id = ?1)"#,
     )
     .bind(area_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();
-    Ok(cards + waves)
+    Ok(cards + tracks)
 }

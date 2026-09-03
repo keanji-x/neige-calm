@@ -27,7 +27,7 @@ use calm_server::db::sqlite::{SqlxRepo, overlay_upsert_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewOverlay, NewWave};
+use calm_server::model::{NewArea, NewOverlay, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -53,7 +53,7 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
             events,
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -323,7 +323,7 @@ async fn uppercase_ai_id_rejected() {
 async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let (_app, repo, state) = boot().await;
 
-    // Seed a wave so the overlay upsert has a real entity to target.
+    // Seed a track so the overlay upsert has a real entity to target.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),
@@ -332,8 +332,8 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -356,23 +356,23 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let actor = ActorId::Plugin(plugin_id.to_string());
     let new_overlay = NewOverlay {
         plugin_id: plugin_id.to_string(),
-        entity_kind: "wave".into(),
-        entity_id: wave.id.to_string(),
+        entity_kind: "track".into(),
+        entity_id: track.id.to_string(),
         kind: "status".into(),
         payload: serde_json::json!({ "state": "Idle" }),
     };
     let (overlay, event_id) = write_with_event_typed(
         state.repo.as_ref(),
         actor,
-        EventScope::Wave {
-            wave: wave.id.clone(),
+        EventScope::Track {
+            track: track.id.clone(),
             area: area.id.clone(),
         },
         None,
         &state.events,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -405,7 +405,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
 // ---------------------------------------------------------------------------
 //
 // Drive the REST surface end-to-end and assert the resulting `events` row
-// carries `scope_kind = 'card'` plus the full `scope_card` / `scope_wave`
+// carries `scope_kind = 'card'` plus the full `scope_card` / `scope_track`
 // / `scope_area` ancestor chain. This is the spot-check the issue brief
 // calls out — a single test that exercises the whole pipeline (route →
 // `card_scope` helper → `write_with_event_typed` → `event_append_in_tx`
@@ -415,7 +415,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
 async fn create_card_stamps_full_scope_chain() {
     let (app, repo, _state) = boot().await;
 
-    // Seed an area + wave so the card has somewhere to live.
+    // Seed an area + track so the card has somewhere to live.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),
@@ -424,8 +424,8 @@ async fn create_card_stamps_full_scope_chain() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -448,7 +448,7 @@ async fn create_card_stamps_full_scope_chain() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/waves/{}/cards", wave.id))
+                .uri(format!("/api/tracks/{}/cards", track.id))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -463,7 +463,7 @@ async fn create_card_stamps_full_scope_chain() {
     // The most recent event row is the one we just produced. Read every
     // scope_* column and assert the full chain is populated.
     let row: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT scope_kind, scope_area, scope_wave, scope_card
+        "SELECT scope_kind, scope_area, scope_track, scope_card
          FROM events ORDER BY id DESC LIMIT 1",
     )
     .fetch_one(repo.pool())
@@ -477,8 +477,8 @@ async fn create_card_stamps_full_scope_chain() {
     );
     assert_eq!(
         row.2.as_deref(),
-        Some(wave.id.as_str()),
-        "scope_wave populated"
+        Some(track.id.as_str()),
+        "scope_track populated"
     );
     assert_eq!(
         row.3.as_deref(),

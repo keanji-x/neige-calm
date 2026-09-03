@@ -1,7 +1,7 @@
 /**
  * Host-theme RGB tuples (#177) — shared between `XtermView` (theme
  * apply + mid-session `TerminalThemeUpdate` dispatch) and the
- * card/wave-create POSTs in `app/router.tsx` / `hooks/useTodayTerminal.ts`.
+ * card/track-create POSTs in `app/router.tsx` / `hooks/useTodayTerminal.ts`.
  *
  * Wire shape matches the server's `RequestTheme` / the daemon's
  * `TerminalTheme` value type: `{ fg: [r, g, b], bg: [r, g, b] }`. The

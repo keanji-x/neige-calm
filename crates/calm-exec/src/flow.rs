@@ -8,7 +8,7 @@ use calm_types::worker_flow::WorkerFlowItem;
 /// Identifiers stamped onto each captured item.
 pub struct FlowRowCtx {
     pub session_id: calm_types::worker::WorkerSessionId,
-    pub wave_id: Option<String>,
+    pub track_id: Option<String>,
     pub card_id: Option<String>,
 }
 

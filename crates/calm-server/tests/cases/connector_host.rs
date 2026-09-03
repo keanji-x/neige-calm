@@ -31,7 +31,7 @@
 //! the API key must appear in NO error sink (`Unavailable` reason, `/enable`
 //! body, `tools_call` error) for either a refused connection or a hung
 //! upstream; and a connector's card-creation refusal is asserted by driving
-//! the REAL `POST /api/waves/{id}/cards` route, not its two accessors.
+//! the REAL `POST /api/tracks/{id}/cards` route, not its two accessors.
 //!
 //! §4 #2 and #9 (discovery + underscore routing) are unit tests against the
 //! production projection/route functions in `mcp_server::transport`. §4 #4 —
@@ -528,7 +528,7 @@ impl Boot {
             self.events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         ))
     }
@@ -547,8 +547,8 @@ impl Boot {
 }
 
 impl Boot {
-    /// One area + one wave, so a test can drive `POST /api/waves/{id}/cards`.
-    async fn seed_wave(&self) -> String {
+    /// One area + one track, so a test can drive `POST /api/tracks/{id}/cards`.
+    async fn seed_track(&self) -> String {
         let area = self
             .repo
             .area_create(calm_server::model::NewArea {
@@ -559,7 +559,7 @@ impl Boot {
             .await
             .unwrap();
         self.repo
-            .wave_create(calm_server::model::NewWave {
+            .track_create(calm_server::model::NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "demo".into(),
@@ -841,7 +841,7 @@ async fn secrets_json_values_never_appear_in_any_plugin_api_response() {
 /// secret appears in NONE of the three sinks a `ureq` transport error reaches:
 /// the `Unavailable` reason (persisted + broadcast as
 /// `Event::PluginState.last_error`), the `POST /enable` 503 body, and the
-/// `tools_call` error that becomes wave transcript text.
+/// `tools_call` error that becomes track transcript text.
 ///
 /// The leak this pins: `ureq::Error`'s `Display` prints the FULL URL first, and
 /// `HttpMcpClient::new` folds the API key into that URL's query string.
@@ -921,7 +921,7 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
             "{label}: the API key leaked into last_error: {reason}"
         );
 
-        // Sink 4: a `tools_call` failure, which becomes wave transcript text.
+        // Sink 4: a `tools_call` failure, which becomes track transcript text.
         // Build the client the same way `spawn_mcp_http` does, then call it
         // against the same dead/hung upstream.
         let manifest = state.plugin.registry().get(CONNECTOR_ID).unwrap();
@@ -2323,7 +2323,7 @@ async fn a_long_running_tools_call_outlives_the_bringup_budget() {
 
 /// An upstream that quotes our own query string back inside `tools/list`
 /// descriptions and `tools/call` results is the success-path leak: those
-/// strings become `ExposedTool` entries agents read and wave-transcript
+/// strings become `ExposedTool` entries agents read and track-transcript
 /// payloads. Nothing here is an error path, so `MAX_UPSTREAM_DETAIL_CHARS` and
 /// the 4xx arm are not involved — this is the JSON-tree scrub.
 #[tokio::test]
@@ -2352,7 +2352,7 @@ async fn a_success_path_that_echoes_the_query_never_leaks_the_key() {
     assert!(!catalog.contains(SECRET_VALUE), "{catalog}");
     assert!(catalog.contains("<redacted>"), "{catalog}");
 
-    // 2. The `tools/call` result — what reaches the wave transcript.
+    // 2. The `tools/call` result — what reaches the track transcript.
     let ConnectorClient::Http(client) = host
         .connector_client(CONNECTOR_ID)
         .await
@@ -2693,7 +2693,7 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
     let host = b.host();
     seed_row(&b, CONNECTOR_ID).await;
     host.spawn(CONNECTOR_ID).await.expect("connector spawns");
-    let wave_id = b.seed_wave().await;
+    let track_id = b.seed_track().await;
     let state = b.state(Arc::clone(&host));
 
     // Drive the REAL route. Asserting only on the two accessors would pass
@@ -2702,7 +2702,7 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/waves/{wave_id}/cards"))
+                .uri(format!("/api/tracks/{track_id}/cards"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -2744,7 +2744,12 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
          sends them to debug the wrong thing: {body}"
     );
     assert!(
-        state.repo.cards_by_wave(&wave_id).await.unwrap().is_empty(),
+        state
+            .repo
+            .cards_by_track(&track_id)
+            .await
+            .unwrap()
+            .is_empty(),
         "no card may have been written"
     );
 
@@ -2754,7 +2759,7 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/waves/{wave_id}/cards"))
+                .uri(format!("/api/tracks/{track_id}/cards"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -3174,7 +3179,7 @@ async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() 
 
 /// `scrub_value` deliberately does not descend into JSON numbers, so an
 /// upstream that echoes a number-shaped credential back as `{"k": 12345678}` in
-/// `structuredContent` would put it in the tool result and the wave transcript
+/// `structuredContent` would put it in the tool result and the track transcript
 /// with nothing to redact. Round 4 classified that as an accepted residual;
 /// it is a disclosure. The credential is refused instead.
 ///
@@ -3230,7 +3235,7 @@ async fn a_number_shaped_credential_never_reaches_the_wire() {
 /// One scrub pass never rescans what it wrote, so a credential that shares text
 /// with `<redacted>` can be re-formed out of its own redaction: with
 /// `redacted>y`, the upstream string `redacted>yy` scrubs to `<redacted>y`,
-/// which carries the credential verbatim into `ExposedTool` and the wave
+/// which carries the credential verbatim into `ExposedTool` and the track
 /// transcript. Round 3 accepted these credentials and recorded the leak as an
 /// open residual; they are refused now.
 ///

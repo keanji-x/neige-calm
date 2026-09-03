@@ -3,7 +3,7 @@
 // columns, and an accent-soft inset on the highlighted row. No outer frame;
 // the 748px breakout itself is the visual event.
 
-import type { TableBlockPayload } from '../../cards/builtins/wave-report';
+import type { TableBlockPayload } from '../../cards/builtins/track-report';
 
 function alignClass(align: 'left' | 'right' | undefined): string {
   return align === 'right' ? 'rb-align-right' : 'rb-align-left';

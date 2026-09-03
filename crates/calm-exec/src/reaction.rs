@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use calm_types::error::CoreError;
 use calm_types::event::ArtifactRef;
-use calm_types::ids::WaveId;
-use calm_types::model::WaveLifecycle;
+use calm_types::ids::TrackId;
+use calm_types::model::TrackLifecycle;
 use calm_types::observation::Observation;
 use calm_types::worker::Principal;
 use serde_json::Value;
@@ -13,15 +13,15 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DecisionIntent {
-    /// Edge legality remains with `wave_lifecycle::validate_transition`.
+    /// Edge legality remains with `track_lifecycle::validate_transition`.
     LifecycleTransition {
-        wave_id: WaveId,
-        to: WaveLifecycle,
+        track_id: TrackId,
+        to: TrackLifecycle,
         agent_message: Option<String>,
     },
     /// `None` leaves that half unchanged.
     ReportWrite {
-        wave_id: WaveId,
+        track_id: TrackId,
         summary: Option<String>,
         body: Option<String>,
         agent_message: Option<String>,

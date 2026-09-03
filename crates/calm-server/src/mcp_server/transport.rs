@@ -42,7 +42,7 @@ use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolDescriptor, ToolRegistry,
     require_role_any,
 };
-use crate::mcp_server::tool_visibility::{WavePluginScope, plugin_scope_for_wave};
+use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
 use crate::model::CardRole;
 use crate::model::{new_id, now_ms};
 use crate::operation::forge_action_adapter::{
@@ -53,7 +53,7 @@ use crate::plugin_host::ConnectorClient;
 use crate::plugin_host::manifest::ToolKind;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
-use calm_truth::wave_vcs_repo::SqlxWaveVcsRepo;
+use calm_truth::track_vcs_repo::SqlxTrackVcsRepo;
 use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
 use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
@@ -190,11 +190,11 @@ impl McpServer {
                 .map_err(|e| anyhow::anyhow!("chmod mcp socket {}: {e}", socket_path.display()))?;
         }
 
-        let wave_vcs = repo.sqlite_pool().map(SqlxWaveVcsRepo::shared);
+        let track_vcs = repo.sqlite_pool().map(SqlxTrackVcsRepo::shared);
         let route_repo: Arc<dyn RouteRepo> = repo;
         let ctx = Arc::new(AppContext {
             repo: route_repo,
-            wave_vcs,
+            track_vcs,
             events,
             write,
             daemon_token_hash,
@@ -424,10 +424,10 @@ async fn dispatch_request(
                     {
                         Some(identity) => {
                             // #891 slice ④ — plugin tools are scoped to the
-                            // resolved thread's wave (bound template ⇒ owning
+                            // resolved thread's track (bound template ⇒ owning
                             // plugin only).
                             let scope =
-                                plugin_scope_for_wave(ctx, identity.wave_id.as_deref()).await;
+                                plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
                             let mut descriptors = registry.descriptors_for_role(identity.role);
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
@@ -439,12 +439,12 @@ async fn dispatch_request(
                             descriptors
                         }
                         None => {
-                            // Unresolvable threadId: no wave context, so the
+                            // Unresolvable threadId: no track context, so the
                             // shared scope function yields the union (F7 —
                             // "discovery wide, dispatch strict"); tools/call
                             // still resolves + enforces per-thread identity
-                            // and per-wave scope.
-                            let scope = plugin_scope_for_wave(ctx, None).await;
+                            // and per-track scope.
+                            let scope = plugin_scope_for_track(ctx, None).await;
                             let mut descriptors =
                                 registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
                             descriptors.extend(plugin_tool_descriptors(ctx, &scope).await);
@@ -455,12 +455,12 @@ async fn dispatch_request(
                     // a thread is attributed. Discovery can safely return the
                     // role-visible union because tools/call still resolves and
                     // enforces the exact per-thread identity (and, per #891
-                    // slice ④, the per-wave plugin scope). With no wave to
+                    // slice ④, the per-track plugin scope). With no track to
                     // key on, the shared scope function deliberately keeps the
                     // union here (决策记录 F7): the residual exposure is tool
                     // *names* only.
                     None => {
-                        let scope = plugin_scope_for_wave(ctx, None).await;
+                        let scope = plugin_scope_for_track(ctx, None).await;
                         let mut descriptors =
                             registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
                         descriptors.extend(plugin_tool_descriptors(ctx, &scope).await);
@@ -474,7 +474,7 @@ async fn dispatch_request(
                     {
                         Some(identity) if same_bound_session(&identity, bound) => {
                             let scope =
-                                plugin_scope_for_wave(ctx, identity.wave_id.as_deref()).await;
+                                plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
                             let mut descriptors = registry.descriptors_for_role(identity.role);
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
@@ -492,11 +492,11 @@ async fn dispatch_request(
                         _ => Vec::new(),
                     },
                     None => {
-                        // The bound card's identity carries the wave the
-                        // per-wave plugin scope keys on — no extra query.
+                        // The bound card's identity carries the track the
+                        // per-track plugin scope keys on — no extra query.
                         let card =
                             ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
-                        let scope = plugin_scope_for_wave(ctx, Some(card.wave_id.as_str())).await;
+                        let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
                         let mut descriptors = registry.descriptors_for_role(bound.role);
                         extend_plugin_tool_descriptors_for_role(
                             ctx,
@@ -540,7 +540,7 @@ async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
     role: CardRole,
-    scope: &WavePluginScope,
+    scope: &TrackPluginScope,
 ) {
     if PLUGIN_TOOL_ROLES.contains(&role) {
         descriptors.extend(plugin_tool_descriptors(ctx, scope).await);
@@ -552,7 +552,7 @@ async fn extend_plugin_tool_descriptors_for_role(
 /// purely role-gated.
 async fn plugin_tool_descriptors(
     ctx: &Arc<AppContext>,
-    scope: &WavePluginScope,
+    scope: &TrackPluginScope,
 ) -> Vec<ToolDescriptor> {
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
         return Vec::new();
@@ -572,7 +572,7 @@ async fn plugin_tool_descriptors(
 fn plugin_tool_descriptors_from(
     manifests: Vec<crate::plugin_host::Manifest>,
     running_ids: &BTreeSet<String>,
-    scope: &WavePluginScope,
+    scope: &TrackPluginScope,
 ) -> Vec<ToolDescriptor> {
     let mut descriptors = Vec::new();
     for manifest in manifests {
@@ -698,12 +698,12 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     };
 
-    // #891 slice ④ — dispatch-side per-wave scope enforcement (the strict
-    // half of "discovery wide, dispatch strict"): a wave bound to a template
+    // #891 slice ④ — dispatch-side per-track scope enforcement (the strict
+    // half of "discovery wide, dispatch strict"): a track bound to a template
     // may only call the owning plugin's tools. Rejected via `unknown_tool` —
-    // the same object an unknown tool gets — so a bound wave cannot probe
+    // the same object an unknown tool gets — so a bound track cannot probe
     // for the existence of other plugins' tools.
-    if !plugin_scope_for_wave(ctx, identity.wave_id.as_deref())
+    if !plugin_scope_for_track(ctx, identity.track_id.as_deref())
         .await
         .allows(&plugin_id)
     {
@@ -860,7 +860,7 @@ pub(crate) struct ForgeActionSubmission {
 pub(crate) async fn submit_forge_action(
     ctx: &Arc<AppContext>,
     plugin_id: &str,
-    wave_id: String,
+    track_id: String,
     card_id: String,
     cwd_lease: PathBuf,
     payload: PluginForgePayload,
@@ -872,7 +872,7 @@ pub(crate) async fn submit_forge_action(
     };
 
     let parked = payload.parked;
-    let idempotency_key = format!("{plugin_id}:{wave_id}:{card_id}:{}", payload.idem_key);
+    let idempotency_key = format!("{plugin_id}:{track_id}:{card_id}:{}", payload.idem_key);
     let result_path = forge_result_path(&ctx.gate_logs_dir, &idempotency_key)?;
     let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
@@ -882,7 +882,7 @@ pub(crate) async fn submit_forge_action(
         payload_hash: semantic_payload_hash(&payload)?,
     };
     let forge_payload = ForgeActionPayload {
-        wave_id,
+        track_id,
         card_id,
         subject: payload.subject,
         argv: payload.argv,
@@ -928,15 +928,15 @@ async fn dispatch_forge_action_plugin_tool(
 
     validate_plugin_forge_payload(&payload)?;
 
-    let wave_id = identity
-        .wave_id
+    let track_id = identity
+        .track_id
         .clone()
-        .ok_or_else(|| RpcError::invalid_params("forge action requires a wave-scoped caller"))?;
+        .ok_or_else(|| RpcError::invalid_params("forge action requires a track-scoped caller"))?;
     let card_id = identity.card_id.clone();
-    let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
+    let cwd_lease = resolve_forge_cwd(ctx, &identity, &track_id).await?;
 
     let submitted =
-        match submit_forge_action(ctx, plugin_id, wave_id, card_id, cwd_lease, payload).await? {
+        match submit_forge_action(ctx, plugin_id, track_id, card_id, cwd_lease, payload).await? {
             Ok(submitted) => submitted,
             Err(e) => return Ok(mcp_error_result(e)),
         };
@@ -985,27 +985,27 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
 async fn resolve_forge_cwd(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<PathBuf, RpcError> {
-    let wave = ctx
+    let track = ctx
         .repo
-        .wave_get(wave_id)
+        .track_get(track_id)
         .await
-        .map_err(|e| RpcError::internal(format!("forge action wave lookup: {e}")))?
-        .ok_or_else(|| RpcError::invalid_params(format!("unknown wave `{wave_id}`")))?;
-    if wave.area_id.as_str() != identity.area_id.as_str() {
+        .map_err(|e| RpcError::internal(format!("forge action track lookup: {e}")))?
+        .ok_or_else(|| RpcError::invalid_params(format!("unknown track `{track_id}`")))?;
+    if track.area_id.as_str() != identity.area_id.as_str() {
         return Err(RpcError::invalid_params(
-            "forge action wave belongs to a different area",
+            "forge action track belongs to a different area",
         ));
     }
-    let wave_cwd = PathBuf::from(&wave.workspace.path);
-    if !wave_cwd.is_absolute() {
+    let track_cwd = PathBuf::from(&track.workspace.path);
+    if !track_cwd.is_absolute() {
         return Err(RpcError::invalid_params(
-            "forge action requires an absolute wave cwd",
+            "forge action requires an absolute track cwd",
         ));
     }
     match identity.role {
-        CardRole::Spec => Ok(wave_cwd),
+        CardRole::Spec => Ok(track_cwd),
         CardRole::Worker => {
             let lease = ctx
                 .repo
@@ -1013,9 +1013,9 @@ async fn resolve_forge_cwd(
                 .await
                 .map_err(|e| RpcError::internal(format!("workspace lease lookup: {e}")))?
                 .ok_or_else(|| RpcError::invalid_params("no held workspace lease"))?;
-            if lease.wave_id != wave_id {
+            if lease.track_id != track_id {
                 return Err(RpcError::invalid_params(
-                    "workspace lease belongs to a different wave",
+                    "workspace lease belongs to a different track",
                 ));
             }
             let lease_path = Path::new(&lease.path);
@@ -1033,7 +1033,7 @@ async fn resolve_forge_cwd(
                     "workspace lease path must not be empty",
                 ));
             }
-            // ③-c re-anchors the lease under repo_root (git toplevel of wave.cwd)
+            // ③-c re-anchors the lease under repo_root (git toplevel of track.cwd)
             // and updates BOTH ① and this resolve together; until then match ①'s base.
             if lease_path.is_absolute() {
                 Ok(lease_path.to_path_buf())
@@ -1276,18 +1276,18 @@ mod connector_tool_routing_tests {
     }
 
     #[test]
-    fn unbound_wave_sees_allowlisted_connector_tools_and_nothing_else() {
+    fn unbound_track_sees_allowlisted_connector_tools_and_nothing_else() {
         let registry = registry_after_materialization(&[(
             CONNECTOR_ID,
             &[UNDERSCORE_TOOL, OTHER_TOOL],
             &[UNDERSCORE_TOOL, OTHER_TOOL, DENIED_TOOL],
         )]);
-        // `WavePluginScope::All` is what an UNBOUND wave resolves to
-        // (`plugin_scope_for_wave`: no wave / no `plugin_scope` → All).
+        // `TrackPluginScope::All` is what an UNBOUND track resolves to
+        // (`plugin_scope_for_track`: no track / no `plugin_scope` → All).
         let names: Vec<String> = plugin_tool_descriptors_from(
             registry.list(),
             &running(&[CONNECTOR_ID]),
-            &WavePluginScope::All,
+            &TrackPluginScope::All,
         )
         .into_iter()
         .map(|d| d.name)
@@ -1317,7 +1317,7 @@ mod connector_tool_routing_tests {
         )]);
         // Same registry, empty running set — the ONLY thing that changed.
         let names: Vec<String> =
-            plugin_tool_descriptors_from(registry.list(), &running(&[]), &WavePluginScope::All)
+            plugin_tool_descriptors_from(registry.list(), &running(&[]), &TrackPluginScope::All)
                 .into_iter()
                 .map(|d| d.name)
                 .collect();
@@ -1482,7 +1482,7 @@ async fn card_bound_tool_identity(
         role: card.role,
         provider: bound.provider.clone(),
         session_id: bound.session_id.clone(),
-        wave_id: Some(card.wave_id.as_str().to_string()),
+        track_id: Some(card.track_id.as_str().to_string()),
         area_id: card.area_id.as_str().to_string(),
         thread_id: "card-bound".to_string(),
     })
@@ -1518,7 +1518,7 @@ async fn ensure_card_bound_session_active(
             bound_session_auth_error(method, bound)
         })?;
     if card.card_id.as_str() != bound.card_id.as_str()
-        || card.wave_id != session.wave_id
+        || card.track_id != session.track_id
         || card.area_id.as_str() != bound.area_id.as_str()
     {
         warn_bound_session_reject(method, bound, "card session link drift");
@@ -1618,7 +1618,7 @@ async fn resolve_thread_identity(
             .clone()
             .unwrap_or(AgentProvider::Codex),
         session_id: runtime.id.clone(),
-        wave_id: Some(card.wave_id.as_str().to_string()),
+        track_id: Some(card.track_id.as_str().to_string()),
         area_id: card.area_id.as_str().to_string(),
         thread_id: thread_id.to_string(),
     })

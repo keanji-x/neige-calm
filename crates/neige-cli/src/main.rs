@@ -1,9 +1,9 @@
-//! `neige` — terminal CLI for read-only wave file MCP tools.
+//! `neige` — terminal CLI for read-only track file MCP tools.
 //!
 //! The CLI is intentionally tiny. It inherits the per-card MCP socket and raw
 //! token from the terminal environment, initializes the existing kernel MCP
 //! server with the token under `params._meta["dev.neige/auth"].token`, then
-//! performs one `tools/call` for wave reads or worker task reports.
+//! performs one `tools/call` for track reads or worker task reports.
 //! `NEIGE_MCP_DAEMON_TOKEN` is for the stdio shim only; the CLI requires
 //! `NEIGE_MCP_TOKEN` because its tool calls do not carry thread metadata.
 
@@ -17,15 +17,15 @@ use tokio::net::UnixStream;
 
 const ENV_SOCKET: &str = "NEIGE_MCP_SOCKET";
 const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
-const TOOL_WAVE_LS: &str = "calm.wave.ls";
-const TOOL_WAVE_CAT: &str = "calm.wave.cat";
-const TOOL_WAVE_STATE: &str = "calm.wave.state";
-const TOOL_WAVE_DIFF: &str = "calm.wave.diff";
-const TOOL_WAVE_CAT_AT: &str = "calm.wave.cat_at";
-const TOOL_WAVE_LOG: &str = "calm.wave.log";
+const TOOL_TRACK_LS: &str = "calm.track.ls";
+const TOOL_TRACK_CAT: &str = "calm.track.cat";
+const TOOL_TRACK_STATE: &str = "calm.track.state";
+const TOOL_TRACK_DIFF: &str = "calm.track.diff";
+const TOOL_TRACK_CAT_AT: &str = "calm.track.cat_at";
+const TOOL_TRACK_LOG: &str = "calm.track.log";
 const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 const TOOL_TASK_FAIL: &str = "calm.task.fail";
-const TOOL_ADMIN_WAVE_GC: &str = "calm.admin.wave_gc";
+const TOOL_ADMIN_TRACK_GC: &str = "calm.admin.track_gc";
 const TOOL_ADMIN_VACUUM: &str = "calm.admin.vacuum";
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -64,17 +64,17 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::missing_env(ENV_TOKEN, cli.json_errors()))?;
 
-    let raw = call_wave_tool(&socket, &token, &cli).await?;
+    let raw = call_track_tool(&socket, &token, &cli).await?;
     match cli.command {
         Command::Ls { json_output, .. } => render_ls(&raw, json_output, cli.json_errors()),
-        Command::Cat { .. } => render_cat_like(&raw, TOOL_WAVE_CAT, cli.json_errors()),
+        Command::Cat { .. } => render_cat_like(&raw, TOOL_TRACK_CAT, cli.json_errors()),
         Command::State { json_output } => render_state(&raw, json_output, cli.json_errors()),
         Command::Diff { json_output, .. } => render_diff(&raw, json_output, cli.json_errors()),
-        Command::CatAt { .. } => render_cat_like(&raw, TOOL_WAVE_CAT_AT, cli.json_errors()),
+        Command::CatAt { .. } => render_cat_like(&raw, TOOL_TRACK_CAT_AT, cli.json_errors()),
         Command::Log { json_output, .. } => render_log(&raw, json_output, cli.json_errors()),
         Command::TaskCompleted { .. }
         | Command::TaskFailed { .. }
-        | Command::WaveGc { .. }
+        | Command::TrackGc { .. }
         | Command::Vacuum { .. } => {
             let serialized = serde_json::to_string(&raw).map_err(|e| {
                 AppError::new(
@@ -90,7 +90,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     }
 }
 
-async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, AppError> {
+async fn call_track_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, AppError> {
     let stream = UnixStream::connect(socket).await.map_err(|e| {
         AppError::new(
             format!("connect {socket}: {e}"),
@@ -131,9 +131,9 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
     }
 
     let (name, arguments) = match &cli.command {
-        Command::Ls { path, .. } => (TOOL_WAVE_LS, json!({ "path": path })),
-        Command::Cat { path, .. } => (TOOL_WAVE_CAT, json!({ "path": path })),
-        Command::State { .. } => (TOOL_WAVE_STATE, json!({})),
+        Command::Ls { path, .. } => (TOOL_TRACK_LS, json!({ "path": path })),
+        Command::Cat { path, .. } => (TOOL_TRACK_CAT, json!({ "path": path })),
+        Command::State { .. } => (TOOL_TRACK_STATE, json!({})),
         Command::Diff { from, to, path, .. } => {
             let mut args = serde_json::Map::new();
             args.insert("from".into(), Value::String(from.clone()));
@@ -143,10 +143,10 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
             if let Some(path) = path {
                 args.insert("path".into(), Value::String(path.clone()));
             }
-            (TOOL_WAVE_DIFF, Value::Object(args))
+            (TOOL_TRACK_DIFF, Value::Object(args))
         }
         Command::CatAt { commit, path, .. } => (
-            TOOL_WAVE_CAT_AT,
+            TOOL_TRACK_CAT_AT,
             json!({
                 "commit": commit,
                 "path": path,
@@ -160,7 +160,7 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
             if let Some(limit) = limit {
                 args.insert("limit".into(), Value::from(*limit));
             }
-            (TOOL_WAVE_LOG, Value::Object(args))
+            (TOOL_TRACK_LOG, Value::Object(args))
         }
         Command::TaskCompleted {
             idempotency_key,
@@ -186,8 +186,8 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
                 "reason": reason,
             }),
         ),
-        Command::WaveGc {
-            wave_id,
+        Command::TrackGc {
+            track_id,
             keep,
             dry_run,
             force,
@@ -195,8 +195,8 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
         } => {
             debug_assert!(*dry_run || *force);
             (
-                TOOL_ADMIN_WAVE_GC,
-                json!({ "wave_id": wave_id, "keep": keep, "dry_run": dry_run }),
+                TOOL_ADMIN_TRACK_GC,
+                json!({ "track_id": track_id, "keep": keep, "dry_run": dry_run }),
             )
         }
         Command::Vacuum { force, .. } => {
@@ -326,10 +326,10 @@ async fn read_response(
 fn render_ls(value: &Value, json_output: bool, json_error: bool) -> Result<(), AppError> {
     let entries = value.as_array().ok_or_else(|| {
         AppError::new(
-            "calm.wave.ls returned non-array structuredContent",
+            "calm.track.ls returned non-array structuredContent",
             4,
             json_error,
-            json!({ "kind": "shape", "tool": TOOL_WAVE_LS, "value": value }),
+            json!({ "kind": "shape", "tool": TOOL_TRACK_LS, "value": value }),
         )
     })?;
     if json_output {
@@ -351,10 +351,10 @@ fn render_ls(value: &Value, json_output: bool, json_error: bool) -> Result<(), A
     for entry in entries {
         let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {
             AppError::new(
-                "calm.wave.ls entry missing string name",
+                "calm.track.ls entry missing string name",
                 4,
                 json_error,
-                json!({ "kind": "shape", "tool": TOOL_WAVE_LS, "entry": entry }),
+                json!({ "kind": "shape", "tool": TOOL_TRACK_LS, "entry": entry }),
             )
         })?;
         let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("file");
@@ -417,10 +417,10 @@ fn render_cat_like(value: &Value, tool: &str, json_error: bool) -> Result<(), Ap
 fn render_state(value: &Value, json_output: bool, json_error: bool) -> Result<(), AppError> {
     if !value.is_object() {
         return Err(AppError::new(
-            "calm.wave.state returned non-object structuredContent",
+            "calm.track.state returned non-object structuredContent",
             4,
             json_error,
-            json!({ "kind": "shape", "tool": TOOL_WAVE_STATE, "value": value }),
+            json!({ "kind": "shape", "tool": TOOL_TRACK_STATE, "value": value }),
         ));
     }
     let serialized = if json_output {
@@ -460,20 +460,20 @@ fn render_diff(value: &Value, json_output: bool, json_error: bool) -> Result<(),
         .and_then(Value::as_array)
         .ok_or_else(|| {
             AppError::new(
-                "calm.wave.diff returned non-array files",
+                "calm.track.diff returned non-array files",
                 4,
                 json_error,
-                json!({ "kind": "shape", "tool": TOOL_WAVE_DIFF, "value": value }),
+                json!({ "kind": "shape", "tool": TOOL_TRACK_DIFF, "value": value }),
             )
         })?;
     let mut stdout = io::stdout();
     for file in files {
         let path = file.get("path").and_then(Value::as_str).ok_or_else(|| {
             AppError::new(
-                "calm.wave.diff file missing path",
+                "calm.track.diff file missing path",
                 4,
                 json_error,
-                json!({ "kind": "shape", "tool": TOOL_WAVE_DIFF, "file": file }),
+                json!({ "kind": "shape", "tool": TOOL_TRACK_DIFF, "file": file }),
             )
         })?;
         let status = file
@@ -532,20 +532,20 @@ fn render_log(value: &Value, json_output: bool, json_error: bool) -> Result<(), 
         .and_then(Value::as_array)
         .ok_or_else(|| {
             AppError::new(
-                "calm.wave.log returned non-array commits",
+                "calm.track.log returned non-array commits",
                 4,
                 json_error,
-                json!({ "kind": "shape", "tool": TOOL_WAVE_LOG, "value": value }),
+                json!({ "kind": "shape", "tool": TOOL_TRACK_LOG, "value": value }),
             )
         })?;
     let mut stdout = io::stdout();
     for commit in commits {
         let hash = commit.get("hash").and_then(Value::as_str).ok_or_else(|| {
             AppError::new(
-                "calm.wave.log commit missing hash",
+                "calm.track.log commit missing hash",
                 4,
                 json_error,
-                json!({ "kind": "shape", "tool": TOOL_WAVE_LOG, "commit": commit }),
+                json!({ "kind": "shape", "tool": TOOL_TRACK_LOG, "commit": commit }),
             )
         })?;
         let lifecycle = commit
@@ -619,7 +619,7 @@ impl Cli {
         }
         let command = iter.next().ok_or_else(|| {
             AppError::usage(
-                "missing command; expected `ls`, `cat`, `state`, `diff`, `cat-at`, `log`, `task-completed`, `task-failed`, `wave-gc`, or `vacuum`",
+                "missing command; expected `ls`, `cat`, `state`, `diff`, `cat-at`, `log`, `task-completed`, `task-failed`, `track-gc`, or `vacuum`",
                 json,
             )
         })?;
@@ -958,46 +958,46 @@ impl Cli {
                     },
                 })
             }
-            "wave-gc" => {
-                let mut wave_id: Option<String> = None;
+            "track-gc" => {
+                let mut track_id: Option<String> = None;
                 let mut keep: Option<u64> = None;
                 let mut dry_run = false;
                 let mut force = false;
                 while let Some(arg) = iter.next() {
                     match arg.as_str() {
                         "--json" => json = true,
-                        "--wave-id" => {
+                        "--track-id" => {
                             let value = iter.next().ok_or_else(|| {
-                                AppError::usage("wave-gc requires a value after --wave-id", json)
+                                AppError::usage("track-gc requires a value after --track-id", json)
                             })?;
                             if value.is_empty() {
                                 return Err(AppError::usage(
-                                    "wave-gc requires a non-empty --wave-id",
+                                    "track-gc requires a non-empty --track-id",
                                     json,
                                 ));
                             }
-                            if wave_id.replace(value).is_some() {
+                            if track_id.replace(value).is_some() {
                                 return Err(AppError::usage(
-                                    "wave-gc accepts --wave-id once",
+                                    "track-gc accepts --track-id once",
                                     json,
                                 ));
                             }
                         }
                         "--keep" => {
                             let value = iter.next().ok_or_else(|| {
-                                AppError::usage("wave-gc requires a value after --keep", json)
+                                AppError::usage("track-gc requires a value after --keep", json)
                             })?;
                             let parsed = value.parse::<u64>().map_err(|_| {
-                                AppError::usage("wave-gc --keep must be a positive integer", json)
+                                AppError::usage("track-gc --keep must be a positive integer", json)
                             })?;
                             if parsed == 0 {
                                 return Err(AppError::usage(
-                                    "wave-gc --keep must be a positive integer",
+                                    "track-gc --keep must be a positive integer",
                                     json,
                                 ));
                             }
                             if keep.replace(parsed).is_some() {
-                                return Err(AppError::usage("wave-gc accepts --keep once", json));
+                                return Err(AppError::usage("track-gc accepts --keep once", json));
                             }
                         }
                         "--dry-run" => dry_run = true,
@@ -1013,17 +1013,17 @@ impl Cli {
                         }
                     }
                 }
-                let wave_id =
-                    wave_id.ok_or_else(|| AppError::usage("wave-gc requires --wave-id", json))?;
+                let track_id = track_id
+                    .ok_or_else(|| AppError::usage("track-gc requires --track-id", json))?;
                 if !dry_run && !force {
                     return Err(AppError::usage(
-                        "wave-gc is destructive (prunes VCS history + sweeps objects); re-run with --force to confirm",
+                        "track-gc is destructive (prunes VCS history + sweeps objects); re-run with --force to confirm",
                         json,
                     ));
                 }
                 Ok(Self {
-                    command: Command::WaveGc {
-                        wave_id,
+                    command: Command::TrackGc {
+                        track_id,
                         keep: keep.unwrap_or(50),
                         dry_run,
                         force,
@@ -1078,7 +1078,7 @@ impl Cli {
             Command::Log { json_output, .. } => json_output,
             Command::TaskCompleted { json_errors, .. } => json_errors,
             Command::TaskFailed { json_errors, .. } => json_errors,
-            Command::WaveGc { json_errors, .. } => json_errors,
+            Command::TrackGc { json_errors, .. } => json_errors,
             Command::Vacuum { json_errors, .. } => json_errors,
         }
     }
@@ -1124,8 +1124,8 @@ enum Command {
         reason: String,
         json_errors: bool,
     },
-    WaveGc {
-        wave_id: String,
+    TrackGc {
+        track_id: String,
         keep: u64,
         dry_run: bool,
         force: bool,
@@ -1168,7 +1168,7 @@ impl AppError {
             json,
             json!({
                 "kind": "usage",
-                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige diff <from> [to] [path] | neige cat-at <commit> <path> | neige log [path] [--limit N] | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text> | neige wave-gc --wave-id <id> [--keep N] [--dry-run] --force | neige vacuum --force",
+                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige diff <from> [to] [path] | neige cat-at <commit> <path> | neige log [path] [--limit N] | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text> | neige track-gc --track-id <id> [--keep N] [--dry-run] --force | neige vacuum --force",
             }),
         )
     }
@@ -1215,7 +1215,7 @@ mod tests {
                 panic!("expected ls")
             }
             Command::TaskCompleted { .. } | Command::TaskFailed { .. } => panic!("expected ls"),
-            Command::WaveGc { .. } | Command::Vacuum { .. } => panic!("expected ls"),
+            Command::TrackGc { .. } | Command::Vacuum { .. } => panic!("expected ls"),
         }
     }
 
@@ -1231,7 +1231,7 @@ mod tests {
             | Command::Log { .. }
             | Command::TaskCompleted { .. }
             | Command::TaskFailed { .. }
-            | Command::WaveGc { .. }
+            | Command::TrackGc { .. }
             | Command::Vacuum { .. } => panic!("expected state"),
         }
 
@@ -1332,34 +1332,34 @@ mod tests {
     }
 
     #[test]
-    fn wave_gc_parses_default_keep_force_and_options() {
+    fn track_gc_parses_default_keep_force_and_options() {
         let cli = Cli::parse(
-            ["wave-gc", "--wave-id", "w-1", "--force"]
+            ["track-gc", "--track-id", "w-1", "--force"]
                 .into_iter()
                 .map(String::from),
         )
         .expect("parse");
         match cli.command {
-            Command::WaveGc {
-                wave_id,
+            Command::TrackGc {
+                track_id,
                 keep,
                 dry_run,
                 force,
                 json_errors,
             } => {
-                assert_eq!(wave_id, "w-1");
+                assert_eq!(track_id, "w-1");
                 assert_eq!(keep, 50);
                 assert!(!dry_run);
                 assert!(force);
                 assert!(!json_errors);
             }
-            _ => panic!("expected wave-gc"),
+            _ => panic!("expected track-gc"),
         }
 
         let cli = Cli::parse(
             [
-                "wave-gc",
-                "--wave-id",
+                "track-gc",
+                "--track-id",
                 "w-1",
                 "--keep",
                 "10",
@@ -1371,34 +1371,34 @@ mod tests {
         )
         .expect("dry-run parses without --force");
         match cli.command {
-            Command::WaveGc {
-                wave_id,
+            Command::TrackGc {
+                track_id,
                 keep,
                 dry_run,
                 force,
                 json_errors,
             } => {
-                assert_eq!(wave_id, "w-1");
+                assert_eq!(track_id, "w-1");
                 assert_eq!(keep, 10);
                 assert!(dry_run);
                 assert!(!force);
                 assert!(json_errors);
             }
-            _ => panic!("expected wave-gc"),
+            _ => panic!("expected track-gc"),
         }
     }
 
     #[test]
-    fn wave_gc_requires_wave_id() {
-        let err = Cli::parse(["wave-gc", "--force"].into_iter().map(String::from))
-            .expect_err("wave id required");
-        assert!(err.message.contains("--wave-id"), "err = {err:?}");
+    fn track_gc_requires_track_id() {
+        let err = Cli::parse(["track-gc", "--force"].into_iter().map(String::from))
+            .expect_err("track id required");
+        assert!(err.message.contains("--track-id"), "err = {err:?}");
     }
 
     #[test]
-    fn wave_gc_requires_force_unless_dry_run() {
+    fn track_gc_requires_force_unless_dry_run() {
         let err = Cli::parse(
-            ["wave-gc", "--wave-id", "w-1"]
+            ["track-gc", "--track-id", "w-1"]
                 .into_iter()
                 .map(String::from),
         )
@@ -1409,17 +1409,17 @@ mod tests {
         );
 
         let cli = Cli::parse(
-            ["wave-gc", "--wave-id", "w-1", "--dry-run"]
+            ["track-gc", "--track-id", "w-1", "--dry-run"]
                 .into_iter()
                 .map(String::from),
         )
         .expect("dry-run parses without force");
         match cli.command {
-            Command::WaveGc { dry_run, force, .. } => {
+            Command::TrackGc { dry_run, force, .. } => {
                 assert!(dry_run);
                 assert!(!force);
             }
-            _ => panic!("expected wave-gc"),
+            _ => panic!("expected track-gc"),
         }
     }
 
@@ -1484,7 +1484,7 @@ mod tests {
                 panic!("expected task-completed")
             }
             Command::TaskFailed { .. } => panic!("expected task-completed"),
-            Command::WaveGc { .. } | Command::Vacuum { .. } => {
+            Command::TrackGc { .. } | Command::Vacuum { .. } => {
                 panic!("expected task-completed")
             }
         }
@@ -1525,7 +1525,7 @@ mod tests {
                 panic!("expected task-completed")
             }
             Command::TaskFailed { .. } => panic!("expected task-completed"),
-            Command::WaveGc { .. } | Command::Vacuum { .. } => {
+            Command::TrackGc { .. } | Command::Vacuum { .. } => {
                 panic!("expected task-completed")
             }
         }

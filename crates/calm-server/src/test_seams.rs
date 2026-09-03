@@ -49,13 +49,13 @@ pub fn crash_point(point: &str) {
 #[cfg(feature = "fixtures")]
 pub async fn prepare_workspace_lease_target_for_test(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    wave_id: &str,
+    track_id: &str,
     card_id: &str,
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
     crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
         tx,
-        wave_id,
+        track_id,
         card_id,
         workspace_root,
     )
@@ -69,7 +69,7 @@ pub async fn prepare_workspace_lease_target_for_test(
 /// Freeze point 1 ("the first workspace lease") lives inside
 /// `acquire_workspace_lease_at_path_tx`, the single statement both public
 /// `acquire_*` wrappers bottom out in. The alternative for testing it is
-/// `POST /api/waves/{id}/codex-cards`, which needs a live codex app-server —
+/// `POST /api/tracks/{id}/codex-cards`, which needs a live codex app-server —
 /// so the test would either be skipped in CI or would assert on a
 /// re-implementation of the lease, and a fixture that re-implements the thing
 /// under test proves nothing. This calls the real function.
@@ -79,7 +79,7 @@ pub async fn prepare_workspace_lease_target_for_test(
 pub async fn acquire_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     lease_owner: &str,
     path: &std::path::Path,
 ) -> crate::error::Result<()> {
@@ -87,7 +87,7 @@ pub async fn acquire_workspace_lease_for_test(
     crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
         &mut tx,
         card_id,
-        wave_id,
+        track_id,
         lease_owner,
         path,
     )

@@ -1,5 +1,5 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
-import type { ReportBlock } from '../cards/builtins/wave-report';
+import type { ReportBlock } from '../cards/builtins/track-report';
 
 export interface ReportOutlineChild {
   blockId: string;

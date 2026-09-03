@@ -1,1 +1,1 @@
-export const DELETE_WAVE_COPY = 1;
+export const DELETE_TRACK_COPY = 1;

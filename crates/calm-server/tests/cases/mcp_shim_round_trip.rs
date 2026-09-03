@@ -19,7 +19,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -88,8 +88,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-shim-round-trip".into(),
@@ -112,7 +112,7 @@ async fn boot() -> Boot {
         card_id.clone(),
         &calm_server::model::new_id(),
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -134,12 +134,12 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let registry = build_default_registry();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

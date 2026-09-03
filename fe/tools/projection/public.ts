@@ -60,7 +60,7 @@
 //    whether a marked host runs anything, whether the payload (`cardId` /
 //    `blockId`) reaches the right callback, whether that callback is the one the
 //    row's action names. A painter that wires every action to the same handler
-//    is green here. Outside it, `wave/page/public.test.tsx` drives the real
+//    is green here. Outside it, `track/page/public.test.tsx` drives the real
 //    desktop page and asserts, for each of the three actions that exist today,
 //    that the callback it must reach was called with the right payload —
 //    `onOpenTask` with the block id, `onOpenCard` with the worker card's id,
@@ -72,12 +72,12 @@
 //    supplies `onOpenCard` and asserts it was never reached — so a delete that
 //    fires the correct callback **and** opens the card goes red. The **mobile**
 //    surface has its own, narrower half: `reveal-block` is the one action it
-//    supports, and `wave/page/public.test.tsx` taps a real mobile Task row and
+//    supports, and `track/page/public.test.tsx` taps a real mobile Task row and
 //    asserts `onOpenTask` was called once with the block id. That case pins no
 //    rival callback, so mobile has positive binding and payload but no
 //    exclusivity. What remains unexhausted on both surfaces is the rest of the
 //    prop surface: no case enumerates *every* callback the page takes, so an
-//    action that additionally fires some third prop (`onRenameWave`, say) is
+//    action that additionally fires some third prop (`onRenameTrack`, say) is
 //    still green. A fourth action arrives with no cover at all, and so would a
 //    third surface.
 //  - **Interactivity of the host.** §6.3 declines this: a marker may sit on a
@@ -97,10 +97,10 @@
 //    its text, and nothing else: a painter that ignored `struck`, or inverted
 //    it, is green under every code above. Both surfaces cover it *outside* the
 //    projection, and neither of those is a projection obligation. Desktop:
-//    `wave/page/public.test.tsx` asserts the `taskWithdrawn` class on a
+//    `track/page/public.test.tsx` asserts the `taskWithdrawn` class on a
 //    withdrawn declaration badge and its absence on an ordinary one. Mobile:
-//    `wave/page/mobile-painter.test.tsx` makes the same both-ways class
-//    assertion, and `wave/page/mobile-task-row.browser.test.tsx` goes one
+//    `track/page/mobile-painter.test.tsx` makes the same both-ways class
+//    assertion, and `track/page/mobile-task-row.browser.test.tsx` goes one
 //    further — it reads `text-decoration-line` back out of the cascade in a real
 //    engine, which is the half a class assertion cannot reach on either side.
 //  - **The projection is not onto, by design.** Nothing here says the DOM holds
@@ -140,7 +140,7 @@
 //    holds `Referenced by` and `Conversations`, composed by the page outside the
 //    painter.
 //  - **The characterization suite is no longer independent.**
-//    `wave/page/view-characterization.test.tsx` compared the derivation against
+//    `track/page/view-characterization.test.tsx` compared the derivation against
 //    a hand-written page; since S1b-3b the page renders *from* that derivation,
 //    so a misread rule now makes both sides wrong together and the suite stays
 //    green. It is a same-source regression test now, and its own head says so.
@@ -331,7 +331,7 @@ function show(values: readonly (string | null)[]): string {
  * **What closes that gap is not in this file**, and on the desktop it is two
  * things, not one:
  *
- *  - `features/wave/page/desktop-entry.test.tsx` mocks `paintDesktopPanel` and
+ *  - `features/track/page/desktop-entry.test.tsx` mocks `paintDesktopPanel` and
  *    holds the *call*: the page invokes it once, with the whole derived view,
  *    and the panel it shows is the value that came back — a marked node in the
  *    real DOM therefore came from the painter. This is the load-bearing half,

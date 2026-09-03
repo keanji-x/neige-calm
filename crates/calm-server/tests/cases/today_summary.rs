@@ -41,7 +41,7 @@ use calm_server::{
     routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT,
     shared_codex_appserver::SharedCodexAppServer,
     state::{AppState, CodexClient, DaemonClient, WriteContext},
-    wave_area_cache::WaveAreaCache,
+    track_area_cache::TrackAreaCache,
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -93,12 +93,12 @@ async fn boot_with_rendezvouses(
 ) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
-    let waves = WaveAreaCache::new();
+    let tracks = TrackAreaCache::new();
     // Seeded, not empty: a second server over an existing database must
     // recognise the cards already there, or `ensure` tries to mint a second
     // spec card and the re-point fixture stops being a re-point.
     repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_wave_area_cache(&waves).await.unwrap();
+    repo.seed_track_area_cache(&tracks).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -112,7 +112,7 @@ async fn boot_with_rendezvouses(
         tmp.path().join("plugins-data"),
         Vec::new(),
         events.clone(),
-        WriteContext::new(roles.clone(), waves.clone()),
+        WriteContext::new(roles.clone(), tracks.clone()),
     ));
     let state = AppState::from_parts(
         repo_dyn.clone(),
@@ -121,7 +121,7 @@ async fn boot_with_rendezvouses(
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(roles),
-        Some(waves),
+        Some(tracks),
     )
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo.clone(),
@@ -138,7 +138,7 @@ async fn boot_with_rendezvouses(
     };
     let create_counters = Arc::clone(&state.today_summary_create);
     let app = routes::router()
-        // `POST /api/waves/{id}/report` — the route this file produces its
+        // `POST /api/tracks/{id}/report` — the route this file produces its
         // activity with — extracts a `Principal`, so the session layer has to
         // be present exactly as `main.rs` assembles it.
         .layer(Extension(Principal {
@@ -188,10 +188,10 @@ impl Boot {
         )
     }
 
-    /// A user-visible area with one real wave in it. Through `POST /api/areas`
-    /// and `POST /api/waves`, so the area is `kind = 'user'` and the wave has
-    /// the cards and workspace a production wave has.
-    async fn user_wave(&self, title: &str) -> String {
+    /// A user-visible area with one real track in it. Through `POST /api/areas`
+    /// and `POST /api/tracks`, so the area is `kind = 'user'` and the track has
+    /// the cards and workspace a production track has.
+    async fn user_track(&self, title: &str) -> String {
         let (status, area) = self
             .request(
                 "POST",
@@ -201,10 +201,10 @@ impl Boot {
             )
             .await;
         assert_eq!(status, StatusCode::CREATED, "area={area}");
-        let (status, wave) = self
+        let (status, track) = self
             .request(
                 "POST",
-                "/api/waves",
+                "/api/tracks",
                 None,
                 Some(json!({
                     "area_id": area["id"],
@@ -213,20 +213,20 @@ impl Boot {
                 })),
             )
             .await;
-        assert_eq!(status, StatusCode::CREATED, "wave={wave}");
-        wave["id"].as_str().unwrap().to_string()
+        assert_eq!(status, StatusCode::CREATED, "track={track}");
+        track["id"].as_str().unwrap().to_string()
     }
 
-    /// Real activity: a user editing a wave's report through the REST route.
+    /// Real activity: a user editing a track's report through the REST route.
     ///
     /// This is a production emitter — `persist_report` writes one `CardUpdated`
-    /// and one `WaveReportEdited` at `EventScope::Wave` — so it is the row shape
+    /// and one `TrackReportEdited` at `EventScope::Track` — so it is the row shape
     /// the projection has to be able to see, not a hand-built approximation.
-    async fn edit_report(&self, wave_id: &str, summary: &str) {
+    async fn edit_report(&self, track_id: &str, summary: &str) {
         let (status, body) = self
             .request(
                 "POST",
-                &format!("/api/waves/{wave_id}/report"),
+                &format!("/api/tracks/{track_id}/report"),
                 None,
                 Some(json!({"ifDocRev": 0, "summary": summary, "body": format!("# {summary}\n")})),
             )
@@ -420,12 +420,12 @@ impl Boot {
         }
     }
 
-    async fn launchpad_wave_id(&self) -> Option<String> {
+    async fn launchpad_track_id(&self) -> Option<String> {
         self.repo
-            .wave_get_launchpad()
+            .track_get_launchpad()
             .await
             .unwrap()
-            .map(|wave| wave.id.to_string())
+            .map(|track| track.id.to_string())
     }
 }
 
@@ -455,16 +455,16 @@ const SUMMARY_MARKER: &str = "Today's activity across the workspace";
 /// returned 409 unconditionally.
 ///
 /// The statement is narrow by design: it is about **this endpoint**.
-/// `POST /api/waves/{id}/conversations` and `POST /api/cards/{id}/spec/input`
+/// `POST /api/tracks/{id}/conversations` and `POST /api/cards/{id}/spec/input`
 /// remain reachable and are deliberately out of scope — a user typing to an
 /// agent by hand is not what is being prevented.
 #[tokio::test]
 async fn an_empty_activity_window_refuses_without_creating_or_sending_anything() {
     let b = boot().await;
-    // A wave exists, so "nothing happened" is not "nothing exists": creating a
-    // wave is not activity under the allowlist (`wave.created` is not on it),
+    // A track exists, so "nothing happened" is not "nothing exists": creating a
+    // track is not activity under the allowlist (`track.created` is not on it),
     // and that is the state a user opening Today on a quiet morning is in.
-    let wave_id = b.user_wave("quiet").await;
+    let track_id = b.user_track("quiet").await;
 
     let (status, body) = b.summary(None).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
@@ -475,7 +475,7 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
     );
 
     assert_eq!(
-        b.launchpad_wave_id().await,
+        b.launchpad_track_id().await,
         None,
         "a refusal must not even bootstrap the launchpad: `ensure` materializes \
          a workspace and waits on a harness start, and the gate is placed \
@@ -497,10 +497,10 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
     );
 
     // --- and now the same endpoint, with activity ---
-    b.edit_report(&wave_id, "did a thing").await;
+    b.edit_report(&track_id, "did a thing").await;
     let (status, body) = b.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert!(b.launchpad_wave_id().await.is_some());
+    assert!(b.launchpad_track_id().await.is_some());
     assert_eq!(
         b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
             .await,
@@ -526,7 +526,7 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
 /// enqueue, which is the layer that can actually be proved.
 ///
 /// The regression it exists for is the silent no-op: a second press that sends
-/// nothing at all, because `create_wave_conversation` skips its send once the
+/// nothing at all, because `create_track_conversation` skips its send once the
 /// card has ever had a message. That is why the summary is sent *outside* the
 /// create branch, and it is what the third and fourth rows below assert.
 ///
@@ -538,8 +538,8 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
 #[tokio::test]
 async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_a_summary() {
     let b = boot().await;
-    let wave_id = b.user_wave("busy").await;
-    b.edit_report(&wave_id, "first").await;
+    let track_id = b.user_track("busy").await;
+    b.edit_report(&track_id, "first").await;
 
     let (status, body) = b.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -606,7 +606,7 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
 /// actor, and across a workspace re-point.
 ///
 /// The re-point is the decisive half, and it is why this is an end-to-end case
-/// rather than only the module's golden. `derive_wave_conversation_keys` feeds
+/// rather than only the module's golden. `derive_track_conversation_keys` feeds
 /// one digest to the card id **and** the operation key, so mixing
 /// `workspace_key_digest(cwd)` into the key — the shape `today.rs` uses for a
 /// key that carries no conversation identity — derives a *second* conversation
@@ -621,12 +621,12 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
 async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conversation() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
-    let wave_id = before.user_wave("busy").await;
-    before.edit_report(&wave_id, "first").await;
+    let track_id = before.user_track("busy").await;
+    before.edit_report(&track_id, "first").await;
 
     let (status, first) = before.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={first}");
-    let launchpad = first["wave_id"].as_str().unwrap().to_string();
+    let launchpad = first["track_id"].as_str().unwrap().to_string();
     let card_id = first["card_id"].as_str().unwrap().to_string();
     assert_eq!(
         card_id,
@@ -634,7 +634,7 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
         "the endpoint must land on the card the bare-key derivation names"
     );
     let old_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -643,7 +643,7 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
      * A declared AI actor, and what it must NOT change is the attribution.
      *
      * This used to assert the derived `card_id` was unchanged — an assertion no
-     * mutation can fail, because `derive_wave_conversation_keys(wave_id, key)`
+     * mutation can fail, because `derive_track_conversation_keys(track_id, key)`
      * has no actor parameter at all. It read like a guard and was one only by
      * accident (it covered the 403 path). The real property is that the header
      * does not reach the message: the endpoint takes no `Actor`, so a caller
@@ -663,7 +663,7 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
     let (status, repointed) = after.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={repointed}");
     let new_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -700,7 +700,7 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
 ///
 /// `activity_window`'s own cases build their rows with an INSERT, because they
 /// need to choose `at` to the millisecond. That leaves one thing they cannot
-/// claim: that a real emitter's row has the `kind` and the `scope_wave` the
+/// claim: that a real emitter's row has the `kind` and the `scope_track` the
 /// query joins on. This drives two production write paths and reads the answer
 /// out of the endpoint's own gate — if either emitter's shape stopped matching,
 /// the endpoint would refuse a day on which two things demonstrably happened.
@@ -711,31 +711,31 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
 #[tokio::test]
 async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity() {
     let b = boot().await;
-    let wave_id = b.user_wave("real").await;
+    let track_id = b.user_track("real").await;
 
     // Nothing yet — so the two writes below are the only reason the gate opens.
     let (status, _) = b.summary(None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    b.edit_report(&wave_id, "a real edit").await;
+    b.edit_report(&track_id, "a real edit").await;
     let (status, body) = b.summary(None).await;
     assert_eq!(
         status,
         StatusCode::OK,
-        "a real `wave.report_edited` must count as activity: {body}"
+        "a real `track.report_edited` must count as activity: {body}"
     );
 
     // A fresh database for the lifecycle half, so the report edit above cannot
     // be what opens the gate.
     let b = boot().await;
-    let wave_id = b.user_wave("real").await;
+    let track_id = b.user_track("real").await;
     let (status, _) = b.summary(None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
     let (status, patched) = b
         .request(
             "PATCH",
-            &format!("/api/waves/{wave_id}"),
+            &format!("/api/tracks/{track_id}"),
             None,
             Some(json!({"lifecycle": "planning"})),
         )
@@ -745,7 +745,7 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
     assert_eq!(
         status,
         StatusCode::OK,
-        "a real `wave.lifecycle_changed` must count as activity: {body}"
+        "a real `track.lifecycle_changed` must count as activity: {body}"
     );
 }
 
@@ -767,13 +767,13 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
 #[tokio::test]
 async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     let b = boot().await;
-    let wave_id = b.user_wave("dormant").await;
-    b.edit_report(&wave_id, "something happened").await;
+    let track_id = b.user_track("dormant").await;
+    b.edit_report(&track_id, "something happened").await;
 
     let (status, first) = b.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={first}");
     let card_id = first["card_id"].as_str().unwrap().to_string();
-    let launchpad = first["wave_id"].as_str().unwrap().to_string();
+    let launchpad = first["track_id"].as_str().unwrap().to_string();
 
     // A turn's worth of transcript, so "did the recovery keep it?" has an
     // answer. Written through the repo the harness itself writes with.
@@ -893,7 +893,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
 /// * the create operation lands `Stuck` — `plan_compensation` marks it on the
 ///   first compensation error and never re-drives it, leaving the card behind
 ///   (`deletable: false`) with no first message **and no runtime**;
-/// * the create operation *succeeds* and `create_wave_conversation`'s own first
+/// * the create operation *succeeds* and `create_track_conversation`'s own first
 ///   `send_spec_input` then fails — a 503 from a shared app-server that went
 ///   down in between. It returns `Err`, so the summary is not sent either. Here
 ///   the runtime DOES exist.
@@ -920,8 +920,8 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
 #[tokio::test]
 async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     let b = boot().await;
-    let wave_id = b.user_wave("interrupted").await;
-    b.edit_report(&wave_id, "something happened").await;
+    let track_id = b.user_track("interrupted").await;
+    b.edit_report(&track_id, "something happened").await;
 
     // Mint the card through the real endpoint, under the real key.
     let (status, first) = b.summary(None).await;
@@ -1012,8 +1012,8 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
         Some(barrier.clone()),
     )
     .await;
-    let wave_id = b.user_wave("contended").await;
-    b.edit_report(&wave_id, "something happened").await;
+    let track_id = b.user_track("contended").await;
+    b.edit_report(&track_id, "something happened").await;
 
     let app = b.app.clone();
     let trigger = tokio::spawn(async move {
@@ -1046,14 +1046,14 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    let launchpad = b.launchpad_wave_id().await.expect("ensure minted it");
+    let launchpad = b.launchpad_track_id().await.expect("ensure minted it");
 
     // The interloper, through the production route, same key, different text.
     let response = b
         .app
         .clone()
         .oneshot(
-            Request::post(format!("/api/waves/{launchpad}/conversations"))
+            Request::post(format!("/api/tracks/{launchpad}/conversations"))
                 .header("content-type", "application/json")
                 // The SAME fixed key the endpoint derives from — that is what
                 // makes both submissions aim at one card and one operation key.
@@ -1131,11 +1131,11 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
 /// The per-card first-message claim, which the recovery send must hold.
 ///
 /// **This is a race the fix itself opened.** Moving "send the first message" out
-/// of `create_wave_conversation` and into this handler moved it out from under
+/// of `create_track_conversation` and into this handler moved it out from under
 /// `conversation_first_message_locks`; two concurrent triggers against a card
 /// with an empty transcript then both read "nothing enqueued" and both send,
 /// and the agent gets the same standing instruction twice —
-/// `create_wave_conversation`'s own comment names that outcome as the reason the
+/// `create_track_conversation`'s own comment names that outcome as the reason the
 /// lock exists.
 ///
 /// The window is open **only** in the empty-transcript state, which is what
@@ -1165,8 +1165,8 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
 async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let staging = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces").await;
-    let wave_id = staging.user_wave("contended-bootstrap").await;
-    staging.edit_report(&wave_id, "something happened").await;
+    let track_id = staging.user_track("contended-bootstrap").await;
+    staging.edit_report(&track_id, "something happened").await;
 
     let (status, first) = staging.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={first}");

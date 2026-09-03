@@ -15,7 +15,7 @@ use crate::db::sqlite::{
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id};
@@ -35,7 +35,7 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -64,7 +64,7 @@ pub struct ClaudeAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     codex: Arc<CodexClient>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -75,7 +75,7 @@ pub struct ClaudeWorkerAdapter {
     codex: Arc<CodexClient>,
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -85,13 +85,13 @@ impl ClaudeAdapter {
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
             codex,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -102,14 +102,14 @@ impl ClaudeAdapter {
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             codex,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -121,14 +121,14 @@ impl ClaudeWorkerAdapter {
         codex: Arc<CodexClient>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
             codex,
             mcp_server,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -140,7 +140,7 @@ impl ClaudeWorkerAdapter {
         codex: Arc<CodexClient>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
@@ -148,7 +148,7 @@ impl ClaudeWorkerAdapter {
             codex,
             mcp_server,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -165,7 +165,7 @@ pub struct ClaudeCreateOperationPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClaudeWorkerOperationPayload {
     pub actor: ActorId,
-    pub wave_id: String,
+    pub track_id: String,
     pub idempotency_key: String,
     pub goal: String,
     /// Forward-compatible only. Scheduler-created Claude worker payloads keep
@@ -181,7 +181,7 @@ pub struct ClaudeWorkerOperationPayload {
 
 #[derive(Clone, Debug)]
 pub struct ClaudeCreateRequestInput {
-    pub wave_id: String,
+    pub track_id: String,
     pub title: Option<String>,
     pub sort: Option<f64>,
     pub cwd: Option<String>,
@@ -193,7 +193,7 @@ pub struct ClaudeCreateRequestInput {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NormalizedClaudeCreateRequest {
-    pub wave_id: String,
+    pub track_id: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -210,7 +210,7 @@ pub struct NormalizedClaudeCreateRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreparedClaudeCreateRequest {
-    pub wave_id: String,
+    pub track_id: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -257,7 +257,7 @@ pub fn normalize_claude_create_request(
     let icon_fg = normalize_optional_css_color(input.icon_fg.as_deref(), "icon_fg")?;
 
     Ok(NormalizedClaudeCreateRequest {
-        wave_id: input.wave_id,
+        track_id: input.track_id,
         title: input.title,
         sort: input.sort,
         cwd,
@@ -294,7 +294,7 @@ pub async fn prepare_claude_create_request(
     }
 
     Ok(PreparedClaudeCreateRequest {
-        wave_id: request.wave_id,
+        track_id: request.track_id,
         title: request.title,
         sort: request.sort,
         cwd: request.cwd,
@@ -344,12 +344,12 @@ fn build_claude_worker_command_line(
     claude_bin: &str,
     settings_path: &Path,
     claude_session_id: &str,
-    wave_id: &str,
+    track_id: &str,
     prompt: &str,
 ) -> String {
     let worker_system_prompt = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Worker.prompt_template(),
-        wave_id,
+        track_id,
     );
     let mut command_line = format!(
         "{} --allow-dangerously-skip-permissions --settings {} --session-id {} --append-system-prompt {}",
@@ -399,13 +399,13 @@ impl ProviderAdapter for ClaudeAdapter {
         normalize_optional_css_color(payload.request.icon_fg.as_deref(), "icon_fg")?;
         if self
             .repo
-            .wave_get(&payload.request.wave_id)
+            .track_get(&payload.request.track_id)
             .await?
             .is_none()
         {
             return Err(CalmError::NotFound(format!(
-                "wave {}",
-                payload.request.wave_id
+                "track {}",
+                payload.request.track_id
             )));
         }
         if !payload.request.env.is_object() {
@@ -424,18 +424,18 @@ impl ProviderAdapter for ClaudeAdapter {
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         let request = payload.request;
         let card_id = request.card_id.clone();
-        let wave_id = request.wave_id.clone();
+        let track_id = request.track_id.clone();
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
-            WaveId::from(wave_id.clone()),
+            TrackId::from(track_id.clone()),
         )
         .await?;
         let (card, term) = card_with_claude_create_tx(
             tx,
             card_id,
             &runtime_id,
-            WaveId::from(wave_id),
+            TrackId::from(track_id),
             request.title.clone(),
             request.sort,
             request.command_line.clone(),
@@ -470,7 +470,7 @@ impl ProviderAdapter for ClaudeAdapter {
             &event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -479,7 +479,7 @@ impl ProviderAdapter for ClaudeAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -504,7 +504,7 @@ impl ProviderAdapter for ClaudeAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
-            "wave_id": card.wave_id,
+            "track_id": card.track_id,
             "terminal_id": term.id,
             "settings_path": request.settings_path,
             "claude_session_id": request.claude_session_id,
@@ -594,23 +594,23 @@ impl ProviderAdapter for ClaudeAdapter {
                         return Ok(());
                     }
 
-                    let wave_id = if let Some(wave_id) =
-                        output.data.get("wave_id").and_then(Value::as_str)
+                    let track_id = if let Some(track_id) =
+                        output.data.get("track_id").and_then(Value::as_str)
                     {
-                        WaveId::from(wave_id.to_string())
+                        TrackId::from(track_id.to_string())
                     } else {
                         ctx.repo
                             .card_get(&card_id)
                             .await?
                             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
-                            .wave_id
+                            .track_id
                     };
                     let scope =
-                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), wave_id)
+                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), track_id)
                             .await?;
                     let write = WriteContext::new(
                         self.card_role_cache.clone(),
-                        self.wave_area_cache.clone(),
+                        self.track_area_cache.clone(),
                     );
                     let card_id_for_tx = card_id.clone();
                     let (_unit, _ids) = write_with_events_typed(
@@ -759,8 +759,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 "claude worker idempotency_key must not be empty".into(),
             ));
         }
-        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
+        if self.repo.track_get(&payload.track_id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("track {}", payload.track_id)));
         }
         Ok(())
     }
@@ -781,8 +781,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();
-        let wave_id = WaveId::from(payload.wave_id.clone());
-        let cwd_path = plain_workspace_lease_path_for(wave_id.as_str(), &card_id)?;
+        let track_id = TrackId::from(payload.track_id.clone());
+        let cwd_path = plain_workspace_lease_path_for(track_id.as_str(), &card_id)?;
         let cwd = cwd_path.to_string_lossy().to_string();
         let settings_path = self
             .codex
@@ -799,14 +799,14 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &self.codex.claude_bin,
             &settings_path,
             &claude_session_id,
-            wave_id.as_str(),
+            track_id.as_str(),
             &rendered_prompt,
         );
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
-            wave_id.clone(),
+            track_id.clone(),
         )
         .await?;
 
@@ -815,7 +815,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             card_id.clone(),
             &runtime_id,
             Some(op.id.as_str()),
-            wave_id,
+            track_id,
             None,
             None,
             command_line.clone(),
@@ -834,7 +834,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let (lease, lease_event) = acquire_plain_workspace_lease_tx(
             tx,
             &card_id,
-            card.wave_id.as_str(),
+            card.track_id.as_str(),
             &op.id,
             &cwd_path,
         )
@@ -879,7 +879,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
-            "wave_id": card.wave_id,
+            "track_id": card.track_id,
             "terminal_id": term.id,
             "settings_path": settings_path,
             "settings_dir": settings_dir,
@@ -913,7 +913,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let card_id = output.output_string("card_id", "claude worker")?;
         let runtime_id = output.output_string("runtime_id", "claude worker")?;
         let terminal_id = output.output_string("terminal_id", "claude worker")?;
-        let wave_id = WaveId::from(output.output_string("wave_id", "claude worker")?);
+        let track_id = TrackId::from(output.output_string("track_id", "claude worker")?);
         let settings_path = PathBuf::from(output.output_string("settings_path", "claude worker")?);
         let settings_dir = settings_path_parent(&settings_path)?;
         let command_line = output.output_string("command_line", "claude worker")?;
@@ -936,10 +936,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             mark_claude_worker_running(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 &card_id,
                 &terminal_id,
-                &wave_id,
+                &track_id,
             )
             .await
             .unwrap_or_else(|e| {
@@ -954,15 +954,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             log_claude_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 &card_id,
-                &wave_id,
+                &track_id,
             )
             .await
             .unwrap_or_else(|e| {
                 tracing::error!(
                     card_id = %card_id,
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
                     "claude worker CardAdded append failed after recovery exit preservation; continuing"
                 );
@@ -979,10 +979,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             mark_claude_worker_running(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 &card_id,
                 &terminal_id,
-                &wave_id,
+                &track_id,
             )
             .await
             .unwrap_or_else(|e| {
@@ -997,15 +997,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             log_claude_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 &card_id,
-                &wave_id,
+                &track_id,
             )
             .await
             .unwrap_or_else(|e| {
                 tracing::error!(
                     card_id = %card_id,
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
                     "claude worker CardAdded append failed after live recovery preservation; continuing"
                 );
@@ -1056,10 +1056,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 mark_claude_worker_running(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     &card_id,
                     &terminal_id,
-                    &wave_id,
+                    &track_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
@@ -1074,15 +1074,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 log_claude_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     &card_id,
-                    &wave_id,
+                    &track_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
                     tracing::error!(
                         card_id = %card_id,
-                        wave_id = %wave_id,
+                        track_id = %track_id,
                         error = %e,
                         "claude worker CardAdded append failed after live spawn; continuing"
                     );
@@ -1092,7 +1092,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             Err(e) if worker_spawn_failure_preserved(ctx.repo.as_ref(), &terminal_id).await? => {
                 tracing::info!(
                     card_id = %card_id,
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     terminal_id = %terminal_id,
                     spawn_err = %e,
                     "claude worker TUI fast-exit; preserving card + terminal"
@@ -1100,10 +1100,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 mark_claude_worker_running(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     &card_id,
                     &terminal_id,
-                    &wave_id,
+                    &track_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
@@ -1118,15 +1118,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 log_claude_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     &card_id,
-                    &wave_id,
+                    &track_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
                     tracing::error!(
                         card_id = %card_id,
-                        wave_id = %wave_id,
+                        track_id = %track_id,
                         error = %e,
                         "claude worker CardAdded append failed after fast-exit preservation; continuing"
                     );
@@ -1230,10 +1230,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
 async fn mark_claude_worker_running(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     card_id: &str,
     terminal_id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
 ) -> Result<()> {
     let card_id_string = card_id.to_string();
     let existing = ctx
@@ -1251,10 +1251,10 @@ async fn mark_claude_worker_running(
     let scope = card_scope(
         ctx.repo.as_ref(),
         CardId::from(card_id.to_string()),
-        wave_id.clone(),
+        track_id.clone(),
     )
     .await?;
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let card_id_for_tx = card_id.to_string();
     let (_unit, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
@@ -1301,9 +1301,9 @@ async fn mark_claude_worker_running(
 async fn log_claude_worker_card_added(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     card_id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
 ) -> Result<()> {
     let card = ctx
         .repo
@@ -1313,7 +1313,7 @@ async fn log_claude_worker_card_added(
     let scope = card_scope(
         ctx.repo.as_ref(),
         CardId::from(card_id.to_string()),
-        wave_id.clone(),
+        track_id.clone(),
     )
     .await?;
     ctx.repo
@@ -1323,7 +1323,7 @@ async fn log_claude_worker_card_added(
             None,
             &ctx.events,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             Event::CardAdded(card),
         )
         .await?;

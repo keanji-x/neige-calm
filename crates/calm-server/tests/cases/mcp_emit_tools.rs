@@ -17,7 +17,7 @@
 
 use calm_server::event::{Event, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{CardRole, Wave, WaveLifecycle, WavePatch};
+use calm_server::model::{CardRole, Track, TrackLifecycle, TrackPatch};
 use serde_json::json;
 use tokio::time::timeout;
 
@@ -28,7 +28,7 @@ use support::mcp::{
     tools_call_frame, wait_for_kind,
 };
 
-async fn boot_wave(b: &CardBoot) -> Wave {
+async fn boot_track(b: &CardBoot) -> Track {
     let card = b
         .repo
         .card_get(b.card_id.as_str())
@@ -36,24 +36,24 @@ async fn boot_wave(b: &CardBoot) -> Wave {
         .expect("card lookup")
         .expect("boot card exists");
     b.repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await
-        .expect("wave lookup")
-        .expect("boot wave exists")
+        .expect("track lookup")
+        .expect("boot track exists")
 }
 
-async fn set_boot_wave_lifecycle(b: &CardBoot, lifecycle: WaveLifecycle) -> Wave {
-    let wave = boot_wave(b).await;
+async fn set_boot_track_lifecycle(b: &CardBoot, lifecycle: TrackLifecycle) -> Track {
+    let track = boot_track(b).await;
     b.repo
-        .wave_update(
-            wave.id.as_str(),
-            WavePatch {
+        .track_update(
+            track.id.as_str(),
+            TrackPatch {
                 lifecycle: Some(lifecycle),
                 ..Default::default()
             },
         )
         .await
-        .expect("set test wave lifecycle")
+        .expect("set test track lifecycle")
 }
 
 async fn recv_bus(
@@ -323,9 +323,9 @@ async fn legacy_alias_task_completed_still_dispatches_via_warn() {
 }
 
 #[tokio::test]
-async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
+async fn task_completed_from_working_auto_promotes_track_to_reviewing() {
     let b = boot_with_role(CardRole::Worker).await;
-    let wave = set_boot_wave_lifecycle(&b, WaveLifecycle::Working).await;
+    let track = set_boot_track_lifecycle(&b, TrackLifecycle::Working).await;
     let mut rx = b.events.subscribe();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     handshake(&mut rd, &mut wr, &b.raw_token).await;
@@ -361,37 +361,37 @@ async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
     let auto_changed = recv_bus(&mut rx).await;
     assert!(matches!(auto_changed.actor, ActorId::Kernel));
     match &auto_changed.event {
-        Event::WaveLifecycleChanged {
+        Event::TrackLifecycleChanged {
             id,
             area_id,
             from,
             to,
             agent_message,
         } => {
-            assert_eq!(id, &wave.id);
-            assert_eq!(area_id, &wave.area_id);
-            assert_eq!(*from, WaveLifecycle::Working);
-            assert_eq!(*to, WaveLifecycle::Reviewing);
+            assert_eq!(id, &track.id);
+            assert_eq!(area_id, &track.area_id);
+            assert_eq!(*from, TrackLifecycle::Working);
+            assert_eq!(*to, TrackLifecycle::Reviewing);
             assert_eq!(agent_message.as_deref(), Some("[auto] first task report"));
         }
-        other => panic!("expected auto WaveLifecycleChanged after task report, got {other:?}"),
+        other => panic!("expected auto TrackLifecycleChanged after task report, got {other:?}"),
     }
 
     let auto_updated = recv_bus(&mut rx).await;
     assert!(matches!(auto_updated.actor, ActorId::Kernel));
     match &auto_updated.event {
-        Event::WaveUpdated(payload) => {
-            assert_eq!(payload.id, wave.id);
-            assert_eq!(payload.lifecycle, WaveLifecycle::Reviewing);
+        Event::TrackUpdated(payload) => {
+            assert_eq!(payload.id, track.id);
+            assert_eq!(payload.lifecycle, TrackLifecycle::Reviewing);
             assert_eq!(
                 payload.agent_message.as_deref(),
                 Some("[auto] first task report")
             );
         }
-        other => panic!("expected auto WaveUpdated after lifecycle change, got {other:?}"),
+        other => panic!("expected auto TrackUpdated after lifecycle change, got {other:?}"),
     }
-    let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(post.lifecycle, WaveLifecycle::Reviewing);
+    let post = b.repo.track_get(track.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, TrackLifecycle::Reviewing);
     let _ = (&b.server, &b.repo);
 }
 

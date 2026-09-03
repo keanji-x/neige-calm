@@ -6,7 +6,7 @@
 // **right element** (a `data-nc-module` on the head row instead of the section
 // would satisfy a "the attribute is somewhere" check and break the projection's
 // scoping), and that **omitting the prop leaves no attribute at all**. The
-// second one is not symmetry for its own sake: the wave page renders
+// second one is not symmetry for its own sake: the track page renders
 // `Referenced by` and `Conversations` through `PanelModule` as well, and those
 // two must stay unmarked or the panel's tree holds four module markers against a
 // view model of two.

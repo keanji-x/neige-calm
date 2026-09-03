@@ -1,5 +1,5 @@
 // Pick a foreground colour (black or white) that reads against an
-// arbitrary background colour string. Used by Calendar's WaveBar so
+// arbitrary background colour string. Used by Calendar's TrackBar so
 // the area-coloured bar always carries WCAG-AA-passing text regardless
 // of whether the user picked a pastel green or a deep navy for the area.
 //

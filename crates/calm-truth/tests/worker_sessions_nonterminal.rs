@@ -2,15 +2,15 @@ use calm_truth::db::RepoSyncDomainRaw;
 use calm_truth::db::sqlite::{
     SqlxRepo, begin_immediate_tx, session_insert_tx, session_state_transition_tx,
 };
-use calm_truth::model::{NewArea, NewWave, RequestTheme};
+use calm_truth::model::{NewArea, NewTrack, RequestTheme};
 use calm_truth::session_repo::SessionRepo;
-use calm_types::ids::{CardId, WaveId};
+use calm_types::ids::{CardId, TrackId};
 use calm_types::worker::{
     Liveness, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
     WorkerSessionId, WorkerSessionState,
 };
 
-async fn seeded_repo() -> (SqlxRepo, WaveId) {
+async fn seeded_repo() -> (SqlxRepo, TrackId) {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
@@ -22,8 +22,8 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
         })
         .await
         .expect("seed area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "worker-session-scan".into(),
@@ -35,14 +35,14 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
             theme: RequestTheme::default_dark(),
         })
         .await
-        .expect("seed wave");
-    (repo, wave.id)
+        .expect("seed track");
+    (repo, track.id)
 }
 
-fn session(state: WorkerSessionState, wave_id: WaveId, created_at_ms: i64) -> WorkerSession {
+fn session(state: WorkerSessionState, track_id: TrackId, created_at_ms: i64) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(format!("ws-{}", state.as_db_str())),
-        wave_id,
+        track_id,
         provider: WorkerProviderKind::Codex,
         mode: SessionMode::Resumable,
         contract: WorkerContract::Executor,
@@ -71,7 +71,7 @@ fn session(state: WorkerSessionState, wave_id: WaveId, created_at_ms: i64) -> Wo
 
 #[tokio::test]
 async fn sessions_nonterminal_matches_worker_session_state_terminal_set() {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let states = [
         WorkerSessionState::Starting,
         WorkerSessionState::Running,
@@ -83,7 +83,7 @@ async fn sessions_nonterminal_matches_worker_session_state_terminal_set() {
     ];
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
     for (idx, state) in states.into_iter().enumerate() {
-        session_insert_tx(&mut tx, session(state, wave_id.clone(), idx as i64 + 1))
+        session_insert_tx(&mut tx, session(state, track_id.clone(), idx as i64 + 1))
             .await
             .expect("insert session");
     }
@@ -105,12 +105,12 @@ async fn sessions_nonterminal_matches_worker_session_state_terminal_set() {
 
 #[tokio::test]
 async fn session_set_liveness_preserves_updated_at_ms() {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let id = WorkerSessionId::from("ws-liveness-preserves-updated-at");
     let created_at_ms = 1_000;
     let updated_at_ms = 1_234;
     let probed_at_ms = 9_876;
-    let mut seeded = session(WorkerSessionState::Running, wave_id, created_at_ms);
+    let mut seeded = session(WorkerSessionState::Running, track_id, created_at_ms);
     seeded.id = id.clone();
     seeded.updated_at_ms = updated_at_ms;
 
@@ -141,12 +141,12 @@ async fn session_set_liveness_preserves_updated_at_ms() {
 
 #[tokio::test]
 async fn session_set_liveness_noops_after_terminal_transition() {
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let id = WorkerSessionId::from("ws-liveness-terminal-race");
     let created_at_ms = 2_000;
     let active_probe_ms = 2_500;
     let stale_probe_ms = 3_000;
-    let mut seeded = session(WorkerSessionState::Running, wave_id, created_at_ms);
+    let mut seeded = session(WorkerSessionState::Running, track_id, created_at_ms);
     seeded.id = id.clone();
 
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");

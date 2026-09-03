@@ -40,7 +40,7 @@ use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -78,8 +78,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -91,11 +91,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-area-folders-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
 
     let app = routes::router()
@@ -327,7 +330,7 @@ async fn resolve_tolerates_corrupt_overlapping_rows() {
     //
     // The winner IS a contract, and it is `/a`: `area_folders_list_all`
     // is `ORDER BY path ASC` and `find_owner` takes the first match. It
-    // must be pinned because `resolve_and_wave_create_agree_on_overlapping_rows`
+    // must be pinned because `resolve_and_track_create_agree_on_overlapping_rows`
     // depends on both resolvers landing on the *same* row — changing the
     // ORDER BY (or reintroducing a tiebreak on one side only) must break
     // a test rather than silently re-split the two answers.

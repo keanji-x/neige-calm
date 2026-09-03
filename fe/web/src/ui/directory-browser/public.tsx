@@ -33,7 +33,7 @@
 //     `entry.css`. Mono is for the value, not for the look: a path is read by
 //     its separators, and a proportional font puts every `/` at a different
 //     offset down a list of them. (An earlier draft of this comment cited
-//     "fe-design.md:869" for the rule, copied from `new-wave/public.tsx`. That
+//     "fe-design.md:869" for the rule, copied from `new-track/public.tsx`. That
 //     citation is dangling — the design doc is 188 lines since #1181 trimmed
 //     it, and it carries no rule about mono in fields at all.)
 //

@@ -21,24 +21,24 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
+import { createUserArea, createTrackInArea, resetReplayServer } from './helpers/reset';
 import { SPEC_CHAT_COPY, forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 
 test.describe('spec chat interrupt UI', () => {
-  let waveId: string;
+  let trackId: string;
   let specCardId: string;
 
   test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
     const area = await createUserArea(request, 'AtlasSpecStop');
-    const wave = await createWaveInArea(request, area.id, 'Spec interrupt test');
-    waveId = wave.id;
-    specCardId = await getSpecCardId(request, waveId);
+    const track = await createTrackInArea(request, area.id, 'Spec interrupt test');
+    trackId = track.id;
+    specCardId = await getSpecCardId(request, trackId);
   });
 
-  /** Open the wave mid-turn and land in conversation mode. */
+  /** Open the track mid-turn and land in conversation mode. */
   async function openRunningConversation(page: Page): Promise<void> {
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await page.goto(`/calm/track/${trackId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec interrupt test' }),
     ).toBeVisible();

@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { seedWaveViewMode } from './helpers/reset';
+import { seedTrackViewMode } from './helpers/reset';
 
 type ResizeCommitRecord = {
   terminalId: string;
@@ -16,11 +16,11 @@ test('#423 collapsed Claude xterm mount does not commit tiny geometry', async ({
   await installTinyMountHarness(page);
 
   const area = await createArea(page.request, `E2E #423 ${Date.now()}`);
-  const wave = await createWave(page.request, area.id, `E2E #423 wave ${Date.now()}`);
-  await createClaudeCard(page.request, wave.id);
-  await seedWaveViewMode(page.request, wave.id, 'grid');
+  const track = await createTrack(page.request, area.id, `E2E #423 track ${Date.now()}`);
+  await createClaudeCard(page.request, track.id);
+  await seedTrackViewMode(page.request, track.id, 'grid');
 
-  await page.goto(`/calm/wave/${wave.id}?testMounts=1`, {
+  await page.goto(`/calm/track/${track.id}?testMounts=1`, {
     waitUntil: 'domcontentloaded',
   });
   await expect(page.locator('.codex-card-pty').first()).toBeVisible({
@@ -330,18 +330,18 @@ async function createArea(
   return (await response.json()) as { id: string };
 }
 
-async function createWave(
+async function createTrack(
   request: APIRequestContext,
   areaId: string,
   title: string,
 ): Promise<{ id: string }> {
-  const response = await request.post('/api/waves', {
+  const response = await request.post('/api/tracks', {
     data: {
       area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about tiny-mount card layout, not working
-      // directories. See `helpers/reset.ts::createWaveInArea` for why
+      // directories. See `helpers/reset.ts::createTrackInArea` for why
       // the invented `/tmp/playwright-area-<id>` attached path was
       // never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
@@ -349,16 +349,16 @@ async function createWave(
     headers: { 'content-type': 'application/json' },
   });
   if (!response.ok()) {
-    throw new Error(await formatApiError('create wave', response));
+    throw new Error(await formatApiError('create track', response));
   }
   return (await response.json()) as { id: string };
 }
 
 async function createClaudeCard(
   request: APIRequestContext,
-  waveId: string,
+  trackId: string,
 ): Promise<void> {
-  const response = await request.post(`/api/waves/${waveId}/cards`, {
+  const response = await request.post(`/api/tracks/${trackId}/cards`, {
     data: {
       kind: 'claude',
       payload: {

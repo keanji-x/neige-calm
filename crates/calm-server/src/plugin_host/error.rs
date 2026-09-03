@@ -139,8 +139,8 @@ pub enum HostError {
     /// #891 slice ④ — registration-time template-id uniqueness. A trusted
     /// plugin declares a template id another **running trusted** plugin
     /// already registers; spawning it would make the binding resolvers
-    /// (`routes::waves::resolve_template_binding`, the spec harness's
-    /// `bound_template`, the MCP per-wave tool scope) ambiguous. Like
+    /// (`routes::tracks::resolve_template_binding`, the spec harness's
+    /// `bound_template`, the MCP per-track tool scope) ambiguous. Like
     /// `KernelTooOld` this fires before any process spawn or token mint, so
     /// no half-spawned state is left behind; the boot autospawn loop's
     /// per-plugin tolerance logs and continues.

@@ -37,7 +37,7 @@ describe('event protocol contract', () => {
       sub: readonly Topic[];
       since: number;
     }>>();
-    expectTypeOf<Topic>().toEqualTypeOf<'*' | `area:${string}` | `wave:${string}` | `card:${string}`>();
+    expectTypeOf<Topic>().toEqualTypeOf<'*' | `area:${string}` | `track:${string}` | `card:${string}`>();
     expectTypeOf<EventFrame['type']>().toEqualTypeOf<
       'event' | 'malformed-event' | 'replay-complete' | 'snapshot-required'
     >();

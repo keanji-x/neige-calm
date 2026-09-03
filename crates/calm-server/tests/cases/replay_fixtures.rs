@@ -6,7 +6,7 @@
 //! the resulting state — both event sequence and any final overlay
 //! payloads — matches the fixture's `expected` block.
 //!
-//! Scope E ships just one fixture (`wave-grid-layout-trace`) — the wave-
+//! Scope E ships just one fixture (`track-grid-layout-trace`) — the track-
 //! grid layout migration's smoke trace. The infrastructure here is the
 //! seed for the broader "bug report = file + one replay command" story:
 //! future bugs become reproducible artifacts in the same shape.
@@ -54,9 +54,9 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{
-    NewArea, NewCard, NewWave, Overlay, Task, TaskKind, TaskStatus, WaveLifecycle,
+    NewArea, NewCard, NewTrack, Overlay, Task, TaskKind, TaskStatus, TrackLifecycle,
 };
-use calm_server::model::{WavePatch, new_id, now_ms};
+use calm_server::model::{TrackPatch, new_id, now_ms};
 use calm_server::replay::{self, Fixture};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -86,7 +86,7 @@ fn load_fixture(name: &str) -> Fixture {
     replay::load_fixture_from_path(&path).expect("load fixture")
 }
 
-async fn seed_rooted_wave(repo: &SqlxRepo) {
+async fn seed_rooted_track(repo: &SqlxRepo) {
     let area = repo
         .area_create(NewArea {
             name: "reset-rooted".into(),
@@ -95,11 +95,11 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
         })
         .await
         .expect("create reset area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
-            title: "reset rooted wave".into(),
+            title: "reset rooted track".into(),
             sort: None,
             cwd: String::new(),
             template_id: None,
@@ -108,10 +108,10 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create reset wave");
+        .expect("create reset track");
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -142,8 +142,8 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
     tx.commit().await.expect("commit runtime tx");
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .expect("read reset root");
@@ -215,8 +215,8 @@ where
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn replay_wave_grid_layout_trace() {
-    let fixture = load_fixture("wave-grid-layout-trace.events.json");
+async fn replay_track_grid_layout_trace() {
+    let fixture = load_fixture("track-grid-layout-trace.events.json");
     let (addr, repo, bus) = boot().await;
     let ids = raw_insert_fixture_events(&repo, &bus, &fixture).await;
     assert_eq!(
@@ -317,15 +317,15 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "replay-terminal".into(),
             sort: None,
             // #1147 S6 — the dispatcher's terminal worker defaults its cwd to
-            // the wave's workspace, and the kernel refuses to open a terminal
-            // in an empty one. Production waves always have a path; so does
+            // the track's workspace, and the kernel refuses to open a terminal
+            // in an empty one. Production tracks always have a path; so does
             // this fixture.
             cwd: "/neige-fixture-workspace".into(),
             template_id: None,
@@ -334,27 +334,27 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
     state
-        .wave_area_cache
-        .insert(wave.id.clone(), area.id.clone());
-    repo.wave_update(
-        wave.id.as_str(),
-        WavePatch {
-            lifecycle: Some(WaveLifecycle::Dispatching),
+        .track_area_cache
+        .insert(track.id.clone(), area.id.clone());
+    repo.track_update(
+        track.id.as_str(),
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Dispatching),
             ..Default::default()
         },
     )
     .await
     .expect("open scheduler lifecycle");
-    let wave_id = wave.id.to_string();
+    let track_id = track.id.to_string();
 
     let worker_key = "replay-terminal-worker-hook";
-    let worker_idempotency_key = format!("{wave_id}:{worker_key}");
+    let worker_idempotency_key = format!("{track_id}:{worker_key}");
     let now = now_ms();
     let task = Task {
         id: worker_idempotency_key.clone(),
-        wave_id: wave_id.clone(),
+        track_id: track_id.clone(),
         key: worker_key.into(),
         kind: TaskKind::Terminal,
         goal: "printf replay-worker".into(),
@@ -387,12 +387,15 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
     state
         .dispatcher
         .scheduler()
-        .schedule_wave(wave.id.clone())
+        .schedule_track(track.id.clone())
         .await;
 
     let worker_card = timeout(Duration::from_secs(2), async {
         loop {
-            let cards = repo.cards_by_wave(&wave_id).await.expect("list wave cards");
+            let cards = repo
+                .cards_by_track(&track_id)
+                .await
+                .expect("list track cards");
             if let Some(card) = cards.into_iter().find(|card| {
                 card.payload.get("idempotency_key").and_then(Value::as_str)
                     == Some(worker_idempotency_key.as_str())
@@ -434,7 +437,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         app.clone(),
         Request::builder()
             .method("POST")
-            .uri(format!("/api/waves/{wave_id}/terminal-cards"))
+            .uri(format!("/api/tracks/{track_id}/terminal-cards"))
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .expect("build terminal-card request"),
@@ -451,13 +454,15 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         app,
         Request::builder()
             .method("GET")
-            .uri(format!("/api/waves/{wave_id}"))
+            .uri(format!("/api/tracks/{track_id}"))
             .body(Body::empty())
-            .expect("build wave detail request"),
+            .expect("build track detail request"),
     )
     .await;
-    assert_eq!(get_status, StatusCode::OK, "wave detail: {detail:?}");
-    let cards = detail["cards"].as_array().expect("wave detail cards array");
+    assert_eq!(get_status, StatusCode::OK, "track detail: {detail:?}");
+    let cards = detail["cards"]
+        .as_array()
+        .expect("track detail cards array");
     assert!(
         cards.iter().any(|card| card["id"] == card_id),
         "created terminal card row should survive replay no-op spawn: {detail:?}"
@@ -498,7 +503,7 @@ async fn record_session_roundtrips_through_loader() {
             id: "ov-1".into(),
             plugin_id: "core".into(),
             entity_kind: "view".into(),
-            entity_id: "wave-1".into(),
+            entity_id: "track-1".into(),
             kind: "layout".into(),
             payload: serde_json::json!({"positions": {"card_1": {"x": 0, "y": 0, "w": 4, "h": 3}}}),
             updated_at: 1,
@@ -506,7 +511,7 @@ async fn record_session_roundtrips_through_loader() {
         Event::OverlayDeleted {
             plugin_id: "core".into(),
             entity_kind: "view".into(),
-            entity_id: "wave-1".into(),
+            entity_id: "track-1".into(),
             kind: "layout".into(),
         },
     ];
@@ -519,7 +524,7 @@ async fn record_session_roundtrips_through_loader() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            &calm_server::track_area_cache::TrackAreaCache::new(),
             ev,
         )
         .await
@@ -578,13 +583,13 @@ async fn record_session_roundtrips_through_loader() {
 // intervening Delete).
 #[test]
 fn fold_layout_positions_respects_overlay_deleted() {
-    let wave_id = "wave-1";
+    let track_id = "track-1";
 
     let set_a = Event::OverlaySet(Overlay {
         id: "ov-a".into(),
         plugin_id: "core".into(),
         entity_kind: "view".into(),
-        entity_id: wave_id.into(),
+        entity_id: track_id.into(),
         kind: "layout".into(),
         payload: serde_json::json!({"positions": {"card_1": {"x": 0, "y": 0, "w": 4, "h": 3}}}),
         updated_at: 1,
@@ -592,14 +597,14 @@ fn fold_layout_positions_respects_overlay_deleted() {
     let delete = Event::OverlayDeleted {
         plugin_id: "core".into(),
         entity_kind: "view".into(),
-        entity_id: wave_id.into(),
+        entity_id: track_id.into(),
         kind: "layout".into(),
     };
     let set_b = Event::OverlaySet(Overlay {
         id: "ov-b".into(),
         plugin_id: "core".into(),
         entity_kind: "view".into(),
-        entity_id: wave_id.into(),
+        entity_id: track_id.into(),
         kind: "layout".into(),
         payload: serde_json::json!({"positions": {"card_9": {"x": 8, "y": 0, "w": 4, "h": 3}}}),
         updated_at: 3,
@@ -608,29 +613,29 @@ fn fold_layout_positions_respects_overlay_deleted() {
     // Set → Delete → Set: end state is set_b alone (the delete cleared
     // set_a's contribution before set_b overwrote).
     let got =
-        replay::fold_layout_positions([set_a.clone(), delete.clone(), set_b.clone()], wave_id)
+        replay::fold_layout_positions([set_a.clone(), delete.clone(), set_b.clone()], track_id)
             .expect("set after delete still produces Some");
     assert_eq!(got.len(), 1, "delete cleared set_a before set_b");
     assert!(got.contains_key("card_9"));
     assert!(!got.contains_key("card_1"));
 
     // Set → Delete: end state is None (delete is terminal until next set).
-    let got = replay::fold_layout_positions([set_a.clone(), delete.clone()], wave_id);
+    let got = replay::fold_layout_positions([set_a.clone(), delete.clone()], track_id);
     assert!(got.is_none(), "delete after lone set yields None");
 
     // Delete-only on an empty stream is still None (no panic, no spurious
     // entry).
-    let got = replay::fold_layout_positions([delete], wave_id);
+    let got = replay::fold_layout_positions([delete], track_id);
     assert!(got.is_none(), "lone delete yields None");
 
-    // Wrong-wave delete must not affect the running state.
+    // Wrong-track delete must not affect the running state.
     let delete_other = Event::OverlayDeleted {
         plugin_id: "core".into(),
         entity_kind: "view".into(),
-        entity_id: "wave-other".into(),
+        entity_id: "track-other".into(),
         kind: "layout".into(),
     };
-    let got = replay::fold_layout_positions([set_a.clone(), delete_other, set_b.clone()], wave_id)
+    let got = replay::fold_layout_positions([set_a.clone(), delete_other, set_b.clone()], track_id)
         .expect("unrelated delete must not clear");
     // set_a's positions merged with set_b via the `.or(current)` fold —
     // this is the existing upsert semantics and not in scope of the
@@ -655,7 +660,7 @@ fn fold_layout_positions_respects_overlay_deleted() {
 //      id is back to `N` (the `sqlite_sequence` reset path).
 #[tokio::test]
 async fn reset_from_fixture_wipes_and_reseeds() {
-    let fixture = load_fixture("wave-grid-layout-trace.events.json");
+    let fixture = load_fixture("track-grid-layout-trace.events.json");
     let (repo, bus, _state) = replay::boot_in_memory()
         .await
         .expect("boot in-memory replay state");
@@ -677,7 +682,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         id: "ov-extra".into(),
         plugin_id: "core".into(),
         entity_kind: "view".into(),
-        entity_id: "wave-extra".into(),
+        entity_id: "track-extra".into(),
         kind: "layout".into(),
         payload: serde_json::json!({"positions": {}}),
         updated_at: 99,
@@ -689,18 +694,18 @@ async fn reset_from_fixture_wipes_and_reseeds() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            &calm_server::track_area_cache::TrackAreaCache::new(),
             extra,
         )
         .await
         .expect("log extra event");
     assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");
 
-    // Issue #644 review: `tasks` deliberately has no FK to `waves`, so a
-    // wave wipe alone would never cascade here. Seed one row directly and
+    // Issue #644 review: `tasks` deliberately has no FK to `tracks`, so a
+    // track wipe alone would never cascade here. Seed one row directly and
     // assert the reset's explicit `DELETE FROM tasks` clears it.
     sqlx::query(
-        "INSERT INTO tasks (id, wave_id, key, kind, goal, context_json, \
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, \
          created_at_ms, updated_at_ms) \
          VALUES ('wv-x:t1', 'wv-x', 't1', 'codex', 'leftover goal', '{}', 1, 1)",
     )
@@ -708,10 +713,10 @@ async fn reset_from_fixture_wipes_and_reseeds() {
     .await
     .expect("seed leftover tasks row");
 
-    // PR7b-i review blocker: a rooted wave used to make the structural
+    // PR7b-i review blocker: a rooted track used to make the structural
     // wipe fail when `DELETE FROM worker_sessions` ran while
-    // `waves.root_session_id` still pointed at the root session.
-    seed_rooted_wave(&repo).await;
+    // `tracks.root_session_id` still pointed at the root session.
+    seed_rooted_track(&repo).await;
 
     // Reset: drop everything, reseed from the fixture, assert ids
     // re-start at 1 and the log carries exactly the fixture again.
@@ -766,7 +771,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
 //
 //   1. **WS `/api/events` replay** — historically streamed the raw
 //      persisted envelope verbatim. PR #214 added a read-side guard on
-//      `GET /api/overlays` + `GET /api/waves/{id}`; PR #220 closed the
+//      `GET /api/overlays` + `GET /api/tracks/{id}`; PR #220 closed the
 //      leak on the third surface by extending the same per-row
 //      predicate (`crate::validation::should_skip_event_for_overlay_version`)
 //      to both the live-broadcast and the cursor-replay legs of
@@ -952,8 +957,8 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     //     exceeds the kernel's ceiling (both kinds cap at v1 today)
     repo.overlay_upsert(NewOverlay {
         plugin_id: "core".into(),
-        entity_kind: "wave".into(),
-        entity_id: "wave-fwd".into(),
+        entity_kind: "track".into(),
+        entity_id: "track-fwd".into(),
         kind: "status".into(),
         payload: serde_json::json!({"state": "ok"}),
     })
@@ -961,8 +966,8 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     .expect("upsert v1 status overlay (no schemaVersion)");
     repo.overlay_upsert(NewOverlay {
         plugin_id: "core".into(),
-        entity_kind: "wave".into(),
-        entity_id: "wave-fwd".into(),
+        entity_kind: "track".into(),
+        entity_id: "track-fwd".into(),
         kind: "progress".into(),
         // The route's write-side validator (`validate_overlay_payload`)
         // would reject this; going through `repo.overlay_upsert`
@@ -982,7 +987,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     // Verify the raw repo returns BOTH rows — the filter is a route-
     // layer concern, not a repo concern.
     let raw = repo
-        .overlays_for("wave", "wave-fwd")
+        .overlays_for("track", "track-fwd")
         .await
         .expect("repo overlays_for");
     assert_eq!(
@@ -1001,7 +1006,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/overlays?entity_kind=wave&entity_id=wave-fwd")
+                .uri("/api/overlays?entity_kind=track&entity_id=track-fwd")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1040,7 +1045,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
     use calm_server::state::{AppState, CodexClient, DaemonClient};
 
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -1048,7 +1053,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         std::env::temp_dir().join("calm-plugins-data-schema-fwd"),
         Vec::new(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
     let state = AppState::from_parts(
         repo,
@@ -1057,7 +1062,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
     routes::router()
         .layer(axum::middleware::from_fn(

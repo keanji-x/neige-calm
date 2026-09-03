@@ -6,11 +6,11 @@ use std::sync::Arc;
 struct TerminalWorkerHarness {
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     adapter: TerminalWorkerAdapter,
-    wave_id: String,
+    track_id: String,
 }
 
-/// #1147 S6 — a wave's workspace is where its terminals land, so the harness
-/// wave carries one. An empty `workspace_path` is not a state any creation
+/// #1147 S6 — a track's workspace is where its terminals land, so the harness
+/// track carries one. An empty `workspace_path` is not a state any creation
 /// route produces; `terminal_worker_refuses_to_default_to_an_empty_workspace`
 /// builds that one deliberately.
 const HARNESS_WORKSPACE: &str = "/neige-fixture-workspace";
@@ -35,9 +35,9 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         repo.as_ref(),
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "terminal workers".into(),
@@ -53,9 +53,13 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
     .unwrap();
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     TerminalWorkerHarness {
-        adapter: TerminalWorkerAdapter::new(route_repo, CardRoleCache::new(), WaveAreaCache::new()),
+        adapter: TerminalWorkerAdapter::new(
+            route_repo,
+            CardRoleCache::new(),
+            TrackAreaCache::new(),
+        ),
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
     }
 }
 
@@ -68,10 +72,10 @@ async fn prepare_terminal_worker_with_cwd(
     key: &str,
     cwd: Option<String>,
 ) -> TxOutput {
-    let task_id = format!("{}:{key}", harness.wave_id);
+    let task_id = format!("{}:{key}", harness.track_id);
     let payload = serde_json::to_value(TerminalWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: harness.wave_id.clone(),
+        track_id: harness.track_id.clone(),
         idempotency_key: task_id.clone(),
         cmd: format!("printf {key}\n"),
         cwd,
@@ -79,11 +83,11 @@ async fn prepare_terminal_worker_with_cwd(
     .unwrap();
     sqlx::query(
         "INSERT OR IGNORE INTO tasks \
-         (id, wave_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
+         (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, 'terminal', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
-    .bind(&harness.wave_id)
+    .bind(&harness.track_id)
     .bind(key)
     .execute(harness.repo.pool())
     .await
@@ -137,7 +141,7 @@ async fn terminal_worker_prepare_titles_card_with_task_key() {
     // The pre-existing payload merge must survive untouched.
     assert_eq!(
         wire.payload.get("idempotency_key").and_then(Value::as_str),
-        Some(format!("{}:slice-d", harness.wave_id).as_str())
+        Some(format!("{}:slice-d", harness.track_id).as_str())
     );
     assert_eq!(
         wire.payload.get("role_request").and_then(Value::as_str),
@@ -146,8 +150,8 @@ async fn terminal_worker_prepare_titles_card_with_task_key() {
 }
 
 /// #1147 S6 — a terminal worker whose task row names no cwd lands in the
-/// **wave's workspace**. It used to land in `$HOME` (`default_cwd()`), which is
-/// how "each wave is a repository" stopped being true the moment a worker
+/// **track's workspace**. It used to land in `$HOME` (`default_cwd()`), which is
+/// how "each track is a repository" stopped being true the moment a worker
 /// actually opened a shell.
 ///
 /// The task row deliberately carries `cwd: None`: the dispatcher keeps it that
@@ -155,7 +159,7 @@ async fn terminal_worker_prepare_titles_card_with_task_key() {
 /// into the payload would put the server's environment into
 /// `stable_payload_hash`), so `None` is the shape production actually sends.
 #[tokio::test]
-async fn terminal_worker_without_cwd_lands_in_the_wave_workspace() {
+async fn terminal_worker_without_cwd_lands_in_the_track_workspace() {
     let harness = terminal_worker_harness().await;
     let workspace = HARNESS_WORKSPACE;
 
@@ -176,12 +180,12 @@ async fn terminal_worker_without_cwd_lands_in_the_wave_workspace() {
         "the card payload's cwd is what the FE shows; it must agree with the row"
     );
 
-    // No freeze assertion here, deliberately: this harness's wave is
-    // `attached`, and attached waves are frozen the moment they are created
+    // No freeze assertion here, deliberately: this harness's track is
+    // `attached`, and attached tracks are frozen the moment they are created
     // (design §数据模型), so asserting `frozen_at.is_some()` would pass with the
     // freeze deleted. Freeze point 2 is asserted where it can actually fail —
-    // `wave_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`
-    // (unfrozen managed wave, user route) and
+    // `track_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`
+    // (unfrozen managed track, user route) and
     // `claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`
     // (the call site that reaches `terminal_create_tx` directly).
 }
@@ -203,24 +207,24 @@ async fn terminal_worker_with_an_explicit_cwd_keeps_it() {
 
 /// Fail closed rather than inheriting the server's cwd.
 ///
-/// A wave with an empty `workspace_path` is not a state S2 can produce; if one
+/// A track with an empty `workspace_path` is not a state S2 can produce; if one
 /// exists the row is broken. Writing `""` into `terminals.cwd` would make the
 /// worker inherit whatever directory the kernel happens to be running in — the
 /// unreadable-failure shape #1147 was opened on.
 #[tokio::test]
 async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
     let harness = terminal_worker_harness_with_workspace("").await;
-    let stored: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id = ?1")
-        .bind(&harness.wave_id)
+    let stored: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
+        .bind(&harness.track_id)
         .fetch_one(harness.repo.pool())
         .await
         .unwrap();
-    assert_eq!(stored, "", "premise: this harness's wave has no workspace");
+    assert_eq!(stored, "", "premise: this harness's track has no workspace");
 
-    let task_id = format!("{}:empty", harness.wave_id);
+    let task_id = format!("{}:empty", harness.track_id);
     let payload = serde_json::to_value(TerminalWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: harness.wave_id.clone(),
+        track_id: harness.track_id.clone(),
         idempotency_key: task_id.clone(),
         cmd: "printf hi\n".into(),
         cwd: None,
@@ -228,11 +232,11 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
     .unwrap();
     sqlx::query(
         "INSERT OR IGNORE INTO tasks \
-         (id, wave_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
+         (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, 'empty', 'terminal', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
-    .bind(&harness.wave_id)
+    .bind(&harness.track_id)
     .execute(harness.repo.pool())
     .await
     .unwrap();

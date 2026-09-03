@@ -8,7 +8,7 @@
 //!
 //! * `prepare_tx` — guarded `gate_attempt` bump (`N-1 → N`, only while
 //!   the row is `verifying`) + freezes the gate definition, resolved
-//!   cwd (`gate.cwd → task.cwd → waves.cwd`, design §6.4) and attempt
+//!   cwd (`gate.cwd → task.cwd → tracks.cwd`, design §6.4) and attempt
 //!   into `tx_output.data`. The gate that runs is the one recorded.
 //! * `spawn_side_effect` — kill-prior (own-row artifacts per the #653
 //!   §3.2 MUST, the previous attempt's op artifacts, and the tasks-row
@@ -48,12 +48,12 @@ use crate::db::sqlite::{
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, AreaId, WaveId};
+use crate::ids::{ActorId, AreaId, TrackId};
 use crate::model::{TaskStatus, now_ms};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
-use crate::wave_lifecycle::auto_transition_if_current_in_tx;
+use crate::track_lifecycle::auto_transition_if_current_in_tx;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -110,7 +110,7 @@ const TASK_VERIFY_PHASES: &[PhaseTag] = &[
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskVerifyOperationPayload {
     pub actor: ActorId,
-    pub wave_id: String,
+    pub track_id: String,
     pub task_id: String,
     pub attempt: i64,
 }
@@ -158,11 +158,11 @@ pub struct GateVerdict {
 }
 
 /// Everything the gate-result tx needs to address the task row and the
-/// wave-scoped event.
+/// track-scoped event.
 #[derive(Clone, Debug)]
 pub(crate) struct GateResultCtx {
     pub task_id: String,
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub area_id: AreaId,
 }
 
@@ -185,7 +185,7 @@ pub(crate) async fn apply_gate_result_in_tx(
 /// (PR #685 review F4): the scheduler's pre-bump reconcile arm flips a
 /// row still sitting at `verdict.attempt - 1` — the shape left behind
 /// when `prepare_tx` failed with a client error BEFORE the guarded
-/// bump (wave row gone → Conflict, gate_json gone → Conflict). The
+/// bump (track row gone → Conflict, gate_json gone → Conflict). The
 /// recorded verdict keeps the op's attempt number; only the in-tx
 /// guard differs.
 pub(crate) async fn apply_gate_result_with_guard_in_tx(
@@ -207,8 +207,8 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
     if rows == 0 {
         return Ok(Vec::new());
     }
-    let scope = EventScope::Wave {
-        wave: rctx.wave_id.clone(),
+    let scope = EventScope::Track {
+        track: rctx.track_id.clone(),
         area: rctx.area_id.clone(),
     };
     let mut events = vec![Event::TaskGateResult {
@@ -224,9 +224,9 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
     }];
     if let Some(auto_events) = auto_transition_if_current_in_tx(
         tx,
-        &rctx.wave_id,
-        crate::model::WaveLifecycle::Working,
-        crate::model::WaveLifecycle::Reviewing,
+        &rctx.track_id,
+        crate::model::TrackLifecycle::Working,
+        crate::model::TrackLifecycle::Reviewing,
         &ActorId::KernelDispatcher,
         Some("[auto] gate result recorded".to_string()),
     )
@@ -475,7 +475,7 @@ fn timeout_verdict(log_path: &Path, attempt: i64, timeout_secs: i64) -> GateVerd
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FrozenVerify {
     pub task_id: String,
-    pub wave_id: String,
+    pub track_id: String,
     pub area_id: String,
     pub key: String,
     pub attempt: i64,
@@ -493,7 +493,7 @@ impl FrozenVerify {
     fn result_ctx(&self) -> GateResultCtx {
         GateResultCtx {
             task_id: self.task_id.clone(),
-            wave_id: WaveId::from(self.wave_id.clone()),
+            track_id: TrackId::from(self.track_id.clone()),
             area_id: AreaId::from(self.area_id.clone()),
         }
     }
@@ -665,26 +665,26 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let gate: GateSpec = serde_json::from_str(gate_json)
             .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
 
-        // §6.4 cwd chain: gate.cwd → task.cwd → the wave's workspace path.
-        // #1147 S1 — reads `workspace_path`; `waves.cwd` was dropped by
+        // §6.4 cwd chain: gate.cwd → task.cwd → the track's workspace path.
+        // #1147 S1 — reads `workspace_path`; `tracks.cwd` was dropped by
         // migration 0077 (this is a raw SELECT, so it would have failed at
         // RUNTIME, not compile time, had it been missed).
-        let wave: Option<(String, String)> =
-            sqlx::query_as("SELECT workspace_path, area_id FROM waves WHERE id = ?1")
-                .bind(&task.wave_id)
+        let track: Option<(String, String)> =
+            sqlx::query_as("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
+                .bind(&task.track_id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let (wave_cwd, area_id) =
-            wave.ok_or_else(|| CalmError::Conflict(format!("wave {} is gone", task.wave_id)))?;
+        let (track_cwd, area_id) =
+            track.ok_or_else(|| CalmError::Conflict(format!("track {} is gone", task.track_id)))?;
         let cwd = gate
             .cwd
             .clone()
             .filter(|c| !c.trim().is_empty())
             .or_else(|| task.cwd.clone().filter(|c| !c.trim().is_empty()))
-            .unwrap_or(wave_cwd);
+            .unwrap_or(track_cwd);
         if cwd.trim().is_empty() {
             return Err(CalmError::BadRequest(format!(
-                "task {}: no gate cwd resolvable (gate.cwd, task.cwd, waves.cwd all empty)",
+                "task {}: no gate cwd resolvable (gate.cwd, task.cwd, tracks.cwd all empty)",
                 task.id
             )));
         }
@@ -700,7 +700,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
 
         let frozen = FrozenVerify {
             task_id: task.id.clone(),
-            wave_id: task.wave_id.clone(),
+            track_id: task.track_id.clone(),
             area_id,
             key: task.key.clone(),
             attempt,
@@ -1161,7 +1161,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     op: "fail_task_gate_infra".into(),
                     args: json!({
                         "task_id": frozen.task_id,
-                        "wave_id": frozen.wave_id,
+                        "track_id": frozen.track_id,
                         "area_id": frozen.area_id,
                         "attempt": frozen.attempt,
                         "reason": reason,
@@ -1214,9 +1214,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     .ok_or_else(|| {
                         CalmError::Internal("fail_task_gate_infra missing task_id".into())
                     })?;
-                let wave_id = step
+                let track_id = step
                     .args
-                    .get("wave_id")
+                    .get("track_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let area_id = step
@@ -1236,7 +1236,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     .unwrap_or("gate-infra");
                 let rctx = GateResultCtx {
                     task_id: task_id.to_string(),
-                    wave_id: WaveId::from(wave_id.to_string()),
+                    track_id: TrackId::from(track_id.to_string()),
                     area_id: AreaId::from(area_id.to_string()),
                 };
                 let verdict = GateVerdict {
@@ -1272,7 +1272,7 @@ mod tests {
     fn attempt_key_round_trip() {
         assert_eq!(gate_attempt_key("w:impl", 3), "w:impl#g3");
         assert_eq!(parse_attempt_key("w:impl#g3"), Some(("w:impl", 3)));
-        // Task keys may contain '#g' lookalikes only via the wave id /
+        // Task keys may contain '#g' lookalikes only via the track id /
         // key alphabet — keys are [a-z0-9._-], so the LAST '#g' is
         // always the attempt separator.
         assert_eq!(parse_attempt_key("w:impl#g0"), None, "attempt >= 1");

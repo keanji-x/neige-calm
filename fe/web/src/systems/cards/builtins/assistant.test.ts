@@ -10,7 +10,7 @@ const callComponent = (entry: typeof ASSISTANT_CARD_ENTRY) =>
   (entry.component as unknown as (props: unknown) => unknown)({});
 
 describe('assistant card entry', () => {
-  it('recognises a wave assistant only by the assistant marker', () => {
+  it('recognises a track assistant only by the assistant marker', () => {
     expect(ASSISTANT_CARD_ENTRY.fromKernel?.({
       id: 'c1', kind: 'codex', payload: { harness_profile: 'assistant' },
     })).toEqual({ type: 'assistant', id: 'c1' });
@@ -22,7 +22,7 @@ describe('assistant card entry', () => {
   /*
    * The two markers live under one field, and this is the direction that
    * actually costs something: a predicate widened to "has a `harness_profile`"
-   * would make every area chat card resolve as a wave assistant. The server
+   * would make every area chat card resolve as a track assistant. The server
    * refuses to conflate them for the same reason and pins it in
    * `plain_chat.rs::the_two_conversation_markers_never_answer_for_each_other`.
    */

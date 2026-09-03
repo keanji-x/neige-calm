@@ -1,6 +1,6 @@
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
-    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent,
+    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, TrackEvent,
     WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
 };
 
@@ -13,7 +13,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::*;
 use crate::state::WriteContext;
-use crate::{card_role_cache::CardRoleCache, wave_area_cache::WaveAreaCache};
+use crate::{card_role_cache::CardRoleCache, track_area_cache::TrackAreaCache};
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
 pub mod prelude {
@@ -34,32 +34,32 @@ pub trait ServerRepoReadExt {
     async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>>;
     async fn area_folders_list_all(&self) -> Result<Vec<AreaFolder>>;
     async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>>;
-    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>>;
-    async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
-    /// #1253 PR1 — the Today launchpad wave, or `None` before it exists.
-    async fn wave_get_launchpad(&self) -> Result<Option<Wave>>;
-    async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
-    async fn waves_window(
+    async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>>;
+    async fn track_get(&self, id: &str) -> Result<Option<Track>>;
+    /// #1253 PR1 — the Today launchpad track, or `None` before it exists.
+    async fn track_get_launchpad(&self) -> Result<Option<Track>>;
+    async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
+    async fn tracks_window(
         &self,
         area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
-    ) -> Result<Vec<Wave>>;
-    async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>>;
+    ) -> Result<Vec<Track>>;
+    async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>>;
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
-    async fn task_contexts_by_dst_wave(
+    async fn task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<calm_truth::db::TaskContextRow>>;
-    async fn stale_task_contexts_by_dst_wave(
+    async fn stale_task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<calm_truth::db::TaskContextRow>>;
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<calm_truth::db::TaskContextRow>>;
     async fn task_contexts_inflight_stale(&self) -> Result<Vec<calm_truth::db::TaskContextRow>>;
-    async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
-    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
+    async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>>;
+    async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
@@ -98,7 +98,7 @@ pub trait ServerRepoReadExt {
     ) -> Result<Vec<(String, serde_json::Value)>>;
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
-    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()>;
+    async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()>;
     async fn card_mcp_token_lookup_by_hash(
         &self,
         hashed_token: &str,
@@ -156,38 +156,38 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>> {
-        calm_truth::db::RepoRead::waves_by_area(self, area_id)
+    async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>> {
+        calm_truth::db::RepoRead::tracks_by_area(self, area_id)
             .await
             .map_err(Into::into)
     }
-    async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
-        calm_truth::db::RepoRead::wave_get(self, id)
+    async fn track_get(&self, id: &str) -> Result<Option<Track>> {
+        calm_truth::db::RepoRead::track_get(self, id)
             .await
             .map_err(Into::into)
     }
-    async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
-        calm_truth::db::RepoRead::wave_get_launchpad(self)
+    async fn track_get_launchpad(&self) -> Result<Option<Track>> {
+        calm_truth::db::RepoRead::track_get_launchpad(self)
             .await
             .map_err(Into::into)
     }
-    async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
-        calm_truth::db::RepoRead::wave_detail(self, id)
+    async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>> {
+        calm_truth::db::RepoRead::track_detail(self, id)
             .await
             .map_err(Into::into)
     }
-    async fn waves_window(
+    async fn tracks_window(
         &self,
         area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
-    ) -> Result<Vec<Wave>> {
-        calm_truth::db::RepoRead::waves_window(self, area_id, since, until)
+    ) -> Result<Vec<Track>> {
+        calm_truth::db::RepoRead::tracks_window(self, area_id, since, until)
             .await
             .map_err(Into::into)
     }
-    async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>> {
-        calm_truth::db::RepoRead::tasks_by_wave(self, wave_id)
+    async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>> {
+        calm_truth::db::RepoRead::tasks_by_track(self, track_id)
             .await
             .map_err(Into::into)
     }
@@ -201,19 +201,19 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn task_contexts_by_dst_wave(
+    async fn task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<calm_truth::db::TaskContextRow>> {
-        calm_truth::db::RepoRead::task_contexts_by_dst_wave(self, dst_wave_id)
+        calm_truth::db::RepoRead::task_contexts_by_dst_track(self, dst_track_id)
             .await
             .map_err(Into::into)
     }
-    async fn stale_task_contexts_by_dst_wave(
+    async fn stale_task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<calm_truth::db::TaskContextRow>> {
-        calm_truth::db::RepoRead::stale_task_contexts_by_dst_wave(self, dst_wave_id)
+        calm_truth::db::RepoRead::stale_task_contexts_by_dst_track(self, dst_track_id)
             .await
             .map_err(Into::into)
     }
@@ -227,13 +227,13 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
-        calm_truth::db::RepoRead::cards_by_wave(self, wave_id)
+    async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>> {
+        calm_truth::db::RepoRead::cards_by_track(self, track_id)
             .await
             .map_err(Into::into)
     }
-    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>> {
-        calm_truth::db::RepoRead::wave_report_cards_by_area(self, area_id)
+    async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>> {
+        calm_truth::db::RepoRead::track_report_cards_by_area(self, area_id)
             .await
             .map_err(Into::into)
     }
@@ -359,8 +359,8 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()> {
-        calm_truth::db::RepoRead::seed_wave_area_cache(self, cache)
+    async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()> {
+        calm_truth::db::RepoRead::seed_track_area_cache(self, cache)
             .await
             .map_err(Into::into)
     }
@@ -439,7 +439,7 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
-        wave_area_cache: &WaveAreaCache,
+        track_area_cache: &TrackAreaCache,
         event: Event,
     ) -> Result<i64>;
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()>;
@@ -456,12 +456,12 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         since_id: i64,
         probe_limit: i64,
     ) -> Result<(i64, Option<i64>)>;
-    async fn events_for_wave(
+    async fn events_for_track(
         &self,
-        wave_id: &str,
+        track_id: &str,
         kinds: &[&str],
         since_id: Option<i64>,
-    ) -> Result<Vec<WaveEvent>>;
+    ) -> Result<Vec<TrackEvent>>;
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
     async fn events_prune_watermark(&self) -> Result<i64>;
     async fn events_latest_id(&self) -> Result<Option<i64>>;
@@ -523,7 +523,7 @@ where
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
-        wave_area_cache: &WaveAreaCache,
+        track_area_cache: &TrackAreaCache,
         event: Event,
     ) -> Result<i64> {
         calm_truth::db::RepoEventWrite::log_pure_event(
@@ -533,7 +533,7 @@ where
             correlation,
             bus,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             event,
         )
         .await
@@ -562,13 +562,13 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn events_for_wave(
+    async fn events_for_track(
         &self,
-        wave_id: &str,
+        track_id: &str,
         kinds: &[&str],
         since_id: Option<i64>,
-    ) -> Result<Vec<WaveEvent>> {
-        calm_truth::db::RepoEventWrite::events_for_wave(self, wave_id, kinds, since_id)
+    ) -> Result<Vec<TrackEvent>> {
+        calm_truth::db::RepoEventWrite::events_for_track(self, track_id, kinds, since_id)
             .await
             .map_err(Into::into)
     }
@@ -594,9 +594,9 @@ pub trait ServerRepoSyncDomainRawExt: ServerRepoReadExt {
     async fn area_create(&self, p: NewArea) -> Result<Area>;
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
     async fn area_delete(&self, id: &str) -> Result<()>;
-    async fn wave_create(&self, p: NewWave) -> Result<Wave>;
-    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave>;
-    async fn wave_delete(&self, id: &str) -> Result<()>;
+    async fn track_create(&self, p: NewTrack) -> Result<Track>;
+    async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track>;
+    async fn track_delete(&self, id: &str) -> Result<()>;
     async fn card_create(&self, p: NewCard) -> Result<Card>;
     async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card>;
     async fn card_delete(&self, id: &str) -> Result<()>;
@@ -630,18 +630,18 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn wave_create(&self, p: NewWave) -> Result<Wave> {
-        calm_truth::db::RepoSyncDomainRaw::wave_create(self, p)
+    async fn track_create(&self, p: NewTrack) -> Result<Track> {
+        calm_truth::db::RepoSyncDomainRaw::track_create(self, p)
             .await
             .map_err(Into::into)
     }
-    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave> {
-        calm_truth::db::RepoSyncDomainRaw::wave_update(self, id, p)
+    async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track> {
+        calm_truth::db::RepoSyncDomainRaw::track_update(self, id, p)
             .await
             .map_err(Into::into)
     }
-    async fn wave_delete(&self, id: &str) -> Result<()> {
-        calm_truth::db::RepoSyncDomainRaw::wave_delete(self, id)
+    async fn track_delete(&self, id: &str) -> Result<()> {
+        calm_truth::db::RepoSyncDomainRaw::track_delete(self, id)
             .await
             .map_err(Into::into)
     }
@@ -703,7 +703,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         &self,
         runtime_id: &str,
         card_id: &str,
-        wave_id: &str,
+        track_id: &str,
         thread_id: &str,
         turn_id: Option<&str>,
         item_uuid: Option<&str>,
@@ -799,7 +799,7 @@ where
         &self,
         runtime_id: &str,
         card_id: &str,
-        wave_id: &str,
+        track_id: &str,
         thread_id: &str,
         turn_id: Option<&str>,
         item_uuid: Option<&str>,
@@ -808,7 +808,7 @@ where
         params: &str,
     ) -> Result<i64> {
         calm_truth::db::RepoOutOfDomain::harness_item_insert(
-            self, runtime_id, card_id, wave_id, thread_id, turn_id, item_uuid, item_type, method,
+            self, runtime_id, card_id, track_id, thread_id, turn_id, item_uuid, item_type, method,
             params,
         )
         .await
@@ -925,15 +925,15 @@ pub mod sqlite {
 
     use crate::card_role_cache::CardRoleCache;
     use crate::error::Result;
-    use crate::ids::WaveId;
+    use crate::ids::TrackId;
     use crate::model::{Card, CardRole, Terminal};
     use calm_truth::model::RequestTheme;
 
-    pub async fn require_wave_exists_tx(
+    pub async fn require_track_exists_tx(
         tx: &mut Transaction<'_, Sqlite>,
-        wave_id: &str,
+        track_id: &str,
     ) -> Result<()> {
-        calm_truth::db::sqlite::require_wave_exists_tx(tx, wave_id)
+        calm_truth::db::sqlite::require_track_exists_tx(tx, track_id)
             .await
             .map_err(Into::into)
     }
@@ -971,7 +971,7 @@ pub mod sqlite {
         card_id: String,
         runtime_id: &str,
         spawn_op_id: Option<&str>,
-        wave_id: WaveId,
+        track_id: TrackId,
         title: Option<String>,
         sort: Option<f64>,
         program: String,
@@ -987,7 +987,7 @@ pub mod sqlite {
             card_id,
             runtime_id,
             spawn_op_id,
-            wave_id,
+            track_id,
             title,
             sort,
             program,
@@ -1008,7 +1008,7 @@ pub mod sqlite {
         card_id: String,
         runtime_id: &str,
         spawn_op_id: Option<&str>,
-        wave_id: WaveId,
+        track_id: TrackId,
         title: Option<String>,
         sort: Option<f64>,
         cwd: String,
@@ -1026,7 +1026,7 @@ pub mod sqlite {
             card_id,
             runtime_id,
             spawn_op_id,
-            wave_id,
+            track_id,
             title,
             sort,
             cwd,
@@ -1048,7 +1048,7 @@ pub mod sqlite {
         tx: &mut Transaction<'_, Sqlite>,
         card_id: String,
         runtime_id: &str,
-        wave_id: WaveId,
+        track_id: TrackId,
         title: Option<String>,
         sort: Option<f64>,
         program: String,
@@ -1068,7 +1068,7 @@ pub mod sqlite {
             tx,
             card_id,
             runtime_id,
-            wave_id,
+            track_id,
             title,
             sort,
             program,
@@ -1094,7 +1094,7 @@ pub mod sqlite {
         card_id: String,
         runtime_id: &str,
         spawn_op_id: Option<&str>,
-        wave_id: WaveId,
+        track_id: TrackId,
         title: Option<String>,
         sort: Option<f64>,
         program: String,
@@ -1113,7 +1113,7 @@ pub mod sqlite {
             card_id,
             runtime_id,
             spawn_op_id,
-            wave_id,
+            track_id,
             title,
             sort,
             program,

@@ -11,7 +11,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::terminal_adapter::TerminalAdapter;
 use calm_server::operation::{
@@ -48,7 +48,7 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     events: EventBus,
     spawn_count: Arc<AtomicUsize>,
     _tmp: TempDir,
@@ -79,8 +79,8 @@ where
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "codex-endpoint".into(),
@@ -112,7 +112,7 @@ where
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -135,7 +135,7 @@ where
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
@@ -145,7 +145,7 @@ where
         state.pending_codex_threads.clone(),
         state.pending_codex_threads_spawn_serial.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         hook.clone(),
     ));
     let completion = OperationCompletionBus::new();
@@ -174,7 +174,7 @@ where
         app,
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         events,
         spawn_count,
         _tmp: tmp,
@@ -262,14 +262,14 @@ fn failing_spawn_hook(
 
 async fn post(
     app: axum::Router,
-    wave_id: &str,
+    track_id: &str,
     body: Value,
     idempotency_key: Option<&str>,
     actor: Option<&str>,
 ) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{wave_id}/codex-cards"))
+        .uri(format!("/api/tracks/{track_id}/codex-cards"))
         .header("content-type", "application/json");
     if let Some(key) = idempotency_key {
         req = req.header("Idempotency-Key", key);
@@ -286,13 +286,13 @@ async fn post(
 
 async fn post_terminal(
     app: axum::Router,
-    wave_id: &str,
+    track_id: &str,
     body: Value,
     idempotency_key: Option<&str>,
 ) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{wave_id}/terminal-cards"))
+        .uri(format!("/api/tracks/{track_id}/terminal-cards"))
         .header("content-type", "application/json");
     if let Some(key) = idempotency_key {
         req = req.header("Idempotency-Key", key);
@@ -365,7 +365,7 @@ async fn post_codex_card_empty_prompt_succeeds_via_register_pending() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
-    let (status, card) = post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    let (status, card) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
     assert_eq!(
         card["payload"]["codex_thread_status"],
@@ -384,7 +384,7 @@ async fn post_codex_card_with_prompt_succeeds_via_mint_and_await() {
 
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(Some("explain this")),
         None,
         None,
@@ -422,7 +422,7 @@ async fn post_codex_card_idempotency_same_key_same_normalized_payload_reuses_op(
 
     let (first_status, first_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         first_body,
         Some("codex-same-normalized"),
         None,
@@ -430,7 +430,7 @@ async fn post_codex_card_idempotency_same_key_same_normalized_payload_reuses_op(
     .await;
     let (second_status, second_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         second_body,
         Some("codex-same-normalized"),
         None,
@@ -458,7 +458,7 @@ async fn post_codex_card_idempotency_key_reused_by_terminal_operation_uses_fresh
     });
     let (terminal_status, terminal_card) = post_terminal(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         terminal_body,
         Some(terminal_key),
     )
@@ -471,7 +471,7 @@ async fn post_codex_card_idempotency_key_reused_by_terminal_operation_uses_fresh
 
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(None),
         Some(codex_key),
         None,
@@ -528,7 +528,7 @@ async fn post_codex_card_idempotency_trims_cwd_and_prompt_for_hash_equivalence()
 
     let (first_status, first_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         first_body,
         Some("codex-trimmed-normalized"),
         None,
@@ -536,7 +536,7 @@ async fn post_codex_card_idempotency_trims_cwd_and_prompt_for_hash_equivalence()
     .await;
     let (second_status, second_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         second_body,
         Some("codex-trimmed-normalized"),
         None,
@@ -557,7 +557,7 @@ async fn post_codex_card_idempotency_same_key_different_payload_returns_409() {
 
     let (first_status, first_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(None),
         Some("codex-different-payload"),
         None,
@@ -566,7 +566,7 @@ async fn post_codex_card_idempotency_same_key_different_payload_returns_409() {
     assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
     let (second_status, second_body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(Some("now prompted")),
         Some("codex-different-payload"),
         None,
@@ -582,7 +582,7 @@ async fn post_codex_card_empty_spawn_failure_reaps_pty_and_keeps_failed_card() {
     let boot = boot_with_spawn_hook_factory(failing_spawn_hook).await;
     let mut rx = boot.events.subscribe();
 
-    let (status, response) = post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    let (status, response) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -649,7 +649,7 @@ async fn post_codex_card_prompt_spawn_failure_interrupts_turn_and_keeps_card() {
 
     let (status, response) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(Some("interrupt me")),
         None,
         None,
@@ -668,7 +668,7 @@ async fn post_codex_card_prompt_spawn_failure_interrupts_turn_and_keeps_card() {
         None,
         "spawn-failure compensation must interrupt the prompted active turn"
     );
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert_eq!(cards.len(), 1);
     assert!(
         cards[0].payload.get("codex_thread_id").is_none(),
@@ -693,7 +693,7 @@ async fn post_codex_card_validate_forbidden_returns_403_phase_failed() {
 
     let (status, response) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(None),
         None,
         Some("ai:codex"),
@@ -705,7 +705,7 @@ async fn post_codex_card_validate_forbidden_returns_403_phase_failed() {
     assert_eq!(detail["last_error_class"], "forbidden");
     assert!(
         boot.repo
-            .cards_by_wave(&boot.wave_id)
+            .cards_by_track(&boot.track_id)
             .await
             .unwrap()
             .is_empty()
@@ -718,7 +718,7 @@ async fn post_codex_card_invalid_idempotency_key_header_returns_400() {
     let boot = boot_success().await;
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{}/codex-cards", boot.wave_id))
+        .uri(format!("/api/tracks/{}/codex-cards", boot.track_id))
         .header("content-type", "application/json")
         .body(Body::from(body(None).to_string()))
         .unwrap();

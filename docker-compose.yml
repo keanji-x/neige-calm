@@ -148,7 +148,7 @@ services:
       # if the binary isn't reachable inside the container.
       - ${CALM_PROC_SUPERVISOR_BIN:-./target/release/calm-proc-supervisor}:/usr/local/bin/calm-proc-supervisor:ro
       # Issue #339 PR B — the `neige` CLI, invoked by spec/worker agents
-      # from their terminals to read current-wave file views over the
+      # from their terminals to read current-track file views over the
       # per-card MCP socket. Mounting it at /usr/local/bin keeps it on
       # PATH for the agent shell; without this mount `neige ls`/`cat`
       # fails with `command not found` even though `make build`

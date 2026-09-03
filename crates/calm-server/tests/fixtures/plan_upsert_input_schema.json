@@ -12,7 +12,7 @@
           "key": {
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
-            "description": "Stable per-wave task key; also the completion correlation id."
+            "description": "Stable per-track task key; also the completion correlation id."
           },
           "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
           "goal": { "type": "string", "minLength": 1, "description": "codex/claude: goal text; terminal: the command" },
@@ -38,15 +38,15 @@
                   }
                 }
               },
-              "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the wave cwd." },
+              "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the track cwd." },
               "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
             }
           },
-          "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a wave with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
+          "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a track with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
         }
       }
     },
-    "message": { "type": "string", "minLength": 1, "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on WaveUpdated.agent_message when a lifecycle transition is requested." },
-    "lifecycle": { "type": "string", "enum": ["draft", "planning", "dispatching", "working", "blocked", "reviewing", "done", "canceled", "failed"], "description": "Optional wave lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged." }
+    "message": { "type": "string", "minLength": 1, "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested." },
+    "lifecycle": { "type": "string", "enum": ["draft", "planning", "dispatching", "working", "blocked", "reviewing", "done", "canceled", "failed"], "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged." }
   }
 }

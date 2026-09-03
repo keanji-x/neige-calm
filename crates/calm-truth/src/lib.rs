@@ -22,11 +22,11 @@ pub mod session_repo;
 pub mod state;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
+pub mod track_area_cache;
+pub mod track_fs_view;
+pub mod track_vcs;
+pub mod track_vcs_repo;
 pub mod validation;
-pub mod wave_area_cache;
-pub mod wave_fs_view;
-pub mod wave_vcs;
-pub mod wave_vcs_repo;
 pub mod worker_flow_sink;
 
 pub mod error;
@@ -37,4 +37,4 @@ pub mod event {
     pub use calm_types::event::*;
 }
 
-pub use calm_types::{ids, wave_fs_dto, wave_lifecycle, wave_report, worker};
+pub use calm_types::{ids, track_fs_dto, track_lifecycle, track_report, worker};

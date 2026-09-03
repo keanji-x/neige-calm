@@ -16,7 +16,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewPlugin, NewWave, WaveId, now_ms};
+use calm_server::model::{CardRole, NewArea, NewPlugin, NewTrack, TrackId, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -51,7 +51,7 @@ struct Fixture {
     raw_token: String,
     thread_id: String,
     card_id: String,
-    wave_id: String,
+    track_id: String,
     lease_abs: PathBuf,
     _runtime: Arc<OperationRuntime>,
     _lease_tmp: TempDir,
@@ -62,7 +62,7 @@ struct Caller {
     raw_token: String,
     thread_id: String,
     card_id: String,
-    wave_id: String,
+    track_id: String,
     lease_abs: PathBuf,
     _lease_tmp: TempDir,
 }
@@ -146,10 +146,10 @@ async fn real_git_forge_plugin_lowers_through_forge_action_seam() {
 
     let rows = event_rows(&fx.repo, "worktree.provisioned").await;
     assert_eq!(rows.len(), 1, "worktree add must persist one event");
-    assert_worktree_event(&rows[0], &fx.wave_id, &fx.card_id, &target);
+    assert_worktree_event(&rows[0], &fx.track_id, &fx.card_id, &target);
     let worktree_key = scoped_idem_key(
         PLUGIN_ID,
-        &fx.wave_id,
+        &fx.track_id,
         &fx.card_id,
         &format!("git.worktree.add:{target}"),
     );
@@ -194,9 +194,9 @@ async fn real_git_forge_plugin_lowers_through_forge_action_seam() {
     );
     let commit_rows = event_rows(&fx.repo, "worktree.committed").await;
     assert_eq!(commit_rows.len(), 1, "git.commit must persist one event");
-    assert_worktree_committed_event(&commit_rows[0], &fx.wave_id, &fx.card_id, "wt-x");
+    assert_worktree_committed_event(&commit_rows[0], &fx.track_id, &fx.card_id, "wt-x");
 
-    let commit_key = scoped_idem_key(PLUGIN_ID, &fx.wave_id, &fx.card_id, "git.commit:step-1");
+    let commit_key = scoped_idem_key(PLUGIN_ID, &fx.track_id, &fx.card_id, "git.commit:step-1");
     assert!(
         operation_payload_by_idem(&fx.repo, &commit_key)
             .await
@@ -215,9 +215,9 @@ async fn boot_fixture() -> Fixture {
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
-    let wave_cwd = tmp.path().join("wave-cwd");
-    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
-    init_git_repo(&wave_cwd);
+    let track_cwd = tmp.path().join("track-cwd");
+    std::fs::create_dir_all(&track_cwd).expect("create track cwd");
+    init_git_repo(&track_cwd);
 
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -226,7 +226,7 @@ async fn boot_fixture() -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let events = EventBus::new();
 
     let area = repo
@@ -237,25 +237,25 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-git-forge-plugin".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
-    repo.seed_wave_area_cache(&wave_area_cache)
+        .expect("create track");
+    repo.seed_track_area_cache(&track_area_cache)
         .await
-        .expect("seed wave/area cache");
+        .expect("seed track/area cache");
 
-    let caller = create_worker_caller(&sqlx_repo, &card_role_cache, wave.id.clone()).await;
+    let caller = create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone()).await;
     init_git_repo(&caller.lease_abs);
 
     let plugin_host = boot_plugin_host(
@@ -263,7 +263,7 @@ async fn boot_fixture() -> Fixture {
         plugins_dir.clone(),
         plugins_data_dir.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     )
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
@@ -299,7 +299,7 @@ async fn boot_fixture() -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -319,7 +319,7 @@ async fn boot_fixture() -> Fixture {
         raw_token: caller.raw_token,
         thread_id: caller.thread_id,
         card_id: caller.card_id,
-        wave_id: caller.wave_id,
+        track_id: caller.track_id,
         lease_abs: caller.lease_abs,
         _runtime: runtime,
         _lease_tmp: caller._lease_tmp,
@@ -330,7 +330,7 @@ async fn boot_fixture() -> Fixture {
 async fn create_worker_caller(
     sqlx_repo: &Arc<SqlxRepo>,
     card_role_cache: &CardRoleCache,
-    wave_id: WaveId,
+    track_id: TrackId,
 ) -> Caller {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
@@ -348,7 +348,7 @@ async fn create_worker_caller(
         card_id.clone(),
         &runtime_id,
         None,
-        wave_id.clone(),
+        track_id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -377,7 +377,7 @@ async fn create_worker_caller(
             token.into_inner()
         }
     };
-    insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), &lease_path).await;
+    insert_workspace_lease(&mut tx, &card_id, track_id.as_str(), &lease_path).await;
     tx.commit().await.expect("commit card tx");
 
     let thread_id = format!("thread-{card_id}");
@@ -387,7 +387,7 @@ async fn create_worker_caller(
         raw_token,
         thread_id,
         card_id,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         lease_abs,
         _lease_tmp: lease_tmp,
     }
@@ -435,20 +435,20 @@ async fn boot_plugin_host(
 async fn insert_workspace_lease(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     path: &str,
 ) {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
     )
     .bind(calm_server::model::new_id())
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(path)
     .bind("test-lease-owner")
     .bind(now + 60_000)
@@ -549,7 +549,7 @@ async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
 
 async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     let rows: Vec<RawEventRow> = sqlx::query_as(
-        "SELECT scope_kind, scope_area, scope_wave, scope_card, payload \
+        "SELECT scope_kind, scope_area, scope_track, scope_card, payload \
              FROM events WHERE kind = ?1 ORDER BY id ASC",
     )
     .bind(kind)
@@ -558,11 +558,11 @@ async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     .expect("event rows");
     rows.into_iter()
         .map(
-            |(scope_kind, scope_area, scope_wave, scope_card, payload)| {
+            |(scope_kind, scope_area, scope_track, scope_card, payload)| {
                 (
                     scope_kind,
                     scope_area,
-                    scope_wave,
+                    scope_track,
                     scope_card,
                     serde_json::from_str(&payload).expect("event payload json"),
                 )
@@ -596,22 +596,22 @@ async fn operation_payload_by_idem(repo: &SqlxRepo, idem_key: &str) -> Option<Va
     payload.map(|payload| serde_json::from_str(&payload).expect("operation payload json"))
 }
 
-fn assert_worktree_event(row: &EventRow, wave_id: &str, card_id: &str, target: &str) {
-    let (scope_kind, _scope_area, scope_wave, scope_card, payload) = row;
+fn assert_worktree_event(row: &EventRow, track_id: &str, card_id: &str, target: &str) {
+    let (scope_kind, _scope_area, scope_track, scope_card, payload) = row;
     assert_eq!(scope_kind, "card");
-    assert_eq!(scope_wave.as_deref(), Some(wave_id));
+    assert_eq!(scope_track.as_deref(), Some(track_id));
     assert_eq!(scope_card.as_deref(), Some(card_id));
-    assert_eq!(payload["wave_id"], wave_id);
+    assert_eq!(payload["track_id"], track_id);
     assert_eq!(payload["card_id"], card_id);
     assert_eq!(payload["path"], target);
 }
 
-fn assert_worktree_committed_event(row: &EventRow, wave_id: &str, card_id: &str, branch: &str) {
-    let (scope_kind, _scope_area, scope_wave, scope_card, payload) = row;
+fn assert_worktree_committed_event(row: &EventRow, track_id: &str, card_id: &str, branch: &str) {
+    let (scope_kind, _scope_area, scope_track, scope_card, payload) = row;
     assert_eq!(scope_kind, "card");
-    assert_eq!(scope_wave.as_deref(), Some(wave_id));
+    assert_eq!(scope_track.as_deref(), Some(track_id));
     assert_eq!(scope_card.as_deref(), Some(card_id));
-    assert_eq!(payload["wave_id"], wave_id);
+    assert_eq!(payload["track_id"], track_id);
     assert_eq!(payload["card_id"], card_id);
     assert_eq!(payload["branch"], branch);
     assert!(payload["commit_sha"].as_str().is_some_and(is_hex_sha));
@@ -621,8 +621,8 @@ fn is_hex_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn scoped_idem_key(plugin_id: &str, wave_id: &str, card_id: &str, idem_key: &str) -> String {
-    format!("{plugin_id}:{wave_id}:{card_id}:{idem_key}")
+fn scoped_idem_key(plugin_id: &str, track_id: &str, card_id: &str, idem_key: &str) -> String {
+    format!("{plugin_id}:{track_id}:{card_id}:{idem_key}")
 }
 
 fn manifest_path() -> PathBuf {

@@ -20,9 +20,9 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
 use calm_server::harness::{HarnessState, Observation, SpecHarness};
-use calm_server::ids::{ActorId, WaveId};
-use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
-use calm_server::model::{WaveLifecycle, WavePatch};
+use calm_server::ids::{ActorId, TrackId};
+use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
+use calm_server::model::{TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::Manifest;
 use calm_server::state::AppState;
 use http_body_util::BodyExt;
@@ -127,7 +127,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     };
 
     let _dispatcher = spawn_dispatcher(&fx);
-    let repo_gitdir = fx.wave_cwd.join(".git").display().to_string();
+    let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
     // R-d1: this is the first test where a real worker must DISCOVER+CALL
     // annotation-less plugin forge tools (forge plugin tools are published with
     // empty schema/annotations). If the worker fails to call them, that is a
@@ -157,11 +157,11 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
     assert_eq!(s5.actor, ActorId::KernelDispatcher);
     assert_eq!(s5.scope_kind, "card");
-    assert_eq!(s5.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(s5.scope_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(s5.scope_card.as_deref(), Some(worker_card_id.as_str()));
     assert_eq!(
         s5.payload["branch"],
-        format!("neige/{}/{}", fx.wave_id.as_str(), worker_card_id)
+        format!("neige/{}/{}", fx.track_id.as_str(), worker_card_id)
     );
     let head = git_stdout(&worker_cwd, ["rev-parse", "HEAD"]);
     assert!(
@@ -170,16 +170,16 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     );
     assert_eq!(s5.payload["commit_sha"], head);
 
-    let (s6_id, s6_wave, s6) = wait_for_first_forge_event(&fx, "forge.pr.opened", budget).await;
-    assert_eq!(s6_wave.as_deref(), Some(fx.wave_id.as_str()));
+    let (s6_id, s6_track, s6) = wait_for_first_forge_event(&fx, "forge.pr.opened", budget).await;
+    assert_eq!(s6_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(s6["head_sha"], head);
     let pr_number = s6["pr_number"]
         .as_u64()
         .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {s6}"));
     assert!(pr_number >= 1, "PR number must be >= 1, got {pr_number}");
 
-    let (s7_id, s7_wave, s7) = wait_for_first_forge_event(&fx, "forge.pr.checks", budget).await;
-    assert_eq!(s7_wave.as_deref(), Some(fx.wave_id.as_str()));
+    let (s7_id, s7_track, s7) = wait_for_first_forge_event(&fx, "forge.pr.checks", budget).await;
+    assert_eq!(s7_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(s7["pr_number"].as_u64(), Some(pr_number));
     assert_eq!(s7["conclusion"], "success");
 
@@ -275,7 +275,7 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
     assert_eq!(
         draft_to_planning.len(),
         1,
-        "expected exactly one wave.lifecycle_changed draft->planning, got {lifecycle:?}"
+        "expected exactly one track.lifecycle_changed draft->planning, got {lifecycle:?}"
     );
     let (lifecycle_actor, lifecycle_payload) = draft_to_planning[0];
     assert_eq!(
@@ -283,7 +283,7 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
         &ActorId::Kernel,
         "draft->planning companion actor must be Kernel"
     );
-    assert_eq!(lifecycle_payload["id"], json!(fx.wave_id.as_str()));
+    assert_eq!(lifecycle_payload["id"], json!(fx.track_id.as_str()));
     assert!(
         !fx.used_injected_plan(),
         "RealSpecTurn must not use injected plan path"
@@ -380,14 +380,14 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
         .await;
 
     // Steer the cap-exhaust GIVE-UP branch (R7 design D3): GIVE-UP and
-    // ASK-HUMAN are mutually exclusive terminal branches of one wave, so the
+    // ASK-HUMAN are mutually exclusive terminal branches of one track, so the
     // goal fixes coverage on this branch; branch choice is descriptor-legal
     // either way and the protocol mechanics stay autonomous.
     let goal = format!(
         "Plan the smallest issue-development template for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
-                cap, give up and fail the wave; do not request ratification. For every \
-                calm.review.round you record for the design phase of this wave, set \
+                cap, give up and fail the track; do not request ratification. For every \
+                calm.review.round you record for the design phase of this track, set \
                 subject.slice_id to exactly the literal string `{STEERED_REVIEW_SLICE}` \
                 (that exact value, verbatim — no prefix, suffix, phase qualifier, or \
                 derived variant)."
@@ -429,19 +429,19 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // observations below, not a planning-time fabrication.
     wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
 
-    // Pre-position the wave at `reviewing` via a raw WavePatch (precedent:
-    // crates/calm-server/tests/review_ratify.rs `set_wave_lifecycle`) —
+    // Pre-position the track at `reviewing` via a raw TrackPatch (precedent:
+    // crates/calm-server/tests/review_ratify.rs `set_track_lifecycle`) —
     // walking planning -> ... -> reviewing by real turns is capstone scope.
     fx.repo_dyn
-        .wave_update(
-            fx.wave_id.as_str(),
-            WavePatch {
-                lifecycle: Some(WaveLifecycle::Reviewing),
-                ..WavePatch::default()
+        .track_update(
+            fx.track_id.as_str(),
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Reviewing),
+                ..TrackPatch::default()
             },
         )
         .await
-        .expect("pre-position wave lifecycle to reviewing");
+        .expect("pre-position track lifecycle to reviewing");
 
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
@@ -479,25 +479,25 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // no spec-authored cap round to pin ordering against). #943: seeding n=7
     // deadlocks here — the agent re-dispatches a legitimate round-8 whose
     // reviewers the dispatcher-less harness can never complete.
-    let (edge_actor, edge) = wait_for_wave_failed_edge(&fx, floor, review_budget()).await;
+    let (edge_actor, edge) = wait_for_track_failed_edge(&fx, floor, review_budget()).await;
     assert_eq!(
         edge["from"],
         json!("reviewing"),
         "give-up edge must leave reviewing: {edge}"
     );
-    assert_eq!(edge["id"], json!(fx.wave_id.as_str()));
+    assert_eq!(edge["id"], json!(fx.track_id.as_str()));
     assert!(
         matches!(edge_actor, ActorId::AiSpecSession(_)),
         "give-up edge actor must be AiSpecSession, got {edge_actor:?} for {edge}"
     );
 
-    // Oracle (b): the waves row landed on the terminal lifecycle.
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
-        .bind(fx.wave_id.as_str())
+    // Oracle (b): the tracks row landed on the terminal lifecycle.
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
+        .bind(fx.track_id.as_str())
         .fetch_one(fx.repo.pool())
         .await
-        .expect("select wave lifecycle");
-    assert_eq!(lifecycle, "failed", "wave row lifecycle must be failed");
+        .expect("select track lifecycle");
+    assert_eq!(lifecycle, "failed", "track row lifecycle must be failed");
 
     // Oracle (c): branch purity, asserted AFTER the give-up edge (terminal
     // state + teardown follows, so no window ambiguity): the steered run
@@ -534,14 +534,14 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
         .await;
 
     // Steer the cap-exhaust ASK-HUMAN branch (R7 design D4): GIVE-UP and
-    // ASK-HUMAN are mutually exclusive terminal branches of one wave, so the
+    // ASK-HUMAN are mutually exclusive terminal branches of one track, so the
     // goal fixes coverage on this branch; branch choice is descriptor-legal
     // either way and the protocol mechanics stay autonomous.
     let goal = format!(
         "Plan the smallest issue-development template for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
-                cap, ask for human ratification instead of giving up; do not fail the wave. \
-                For every calm.review.round you record for the design phase of this wave, \
+                cap, ask for human ratification instead of giving up; do not fail the track. \
+                For every calm.review.round you record for the design phase of this track, \
                 set subject.slice_id to exactly the literal string \
                 `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, \
                 phase qualifier, or derived variant)."
@@ -583,19 +583,19 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // observations below, not a planning-time fabrication.
     wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
 
-    // Pre-position the wave at `reviewing` via a raw WavePatch (precedent:
-    // crates/calm-server/tests/review_ratify.rs `set_wave_lifecycle`) —
+    // Pre-position the track at `reviewing` via a raw TrackPatch (precedent:
+    // crates/calm-server/tests/review_ratify.rs `set_track_lifecycle`) —
     // walking planning -> ... -> reviewing by real turns is capstone scope.
     fx.repo_dyn
-        .wave_update(
-            fx.wave_id.as_str(),
-            WavePatch {
-                lifecycle: Some(WaveLifecycle::Reviewing),
-                ..WavePatch::default()
+        .track_update(
+            fx.track_id.as_str(),
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Reviewing),
+                ..TrackPatch::default()
             },
         )
         .await
-        .expect("pre-position wave lifecycle to reviewing");
+        .expect("pre-position track lifecycle to reviewing");
 
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
@@ -633,13 +633,13 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // leave `reviewing`; the tool then emits working->blocked + ratify.requested
     // in ONE tx (mcp_server/tools/review.rs), so both must appear.
     let (rw_id, rw_actor, rw_edge) =
-        wait_for_wave_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
+        wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
         matches!(rw_actor, ActorId::AiSpecSession(_)),
         "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
     );
     let (wb_id, wb_actor, wb_edge) =
-        wait_for_wave_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
+        wait_for_track_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
     assert!(
         matches!(wb_actor, ActorId::AiSpecSession(_)),
         "working->blocked edge actor must be AiSpecSession, got {wb_actor:?} for {wb_edge}"
@@ -658,14 +658,14 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
             .is_some_and(|reason| !reason.is_empty()),
         "ratify.requested must carry a non-empty reason: {req}"
     );
-    assert_eq!(req["wave_id"], json!(fx.wave_id.as_str()));
+    assert_eq!(req["track_id"], json!(fx.track_id.as_str()));
 
     // Oracle phase 1 (b): parked, not merged.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
     assert_eq!(
-        wave_lifecycle_row(&fx).await,
+        track_lifecycle_row(&fx).await,
         "blocked",
-        "wave row must be blocked while awaiting ratification"
+        "track row must be blocked while awaiting ratification"
     );
 
     // Grant = PRODUCTION HTTP route via in-process router-oneshot (design D4;
@@ -673,7 +673,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // X-Calm-Actor header to the authenticated user; the route enforces the
     // pending request and emits blocked->working + ratify.resolved{grant}
     // same-tx as ActorId::User — a log_pure_event shortcut is User-only at the
-    // role gate AND would have to hand-roll the waves-row flip.
+    // role gate AND would have to hand-roll the tracks-row flip.
     let app = fixture_router(&fx);
     let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
     let resp = app
@@ -698,12 +698,12 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
     assert_eq!(grant_body["decision"], json!("grant"), "{grant_body}");
 
-    // Same-tx grant effects: waves row flipped + ratify.resolved{grant} by the
+    // Same-tx grant effects: tracks row flipped + ratify.resolved{grant} by the
     // human actor.
     assert_eq!(
-        wave_lifecycle_row(&fx).await,
+        track_lifecycle_row(&fx).await,
         "working",
-        "grant must flip the wave row blocked->working"
+        "grant must flip the track row blocked->working"
     );
     let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
@@ -728,7 +728,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
         "ratify.resolved actor must be User: {resolved}"
     );
     assert_eq!(resolved["decision"], json!("grant"), "{resolved}");
-    assert_eq!(resolved["wave_id"], json!(fx.wave_id.as_str()));
+    assert_eq!(resolved["track_id"], json!(fx.track_id.as_str()));
     assert!(
         resolved_id > req_id,
         "grant must follow the request: resolved={resolved_id}, requested={req_id}"
@@ -742,7 +742,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
             .filter(|(_, payload)| {
                 payload["from"] == json!("blocked")
                     && payload["to"] == json!("working")
-                    && payload["id"] == json!(fx.wave_id.as_str())
+                    && payload["id"] == json!(fx.track_id.as_str())
             })
             .collect();
     assert_eq!(
@@ -763,13 +763,13 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 
     // Oracle phase 2 — PRIMARY resumption signal (independent checker's pin):
     // the real spec re-enters review, working->reviewing, after the grant.
-    // Since #888 the descriptor states the wave is already back in `working`
+    // Since #888 the descriptor states the track is already back in `working`
     // after a grant and instructs a plain working->reviewing resume (the
     // historical "blocked->working->reviewing" wording produced a tolerated
     // illegal working->working attempt, now fixed); resumption is proven by
     // the working->reviewing edge alone.
     let (_resume_id, resume_actor, resume_edge) =
-        wait_for_wave_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
+        wait_for_track_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
             .await;
     assert!(
         matches!(resume_actor, ActorId::AiSpecSession(_)),
@@ -844,7 +844,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // pr_number and head_sha must reach the spec ONLY via observations —
     // never as pre-chewed tool args. The goal needs the fixture's origin
     // path, which only exists post-boot, so it flows through the
-    // spec-harness start op (the spec's actual WaveGoal source,
+    // spec-harness start op (the spec's actual TrackGoal source,
     // `initial_snapshot_with_goal`); `FixtureSpec.goal` only mirrors into
     // the card payload `prompt`, which the spec-harness path never reads.
     let fx = match boot_forge_e2e_fixture(
@@ -886,36 +886,36 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // observations below, not a planning-time fabrication.
     wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
 
-    // Pre-position the wave at `reviewing` via a raw WavePatch (R7a
+    // Pre-position the track at `reviewing` via a raw TrackPatch (R7a
     // precedent) — walking the FSM by real turns is capstone scope.
     fx.repo_dyn
-        .wave_update(
-            fx.wave_id.as_str(),
-            WavePatch {
-                lifecycle: Some(WaveLifecycle::Reviewing),
-                ..WavePatch::default()
+        .track_update(
+            fx.track_id.as_str(),
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Reviewing),
+                ..TrackPatch::default()
             },
         )
         .await
-        .expect("pre-position wave lifecycle to reviewing");
+        .expect("pre-position track lifecycle to reviewing");
 
     // Scripted REAL PR setup (setup, not the proof): branch + commit in the
-    // wave cwd with raw git, push to the bare origin, then scripted MCP
+    // track cwd with raw git, push to the bare origin, then scripted MCP
     // tools/call of gh.pr.create + gh.pr.checks through the daemon socket
     // (identity = the live spec thread) so GENUINE forge.pr.opened /
     // forge.pr.checks events back the injected observations — the events go
     // through the real plugin lowering, not fabricated shim state.
     let branch = "neige-d2-impl-slice";
-    run_git(&fx.wave_cwd, ["checkout", "-B", branch, "origin/main"]);
-    stage_git_change(&fx.wave_cwd, "FORGE_E2E_D2.md", "forge-e2e-d2\n");
-    run_git(&fx.wave_cwd, ["commit", "-m", "d2 scripted impl commit"]);
-    let head_sha = run_git_capture(&fx.wave_cwd, ["rev-parse", "HEAD"]);
+    run_git(&fx.track_cwd, ["checkout", "-B", branch, "origin/main"]);
+    stage_git_change(&fx.track_cwd, "FORGE_E2E_D2.md", "forge-e2e-d2\n");
+    run_git(&fx.track_cwd, ["commit", "-m", "d2 scripted impl commit"]);
+    let head_sha = run_git_capture(&fx.track_cwd, ["rev-parse", "HEAD"]);
     assert!(
         is_hex_sha(&head_sha),
         "scripted branch tip should be a 40-char hex sha, got {head_sha:?}"
     );
-    run_git(&fx.wave_cwd, ["push", "-u", "origin", branch]);
-    run_git(&fx.wave_cwd, ["checkout", "main"]);
+    run_git(&fx.track_cwd, ["push", "-u", "origin", branch]);
+    run_git(&fx.track_cwd, ["checkout", "main"]);
 
     let spec_thread_id = spec_session_thread_id(&fx).await;
     let create_resp = call_tool_via_socket(
@@ -934,7 +934,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     )
     .await;
     assert_forge_tool_accepted(&create_resp, "gh.pr.create");
-    let (opened_id, _, opened) = wait_for_wave_forge_event(
+    let (opened_id, _, opened) = wait_for_track_forge_event(
         &fx,
         "forge.pr.opened",
         0,
@@ -957,7 +957,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     )
     .await;
     assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
-    let (checks_id, _, _checks) = wait_for_wave_forge_event(
+    let (checks_id, _, _checks) = wait_for_track_forge_event(
         &fx,
         "forge.pr.checks",
         opened_id,
@@ -1002,7 +1002,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Seed ONE converged typed impl review.round carrying the REAL branch tip
     // (push precedes seeding so the round carries the real tip sha). Actor
-    // MUST be AiSpec(spec card) + wave scope: role_gate rule 2.8 makes
+    // MUST be AiSpec(spec card) + track scope: role_gate rule 2.8 makes
     // review.round spec-only, and the seeded AiSpec row stays
     // actor-distinguishable from anything the real AiSpecSession emits.
     seed_converged_impl_review_round(&fx, &slice_id, pr_number, &head_sha).await;
@@ -1053,7 +1053,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     inject_observation(
         &harness,
         Observation::ForgePrOpened {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             pr_number,
         },
     )
@@ -1061,7 +1061,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     inject_observation(
         &harness,
         Observation::ForgePrChecks {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             pr_number,
             conclusion: "success".into(),
         },
@@ -1070,7 +1070,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     inject_observation(
         &harness,
         Observation::ReviewRound {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             phase: "impl".into(),
             slice_id: slice_id.clone(),
             pr_number: Some(pr_number),
@@ -1089,7 +1089,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // construction W (no scripted merge/close call in this file), with the
     // oracle (b) op idem-key check corroborating on the worker-seat axis
     // only (it pins the caller card, not scripted-vs-autonomous).
-    let (merged_id, merged_actor, merged) = wait_for_wave_forge_event(
+    let (merged_id, merged_actor, merged) = wait_for_track_forge_event(
         &fx,
         "forge.pr.merged",
         floor,
@@ -1133,7 +1133,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Oracle (b) — the F4 proof: the spec must have passed expected_head_sha.
     // The forge-action op idempotency key is
-    // `{plugin}:{wave}:{caller card}:{plugin idem}` (transport.rs
+    // `{plugin}:{track}:{caller card}:{plugin idem}` (transport.rs
     // `submit_forge_action`), and the plugin idem is the WITH-sha shape
     // `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` only when
     // expected_head_sha was passed (plugins/git-forge/main.rs
@@ -1147,7 +1147,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // discriminator.
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
-        fx.wave_id.as_str(),
+        fx.track_id.as_str(),
         fx.spec_card_id.as_str(),
         repo_arg,
         pr_number,
@@ -1182,7 +1182,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // 5, oracle-only), on the right issue; the op idem key corroborates the
     // caller card (worker-seat exclusion; construction W carries the
     // scripted-vs-autonomous axis).
-    let (closed_id, closed_actor, closed) = wait_for_wave_forge_event(
+    let (closed_id, closed_actor, closed) = wait_for_track_forge_event(
         &fx,
         "forge.issue.closed",
         floor,
@@ -1207,7 +1207,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     );
     let expected_close_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.issue.close:{}:{}",
-        fx.wave_id.as_str(),
+        fx.track_id.as_str(),
         fx.spec_card_id.as_str(),
         repo_arg,
         D2_ISSUE_NUMBER
@@ -1253,18 +1253,18 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Oracle (f): purity. Happy path needs no ratification grant; extra
     // lifecycle transitions (e.g. reviewing->done) are tolerated, but the
-    // wave must not have failed; the plan must be the spec's own.
+    // track must not have failed; the plan must be the spec's own.
     assert_eq!(
         event_payloads(&fx.repo, "ratify.requested").await.len(),
         0,
         "happy-path merge run must not request ratification"
     );
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
-        .bind(fx.wave_id.as_str())
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
+        .bind(fx.track_id.as_str())
         .fetch_one(fx.repo.pool())
         .await
-        .expect("select wave lifecycle");
-    assert_ne!(lifecycle, "failed", "wave must not fail on the happy path");
+        .expect("select track lifecycle");
+    assert_ne!(lifecycle, "failed", "track must not fail on the happy path");
     assert!(
         !fx.used_injected_plan(),
         "RealSpecTurn must not use injected plan path"
@@ -1347,31 +1347,31 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     // Settle the planning turn before setup/seeding (R6 causality guard).
     wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
 
-    // Pre-position the wave at `reviewing` (R7a/R7b precedent).
+    // Pre-position the track at `reviewing` (R7a/R7b precedent).
     fx.repo_dyn
-        .wave_update(
-            fx.wave_id.as_str(),
-            WavePatch {
-                lifecycle: Some(WaveLifecycle::Reviewing),
-                ..WavePatch::default()
+        .track_update(
+            fx.track_id.as_str(),
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Reviewing),
+                ..TrackPatch::default()
             },
         )
         .await
-        .expect("pre-position wave lifecycle to reviewing");
+        .expect("pre-position track lifecycle to reviewing");
 
     // Scripted REAL PR setup (d2 precedent; setup, not the proof): genuine
     // forge.pr.opened/checks events back the injected observations.
     let branch = "neige-r7c-impl-slice";
-    run_git(&fx.wave_cwd, ["checkout", "-B", branch, "origin/main"]);
-    stage_git_change(&fx.wave_cwd, "FORGE_E2E_R7C.md", "forge-e2e-r7c\n");
-    run_git(&fx.wave_cwd, ["commit", "-m", "r7c scripted impl commit"]);
-    let head_sha = run_git_capture(&fx.wave_cwd, ["rev-parse", "HEAD"]);
+    run_git(&fx.track_cwd, ["checkout", "-B", branch, "origin/main"]);
+    stage_git_change(&fx.track_cwd, "FORGE_E2E_R7C.md", "forge-e2e-r7c\n");
+    run_git(&fx.track_cwd, ["commit", "-m", "r7c scripted impl commit"]);
+    let head_sha = run_git_capture(&fx.track_cwd, ["rev-parse", "HEAD"]);
     assert!(
         is_hex_sha(&head_sha),
         "scripted branch tip should be a 40-char hex sha, got {head_sha:?}"
     );
-    run_git(&fx.wave_cwd, ["push", "-u", "origin", branch]);
-    run_git(&fx.wave_cwd, ["checkout", "main"]);
+    run_git(&fx.track_cwd, ["push", "-u", "origin", branch]);
+    run_git(&fx.track_cwd, ["checkout", "main"]);
 
     let spec_thread_id = spec_session_thread_id(&fx).await;
     let create_resp = call_tool_via_socket(
@@ -1390,7 +1390,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     )
     .await;
     assert_forge_tool_accepted(&create_resp, "gh.pr.create");
-    let (opened_id, _, opened) = wait_for_wave_forge_event(
+    let (opened_id, _, opened) = wait_for_track_forge_event(
         &fx,
         "forge.pr.opened",
         0,
@@ -1413,7 +1413,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     )
     .await;
     assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
-    let (_checks_id, _, _checks) = wait_for_wave_forge_event(
+    let (_checks_id, _, _checks) = wait_for_track_forge_event(
         &fx,
         "forge.pr.checks",
         opened_id,
@@ -1470,7 +1470,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     inject_observation(
         &harness,
         Observation::ForgePrOpened {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             pr_number,
         },
     )
@@ -1478,7 +1478,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     inject_observation(
         &harness,
         Observation::ForgePrChecks {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             pr_number,
             conclusion: "success".into(),
         },
@@ -1487,7 +1487,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     inject_observation(
         &harness,
         Observation::ReviewRound {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             phase: "impl".into(),
             slice_id: slice_id.clone(),
             pr_number: Some(pr_number),
@@ -1507,13 +1507,13 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     // complete. The single spec-authored round is the post-grant extension
     // (n=9/cap=10), asserted below.
     let (rw_id, rw_actor, rw_edge) =
-        wait_for_wave_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
+        wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
         matches!(rw_actor, ActorId::AiSpecSession(_)),
         "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
     );
     let (wb_id, wb_actor, wb_edge) =
-        wait_for_wave_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
+        wait_for_track_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
     assert!(
         matches!(wb_actor, ActorId::AiSpecSession(_)),
         "working->blocked edge actor must be AiSpecSession, got {wb_actor:?} for {wb_edge}"
@@ -1527,9 +1527,9 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     // Phase 1 (c) — parked, not merged.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
     assert_eq!(
-        wave_lifecycle_row(&fx).await,
+        track_lifecycle_row(&fx).await,
         "blocked",
-        "wave row must be blocked while awaiting ratification"
+        "track row must be blocked while awaiting ratification"
     );
 
     // Grant = PRODUCTION HTTP route via in-process router-oneshot (R7b
@@ -1557,9 +1557,9 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     let grant_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
     assert_eq!(
-        wave_lifecycle_row(&fx).await,
+        track_lifecycle_row(&fx).await,
         "working",
-        "grant must flip the wave row blocked->working"
+        "grant must flip the track row blocked->working"
     );
     let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
@@ -1591,7 +1591,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
             .filter(|(_, payload)| {
                 payload["from"] == json!("blocked")
                     && payload["to"] == json!("working")
-                    && payload["id"] == json!(fx.wave_id.as_str())
+                    && payload["id"] == json!(fx.track_id.as_str())
             })
             .collect();
     assert_eq!(
@@ -1670,7 +1670,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
 
     // Oracle 2 — the merge follows the extension round (F4 linkage),
     // kernel-appended, head-matched, on the full impl subject.
-    let (merged_id, merged_actor, merged) = wait_for_wave_forge_event(
+    let (merged_id, merged_actor, merged) = wait_for_track_forge_event(
         &fx,
         "forge.pr.merged",
         ext_round_id,
@@ -1702,7 +1702,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     // the WITH-sha shape from the spec seat (d2 oracle (b)).
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
-        fx.wave_id.as_str(),
+        fx.track_id.as_str(),
         fx.spec_card_id.as_str(),
         repo_arg,
         pr_number,
@@ -1750,7 +1750,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
 
     // Oracle 6 — full-history INV-CAP-EXT validation by adjacent pairs:
     // exactly ONE extension on the impl subject, zero on every other subject.
-    let extensions = assert_cap_extension_history(&fx.repo, fx.wave_id.as_str()).await;
+    let extensions = assert_cap_extension_history(&fx.repo, fx.track_id.as_str()).await;
     let impl_subject = SubjectKey {
         phase: "impl".into(),
         slice_id: slice_id.clone(),
@@ -1793,13 +1793,13 @@ fn extension_merge_goal(repo_gitdir: &str) -> String {
     format!(
         "Drive the tail of the issue-development template. Environment facts: the `repo` \
          argument for every gh.* MCP forge tool is exactly `{repo_gitdir}`. Implementation, \
-         the pull request, and both PR review channels are already complete for this wave; \
+         the pull request, and both PR review channels are already complete for this track; \
          their results arrive as observations. If the impl review cannot converge at the \
-         review cap, ask for human ratification instead of giving up; do not fail the wave. \
+         review cap, ask for human ratification instead of giving up; do not fail the track. \
          Once the impl review round for the pull request reports converged, execute the \
          merge step yourself with the MCP forge tools (gh.pr.merge); do not dispatch \
          further tasks. For every calm.review.round you record for the impl phase of this \
-         wave, set subject.slice_id to exactly the literal string \
+         track, set subject.slice_id to exactly the literal string \
          `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, phase \
          qualifier, or derived variant)."
     )
@@ -1809,7 +1809,7 @@ fn extension_merge_goal(repo_gitdir: &str) -> String {
 /// carrying the REAL branch tip + pr_number (#888 R7c; shape =
 /// `seed_prior_design_review_round` × the impl subject/idem-key shape of
 /// `seed_converged_impl_review_round`). Actor MUST be
-/// `ActorId::AiSpec(spec card)` with `EventScope::Wave`: role_gate rule 2.8
+/// `ActorId::AiSpec(spec card)` with `EventScope::Track`: role_gate rule 2.8
 /// makes review.round spec-only, and the seeded AiSpec row stays
 /// actor-distinguishable from the real spec's AiSpecSession rows.
 async fn seed_prior_impl_review_round(
@@ -1820,20 +1820,20 @@ async fn seed_prior_impl_review_round(
     n: u32,
     cap: u32,
 ) {
-    let wave_scope = EventScope::Wave {
-        wave: fx.wave_id.clone(),
+    let track_scope = EventScope::Track {
+        track: fx.track_id.clone(),
         area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
             ActorId::AiSpec(fx.spec_card_id.clone()),
-            wave_scope,
+            track_scope,
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_area_cache,
+            &fx.track_area_cache,
             Event::ReviewRound {
-                wave_id: fx.wave_id.clone(),
+                track_id: fx.track_id.clone(),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: slice_id.into(),
@@ -1859,7 +1859,7 @@ async fn seed_prior_impl_review_round(
                 // number in the pr slot.
                 idempotency_key: format!(
                     "review.round:{}:impl:{}:{}:{}",
-                    fx.wave_id.as_str(),
+                    fx.track_id.as_str(),
                     slice_id,
                     pr_number,
                     n
@@ -1961,7 +1961,7 @@ async fn wait_for_impl_review_round_on_subject(
 // dispatcher's `harness_observation_from_event` push path (the dispatcher is
 // spawned with the FIXTURE's HarnessRegistry — `spawn_dispatcher_with_harness`
 // — so pushes reach the harness the start op registered). ZERO injected
-// observations, ZERO seeded task/review rows, ZERO WavePatch lifecycle
+// observations, ZERO seeded task/review rows, ZERO TrackPatch lifecycle
 // pre-positioning — R6/R7/d2 injected only because no dispatcher ran there.
 //
 // Shimmed (the sanctioned #840 §5 set ONLY): the GitHub remote (gh shim), CI
@@ -1971,9 +1971,9 @@ async fn wait_for_impl_review_round_on_subject(
 // the test (purity, asserted continuously in every stage wait and post-run).
 //
 // Gate honesty (checker pin a): the task-verify runner resolves its cwd as
-// `gate.cwd → task.cwd → waves.cwd` (task_verify_adapter.rs §6.4) and nothing
+// `gate.cwd → task.cwd → tracks.cwd` (task_verify_adapter.rs §6.4) and nothing
 // ever writes `task.cwd` back, so the patched `sh ./e2e-gate.sh` gate
-// compiles/runs the SEEDED `src/lib.rs` in the wave clone — NOT the worker's
+// compiles/runs the SEEDED `src/lib.rs` in the track clone — NOT the worker's
 // branch content. The gate therefore proves the pipeline edge (commit →
 // verifying → task.gate_result{passed} → merge fence ordering); the CONTENT
 // proof lives in the oracle's diff invariant: the merged head's diff against
@@ -1990,10 +1990,10 @@ async fn wait_for_impl_review_round_on_subject(
 // `feedback_real_codex_e2e_crashes_harness`). In deterministic contexts this
 // test self-skips (no NEIGE_CODEX_BIN).
 //
-// Report card: the fixture now always mints it (production `create_wave` mints
-// it atomically for every wave); it is setup, not proof.
+// Report card: the fixture now always mints it (production `create_track` mints
+// it atomically for every track); it is setup, not proof.
 //
-// Steering vs autonomy: the wave goal carries environment facts (repo
+// Steering vs autonomy: the track goal carries environment facts (repo
 // selector = the CLONE gitdir, issue number, base sha — `forge_pr_goal`
 // precedent) plus descriptor-legal planning steering (deferred task blocks:
 // unknown dependencies stay diagnostic-only, so review-pr-a/b
@@ -2047,24 +2047,24 @@ async fn real_spec_drives_issue_to_close_capstone() {
     };
 
     // P4: dispatcher permits 4 so the design/PR reviewer pairs can run in
-    // parallel — but the SCHEDULER also enforces the per-wave task budget
+    // parallel — but the SCHEDULER also enforces the per-track task budget
     // (kernel default 1). Raise it to match; codex tasks lease disjoint
     // worktrees, and the seeded gate script pid-suffixes its output binary so
-    // concurrent gate runs in the shared waves.cwd cannot collide.
+    // concurrent gate runs in the shared tracks.cwd cannot collide.
     fx.repo_dyn
-        .wave_update(
-            fx.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            fx.track_id.as_str(),
+            TrackPatch {
                 task_budget: Some(Some(4)),
-                ..WavePatch::default()
+                ..TrackPatch::default()
             },
         )
         .await
-        .expect("raise wave task budget for parallel reviewer pairs");
+        .expect("raise track task budget for parallel reviewer pairs");
 
     let dispatcher = spawn_dispatcher_with_harness(&fx);
 
-    let repo_gitdir = fx.wave_cwd.join(".git").display().to_string();
+    let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
     let goal = capstone_goal(&repo_gitdir, CAPSTONE_ISSUE_NUMBER, &fx.origin_main_initial);
     boot_spec_harness_via_start_op(&fx, goal).await;
 
@@ -2292,14 +2292,14 @@ async fn real_spec_drives_issue_to_close_capstone() {
     .await;
     assert_eq!(closed_actor, ActorId::KernelDispatcher, "{closed}");
 
-    // S13 — the spec drives the wave lifecycle to done.
+    // S13 — the spec drives the track lifecycle to done.
     let (_done_id, done_actor, done_edge) = wait_capstone_event(
         &fx,
-        "wave.lifecycle_changed",
+        "track.lifecycle_changed",
         merged_id,
         st(),
-        "spec transitions the wave to done",
-        |p| p["to"] == json!("done") && p["id"] == json!(fx.wave_id.as_str()),
+        "spec transitions the track to done",
+        |p| p["to"] == json!("done") && p["id"] == json!(fx.track_id.as_str()),
     )
     .await;
     assert!(
@@ -2367,7 +2367,7 @@ async fn latest_impl_round_before_merge(
         })
 }
 
-/// Wave goal for the capstone: environment facts (forge_pr_goal precedent —
+/// Track goal for the capstone: environment facts (forge_pr_goal precedent —
 /// repo selector, issue number, base sha are facts only the fixture knows)
 /// plus descriptor-legal planning steering (dependency-ordered task blocks
 /// per P5's dispatch-race analysis; GIVE-UP failure terminator per P3).
@@ -2377,14 +2377,14 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
     format!(
         "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \
          the issue, converge design review, implement, open a pull request, converge PR review, \
-         merge, close the issue, and move the wave lifecycle to done.\n\
+         merge, close the issue, and move the track lifecycle to done.\n\
          \n\
          Environment facts:\n\
          - The `repo` argument for EVERY gh.* forge tool call (gh.issue.view, gh.pr.create, \
          gh.pr.checks, gh.pr.diff, gh.pr.merge, gh.issue.close) is exactly `{repo_gitdir}`. \
          Embed this exact literal value in the goal of every task that must call a gh.* tool; \
          workers cannot discover it on their own.\n\
-         - The wave's source issue is #{issue_number}.\n\
+         - The track's source issue is #{issue_number}.\n\
          - Pull requests use base branch `main`; the base commit sha is `{base_sha}`.\n\
          \n\
          Planning constraints (all within the bound template):\n\
@@ -2416,16 +2416,16 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          - merge goal: call gh.pr.merge with the embedded repo and pr, phase `impl`, the \
          reviewed slice_id, and expected_head_sha equal to the head sha of the converged impl \
          review round; then call gh.issue.close for issue #{issue_number} with the same repo.\n\
-         - After the merge task completes and the issue is closed, transition the wave \
+         - After the merge task completes and the issue is closed, transition the track \
          lifecycle to done.\n\
-         - If a review subject cannot converge at the review cap, give up and fail the wave; \
+         - If a review subject cannot converge at the review cap, give up and fail the track; \
          do not request ratification."
     )
 }
 
 /// Floor-based capstone stage wait with the failure terminator folded in:
 /// `ratify.requested` at ANY point is a purity violation (the goal steers
-/// GIVE-UP), and a wave that lands `failed` is a legitimate agent outcome but
+/// GIVE-UP), and a track that lands `failed` is a legitimate agent outcome but
 /// a capstone FAILURE — both fail fast with full agent diagnostics instead of
 /// burning the stage budget.
 async fn wait_capstone_event(
@@ -2451,18 +2451,18 @@ async fn wait_capstone_event(
             )
             .await;
         }
-        if wave_lifecycle_row(fx).await == "failed" {
+        if track_lifecycle_row(fx).await == "failed" {
             panic_with_agent_diag(
                 fx,
                 format!(
-                    "wave lifecycle landed `failed` (spec gave up — terminal) while waiting \
+                    "track lifecycle landed `failed` (spec gave up — terminal) while waiting \
                      for {kind} ({describe})"
                 ),
             )
             .await;
         }
         let rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT id, actor, scope_wave, payload FROM events \
+            "SELECT id, actor, scope_track, payload FROM events \
              WHERE kind = ?1 AND id > ?2 ORDER BY id ASC",
         )
         .bind(kind)
@@ -2472,10 +2472,10 @@ async fn wait_capstone_event(
         .unwrap_or_else(|e| panic!("{kind} event rows after floor {floor}: {e}"));
         let hit = rows
             .into_iter()
-            .find_map(|(id, actor, scope_wave, payload)| {
+            .find_map(|(id, actor, scope_track, payload)| {
                 let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
                 let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-                (scope_wave.as_deref() == Some(fx.wave_id.as_str()) && predicate(&payload))
+                (scope_track.as_deref() == Some(fx.track_id.as_str()) && predicate(&payload))
                     .then_some((id, actor, payload))
             });
         if let Some(hit) = hit {
@@ -2538,7 +2538,7 @@ async fn capstone_oracle(
             RequiredEvent::new("forge.issue.closed", |r| {
                 r.payload["issue_number"] == json!(CAPSTONE_ISSUE_NUMBER)
             }),
-            RequiredEvent::new("wave.lifecycle_changed", |r| {
+            RequiredEvent::new("track.lifecycle_changed", |r| {
                 r.payload["to"] == json!("done")
             }),
         ],
@@ -2586,7 +2586,7 @@ async fn capstone_oracle(
     // the merge subject (which always carries pr_number from the tool args),
     // so 6a is replaced by the direct latest-fence assert already made
     // in-line (merged head == latest pre-merge converged round head).
-    assert_subject_keyed_cap_enforcement(&fx.repo, fx.wave_id.as_str()).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, fx.track_id.as_str()).await;
     if subject.pr_number.is_some() {
         assert_converged_subject_has_merge(&fx.repo, subject).await;
     }
@@ -2615,7 +2615,7 @@ async fn capstone_oracle(
     }
 
     // F4 idem-key shape (d2 helper): the forge-action op idempotency key is
-    // `{plugin}:{wave}:{caller card}:{plugin idem}` and the plugin idem is
+    // `{plugin}:{track}:{caller card}:{plugin idem}` and the plugin idem is
     // `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` ONLY when
     // expected_head_sha was passed — an omitted-sha merge produces
     // `gh.pr.merge:{repo}:{pr}` and fails here. The caller card is NOT pinned
@@ -2664,11 +2664,11 @@ async fn capstone_oracle(
 
     // Content invariant (P2 + pin a): the MERGED head's diff against the
     // seeded base touches src/lib.rs and adds the issue-contract function +
-    // a test. The PR head commit lives in the wave clone's object db (worker
-    // worktrees are `git -C {waves.cwd} worktree add`, so branches/objects
+    // a test. The PR head commit lives in the track clone's object db (worker
+    // worktrees are `git -C {tracks.cwd} worktree add`, so branches/objects
     // share the clone gitdir; no push involved).
     let content_diff = git_stdout(
-        &fx.wave_cwd,
+        &fx.track_cwd,
         [
             "diff",
             &format!("{}..{}", fx.origin_main_initial, merged_head),
@@ -2731,9 +2731,9 @@ async fn capstone_oracle(
         "steered GIVE-UP capstone must never request ratification"
     );
     assert_eq!(
-        wave_lifecycle_row(fx).await,
+        track_lifecycle_row(fx).await,
         "done",
-        "capstone wave row must land done"
+        "capstone track row must land done"
     );
     assert!(
         !fx.used_injected_plan(),
@@ -2793,7 +2793,7 @@ fn capstone_gate_script_is_hermetic_and_cargo_free() {
     let origin = tmp.path().join("origin.git");
     let clone = tmp.path().join("clone");
     seed_rust_micro_crate(&origin, &tmp.path().join("seed"));
-    clone_for_wave(&origin, &clone);
+    clone_for_track(&origin, &clone);
 
     let script = std::fs::read_to_string(clone.join("e2e-gate.sh")).expect("seeded gate script");
     assert!(
@@ -2967,8 +2967,8 @@ async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdic
 async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expected_summary: &str) {
     let verdict = expected_summary;
     let task_id = task_id(fx, key);
-    let wave_scope = EventScope::Wave {
-        wave: fx.wave_id.clone(),
+    let track_scope = EventScope::Track {
+        track: fx.track_id.clone(),
         area: fx.area_id.clone(),
     };
     let dispatch_message = format!("[codex-forge-e2e] seed task {key}");
@@ -2982,7 +2982,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
             let dispatch_message = dispatch_message.clone();
             move |_tx| {
                 let task_id = task_id.clone();
-                let wave_scope = wave_scope.clone();
+                let track_scope = track_scope.clone();
                 let dispatch_message = dispatch_message.clone();
                 Box::pin(async move {
                     Ok((
@@ -2990,7 +2990,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
                         vec![
                             (
                                 ActorId::KernelDispatcher,
-                                wave_scope.clone(),
+                                track_scope.clone(),
                                 Event::TaskDispatched {
                                     idempotency_key: task_id.clone(),
                                     kind: "codex".into(),
@@ -2999,9 +2999,9 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
                             ),
                             (
                                 ActorId::KernelDispatcher,
-                                wave_scope,
+                                track_scope,
                                 Event::TaskContextFrozen {
-                                    wave_id: WaveId::default(),
+                                    track_id: TrackId::default(),
                                     task_key: String::new(),
                                     idempotency_key: String::new(),
                                     task_id,
@@ -3022,11 +3022,11 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     // The seeded fixture shortcut does not mint a real worker session, so
     // author the completion as KernelDispatcher (gate-unrestricted per
     // role_gate rule 5). Card scope alone routes it to the completed bucket
-    // (is_spec_verdict_event is false for non-Wave scope), so runs/ surfaces
+    // (is_spec_verdict_event is false for non-Track scope), so runs/ surfaces
     // the summary the real spec reads.
     let card_scope = EventScope::Card {
         card: fx.spec_card_id.clone(),
-        wave: fx.wave_id.clone(),
+        track: fx.track_id.clone(),
         area: fx.area_id.clone(),
     };
     fx.repo
@@ -3036,7 +3036,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_area_cache,
+            &fx.track_area_cache,
             Event::TaskCompleted {
                 idempotency_key: task_id.clone(),
                 result,
@@ -3049,8 +3049,8 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
 
     let handler = fx
         .registry
-        .lookup(TOOL_WAVE_CAT)
-        .expect("wave cat registered");
+        .lookup(TOOL_TRACK_CAT)
+        .expect("track cat registered");
     let json_path = format!("runs/{task_id}.json");
     let json_read = handler(
         fx.ctx.clone(),
@@ -3175,7 +3175,7 @@ async fn inject_task_changes_requested(_h: &SpecHarness, _idem_key: &str) {
 
 /// Inject the same `Observation::ReviewRound` the prod dispatcher's
 /// `harness_observation_from_event` would push for the seeded prior round —
-/// the spec cannot learn prior rounds from runs//wave-fs (no review.round
+/// the spec cannot learn prior rounds from runs//track-fs (no review.round
 /// projection exists), so this observation turn text is its ONLY channel for
 /// round state, exactly as in production.
 #[cfg(feature = "fixtures")]
@@ -3189,7 +3189,7 @@ async fn inject_design_review_round_observation(
 ) {
     h.observe_for_test(
         Observation::ReviewRound {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             phase: "design".into(),
             slice_id: slice_id.into(),
             pr_number: None,
@@ -3217,25 +3217,25 @@ async fn inject_design_review_round_observation(
 
 /// Seed one prior non-converged design review.round as typed
 /// `Event::ReviewRound` (typed-seeding precedent:
-/// crates/calm-truth/src/wave_vcs.rs review/ratify batch test). Actor MUST be
-/// `ActorId::AiSpec(spec card)` with `EventScope::Wave`: role_gate rule 2.8
+/// crates/calm-truth/src/track_vcs.rs review/ratify batch test). Actor MUST be
+/// `ActorId::AiSpec(spec card)` with `EventScope::Track`: role_gate rule 2.8
 /// makes review.round spec-only, and the seeded AiSpec rows stay
 /// actor-distinguishable from the real spec's AiSpecSession rows.
 async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, cap: u32) {
-    let wave_scope = EventScope::Wave {
-        wave: fx.wave_id.clone(),
+    let track_scope = EventScope::Track {
+        track: fx.track_id.clone(),
         area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
             ActorId::AiSpec(fx.spec_card_id.clone()),
-            wave_scope,
+            track_scope,
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_area_cache,
+            &fx.track_area_cache,
             Event::ReviewRound {
-                wave_id: fx.wave_id.clone(),
+                track_id: fx.track_id.clone(),
                 subject: ReviewSubject {
                     phase: "design".into(),
                     slice_id: slice_id.into(),
@@ -3261,7 +3261,7 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
                 // literal "design" in the pr slot.
                 idempotency_key: format!(
                     "review.round:{}:design:{}:design:{}",
-                    fx.wave_id.as_str(),
+                    fx.track_id.as_str(),
                     slice_id,
                     n
                 ),
@@ -3271,23 +3271,27 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
         .expect("log seeded prior review.round");
 }
 
-/// First post-floor `wave.lifecycle_changed` landing on `failed` for the
-/// fixture wave. Other lifecycle transitions are tolerated.
-async fn wait_for_wave_failed_edge(fx: &Fixture, floor: i64, budget: Duration) -> (ActorId, Value) {
+/// First post-floor `track.lifecycle_changed` landing on `failed` for the
+/// fixture track. Other lifecycle transitions are tolerated.
+async fn wait_for_track_failed_edge(
+    fx: &Fixture,
+    floor: i64,
+    budget: Duration,
+) -> (ActorId, Value) {
     let deadline = Instant::now() + budget;
     loop {
         let rows: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT id, actor, payload FROM events \
-             WHERE kind = 'wave.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
+             WHERE kind = 'track.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
         )
         .bind(floor)
         .fetch_all(fx.repo.pool())
         .await
-        .unwrap_or_else(|e| panic!("wave.lifecycle_changed rows after floor {floor}: {e}"));
+        .unwrap_or_else(|e| panic!("track.lifecycle_changed rows after floor {floor}: {e}"));
         let hit = rows.into_iter().find_map(|(_, actor, payload)| {
             let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
             let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            (payload["to"] == json!("failed") && payload["id"] == json!(fx.wave_id.as_str()))
+            (payload["to"] == json!("failed") && payload["id"] == json!(fx.track_id.as_str()))
                 .then_some((actor, payload))
         });
         if let Some(hit) = hit {
@@ -3297,7 +3301,7 @@ async fn wait_for_wave_failed_edge(fx: &Fixture, floor: i64, budget: Duration) -
             panic_with_agent_diag(
                 fx,
                 format!(
-                    "timed out after {budget:?} waiting for wave.lifecycle_changed to=failed \
+                    "timed out after {budget:?} waiting for track.lifecycle_changed to=failed \
                      after event id {floor}"
                 ),
             )
@@ -3307,11 +3311,11 @@ async fn wait_for_wave_failed_edge(fx: &Fixture, floor: i64, budget: Duration) -
     }
 }
 
-/// First post-floor `wave.lifecycle_changed` matching `from -> to` for the
-/// fixture wave. Other lifecycle transitions and other waves are tolerated.
+/// First post-floor `track.lifecycle_changed` matching `from -> to` for the
+/// fixture track. Other lifecycle transitions and other tracks are tolerated.
 /// Returns the event id so callers can chain rising-floor ordering
 /// invariants.
-async fn wait_for_wave_lifecycle_edge(
+async fn wait_for_track_lifecycle_edge(
     fx: &Fixture,
     floor: i64,
     from: &str,
@@ -3326,7 +3330,7 @@ async fn wait_for_wave_lifecycle_edge(
             .find(|(_, _, payload)| {
                 payload["from"] == json!(from)
                     && payload["to"] == json!(to)
-                    && payload["id"] == json!(fx.wave_id.as_str())
+                    && payload["id"] == json!(fx.track_id.as_str())
             });
         if let Some(hit) = hit {
             return hit;
@@ -3335,7 +3339,7 @@ async fn wait_for_wave_lifecycle_edge(
             panic_with_agent_diag(
                 fx,
                 format!(
-                    "timed out after {budget:?} waiting for wave.lifecycle_changed \
+                    "timed out after {budget:?} waiting for track.lifecycle_changed \
                      {from}->{to} after event id {floor}"
                 ),
             )
@@ -3348,12 +3352,12 @@ async fn wait_for_wave_lifecycle_edge(
 async fn lifecycle_changed_rows_after(fx: &Fixture, floor: i64) -> Vec<(i64, ActorId, Value)> {
     let rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT id, actor, payload FROM events \
-         WHERE kind = 'wave.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
+         WHERE kind = 'track.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
     )
     .bind(floor)
     .fetch_all(fx.repo.pool())
     .await
-    .unwrap_or_else(|e| panic!("wave.lifecycle_changed rows after floor {floor}: {e}"));
+    .unwrap_or_else(|e| panic!("track.lifecycle_changed rows after floor {floor}: {e}"));
     rows.into_iter()
         .map(|(id, actor, payload)| {
             (
@@ -3365,7 +3369,7 @@ async fn lifecycle_changed_rows_after(fx: &Fixture, floor: i64) -> Vec<(i64, Act
         .collect()
 }
 
-/// `wave.lifecycle_changed` rows strictly inside the `(after, before)` event
+/// `track.lifecycle_changed` rows strictly inside the `(after, before)` event
 /// id window — used to pin the grant's same-tx blocked->working edge between
 /// the request and the resolution rows.
 async fn lifecycle_changed_rows_between(
@@ -3417,17 +3421,17 @@ async fn wait_for_ratify_requested(
     }
 }
 
-async fn wave_lifecycle_row(fx: &Fixture) -> String {
-    sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
-        .bind(fx.wave_id.as_str())
+async fn track_lifecycle_row(fx: &Fixture) -> String {
+    sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
+        .bind(fx.track_id.as_str())
         .fetch_one(fx.repo.pool())
         .await
-        .expect("select wave lifecycle")
+        .expect("select track lifecycle")
 }
 
 /// The production HTTP grant seam (design D4): the real `routes::router()`
 /// behind `actor_middleware`, over the fixture's LIVE parts (repo, event bus,
-/// role/wave-area caches), driven in-process via `tower::ServiceExt::oneshot`
+/// role/track-area caches), driven in-process via `tower::ServiceExt::oneshot`
 /// — exact precedent tests/review_ratify.rs.
 fn fixture_router(fx: &Fixture) -> axum::Router {
     let state = AppState::from_parts(
@@ -3437,7 +3441,7 @@ fn fixture_router(fx: &Fixture) -> axum::Router {
         fx.plugin_host.clone(),
         fx.codex.clone(),
         Some(fx.cache.clone()),
-        Some(fx.wave_area_cache.clone()),
+        Some(fx.track_area_cache.clone()),
     );
     calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -3453,7 +3457,7 @@ fn fixture_router(fx: &Fixture) -> axum::Router {
 async fn inject_ratify_resolved_grant(h: &SpecHarness, fx: &Fixture) {
     h.observe_for_test(
         Observation::RatifyResolved {
-            wave_id: fx.wave_id.clone(),
+            track_id: fx.track_id.clone(),
             decision: calm_server::event::RatifyDecision::Grant,
         },
         None,
@@ -3682,13 +3686,13 @@ fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     format!(
         "Drive the tail of the issue-development template for issue #{issue_number}. \
          Environment facts: the `repo` argument for every gh.* MCP forge tool is exactly \
-         `{repo_gitdir}`; the wave's source issue is #{issue_number}. Implementation, the \
-         pull request, and both PR review channels are already complete for this wave; \
+         `{repo_gitdir}`; the track's source issue is #{issue_number}. Implementation, the \
+         pull request, and both PR review channels are already complete for this track; \
          their results arrive as observations. Once the impl review round for the pull \
          request reports converged, execute the merge step yourself with the MCP forge \
          tools (gh.pr.merge, then gh.issue.close for issue #{issue_number}); do not \
          dispatch further tasks. For every calm.review.round you record for the impl phase \
-         of this wave, set subject.slice_id to exactly the literal string \
+         of this track, set subject.slice_id to exactly the literal string \
          `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, phase \
          qualifier, or derived variant)."
     )
@@ -3724,10 +3728,10 @@ fn assert_forge_tool_accepted(resp: &Value, label: &str) {
     );
 }
 
-/// First `kind` event on the fixture wave with id > `floor` matching
+/// First `kind` event on the fixture track with id > `floor` matching
 /// `predicate`; superset-tolerant (other events/subjects are skipped, not
 /// failed). Returns the event id so callers can pin ordering invariants.
-async fn wait_for_wave_forge_event(
+async fn wait_for_track_forge_event(
     fx: &Fixture,
     kind: &str,
     floor: i64,
@@ -3738,7 +3742,7 @@ async fn wait_for_wave_forge_event(
     let deadline = Instant::now() + budget;
     loop {
         let rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT id, actor, scope_wave, payload FROM events \
+            "SELECT id, actor, scope_track, payload FROM events \
              WHERE kind = ?1 AND id > ?2 ORDER BY id ASC",
         )
         .bind(kind)
@@ -3748,10 +3752,10 @@ async fn wait_for_wave_forge_event(
         .unwrap_or_else(|e| panic!("{kind} event rows after floor {floor}: {e}"));
         let hit = rows
             .into_iter()
-            .find_map(|(id, actor, scope_wave, payload)| {
+            .find_map(|(id, actor, scope_track, payload)| {
                 let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
                 let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-                (scope_wave.as_deref() == Some(fx.wave_id.as_str()) && predicate(&payload))
+                (scope_track.as_deref() == Some(fx.track_id.as_str()) && predicate(&payload))
                     .then_some((id, actor, payload))
             });
         if let Some(hit) = hit {
@@ -3771,7 +3775,7 @@ async fn wait_for_wave_forge_event(
 }
 
 /// Seed the ONE converged typed impl review.round (d2 design D2): actor MUST
-/// be `ActorId::AiSpec(spec card)` with `EventScope::Wave` — role_gate rule
+/// be `ActorId::AiSpec(spec card)` with `EventScope::Track` — role_gate rule
 /// 2.8 makes review.round spec-only, and the seeded AiSpec row stays
 /// actor-distinguishable from the real spec's AiSpecSession rows. Phase
 /// literal is "impl" (forge_template_e2e `impl_round` precedent).
@@ -3781,20 +3785,20 @@ async fn seed_converged_impl_review_round(
     pr_number: u64,
     head_sha: &str,
 ) {
-    let wave_scope = EventScope::Wave {
-        wave: fx.wave_id.clone(),
+    let track_scope = EventScope::Track {
+        track: fx.track_id.clone(),
         area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
             ActorId::AiSpec(fx.spec_card_id.clone()),
-            wave_scope,
+            track_scope,
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_area_cache,
+            &fx.track_area_cache,
             Event::ReviewRound {
-                wave_id: fx.wave_id.clone(),
+                track_id: fx.track_id.clone(),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: slice_id.into(),
@@ -3820,7 +3824,7 @@ async fn seed_converged_impl_review_round(
                 // number in the pr slot.
                 idempotency_key: format!(
                     "review.round:{}:impl:{}:{}:1",
-                    fx.wave_id.as_str(),
+                    fx.track_id.as_str(),
                     slice_id,
                     pr_number
                 ),
@@ -3839,7 +3843,7 @@ async fn latest_event_id_of_kind(fx: &Fixture, kind: &str) -> i64 {
 }
 
 /// All forge-action operation idempotency keys containing `needle`, oldest
-/// first. The key shape is `{plugin}:{wave}:{caller card}:{plugin idem}`
+/// first. The key shape is `{plugin}:{track}:{caller card}:{plugin idem}`
 /// (mcp_server/transport.rs `submit_forge_action`), so it pins BOTH the
 /// caller seat and the plugin-level idem (incl. F4's expected_head_sha).
 async fn forge_action_idem_keys_containing(fx: &Fixture, needle: &str) -> Vec<String> {

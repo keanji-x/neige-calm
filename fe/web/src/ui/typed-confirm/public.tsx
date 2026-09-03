@@ -1,7 +1,7 @@
 /**
  * §6.13 — the typed confirmation. The third and heaviest rung of §4.3's
  * confirmation ladder, and the product has exactly **one** operation on it:
- * deleting an area, which cascades to every wave inside it.
+ * deleting an area, which cascades to every track inside it.
  *
  * "One" means one *operation*, not one entry point: the rail's area row and the
  * area page header both open this, with the same copy and the same strength. An

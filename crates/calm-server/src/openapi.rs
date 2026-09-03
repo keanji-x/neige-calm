@@ -15,8 +15,8 @@ use crate::harness::HarnessPhaseTag;
 use crate::model::{
     Area, AreaConversationSummary, AreaFolder, AreaKind, AreaPatch, AreaResolve, Card, CardPatch,
     CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, NewArea, NewAreaFolder,
-    NewCard, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveConversationSummary,
-    WaveDetail, WavePatch, WaveWorkspacePatch,
+    NewCard, NewOverlay, NewTrack, Overlay, Plugin, Terminal, Track, TrackConversationSummary,
+    TrackDetail, TrackPatch, TrackWorkspacePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
@@ -40,20 +40,20 @@ use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::threads::ThreadCardResolution;
 use crate::routes::today::{TodayLaunchpad, TodayLaunchpadResolved};
 use crate::routes::today_summary::TodaySummaryStarted;
-use crate::routes::version::VersionInfo;
-use crate::routes::wave_report_blocks::{
+use crate::routes::track_report_blocks::{
     CreateReportBlockBody, DeleteReportBlockBody, MoveReportBlockBody, ReportBlockWriteResponse,
     UpdateReportBlockBody,
 };
-use crate::routes::waves::{
-    CreateWaveRequest, UpdateWaveReportBody, WaveBacklink, WaveBacklinksResponse, WaveFsCatQuery,
-    WaveFsLsQuery, WavesWindowQuery,
+use crate::routes::tracks::{
+    CreateTrackRequest, TrackBacklink, TrackBacklinksResponse, TrackFsCatQuery, TrackFsLsQuery,
+    TracksWindowQuery, UpdateTrackReportBody,
 };
-use crate::wave_fs_dto::{
-    WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
-    WaveFsRunIndexEntry, WaveFsRunStatus, WaveFsRunVerdict, WaveFsRunVerdictSummary,
+use crate::routes::version::VersionInfo;
+use crate::track_fs_dto::{
+    TrackFsCardMeta, TrackFsHookEvent, TrackFsRunDetail, TrackFsRunEventRef, TrackFsRunEvents,
+    TrackFsRunIndexEntry, TrackFsRunStatus, TrackFsRunVerdict, TrackFsRunVerdictSummary,
 };
-use crate::wave_fs_view::{WaveFsContent, WaveFsEntry};
+use crate::track_fs_view::{TrackFsContent, TrackFsEntry};
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -78,33 +78,33 @@ use utoipa::OpenApi;
         crate::routes::area_folders::create_folder,
         crate::routes::area_folders::delete_folder,
         crate::routes::area_folders::resolve_path,
-        // ---- waves ----
-        crate::routes::wave_templates::list_wave_templates,
-        // ---- wave conversations (#1189) ----
-        crate::routes::wave_conversations::list_wave_conversations,
-        crate::routes::wave_conversations::create_wave_conversation,
-        crate::routes::waves::list_waves_by_area,
-        crate::routes::waves::list_waves_window,
-        crate::routes::waves::get_wave_detail,
-        crate::routes::waves::create_wave,
-        crate::routes::waves::ensure_area_chat_wave,
-        crate::routes::waves::update_wave,
-        crate::routes::waves::delete_wave,
-        crate::routes::waves::get_wave_backlinks,
-        // Issue #247 PR3 — user-facing wave-report edit endpoint
-        crate::routes::waves::update_wave_report,
-        crate::routes::waves::get_wave_report,
-        crate::routes::wave_report_blocks::create_block,
-        crate::routes::wave_report_blocks::update_block,
-        crate::routes::wave_report_blocks::delete_block,
-        crate::routes::wave_report_blocks::move_block,
-        crate::routes::waves::list_wave_files,
-        crate::routes::waves::cat_wave_file,
+        // ---- tracks ----
+        crate::routes::track_templates::list_track_templates,
+        // ---- track conversations (#1189) ----
+        crate::routes::track_conversations::list_track_conversations,
+        crate::routes::track_conversations::create_track_conversation,
+        crate::routes::tracks::list_tracks_by_area,
+        crate::routes::tracks::list_tracks_window,
+        crate::routes::tracks::get_track_detail,
+        crate::routes::tracks::create_track,
+        crate::routes::tracks::ensure_area_chat_track,
+        crate::routes::tracks::update_track,
+        crate::routes::tracks::delete_track,
+        crate::routes::tracks::get_track_backlinks,
+        // Issue #247 PR3 — user-facing track-report edit endpoint
+        crate::routes::tracks::update_track_report,
+        crate::routes::tracks::get_track_report,
+        crate::routes::track_report_blocks::create_block,
+        crate::routes::track_report_blocks::update_block,
+        crate::routes::track_report_blocks::delete_block,
+        crate::routes::track_report_blocks::move_block,
+        crate::routes::tracks::list_track_files,
+        crate::routes::tracks::cat_track_file,
         crate::routes::today::ensure_today_launchpad,
         crate::routes::today::resolve_today_launchpad,
         crate::routes::today_summary::write_today_summary,
         // ---- cards ----
-        crate::routes::cards::list_cards_by_wave,
+        crate::routes::cards::list_cards_by_track,
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
@@ -165,41 +165,41 @@ use utoipa::OpenApi;
         FolderConflict,
         FolderConflictKind,
         ResolveQuery,
-        Wave,
-        NewWave,
-        CreateWaveRequest,
-        WavePatch,
-        WaveWorkspacePatch,
+        Track,
+        NewTrack,
+        CreateTrackRequest,
+        TrackPatch,
+        TrackWorkspacePatch,
         TodayLaunchpad,
         TodayLaunchpadResolved,
         TodaySummaryStarted,
-        WavesWindowQuery,
-        WaveFsLsQuery,
-        WaveFsCatQuery,
-        WaveFsEntry,
-        WaveFsContent,
-        WaveBacklink,
+        TracksWindowQuery,
+        TrackFsLsQuery,
+        TrackFsCatQuery,
+        TrackFsEntry,
+        TrackFsContent,
+        TrackBacklink,
         BacklinkQuote,
-        WaveBacklinksResponse,
-        crate::routes::wave_templates::WaveTemplate,
-        crate::routes::wave_templates::WaveTemplateTask,
-        WaveFsCardMeta,
-        WaveFsRunStatus,
-        WaveFsRunVerdictSummary,
-        WaveFsRunVerdict,
-        WaveFsRunIndexEntry,
-        WaveFsRunEventRef,
-        WaveFsRunEvents,
-        WaveFsRunDetail,
-        WaveFsHookEvent,
-        // Issue #247 PR3 — request body for `POST /api/waves/:id/report`
-        UpdateWaveReportBody,
+        TrackBacklinksResponse,
+        crate::routes::track_templates::TrackTemplate,
+        crate::routes::track_templates::TrackTemplateTask,
+        TrackFsCardMeta,
+        TrackFsRunStatus,
+        TrackFsRunVerdictSummary,
+        TrackFsRunVerdict,
+        TrackFsRunIndexEntry,
+        TrackFsRunEventRef,
+        TrackFsRunEvents,
+        TrackFsRunDetail,
+        TrackFsHookEvent,
+        // Issue #247 PR3 — request body for `POST /api/tracks/:id/report`
+        UpdateTrackReportBody,
         CreateReportBlockBody,
         UpdateReportBlockBody,
         DeleteReportBlockBody,
         MoveReportBlockBody,
         ReportBlockWriteResponse,
-        WaveDetail,
+        TrackDetail,
         Card,
         CardRuntimeView,
         NewCard,
@@ -210,17 +210,17 @@ use utoipa::OpenApi;
         SendSpecInputResponse,
         AreaConversationSummary,
         crate::routes::area_conversations::NewAreaConversationBody,
-        WaveConversationSummary,
-        crate::routes::wave_conversations::NewWaveConversationBody,
+        TrackConversationSummary,
+        crate::routes::track_conversations::NewTrackConversationBody,
         InterruptSpecCardResponse,
         GetSpecRunResponse,
         SpecRunTokenUsage,
         HarnessPhaseTag,
         ResetSpecCardResponse,
-        // Issue #229 PR B — wave-report card payload shape (kernel-owned;
+        // Issue #229 PR B — track-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external
         // consumers see the v1 contract).
-        crate::wave_report::WaveReportPayload,
+        crate::track_report::TrackReportPayload,
         Overlay,
         NewOverlay,
         Terminal,
@@ -250,7 +250,7 @@ use utoipa::OpenApi;
         ViewCatalogEntry,
         ViewSizeWire,
         VersionInfo,
-        // #177 — required theme field on card/wave creation DTOs
+        // #177 — required theme field on card/track creation DTOs
         crate::routes::theme::RequestTheme,
         // shared error response
         ErrorBody,
@@ -258,9 +258,9 @@ use utoipa::OpenApi;
     tags(
         (name = "areas", description = "Area CRUD"),
         (name = "area_folders", description = "Area ↔ folder mapping: claim filesystem paths for an area, resolve a cwd to its owning area"),
-        (name = "waves", description = "Wave CRUD + composite detail"),
+        (name = "tracks", description = "Track CRUD + composite detail"),
         (name = "cards", description = "Card CRUD"),
-        (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),
+        (name = "overlays", description = "Plugin-rendered overlays attached to tracks/cards"),
         (name = "terminals", description = "PTY-backed terminal cards"),
         (name = "codex", description = "Codex (OpenAI) agent cards — hook-driven event stream"),
         (name = "threads", description = "Internal codex thread resolution"),

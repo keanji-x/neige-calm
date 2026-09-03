@@ -7,7 +7,7 @@
 // seeded from `GET /api/cards/{id}/spec/run` on mount. This suite pins
 // the seed path at the browser level: the harness is forced into its
 // phase BEFORE the page ever loads, so the only way the UI can know a
-// turn is live is that seed read — exactly the "open the wave mid-turn"
+// turn is live is that seed read — exactly the "open the track mid-turn"
 // situation #676 shipped dead.
 //
 // The typing indicator (#657's regression, same overlay-gated class of
@@ -16,7 +16,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
+import { createUserArea, createTrackInArea, resetReplayServer } from './helpers/reset';
 import {
   dropServerPhaseFrames,
   forceSpecPhase,
@@ -25,7 +25,7 @@ import {
 } from './helpers/spec-chat';
 
 test.describe('spec chat seed path (#676 pin)', () => {
-  let waveId: string;
+  let trackId: string;
   let specCardId: string;
 
   test.beforeEach(async ({ request }) => {
@@ -33,12 +33,12 @@ test.describe('spec chat seed path (#676 pin)', () => {
     // any harness a previous spec-chat test forced up.
     await resetReplayServer(request);
     const area = await createUserArea(request, 'AtlasSpecSeed');
-    const wave = await createWaveInArea(request, area.id, 'Spec seed test');
-    waveId = wave.id;
-    specCardId = await getSpecCardId(request, waveId);
+    const track = await createTrackInArea(request, area.id, 'Spec seed test');
+    trackId = track.id;
+    specCardId = await getSpecCardId(request, trackId);
   });
 
-  test('wave opened mid-turn renders all working affordances from the GET /spec/run seed', async ({
+  test('track opened mid-turn renders all working affordances from the GET /spec/run seed', async ({
     page,
     request,
   }) => {
@@ -55,7 +55,7 @@ test.describe('spec chat seed path (#676 pin)', () => {
     expect(run.phase).toBe('turn_running');
 
     await dropServerPhaseFrames(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await page.goto(`/calm/track/${trackId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec seed test' }),
     ).toBeVisible();
@@ -82,7 +82,7 @@ test.describe('spec chat seed path (#676 pin)', () => {
     await expect(chip).toHaveAttribute('data-fsm', 'Working');
   });
 
-  test('wave opened while idle renders no working affordances (inverse pin)', async ({
+  test('track opened while idle renders no working affordances (inverse pin)', async ({
     page,
     request,
   }) => {
@@ -91,7 +91,7 @@ test.describe('spec chat seed path (#676 pin)', () => {
     // Same hardening as the mid-turn test: with the WS phase replay
     // dropped, the Idle chip below can only come from the REST seed.
     await dropServerPhaseFrames(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await page.goto(`/calm/track/${trackId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec seed test' }),
     ).toBeVisible();

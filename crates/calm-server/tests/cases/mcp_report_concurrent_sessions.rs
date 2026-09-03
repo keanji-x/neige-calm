@@ -1,5 +1,5 @@
 //! #1189 S6 — G-C: **two real assistant conversations interleaving on one
-//! wave's report**.
+//! track's report**.
 //!
 //! §3.3 rules that concurrency needs no lock because the existing CAS
 //! (`if_rev` / `if_doc_rev`, checked inside the persist transaction against
@@ -8,7 +8,7 @@
 //! that when **two genuine sessions** read the same revision and then write,
 //! the second one is refused.
 //!
-//! The pre-existing conflict cases (`mcp_wave_report_blocks.rs:124-136,
+//! The pre-existing conflict cases (`mcp_track_report_blocks.rs:124-136,
 //! 609-641, 799-820`) do not establish that. They are one session handing
 //! itself a rev the test author typed in, which proves the comparison
 //! rejects a value that does not match — a statement about the comparator,
@@ -42,7 +42,7 @@
 //! Three persistence surfaces are compared byte-for-byte / value-for-value:
 //! the card's `body_crdt` blob, the read projection, and the event-log
 //! length. Three others are **not**: the tasks projection table, the
-//! wave-VCS manifest, and the *content* of the events (as opposed to their
+//! track-VCS manifest, and the *content* of the events (as opposed to their
 //! count).
 //!
 //! That is sound only because of a property of the current implementation,
@@ -61,12 +61,12 @@
 
 #![cfg(unix)]
 
-use crate::mcp_wave_report::{
+use crate::mcp_track_report::{
     Boot, assistant_b_identity, assistant_identity, boot, call_tool, spec_identity,
 };
 use calm_server::mcp_server::registry::ToolCallIdentity;
-use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_WRITE;
-use calm_server::mcp_server::tools::wave_report_blocks::{
+use calm_server::mcp_server::tools::track_report::TOOL_REPORT_WRITE;
+use calm_server::mcp_server::tools::track_report_blocks::{
     RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_MOVE, TOOL_REPORT_BLOCKS_UPSERT,
     TOOL_REPORT_WRITE_MARKDOWN,
 };
@@ -190,7 +190,7 @@ fn assert_same_starting_point(a: &Value, b: &Value) {
 /// "nothing was written" — and the file would have silently decayed back
 /// into the shape it exists to improve on. So the two identities are
 /// asserted distinct, on both axes the recorder gate resolves (card → role
-/// and wave; session → card), before either of them writes.
+/// and track; session → card), before either of them writes.
 fn assert_two_distinct_conversations(a: &ToolCallIdentity, b: &ToolCallIdentity) {
     assert_ne!(
         a.card_id, b.card_id,

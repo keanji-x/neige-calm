@@ -13,7 +13,7 @@ describe('dockSelection', () => {
     [null, '/', 'today'],
     [null, '/settings', 'me'],
     [null, '/settings/appearance', 'me'],
-    [null, '/wave/w1', 'pages'],
+    [null, '/track/w1', 'pages'],
     [null, '/area/c1', 'pages'],
     // A path the dock has no tab for still lights exactly one: Pages is the
     // index the reader is inside, not a fifth "nothing" state.
@@ -23,7 +23,7 @@ describe('dockSelection', () => {
     ['pages', '/', 'pages'],
     ['areas', '/', 'areas'],
     ['areas', '/settings', 'areas'],
-    ['pages', '/wave/w1', 'pages'],
+    ['pages', '/track/w1', 'pages'],
   ];
   for (const [section, path, expected] of cases) {
     it(`selects ${expected} for ${String(section)} at ${path}`, () => {

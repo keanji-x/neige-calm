@@ -5,7 +5,7 @@
  * card rather than by a route, so it must sort below anything a feature says
  * about the same box. The card's *chrome* — `.term`, `.card-head` and the
  * grid cell around them — stays where every other card's chrome is
- * (`styles/wave-grid.css`), because that is what makes a file card the same
+ * (`styles/track-grid.css`), because that is what makes a file card the same
  * object on the board as a terminal.
  *
  * CodeMirror paints itself: its `.cm-*` rules are injected at runtime and are

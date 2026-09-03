@@ -1,20 +1,20 @@
-//! #891 slice ④ / #1110 S4 — per-wave plugin tool visibility.
+//! #891 slice ④ / #1110 S4 — per-track plugin tool visibility.
 //!
-//! A wave with `plugin_scope = Some(plugin_id)` must only see and call that
+//! A track with `plugin_scope = Some(plugin_id)` must only see and call that
 //! plugin's tools; kernel `calm.*` registry tools stay role-gated as before
-//! and never route through here. Unbound waves (`plugin_scope = None`) keep
+//! and never route through here. Unbound tracks (`plugin_scope = None`) keep
 //! the historical union of all running plugins' tools — but that policy also
-//! flows through [`plugin_scope_for_wave`] so the whole visibility decision
+//! flows through [`plugin_scope_for_track`] so the whole visibility decision
 //! lives at a single choke point, applied on BOTH the discovery path
 //! (`tools/list`) and the dispatch path (`tools/call`).
 //!
-//! Fail-closed (design §4 + 决策记录 F7 / #1110 S4): when a wave is scoped
+//! Fail-closed (design §4 + 决策记录 F7 / #1110 S4): when a track is scoped
 //! to a plugin that is not currently running ∧ trusted (plugin stopped,
-//! trust revoked, wave row unreadable), the scope is
-//! [`WavePluginScope::None`] — zero plugin tools. This mirrors the spec
+//! trust revoked, track row unreadable), the scope is
+//! [`TrackPluginScope::None`] — zero plugin tools. This mirrors the spec
 //! harness's descriptor-unresolved degradation (vanilla prompt): the tools
 //! are withdrawn together with the plugin context rather than silently
-//! widened back to the union. The gate reads `waves.plugin_scope` only —
+//! widened back to the union. The gate reads `tracks.plugin_scope` only —
 //! it does not look up `templates[]` by `template_id`.
 
 use std::sync::Arc;
@@ -23,21 +23,21 @@ use crate::forge_trust::trusted_forge_plugin;
 use crate::mcp_server::registry::AppContext;
 
 /// Which plugins' tools a caller may see / call, resolved from the caller's
-/// wave context. Produced only by [`plugin_scope_for_wave`].
+/// track context. Produced only by [`plugin_scope_for_track`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum WavePluginScope {
-    /// No wave context (pre-attribution discovery) or an unbound wave —
+pub(crate) enum TrackPluginScope {
+    /// No track context (pre-attribution discovery) or an unbound track —
     /// union of all running plugins (historical behavior, pinned by tests).
     All,
-    /// Wave with `plugin_scope = Some(id)` whose plugin is running ∧ trusted.
+    /// Track with `plugin_scope = Some(id)` whose plugin is running ∧ trusted.
     Only(String /* plugin_id */),
-    /// Wave with `plugin_scope` set whose plugin is currently unresolvable
-    /// (stopped / untrusted / wave lookup failed) — zero plugin tools,
+    /// Track with `plugin_scope` set whose plugin is currently unresolvable
+    /// (stopped / untrusted / track lookup failed) — zero plugin tools,
     /// fail-closed.
     None,
 }
 
-impl WavePluginScope {
+impl TrackPluginScope {
     pub(crate) fn allows(&self, plugin_id: &str) -> bool {
         match self {
             Self::All => true,
@@ -49,29 +49,29 @@ impl WavePluginScope {
 
 /// Single choke-point policy: resolve the plugin-tool scope for a caller.
 ///
-/// * `wave_id = None` (no wave context) → [`WavePluginScope::All`].
-/// * Wave row has `plugin_scope = None` (unbound) → [`WavePluginScope::All`].
-/// * Wave has `plugin_scope = Some(id)` → [`WavePluginScope::Only`] if that
-///   plugin is running ∧ trusted; [`WavePluginScope::None`] when it is not
+/// * `track_id = None` (no track context) → [`TrackPluginScope::All`].
+/// * Track row has `plugin_scope = None` (unbound) → [`TrackPluginScope::All`].
+/// * Track has `plugin_scope = Some(id)` → [`TrackPluginScope::Only`] if that
+///   plugin is running ∧ trusted; [`TrackPluginScope::None`] when it is not
 ///   (same fail-closed as today's "bound template has no running owner").
-/// * Wave lookup failure / missing wave row → [`WavePluginScope::None`]:
+/// * Track lookup failure / missing track row → [`TrackPluginScope::None`]:
 ///   bound-ness cannot be proven, so fail closed rather than widen to the
 ///   union.
 ///
-/// Does not consult `wave.template_id` or `manifest.templates[]`.
-pub(crate) async fn plugin_scope_for_wave(
+/// Does not consult `track.template_id` or `manifest.templates[]`.
+pub(crate) async fn plugin_scope_for_track(
     ctx: &Arc<AppContext>,
-    wave_id: Option<&str>,
-) -> WavePluginScope {
+    track_id: Option<&str>,
+) -> TrackPluginScope {
     // #891 review fix (hot-path observability): this resolver sits on both
     // the tools/list and tools/call paths and does per-call repo + registry
     // reads; log the resolution at debug so latency regressions and scope
     // decisions are attributable without enabling caching in this slice.
     let started = std::time::Instant::now();
-    let scope = resolve_plugin_scope_for_wave(ctx, wave_id).await;
+    let scope = resolve_plugin_scope_for_track(ctx, track_id).await;
     tracing::debug!(
         target: "mcp_server::tool_visibility",
-        wave_id = wave_id.unwrap_or("<none>"),
+        track_id = track_id.unwrap_or("<none>"),
         scope = ?scope,
         elapsed_us = started.elapsed().as_micros() as u64,
         "plugin tool scope resolved"
@@ -79,54 +79,54 @@ pub(crate) async fn plugin_scope_for_wave(
     scope
 }
 
-async fn resolve_plugin_scope_for_wave(
+async fn resolve_plugin_scope_for_track(
     ctx: &Arc<AppContext>,
-    wave_id: Option<&str>,
-) -> WavePluginScope {
-    let Some(wave_id) = wave_id else {
-        return WavePluginScope::All;
+    track_id: Option<&str>,
+) -> TrackPluginScope {
+    let Some(track_id) = track_id else {
+        return TrackPluginScope::All;
     };
-    let wave = match ctx.repo.wave_get(wave_id).await {
-        Ok(Some(wave)) => wave,
+    let track = match ctx.repo.track_get(track_id).await {
+        Ok(Some(track)) => track,
         Ok(None) => {
             tracing::warn!(
                 target: "mcp_server::tool_visibility",
-                wave_id,
-                "plugin tool scope: wave not found; failing closed (no plugin tools)"
+                track_id,
+                "plugin tool scope: track not found; failing closed (no plugin tools)"
             );
-            return WavePluginScope::None;
+            return TrackPluginScope::None;
         }
         Err(error) => {
             tracing::warn!(
                 target: "mcp_server::tool_visibility",
-                wave_id,
+                track_id,
                 error = %error,
-                "plugin tool scope: wave lookup failed; failing closed (no plugin tools)"
+                "plugin tool scope: track lookup failed; failing closed (no plugin tools)"
             );
-            return WavePluginScope::None;
+            return TrackPluginScope::None;
         }
     };
-    let Some(plugin_id) = wave.plugin_scope.as_deref() else {
-        // Unbound wave — historical union, but routed through this function
+    let Some(plugin_id) = track.plugin_scope.as_deref() else {
+        // Unbound track — historical union, but routed through this function
         // so the policy has exactly one home.
-        return WavePluginScope::All;
+        return TrackPluginScope::All;
     };
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        // Scoped wave but no plugin host yet (boot ordering) — there are no
+        // Scoped track but no plugin host yet (boot ordering) — there are no
         // plugin tools to expose anyway; report the fail-closed scope.
-        return WavePluginScope::None;
+        return TrackPluginScope::None;
     };
     let running_plugin_ids = plugin_host.running_plugin_ids().await;
     if running_plugin_ids.contains(plugin_id) && trusted_forge_plugin(plugin_id) {
-        return WavePluginScope::Only(plugin_id.to_string());
+        return TrackPluginScope::Only(plugin_id.to_string());
     }
     tracing::warn!(
         target: "mcp_server::tool_visibility",
-        wave_id,
+        track_id,
         plugin_id,
         "plugin tool scope: scoped plugin is not running and trusted; failing closed"
     );
-    WavePluginScope::None
+    TrackPluginScope::None
 }
 
 #[cfg(test)]
@@ -137,11 +137,11 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::forge_trust::trusted_forge_plugin;
-    use crate::model::{NewArea, NewWave};
+    use crate::model::{NewArea, NewTrack};
     use crate::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
     use crate::routes::theme::RequestTheme;
     use crate::state::WriteContext;
-    use crate::wave_area_cache::WaveAreaCache;
+    use crate::track_area_cache::TrackAreaCache;
     use serde_json::json;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -151,10 +151,10 @@ mod tests {
 
     #[test]
     fn scope_allows_matrix() {
-        assert!(WavePluginScope::All.allows("any.plugin"));
-        assert!(WavePluginScope::Only("dev.owner".into()).allows("dev.owner"));
-        assert!(!WavePluginScope::Only("dev.owner".into()).allows("dev.other"));
-        assert!(!WavePluginScope::None.allows("dev.owner"));
+        assert!(TrackPluginScope::All.allows("any.plugin"));
+        assert!(TrackPluginScope::Only("dev.owner".into()).allows("dev.owner"));
+        assert!(!TrackPluginScope::Only("dev.owner".into()).allows("dev.other"));
+        assert!(!TrackPluginScope::None.allows("dev.owner"));
     }
 
     #[tokio::test]
@@ -165,8 +165,8 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some(trusted_plugin_id.as_str())).await;
-        let unbound_wave = make_wave(repo.as_ref(), None).await;
+        let bound_track = make_track(repo.as_ref(), Some(trusted_plugin_id.as_str())).await;
+        let unbound_track = make_track(repo.as_ref(), None).await;
 
         // Trusted plugin RUNNING → Only.
         let (host, _tmp) = plugin_host_with_template(repo.clone(), &trusted_plugin_id).await;
@@ -176,33 +176,33 @@ mod tests {
         wait_for_running(&host, &trusted_plugin_id).await;
         let ctx = app_context(repo.clone(), Some(host.clone()));
 
-        // No wave context → All.
+        // No track context → All.
         assert_eq!(
-            plugin_scope_for_wave(&ctx, None).await,
-            WavePluginScope::All
+            plugin_scope_for_track(&ctx, None).await,
+            TrackPluginScope::All
         );
-        // Unbound wave → All (union regression pin).
+        // Unbound track → All (union regression pin).
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(unbound_wave.id.as_str())).await,
-            WavePluginScope::All
+            plugin_scope_for_track(&ctx, Some(unbound_track.id.as_str())).await,
+            TrackPluginScope::All
         );
-        // Bound wave, running trusted owner → Only(owner).
+        // Bound track, running trusted owner → Only(owner).
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(bound_wave.id.as_str())).await,
-            WavePluginScope::Only(trusted_plugin_id.clone())
+            plugin_scope_for_track(&ctx, Some(bound_track.id.as_str())).await,
+            TrackPluginScope::Only(trusted_plugin_id.clone())
         );
-        // Missing wave row → fail-closed None.
+        // Missing track row → fail-closed None.
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some("no-such-wave")).await,
-            WavePluginScope::None
+            plugin_scope_for_track(&ctx, Some("no-such-track")).await,
+            TrackPluginScope::None
         );
 
         // #1110 S4 flatten pin: template_id alone is not the gate even
         // when the matching plugin is running.
         let leftover_template = repo
-            .wave_create(crate::model::NewWave {
+            .track_create(crate::model::NewTrack {
                 template_input: None,
-                area_id: unbound_wave.area_id.clone(),
+                area_id: unbound_track.area_id.clone(),
                 title: "template-id leftover".into(),
                 sort: None,
                 cwd: String::new(),
@@ -212,10 +212,10 @@ mod tests {
                 theme: RequestTheme::default_dark(),
             })
             .await
-            .expect("create leftover-template wave");
+            .expect("create leftover-template track");
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(leftover_template.id.as_str())).await,
-            WavePluginScope::All
+            plugin_scope_for_track(&ctx, Some(leftover_template.id.as_str())).await,
+            TrackPluginScope::All
         );
 
         host.stop(&trusted_plugin_id)
@@ -224,25 +224,25 @@ mod tests {
 
         // Trusted plugin registered but STOPPED → fail-closed None.
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(bound_wave.id.as_str())).await,
-            WavePluginScope::None
+            plugin_scope_for_track(&ctx, Some(bound_track.id.as_str())).await,
+            TrackPluginScope::None
         );
-        // Unbound wave stays All even with the owner stopped.
+        // Unbound track stays All even with the owner stopped.
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(unbound_wave.id.as_str())).await,
-            WavePluginScope::All
+            plugin_scope_for_track(&ctx, Some(unbound_track.id.as_str())).await,
+            TrackPluginScope::All
         );
     }
 
     #[tokio::test]
-    async fn bound_wave_with_untrusted_declaring_plugin_fails_closed() {
+    async fn bound_track_with_untrusted_declaring_plugin_fails_closed() {
         let untrusted_plugin_id = untrusted_plugin_id();
         let repo = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some(untrusted_plugin_id.as_str())).await;
+        let bound_track = make_track(repo.as_ref(), Some(untrusted_plugin_id.as_str())).await;
 
         let (host, _tmp) = plugin_host_with_template(repo.clone(), &untrusted_plugin_id).await;
         host.spawn(&untrusted_plugin_id)
@@ -252,8 +252,8 @@ mod tests {
         let ctx = app_context(repo.clone(), Some(host.clone()));
 
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(bound_wave.id.as_str())).await,
-            WavePluginScope::None
+            plugin_scope_for_track(&ctx, Some(bound_track.id.as_str())).await,
+            TrackPluginScope::None
         );
 
         host.stop(&untrusted_plugin_id)
@@ -262,23 +262,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bound_wave_without_plugin_host_fails_closed() {
+    async fn bound_track_without_plugin_host_fails_closed() {
         let repo = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some("dev.neige.git-forge")).await;
-        let unbound_wave = make_wave(repo.as_ref(), None).await;
+        let bound_track = make_track(repo.as_ref(), Some("dev.neige.git-forge")).await;
+        let unbound_track = make_track(repo.as_ref(), None).await;
         let ctx = app_context(repo, None);
 
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(bound_wave.id.as_str())).await,
-            WavePluginScope::None
+            plugin_scope_for_track(&ctx, Some(bound_track.id.as_str())).await,
+            TrackPluginScope::None
         );
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(unbound_wave.id.as_str())).await,
-            WavePluginScope::All
+            plugin_scope_for_track(&ctx, Some(unbound_track.id.as_str())).await,
+            TrackPluginScope::All
         );
     }
 
@@ -317,9 +317,9 @@ mod tests {
         }
         Arc::new(AppContext {
             repo: route_repo,
-            wave_vcs: None,
+            track_vcs: None,
             events: EventBus::new(),
-            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
             plugin_host,
@@ -327,7 +327,7 @@ mod tests {
         })
     }
 
-    async fn make_wave(repo: &SqlxRepo, plugin_scope: Option<&str>) -> crate::model::Wave {
+    async fn make_track(repo: &SqlxRepo, plugin_scope: Option<&str>) -> crate::model::Track {
         let area = repo
             .area_create(NewArea {
                 name: format!("area-{plugin_scope:?}"),
@@ -336,7 +336,7 @@ mod tests {
             })
             .await
             .expect("create area");
-        repo.wave_create(NewWave {
+        repo.track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "tool visibility".into(),
@@ -348,7 +348,7 @@ mod tests {
             theme: RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave")
+        .expect("create track")
     }
 
     async fn plugin_host_with_template(
@@ -397,7 +397,7 @@ mod tests {
             plugins_data_dir,
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
         ));
         (host, tmp)
     }

@@ -16,11 +16,11 @@ function area(overrides: Partial<Area> = {}): Area {
 function renderPage(overrides: Partial<Parameters<typeof AreaPage>[0]> = {}) {
   const props = {
     area: area(),
-    waveCount: 2,
-    waveList: <div>wave list slot</div>,
+    trackCount: 2,
+    trackList: <div>track list slot</div>,
     onRenameArea: vi.fn(),
     onDeleteArea: vi.fn(),
-    onRequestNewWave: vi.fn(),
+    onRequestNewTrack: vi.fn(),
     ...overrides,
   };
   return { props, ...render(<AreaPage {...props} />) };
@@ -38,7 +38,7 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     renderPage({ onDeleteArea: () => pending.promise });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
-    // §6.13 — deleting an area cascades to every wave inside it, so it is the
+    // §6.13 — deleting an area cascades to every track inside it, so it is the
     // one operation in the product that earns a typed confirm. Confirm stays
     // `blocked` until the name matches; clicking it before that is a no-op, and
     // a suite that skips the typing is asserting against a dialog that never
@@ -66,7 +66,7 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     renderPage({ onDeleteArea: () => pending.promise });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
-    // §6.13 — deleting an area cascades to every wave inside it, so it is the
+    // §6.13 — deleting an area cascades to every track inside it, so it is the
     // one operation in the product that earns a typed confirm. Confirm stays
     // `blocked` until the name matches; clicking it before that is a no-op, and
     // a suite that skips the typing is asserting against a dialog that never
@@ -122,8 +122,8 @@ describe('rename', () => {
    * #1211 — the area side of the empty-commit split, and the reason the new
    * semantics is an explicit prop rather than the primitive's default.
    *
-   * The wave header passes `emptyCommit="clear"` because a wave has a second
-   * namer (the spec agent's `calm.wave.rename`, which only fires on an empty
+   * The track header passes `emptyCommit="clear"` because a track has a second
+   * namer (the spec agent's `calm.track.rename`, which only fires on an empty
    * title). An area has none: nothing but its owner will ever name it, so an
    * empty commit stays a cancel and no request leaves.
    *

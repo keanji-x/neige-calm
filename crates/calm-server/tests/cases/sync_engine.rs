@@ -29,13 +29,13 @@ use std::sync::Arc;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, area_create_tx, card_create_tx, overlay_upsert_tx, wave_create_tx,
+    SqlxRepo, area_create_tx, card_create_tx, overlay_upsert_tx, track_create_tx,
 };
 use calm_server::db::write_with_event_typed;
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewOverlay, NewWave, Wave};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack, Track};
 
 /// Boot an in-memory `SqlxRepo` and a fresh `EventBus`. Repo is returned
 /// as both `Arc<dyn Repo>` (for trait-based calls) and `Arc<SqlxRepo>` (for
@@ -72,7 +72,7 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -120,7 +120,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
     let (repo, concrete, bus) = boot().await;
     let mut sub = bus.subscribe();
 
-    // Seed an area so the wave_create_tx step inside the closure succeeds —
+    // Seed an area so the track_create_tx step inside the closure succeeds —
     // we only want the *closure-level* error to fail the txn.
     let area = repo
         .area_create(NewArea {
@@ -130,7 +130,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         })
         .await
         .unwrap();
-    let waves_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM waves")
+    let tracks_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
         .fetch_one(concrete.pool())
         .await
         .unwrap();
@@ -148,14 +148,14 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
                 // Real entity write succeeds inside the txn ...
-                let _w = wave_create_tx(
+                let _w = track_create_tx(
                     tx,
-                    NewWave {
+                    NewTrack {
                         template_input: None,
                         area_id,
                         title: "doomed".into(),
@@ -167,12 +167,12 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
-                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &calm_server::wave_area_cache::WaveAreaCache::new(),
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    &calm_server::track_area_cache::TrackAreaCache::new(),
                 )
                 .await?;
                 // ... but then the closure deliberately fails.
-                Err::<(Wave, Event), CalmError>(CalmError::Internal("simulated".into()))
+                Err::<(Track, Event), CalmError>(CalmError::Internal("simulated".into()))
             })
         },
     )
@@ -180,12 +180,12 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
     .expect_err("closure failure must bubble");
     assert!(matches!(err, CalmError::Internal(ref m) if m == "simulated"));
 
-    // Wave was rolled back.
-    let waves_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM waves")
+    // Track was rolled back.
+    let tracks_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
         .fetch_one(concrete.pool())
         .await
         .unwrap();
-    assert_eq!(waves_after.0, waves_before.0);
+    assert_eq!(tracks_after.0, tracks_before.0);
 
     // No event row inserted.
     let events_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events")
@@ -235,7 +235,7 @@ async fn event_insert_failure_rolls_back_entity_write() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         |tx| {
             Box::pin(async move {
@@ -293,7 +293,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -314,7 +314,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
     .unwrap();
     let area_id = area.id.clone();
 
-    let (wave, _) = write_with_event_typed(
+    let (track, _) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
         EventScope::System,
@@ -322,13 +322,13 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
-                let wave = wave_create_tx(
+                let track = track_create_tx(
                     tx,
-                    NewWave {
+                    NewTrack {
                         template_input: None,
                         area_id,
                         title: "w1".into(),
@@ -340,13 +340,13 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
-                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &calm_server::wave_area_cache::WaveAreaCache::new(),
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    &calm_server::track_area_cache::TrackAreaCache::new(),
                 )
                 .await?;
                 Ok((
-                    wave.clone(),
-                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+                    track.clone(),
+                    Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(track, None)),
                 ))
             })
         },
@@ -354,7 +354,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
     .await
     .unwrap();
 
-    let wave_id = wave.id.clone();
+    let track_id = track.id.clone();
     let (_card, _) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
@@ -363,14 +363,14 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
                 let card = card_create_tx(
                     tx,
                     NewCard {
-                        wave_id,
+                        track_id,
                         title: None,
                         kind: "terminal".into(),
                         sort: None,
@@ -418,7 +418,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
 async fn replay_then_live_dedup_under_concurrent_write() {
     let (repo, concrete, bus) = boot().await;
 
-    // Seed an area so the wave creates have somewhere to live.
+    // Seed an area so the track creates have somewhere to live.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),
@@ -441,13 +441,13 @@ async fn replay_then_live_dedup_under_concurrent_write() {
             &bus,
             &calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
             move |tx| {
                 Box::pin(async move {
-                    let w = wave_create_tx(
+                    let w = track_create_tx(
                         tx,
-                        NewWave {
+                        NewTrack {
                             template_input: None,
                             area_id,
                             title,
@@ -459,13 +459,13 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                             theme: calm_server::routes::theme::RequestTheme::default_dark(),
                         },
                         None,
-                        &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                        &calm_server::wave_area_cache::WaveAreaCache::new(),
+                        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        &calm_server::track_area_cache::TrackAreaCache::new(),
                     )
                     .await?;
                     Ok((
                         w.clone(),
-                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(w, None)),
                     ))
                 })
             },
@@ -516,13 +516,13 @@ async fn replay_then_live_dedup_under_concurrent_write() {
             &bus,
             &calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
             move |tx| {
                 Box::pin(async move {
-                    let w = wave_create_tx(
+                    let w = track_create_tx(
                         tx,
-                        NewWave {
+                        NewTrack {
                             template_input: None,
                             area_id,
                             title: "during-replay".into(),
@@ -534,13 +534,13 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                             theme: calm_server::routes::theme::RequestTheme::default_dark(),
                         },
                         None,
-                        &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                        &calm_server::wave_area_cache::WaveAreaCache::new(),
+                        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        &calm_server::track_area_cache::TrackAreaCache::new(),
                     )
                     .await?;
                     Ok((
                         w.clone(),
-                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(w, None)),
                     ))
                 })
             },
@@ -604,14 +604,14 @@ async fn replay_then_live_dedup_under_concurrent_write() {
 #[derive(Clone, Debug)]
 enum Op {
     CreateArea(String),
-    CreateWaveInLastArea(String),
-    CreateCardInLastWave(String),
+    CreateTrackInLastArea(String),
+    CreateCardInLastTrack(String),
     SetOverlayOnLastCard(String),
 }
 
 /// Apply an op through `write_with_event` against the shared repo + bus.
 /// Returns `true` if the op committed, `false` if it was skipped (e.g.
-/// `CreateWaveInLastArea` with no area yet).
+/// `CreateTrackInLastArea` with no area yet).
 async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &Op) -> bool {
     match op {
         Op::CreateArea(name) => {
@@ -628,7 +628,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_area_cache::WaveAreaCache::new(),
+                    calm_server::track_area_cache::TrackAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
@@ -642,12 +642,12 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
             state.last_area = Some(area.id);
             true
         }
-        Op::CreateWaveInLastArea(title) => {
+        Op::CreateTrackInLastArea(title) => {
             let Some(area_id) = state.last_area.clone() else {
                 return false;
             };
             let title = title.clone();
-            let (wave, _) = write_with_event_typed(
+            let (track, _) = write_with_event_typed(
                 repo,
                 ActorId::User,
                 EventScope::System,
@@ -655,13 +655,13 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_area_cache::WaveAreaCache::new(),
+                    calm_server::track_area_cache::TrackAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
-                        let w = wave_create_tx(
+                        let w = track_create_tx(
                             tx,
-                            NewWave {
+                            NewTrack {
                                 template_input: None,
                                 area_id,
                                 title,
@@ -673,13 +673,13 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
                             },
                             None,
-                            &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                            &calm_server::wave_area_cache::WaveAreaCache::new(),
+                            &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                            &calm_server::track_area_cache::TrackAreaCache::new(),
                         )
                         .await?;
                         Ok((
                             w.clone(),
-                            Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+                            Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
                                 w, None,
                             )),
                         ))
@@ -688,11 +688,11 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
             )
             .await
             .unwrap();
-            state.last_wave = Some(wave.id);
+            state.last_track = Some(track.id);
             true
         }
-        Op::CreateCardInLastWave(_label) => {
-            let Some(wave_id) = state.last_wave.clone() else {
+        Op::CreateCardInLastTrack(_label) => {
+            let Some(track_id) = state.last_track.clone() else {
                 return false;
             };
             let (card, _) = write_with_event_typed(
@@ -703,14 +703,14 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_area_cache::WaveAreaCache::new(),
+                    calm_server::track_area_cache::TrackAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
                         let c = card_create_tx(
                             tx,
                             NewCard {
-                                wave_id,
+                                track_id,
                                 title: None,
                                 kind: "terminal".into(),
                                 sort: None,
@@ -749,7 +749,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_area_cache::WaveAreaCache::new(),
+                    calm_server::track_area_cache::TrackAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
@@ -768,7 +768,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
 #[derive(Default)]
 struct PropState {
     last_area: Option<calm_server::ids::AreaId>,
-    last_wave: Option<calm_server::ids::WaveId>,
+    last_track: Option<calm_server::ids::TrackId>,
     last_card: Option<calm_server::ids::CardId>,
 }
 
@@ -780,15 +780,15 @@ async fn property_cold_replay_converges_with_continuous_subscriber() {
     // once we're willing to add the crate; design §6.1 calls it out
     // explicitly.
     let ops = vec![
-        Op::CreateWaveInLastArea("skip-me".into()), // no area yet → skipped
+        Op::CreateTrackInLastArea("skip-me".into()), // no area yet → skipped
         Op::CreateArea("alpha".into()),
-        Op::CreateWaveInLastArea("aw1".into()),
-        Op::CreateCardInLastWave("ac1".into()),
+        Op::CreateTrackInLastArea("aw1".into()),
+        Op::CreateCardInLastTrack("ac1".into()),
         Op::SetOverlayOnLastCard("ao1".into()),
         Op::CreateArea("beta".into()),
-        Op::CreateWaveInLastArea("bw1".into()),
-        Op::CreateCardInLastWave("bc1".into()),
-        Op::CreateCardInLastWave("bc2".into()),
+        Op::CreateTrackInLastArea("bw1".into()),
+        Op::CreateCardInLastTrack("bc1".into()),
+        Op::CreateCardInLastTrack("bc2".into()),
         Op::SetOverlayOnLastCard("bo1".into()),
         Op::SetOverlayOnLastCard("bo2".into()), // overlay upsert — same key, second write
     ];
@@ -868,7 +868,7 @@ async fn event_version_round_trips_from_write_to_replay() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -960,7 +960,7 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     // Hand-insert a pre-PR2 row: only the columns that existed before
     // migration 0007 are bound. The `scope_kind` column has a `NOT NULL
     // DEFAULT 'system'` clause, so it backfills automatically; the
-    // ancestor cols (`scope_area` / `scope_wave` / `scope_card`) stay
+    // ancestor cols (`scope_area` / `scope_track` / `scope_card`) stay
     // NULL. This is exactly the shape any row written before PR2 lands
     // takes after the migration's column defaults fire.
     sqlx::query(
@@ -975,7 +975,7 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     // Hand-insert a post-PR2 row with full scope_* columns populated.
     sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version,
-                                 scope_kind, scope_area, scope_wave, scope_card)
+                                 scope_kind, scope_area, scope_track, scope_card)
            VALUES ('area.updated', '{"id":"c2","name":"n2","color":"#000","sort":0,"created_at":0,"updated_at":0}',
                    '"user"', 0, NULL, 1, 'area', 'c2', NULL, NULL)"##,
     )

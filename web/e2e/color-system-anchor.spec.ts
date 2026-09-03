@@ -17,7 +17,7 @@ type Snapshot = {
 
 const themes = ['light', 'dark'] as const;
 const transparentAllowlist = new Set([
-  'wave-title-input',
+  'track-title-input',
   'area-title-input',
   'area-nav-edit-input',
 ]);

@@ -364,13 +364,13 @@ describe('EventStream reconnect', () => {
   it('sends since=<lastEventId> on first open when cursor exists', () => {
     localStorage.setItem('calm:sync:cursor', '17');
     const s = new EventStream('ws://test/api/events');
-    s.subscribe(['wave:w-1']);
+    s.subscribe(['track:w-1']);
     s.start();
     const ws = currentWs();
     ws.open();
 
     const last = lastSentSub(ws);
-    expect(last.sub).toEqual(['wave:w-1']);
+    expect(last.sub).toEqual(['track:w-1']);
     expect(last.since).toBe(17);
   });
 

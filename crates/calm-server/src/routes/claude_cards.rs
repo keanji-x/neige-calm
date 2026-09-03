@@ -1,4 +1,4 @@
-//! `POST /api/waves/:wave_id/claude-cards` — manual Claude worker card
+//! `POST /api/tracks/:track_id/claude-cards` — manual Claude worker card
 //! creation.
 //!
 //! This mirrors the codex card endpoint's PTY-backed shape but deliberately
@@ -35,19 +35,19 @@ use utoipa::ToSchema;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/waves/{wave_id}/claude-cards",
+            "/api/tracks/{track_id}/claude-cards",
             post(create_claude_card),
         )
         .route("/api/cards/{id}/claude/restart", post(restart_claude_card))
 }
 
-/// Body for `POST /api/waves/:wave_id/claude-cards`.
+/// Body for `POST /api/tracks/:track_id/claude-cards`.
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewClaudeCardBody {
     #[serde(default)]
     pub title: Option<String>,
-    /// Sort order within the wave. `None` defaults to "append to end".
+    /// Sort order within the track. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
     /// Working directory Claude runs in. Empty string or missing -> `$HOME`
@@ -70,13 +70,13 @@ pub struct NewClaudeCardBody {
 
 #[utoipa::path(
     post,
-    path = "/api/waves/{wave_id}/claude-cards",
+    path = "/api/tracks/{track_id}/claude-cards",
     tag = "claude",
-    params(("wave_id" = String, Path, description = "Wave id to create the Claude card under")),
+    params(("track_id" = String, Path, description = "Track id to create the Claude card under")),
     request_body(content = NewClaudeCardBody, description = "Body required (theme is mandatory; cwd/prompt optional)"),
     responses(
         (status = 201, description = "Worker card + linked terminal created atomically; Claude daemon spawned", body = Card),
-        (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 404, description = "Track not found", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
@@ -87,10 +87,10 @@ pub(crate) async fn create_claude_card(
     State(cs): State<CodexShellState>,
     actor: Actor,
     headers: HeaderMap,
-    Path(wave_id): Path<String>,
+    Path(track_id): Path<String>,
     Json(p): Json<NewClaudeCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
-    let request = normalize_claude_create_request(wave_id, p)?;
+    let request = normalize_claude_create_request(track_id, p)?;
     let idempotency_key = parse_idempotency_key_header(&headers)?;
     let prepared =
         prepare_claude_create_request(s.repo.as_ref(), cs.codex.as_ref(), request.clone()).await?;
@@ -147,11 +147,11 @@ pub(crate) async fn create_claude_card(
 }
 
 pub(crate) fn normalize_claude_create_request(
-    wave_id: String,
+    track_id: String,
     body: NewClaudeCardBody,
 ) -> Result<NormalizedClaudeCreateRequest> {
     normalize_claude_create_request_payload(ClaudeCreateRequestInput {
-        wave_id,
+        track_id,
         title: body.title,
         sort: body.sort,
         cwd: body.cwd,

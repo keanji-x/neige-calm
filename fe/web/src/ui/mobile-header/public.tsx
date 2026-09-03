@@ -31,7 +31,7 @@ export function MobileHeader({
   /**
    * #1234 — the value of `data-nc-field` on the heading, which is the mobile
    * carrier of a row module's title. **Opt-in**: every other header on the
-   * mobile surface (the wave's own, `app/shell`'s pages) is chrome, and marking
+   * mobile surface (the track's own, `app/shell`'s pages) is chrome, and marking
    * unconditionally would put module-title carriers in trees whose view model
    * has none. `ui/**` cannot import `core/view`'s `MARKER`, so the attribute
    * name is a literal here and the *value* arrives as a string — see

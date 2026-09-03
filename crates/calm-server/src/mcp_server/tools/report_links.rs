@@ -1,4 +1,4 @@
-//! Spec-only discovery reads for wave-report links (#967 S4).
+//! Spec-only discovery reads for track-report links (#967 S4).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,13 +11,13 @@ use crate::mcp_server::registry::{
     read_only_annotations, require_role,
 };
 use crate::model::CardRole;
-use crate::wave_report_read::load_report_read_snapshot;
+use crate::track_report_read::load_report_read_snapshot;
 
 pub const TOOL_AREA_OUTLINE: &str = "calm.area.outline";
 pub const TOOL_REPORT_BACKLINKS: &str = "calm.report.links.backlinks";
 
-const MAX_WAVES: usize = 50;
-const MAX_BLOCKS_PER_WAVE: usize = 40;
+const MAX_TRACKS: usize = 50;
+const MAX_BLOCKS_PER_TRACK: usize = 40;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024;
 
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -36,12 +36,12 @@ where
 fn outline_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_AREA_OUTLINE.into(),
-        description: "Spec-only: list the reports and addressable block index for every wave in \
+        description: "Spec-only: list the reports and addressable block index for every track in \
             the caller's area. Takes no parameters. Create links as \
-            `[label](neige://wave/<wave_id>#<block_id>)`; the `#<block_id>` fragment is optional. \
+            `[label](neige://wave/<track_id>#<block_id>)`; the `#<block_id>` fragment is optional. \
             Block ids come from this outline or `calm.report.read`. Links resolve only within the \
             area. If an anchored block no longer exists, the link degrades to a whole-report link \
-            instead of breaking. Returns `{ waves: [{ id, title, lifecycle, blocks: [{ id, kind, \
+            instead of breaking. Returns `{ tracks: [{ id, title, lifecycle, blocks: [{ id, kind, \
             heading }] }], truncated? }`; it never returns report bodies."
             .into(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -53,9 +53,9 @@ fn outline_descriptor() -> ToolDescriptor {
 fn backlinks_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BACKLINKS.into(),
-        description: "Spec-only: list report links from waves in the same area to the caller's \
-            own wave. Takes no parameters. Link syntax is \
-            `[label](neige://wave/<wave_id>#<block_id>)`; the fragment is optional, and block ids \
+        description: "Spec-only: list report links from tracks in the same area to the caller's \
+            own track. Takes no parameters. Link syntax is \
+            `[label](neige://wave/<track_id>#<block_id>)`; the fragment is optional, and block ids \
             come from `calm.area.outline` or `calm.report.read`. Links resolve only within the \
             area. An anchor whose block no longer exists degrades to a whole-report link rather \
             than breaking."
@@ -74,32 +74,32 @@ async fn area_outline(
     require_role(&identity, CardRole::Spec)?;
     let mut cards = ctx
         .repo
-        .wave_report_cards_by_area(identity.area_id.as_str())
+        .track_report_cards_by_area(identity.area_id.as_str())
         .await
         .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
-    cards.sort_by(|left, right| left.wave_id.as_str().cmp(right.wave_id.as_str()));
+    cards.sort_by(|left, right| left.track_id.as_str().cmp(right.track_id.as_str()));
 
-    let total_waves = cards.len();
-    let mut waves = Vec::new();
+    let total_tracks = cards.len();
+    let mut tracks = Vec::new();
     let mut block_truncations = BTreeMap::new();
-    for card in cards.into_iter().take(MAX_WAVES) {
-        let wave = ctx
+    for card in cards.into_iter().take(MAX_TRACKS) {
+        let track = ctx
             .repo
-            .wave_get(card.wave_id.as_str())
+            .track_get(card.track_id.as_str())
             .await
             .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?
-            .ok_or_else(|| RpcError::internal("area_outline: wave vanished mid-read"))?;
+            .ok_or_else(|| RpcError::internal("area_outline: track vanished mid-read"))?;
         let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str())
             .await
             .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
-        let omitted = snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_WAVE);
+        let omitted = snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK);
         if omitted > 0 {
-            block_truncations.insert(wave.id.as_str().to_string(), omitted);
+            block_truncations.insert(track.id.as_str().to_string(), omitted);
         }
         let blocks: Vec<Value> = snapshot
             .blocks
             .iter()
-            .take(MAX_BLOCKS_PER_WAVE)
+            .take(MAX_BLOCKS_PER_TRACK)
             .map(|block| {
                 json!({
                     "id": block.id,
@@ -108,16 +108,16 @@ async fn area_outline(
                 })
             })
             .collect();
-        waves.push(json!({
-            "id": wave.id,
-            "title": wave.title,
-            "lifecycle": wave.lifecycle,
+        tracks.push(json!({
+            "id": track.id,
+            "title": track.title,
+            "lifecycle": track.lifecycle,
             "blocks": blocks,
         }));
     }
 
-    let mut omitted_waves = total_waves.saturating_sub(MAX_WAVES);
-    let initial = outline_response(waves.clone(), omitted_waves, &block_truncations, false);
+    let mut omitted_tracks = total_tracks.saturating_sub(MAX_TRACKS);
+    let initial = outline_response(tracks.clone(), omitted_tracks, &block_truncations, false);
     let mut estimated_bytes =
         serde_json::to_vec(&initial).map_or(usize::MAX, |serialized| serialized.len());
     let bytes_truncated = estimated_bytes > MAX_RESPONSE_BYTES;
@@ -126,11 +126,11 @@ async fn area_outline(
     // serialized again for the final cap confirmation.
     let target_bytes = MAX_RESPONSE_BYTES.saturating_sub(4096);
     if bytes_truncated {
-        for wave in waves.iter_mut().rev() {
-            let Some(wave_id) = wave.get("id").and_then(Value::as_str).map(str::to_owned) else {
+        for track in tracks.iter_mut().rev() {
+            let Some(track_id) = track.get("id").and_then(Value::as_str).map(str::to_owned) else {
                 continue;
             };
-            let Some(blocks) = wave.get_mut("blocks").and_then(Value::as_array_mut) else {
+            let Some(blocks) = track.get_mut("blocks").and_then(Value::as_array_mut) else {
                 continue;
             };
             while estimated_bytes > target_bytes {
@@ -140,23 +140,23 @@ async fn area_outline(
                 estimated_bytes = estimated_bytes.saturating_sub(
                     serde_json::to_vec(&block).map_or(0, |serialized| serialized.len() + 1),
                 );
-                *block_truncations.entry(wave_id.clone()).or_default() += 1;
+                *block_truncations.entry(track_id.clone()).or_default() += 1;
             }
         }
         while estimated_bytes > target_bytes {
-            let Some(wave) = waves.pop() else {
+            let Some(track) = tracks.pop() else {
                 break;
             };
             estimated_bytes = estimated_bytes.saturating_sub(
-                serde_json::to_vec(&wave).map_or(0, |serialized| serialized.len() + 1),
+                serde_json::to_vec(&track).map_or(0, |serialized| serialized.len() + 1),
             );
-            omitted_waves += 1;
-            if let Some(wave_id) = wave.get("id").and_then(Value::as_str) {
-                block_truncations.remove(wave_id);
+            omitted_tracks += 1;
+            if let Some(track_id) = track.get("id").and_then(Value::as_str) {
+                block_truncations.remove(track_id);
             }
         }
     }
-    let response = outline_response(waves, omitted_waves, &block_truncations, bytes_truncated);
+    let response = outline_response(tracks, omitted_tracks, &block_truncations, bytes_truncated);
     if serde_json::to_vec(&response).map_or(usize::MAX, |serialized| serialized.len())
         > MAX_RESPONSE_BYTES
     {
@@ -168,15 +168,15 @@ async fn area_outline(
 }
 
 fn outline_response(
-    waves: Vec<Value>,
-    omitted_waves: usize,
+    tracks: Vec<Value>,
+    omitted_tracks: usize,
     block_truncations: &BTreeMap<String, usize>,
     bytes_truncated: bool,
 ) -> Value {
-    let mut response = Map::from_iter([("waves".into(), Value::Array(waves))]);
+    let mut response = Map::from_iter([("tracks".into(), Value::Array(tracks))]);
     let mut truncated = Map::new();
-    if omitted_waves > 0 {
-        truncated.insert("waves".into(), json!(omitted_waves));
+    if omitted_tracks > 0 {
+        truncated.insert("tracks".into(), json!(omitted_tracks));
     }
     if !block_truncations.is_empty() {
         truncated.insert("blocks".into(), json!(block_truncations));
@@ -190,7 +190,7 @@ fn outline_response(
     Value::Object(response)
 }
 
-fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
+fn block_heading(block: &calm_types::track_report::ReportBlock) -> String {
     if block.kind != calm_types::report_blocks::KIND_PROSE {
         let identifying = ["symbol", "src", "caption", "title"]
             .into_iter()
@@ -229,7 +229,7 @@ fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
     // those characters and be titled without them. The case that makes any of
     // this matter is a document carrying its own maintenance contract in a
     // leading comment (#1185 §0.7): it renders as nothing, so it may not echo
-    // into the outline of every wave — as noise and against the response byte
+    // into the outline of every track — as noise and against the response byte
     // budget. The block itself stays, with an empty heading; dropping it would
     // make it undeep-linkable, and this outline is the only source of block ids.
     //
@@ -278,10 +278,10 @@ async fn report_backlinks(
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let wave_id = identity.wave_id.ok_or_else(|| {
-        RpcError::invalid_params("calm.report.links.backlinks requires a wave-scoped caller")
+    let track_id = identity.track_id.ok_or_else(|| {
+        RpcError::invalid_params("calm.report.links.backlinks requires a track-scoped caller")
     })?;
-    let page = crate::report_backlinks::backlinks_for_wave(ctx.repo.as_ref(), &wave_id)
+    let page = crate::report_backlinks::backlinks_for_track(ctx.repo.as_ref(), &track_id)
         .await
         .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
     Ok(crate::report_backlinks::mcp_payload(&page))
@@ -290,7 +290,7 @@ async fn report_backlinks(
 #[cfg(test)]
 mod tests {
     use super::block_heading;
-    use calm_types::wave_report::ReportBlock;
+    use calm_types::track_report::ReportBlock;
     use serde_json::json;
 
     fn prose(markdown: &str) -> ReportBlock {

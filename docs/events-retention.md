@@ -11,7 +11,7 @@ Hourly background pass that deletes rows matching ALL of:
 
 * **exact-kind allowlist** — `claude.hook`, `codex.hook`,
   `harness.phase.changed`, `harness.item.added`, `overlay.set`. Everything
-  else (all `card.*` / `wave.*` / `area.*` / `terminal.*` structural kinds,
+  else (all `card.*` / `track.*` / `area.*` / `terminal.*` structural kinds,
   and `overlay.deleted` tombstones) is permanent by construction;
 * **age horizon** on `at` — default 30 days (floored at 1 day, see Knobs);
 * **keep-latest carve-out** — the newest `overlay.set` per
@@ -38,8 +38,8 @@ Pruning `claude.hook` / `codex.hook` rows older than the horizon is an
 **accepted regression** for two production consumers that replay them from
 genesis:
 
-1. **Wave-fs hook transcript** — `hook_events_for_card`
-   (`crates/calm-truth/src/wave_fs_view.rs`): a card's hook transcript
+1. **Track-fs hook transcript** — `hook_events_for_card`
+   (`crates/calm-truth/src/track_fs_view.rs`): a card's hook transcript
    projection no longer includes hook events (either kind) older than the
    horizon.
 2. **Harness recovery catch-up** — `replay_harness_events_since`
@@ -48,7 +48,7 @@ genesis:
    watermark older than the horizon cannot recover hooks that were pruned.
 
 Both consume diagnostics-grade data; >30-day-old hook history is not needed
-for correctness of live waves. `harness.phase.changed` / `harness.item.added`
+for correctness of live tracks. `harness.phase.changed` / `harness.item.added`
 history and superseded `overlay.set` writes carry no state the folds need.
 
 ## Triggers — when to look

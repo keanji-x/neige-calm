@@ -152,7 +152,7 @@ async fn pool_staged_at_0016() -> SqlitePool {
 /// At the 0016 schema, a `terminals` row needs `id, card_id, program,
 /// cwd, env, pid, theme_fg, theme_bg, created_at`. The
 /// `card_id` is a `NOT NULL UNIQUE REFERENCES cards(id)`, so we have
-/// to mint an area → wave → card before we can mint the terminal.
+/// to mint an area → track → card before we can mint the terminal.
 async fn seed_terminal_with_null_theme(pool: &SqlitePool) -> String {
     sqlx::query(
         r#"INSERT INTO coves (id, name, color, sort, created_at, updated_at)
@@ -164,7 +164,7 @@ async fn seed_terminal_with_null_theme(pool: &SqlitePool) -> String {
     sqlx::query(
         r#"INSERT INTO waves
                (id, cove_id, title, sort, archived_at, created_at, updated_at)
-           VALUES ('wave-1', 'area-1', 'w', 0.0, NULL, 0, 0)"#,
+           VALUES ('track-1', 'area-1', 'w', 0.0, NULL, 0, 0)"#,
     )
     .execute(pool)
     .await
@@ -176,7 +176,7 @@ async fn seed_terminal_with_null_theme(pool: &SqlitePool) -> String {
     sqlx::query(
         r#"INSERT INTO cards
                (id, wave_id, kind, sort, payload, created_at, updated_at)
-           VALUES ('card-1', 'wave-1', 'terminal', 0.0, '{}', 0, 0)"#,
+           VALUES ('card-1', 'track-1', 'terminal', 0.0, '{}', 0, 0)"#,
     )
     .execute(pool)
     .await
@@ -230,7 +230,7 @@ async fn backfill_stamps_dark_default_on_pre_177_rows() {
 #[tokio::test]
 async fn post_0017_schema_rejects_null_theme_inserts() {
     let pool = pool_staged_at_0016().await;
-    // Seed a separate area/wave/card chain so the INSERT below has a
+    // Seed a separate area/track/card chain so the INSERT below has a
     // valid FK target. Reuses the helper's terminal row but immediately
     // deletes it — we only need the FK-anchor cards row for the new
     // insert attempt.

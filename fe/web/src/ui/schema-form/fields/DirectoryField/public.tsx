@@ -29,7 +29,7 @@
 // The accessible name comes from the button's *contents* — the purpose phrase
 // while there is no value, the basename once there is one — and from nothing
 // else. In particular **not** from an `aria-label`, and the reason is a second
-// call site: `features/wave/new-card` wraps this field in an astryx `Field`
+// call site: `features/track/new-card` wraps this field in an astryx `Field`
 // whose `<label htmlFor>` points at this button, precisely so the control is
 // named "File or folder" and the path it holds is its value. `aria-label`
 // outranks a `<label>`, so a name set here would silently rename *that*

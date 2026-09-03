@@ -5,8 +5,8 @@
 #
 #   覆盖文件（全部读完，含测试）:
 #     web/src/XtermView.tsx (1156)            web/src/XtermView.test.tsx (1577)
-#     web/src/WaveGrid.tsx (302)              web/src/WaveGrid.test.tsx (482)
-#     web/src/WaveList.tsx (275)              web/src/WaveList.test.tsx (632)
+#     web/src/TrackGrid.tsx (302)              web/src/TrackGrid.test.tsx (482)
+#     web/src/TrackList.tsx (275)              web/src/TrackList.test.tsx (632)
 #     web/src/cards/registry.ts               web/src/cards/registry.test.tsx
 #     web/src/cards/resolver.ts               web/src/cards/lifecycle.ts / .test.ts
 #     web/src/cards/CardHead.tsx / .test.tsx  web/src/cards/LetterAvatar.tsx / .test.tsx
@@ -15,13 +15,13 @@
 #     web/src/cards/useCardOverlay.ts / .test.tsx
 #     web/src/cards/overlayRegistry.ts        web/src/cards/__tests__/overlayRegistry.test.ts
 #     web/src/cards/excludeReportCards.ts / .test.ts
-#     web/src/cards/plugin-iframe.tsx         web/src/cards/wave-file-tree.tsx / .test.tsx
+#     web/src/cards/plugin-iframe.tsx         web/src/cards/track-file-tree.tsx / .test.tsx
 #     web/src/cards/builtins/{index,schemaVersions,terminal,codex,spec,iframe,
 #                             file-viewer,file-viewer-markdown,file-viewer-markdown-toc,
-#                             wave-report}.tsx  + 各自 *.test.tsx
+#                             track-report}.tsx  + 各自 *.test.tsx
 #     web/src/input/{wheelRouter,useWheelRouter,wheelTargets,useXtermWheelTarget,
 #                    xtermAdapter}.ts + wheelRouter.test.ts / xtermAdapter.test.ts
-#     web/src/wave-fs-viewers/{registry,schemas,useWaveFsViewer,index}.ts + tests
+#     web/src/track-fs-viewers/{registry,schemas,useTrackFsViewer,index}.ts + tests
 #     web/eslint.config.js (card-head 类名守卫)
 #
 #   条目总数: 228
@@ -44,8 +44,8 @@
 #     card-visibility-focus ....  6   (CARD-105..110)
 #     card-head ................ 12   (CARD-111..122)
 #     letter-avatar ............  4   (CARD-123..126)
-#     wave-grid ................ 10   (CARD-127..136)
-#     wave-list ................ 10   (CARD-137..146)
+#     track-grid ................ 10   (CARD-127..136)
+#     track-list ................ 10   (CARD-137..146)
 #     wheel-routing ............ 14   (CARD-147..160)
 #     xterm-wheel-adapter ......  8   (CARD-161..168)
 #     card-kind-terminal .......  5   (CARD-169..173)
@@ -53,11 +53,11 @@
 #     card-kind-spec ...........  3   (CARD-181..183)
 #     card-kind-iframe .........  8   (CARD-184..191)
 #     card-kind-file-viewer ....  9   (CARD-192..200)
-#     card-kind-wave-report ....  4   (CARD-201..204)
+#     card-kind-track-report ....  4   (CARD-201..204)
 #     card-kind-plugin .........  5   (CARD-205..209)
 #     card-kind-unknown ........  3   (CARD-210..212)
 #     schema-versions ..........  6   (CARD-213..218)
-#     wave-fs-viewers ..........  5   (CARD-219..223)
+#     track-fs-viewers ..........  5   (CARD-219..223)
 #     builtins-boot ............  5   (CARD-224..228)
 
 # ─────────────────────────────────────────────────────────────────────
@@ -209,7 +209,7 @@
     role_hint='Owner'、capabilities.render_encodings=['Vt']、supports_scrollback=true、
     supports_sixel=false、supports_images=false、kernel_originated_input=false
   why: >
-    'All' 让 wave 导航导致的 remount 能拿回守护进程保留的 scrollback；浏览器是
+    'All' 让 track 导航导致的 remount 能拿回守护进程保留的 scrollback；浏览器是
     不可信入口，kernel_originated_input 必须声明 false（WS 桥接层也会强制剥掉）
   source: web/src/XtermView.tsx:603-636
   authoritative_test: web/src/XtermView.test.tsx:568
@@ -302,7 +302,7 @@
   why: >
     #177 的 e2e（a11y-177-theme-toggle-no-remount）与 OSC 回显 e2e
     （new-terminal-osc-echo）分别读这两个全局；dump 按 terminalId 分键，因为一个
-    wave 可能有多张 xterm 卡片，只有 cooked-shell 那张能复现回显 bug
+    track 可能有多张 xterm 卡片，只有 cooked-shell 那张能复现回显 bug
   source: web/src/XtermView.tsx:189-198,418-435
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
@@ -374,7 +374,7 @@
     延迟挂载期间必须挂一个 ResizeObserver，一旦观察到非退化尺寸就 disconnect
     自己并 bump layoutRetryKey 触发重挂
   why: >
-    卡片布局迟到（RGL 首帧、wave 切换）时必须能自愈，否则终端永远停在 Loading
+    卡片布局迟到（RGL 首帧、track 切换）时必须能自愈，否则终端永远停在 Loading
   source: web/src/XtermView.tsx:344-365
   authoritative_test: web/src/XtermView.test.tsx:496
   owner_slice: systems/terminal/xterm-geometry
@@ -1263,7 +1263,7 @@
     tabindex 改为 -1
   why: >
     issue #236 后续 —— xterm 的 keydown 会吞掉所有 Tab（转成 \t 送 PTY），
-    一旦焦点落上去，普通 Tab 导航就永远出不来，wave 页只要有一张 xterm 卡片
+    一旦焦点落上去，普通 Tab 导航就永远出不来，track 页只要有一张 xterm 卡片
     键盘导航（a11y-keyboard.spec.ts）就断。用户仍可点击进入终端
   source: web/src/XtermView.tsx:481-501
   authoritative_test: NONE
@@ -1322,7 +1322,7 @@
     模块级 warned Set 组成；它们的行为契约是：进程内全局唯一、按 key 去重、
     重复注册同一 type 覆盖而非报错，警告每 key 只打一次
   why: >
-    M3 之前三处 5-case switch 散落在 ui.tsx / WaveGrid.tsx / api/adapt.ts；
+    M3 之前三处 5-case switch 散落在 ui.tsx / TrackGrid.tsx / api/adapt.ts；
     收敛成一张分发表后插件才能在运行时 .set() 进来。warnOnce 防止未知 kind
     在每帧渲染时刷屏
   source: web/src/cards/registry.ts:210-225
@@ -1359,7 +1359,7 @@
     registerCard 必须在缺 title / accessibleName 时抛 EntryMissingMetadata，
     在缺 create 时抛 MissingCreateStrategy
   why: >
-    这两个元数据是 WaveList 的 aria-label 与 CardHead 标题的唯一来源；缺失会
+    这两个元数据是 TrackList 的 aria-label 与 CardHead 标题的唯一来源；缺失会
     退化成 "Card N" 占位而无人发现
   source: web/src/cards/registry.ts:246-256
   authoritative_test: web/src/cards/registry.test.tsx:372
@@ -1449,7 +1449,7 @@
     的条目
   why: >
     catalog 类由 /api/plugins/views 目录驱动发现；kernel-minted-only（spec /
-    wave-report）用户根本不能手动添加
+    track-report）用户根本不能手动添加
   source: web/src/cards/registry.ts:336-353
   authoritative_test: web/src/cards/registry.test.tsx:416
   owner_slice: systems/cards/registry
@@ -1466,7 +1466,7 @@
     renderCard 遇到未注册 type 时必须 warnOnce 并返回 null（不抛）；
     sizeFor 遇到未注册 type 时必须 warnOnce 并返回 FALLBACK_SIZE {w:4,h:6,minW:3,minH:3}
   why: >
-    宁可渲染一个尺寸略错的占位，也不要抛异常炸掉整个 wave 网格
+    宁可渲染一个尺寸略错的占位，也不要抛异常炸掉整个 track 网格
   source: web/src/cards/registry.ts:214-217,290-326
   authoritative_test: web/src/cards/UnknownCard.test.tsx:53
   owner_slice: systems/cards/registry
@@ -1534,7 +1534,7 @@
   family: card-registry
   statement: >
     每个内置卡片模块必须通过 declare module '../../types' 往
-    WaveCardDataMap 里注册自己的 data 类型，使 WaveCardData 保持为已注册
+    TrackCardDataMap 里注册自己的 data 类型，使 TrackCardData 保持为已注册
     map 值的可辨识联合
   why: >
     这是让 card.type 判别在类型层穷尽的唯一机制；漏声明会让新 kind 在联合外，
@@ -1894,10 +1894,10 @@
   statement: >
     必须提供 __resetCardEntryResolverRegistryForTest() 清空解析表
   why: >
-    模块级 Map 跨测试泄漏；WaveGrid / WaveList / wheelRouter 测试都在
+    模块级 Map 跨测试泄漏；TrackGrid / TrackList / wheelRouter 测试都在
     beforeEach+afterEach 调它
   source: web/src/cards/resolver.ts:44-46
-  authoritative_test: web/src/WaveList.test.tsx:189
+  authoritative_test: web/src/TrackList.test.tsx:189
   owner_slice: systems/cards/resolver
   intentional_omission: false
   runtime_layer: systems
@@ -1934,9 +1934,9 @@
     视口就卸载它
   why: >
     terminal / iframe 等有状态内容一旦卸载，PTY 连接与 iframe 会话全丢。
-    WaveList / WaveGrid 测试都断言 onUnmount 未被调用且 DOM 仍在
+    TrackList / TrackGrid 测试都断言 onUnmount 未被调用且 DOM 仍在
   source: web/src/cards/useCardVisibilityFocus.ts:58-67
-  authoritative_test: web/src/WaveList.test.tsx:355
+  authoritative_test: web/src/TrackList.test.tsx:355
   owner_slice: systems/cards/visibility
   intentional_omission: true
   runtime_layer: systems
@@ -1988,7 +1988,7 @@
     卡片头按钮 → 卡片 body 的 Tab 移动属于“焦点仍在卡内”；抖动会让 controller
     误以为失焦（测试断言这段过程 onFocusChange 仅被调用一次）
   source: web/src/cards/useCardVisibilityFocus.ts:32-38
-  authoritative_test: web/src/WaveGrid.test.tsx:399
+  authoritative_test: web/src/TrackGrid.test.tsx:399
   owner_slice: systems/cards/visibility
   intentional_omission: false
   runtime_layer: systems
@@ -2095,10 +2095,10 @@
   statement: >
     onClose 为 undefined 时必须完全不渲染关闭按钮（而不是渲染禁用态）
   why: >
-    issue #229 —— kernel 拥有的卡片（deletable:false）与 WaveList（行级关闭按钮）
+    issue #229 —— kernel 拥有的卡片（deletable:false）与 TrackList（行级关闭按钮）
     都靠这个"不渲染"契约；每个内置卡片都把 onClose:undefined 当成"别显示关闭"
   source: web/src/cards/CardHead.tsx:54-62,184-203
-  authoritative_test: web/src/WaveGrid.test.tsx:276
+  authoritative_test: web/src/TrackGrid.test.tsx:276
   owner_slice: systems/cards/card-head
   intentional_omission: false
   runtime_layer: systems
@@ -2114,10 +2114,10 @@
     mouseDown 三个事件
   why: >
     mouseDown 冒泡会让 RGL 拖拽手柄（卡头通常带 card-drag-handle）把点击当拖拽起手；
-    keyDown 冒泡会打到 WaveList 行的 roving handler（测试断言 Enter 在 Reload
+    keyDown 冒泡会打到 TrackList 行的 roving handler（测试断言 Enter 在 Reload
     按钮上不被 preventDefault）
   source: web/src/cards/CardHead.tsx:190-202,208-226
-  authoritative_test: web/src/WaveList.test.tsx:323
+  authoritative_test: web/src/TrackList.test.tsx:323
   owner_slice: systems/cards/card-head
   intentional_omission: false
   runtime_layer: systems
@@ -2130,9 +2130,9 @@
   family: card-head
   statement: >
     closeAriaLabel 必须透传到关闭按钮的 aria-label，缺省为 'Close'；
-    所有内置卡片在 WaveGrid 语境下统一传 'Remove panel'
+    所有内置卡片在 TrackGrid 语境下统一传 'Remove panel'
   why: >
-    WaveGrid 测试用 button.card-grid-close 与该 label 作为 deletable 契约的查询锚点
+    TrackGrid 测试用 button.card-grid-close 与该 label 作为 deletable 契约的查询锚点
   source: web/src/cards/CardHead.tsx:63-64,193
   authoritative_test: web/src/cards/CardHead.test.tsx:172,180
   owner_slice: systems/cards/card-head
@@ -2163,7 +2163,7 @@
   kind: invariant
   family: card-head
   statement: >
-    重命名能力必须在无 card.id、或 card.type 为 'spec' / 'wave-report' 时禁用
+    重命名能力必须在无 card.id、或 card.type 为 'spec' / 'track-report' 时禁用
   why: >
     这两类是 kernel 铸造的卡片，标题由服务端拥有
   source: web/src/cards/CardHead.tsx:140-145
@@ -2181,7 +2181,7 @@
   statement: >
     重命名输入框必须对 mouseDown / doubleClick / keyDown 全部 stopPropagation
   why: >
-    否则输入过程中的按键会被 RGL 拖拽和 WaveList roving handler 抢走
+    否则输入过程中的按键会被 RGL 拖拽和 TrackList roving handler 抢走
   source: web/src/cards/CardHead.tsx:100-111
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
@@ -2299,21 +2299,21 @@
   migration: pending
 
 # ─────────────────────────────────────────────────────────────────────
-# family: wave-grid
+# family: track-grid
 # ─────────────────────────────────────────────────────────────────────
 
 - id: INV-CARD-127
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
-    WaveGrid 必须导入 react-grid-layout/css/styles.css 与
+    TrackGrid 必须导入 react-grid-layout/css/styles.css 与
     react-resizable/css/styles.css 两份 vendor CSS；应用层样式只能覆盖不能替代
   why: >
     RGL 的定位（transform/absolute）与 react-resizable 的手柄命中区完全由这两份
     vendor CSS 提供；漏掉任一份卡片会全部堆叠在左上角或无法拉伸
-  source: web/src/WaveGrid.tsx:13-14
+  source: web/src/TrackGrid.tsx:13-14
   authoritative_test: NONE
-  owner_slice: features/wave/grid
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2322,15 +2322,15 @@
 
 - id: INV-CARD-128
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
     绝不能把 RGL 的运行时 layout 镜像进 React useState
   why: >
     PR #12 / issue #13 —— 镜像会与 RGL 内部的 minW/minH 归一化形成反馈回路，
     在紧渲染循环里每秒数百次地在两份布局快照之间来回跳
-  source: web/src/WaveGrid.tsx:170-187
+  source: web/src/TrackGrid.tsx:170-187
   authoritative_test: NONE
-  owner_slice: features/wave/grid
+  owner_slice: features/track/grid
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -2339,15 +2339,15 @@
 
 - id: INV-CARD-129
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
-    layout 必须用 useMemo 保持引用稳定（依赖 waveId / cardKeys 字符串 /
+    layout 必须用 useMemo 保持引用稳定（依赖 trackId / cardKeys 字符串 /
     storedPositions），卡片不变时交给 RGL 的必须是同一个引用
   why: >
     引用变化会触发 RGL 重新归一化，等价于上一条的回路
-  source: web/src/WaveGrid.tsx:179-187
+  source: web/src/TrackGrid.tsx:179-187
   authoritative_test: NONE
-  owner_slice: features/wave/grid
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2356,16 +2356,16 @@
 
 - id: INV-CARD-130
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
     onLayoutChange 必须经 requestAnimationFrame 合帧：latch 最新布局，一帧最多
     一次 upsertOverlay；rAF 不可用时退化为 setTimeout(0)
   why: >
     RGL 在拖拽的每个 pointermove 都触发 onLayoutChange，一帧一次 POST 才合理；
     rAF 把节奏绑在浏览器绘制循环上，无需人调延迟常数
-  source: web/src/WaveGrid.tsx:196-235
-  authoritative_test: web/src/WaveGrid.test.tsx:431
-  owner_slice: features/wave/grid
+  source: web/src/TrackGrid.tsx:196-235
+  authoritative_test: web/src/TrackGrid.test.tsx:431
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2374,14 +2374,14 @@
 
 - id: INV-CARD-131
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
     卸载时必须 cancelAnimationFrame 掉挂起的 rAF
   why: >
     拖到一半导航走人时，latch 的布局相对用户意图已经过期
-  source: web/src/WaveGrid.tsx:237-248
+  source: web/src/TrackGrid.tsx:237-248
   authoritative_test: NONE
-  owner_slice: features/wave/grid
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2390,15 +2390,15 @@
 
 - id: GATE-CARD-132
   kind: gate
-  family: wave-grid
+  family: track-grid
   statement: >
     每次布局写入必须带 schemaVersion: OVERLAY_LAYOUT_SCHEMA_VERSION（当前 1），
     payload 形状为 { schemaVersion, positions: {key: {x,y,w,h}} }
   why: >
     Tier A 持久化契约；缺字段被读侧当作 v1，但新写入必须显式打戳
-  source: web/src/WaveGrid.tsx:49-56,228-231
-  authoritative_test: web/src/WaveGrid.test.tsx:431
-  owner_slice: features/wave/grid
+  source: web/src/TrackGrid.tsx:49-56,228-231
+  authoritative_test: web/src/TrackGrid.test.tsx:431
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2407,16 +2407,16 @@
 
 - id: INV-CARD-133
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
     slotKey 必须优先用 kernel id（card slot 用 card.id，unknown slot 用 slot.id），
-    只在缺失时退回 `idx-${i}`；WaveList 必须用完全相同的 slotKey 形状
+    只在缺失时退回 `idx-${i}`；TrackList 必须用完全相同的 slotKey 形状
   why: >
     键跨重排稳定，RGL keys 与持久化布局才不漂移；grid/list 共享同一键形状，
     切换视图时卡片不会卸载重挂（xterm 会话保活、codex 钩子继续落在同一实例）
-  source: web/src/WaveGrid.tsx:29-36 web/src/WaveList.tsx:57-64
+  source: web/src/TrackGrid.tsx:29-36 web/src/TrackList.tsx:57-64
   authoritative_test: NONE
-  owner_slice: features/wave/grid
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2425,16 +2425,16 @@
 
 - id: INV-CARD-134
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
     closable 判定必须是 slot.deletable !== false —— 只有字面 false 才隐藏关闭 X，
     undefined 必须视为可删
   why: >
     issue #229 PR A —— 事件日志回放与旧 KernelCard 线格不带该字段；kernel 默认
     与 OpenAPI 输出都偏向 true
-  source: web/src/WaveGrid.tsx:273-289
-  authoritative_test: web/src/WaveGrid.test.tsx:330
-  owner_slice: features/wave/grid
+  source: web/src/TrackGrid.tsx:273-289
+  authoritative_test: web/src/TrackGrid.test.tsx:330
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2443,16 +2443,16 @@
 
 - id: INV-CARD-135
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
-    每个卡片包裹 div 必须带 className="wave-card"、data-wheel-card，
+    每个卡片包裹 div 必须带 className="track-card"、data-wheel-card，
     以及 card slot 时的 data-card-id
   why: >
     data-wheel-card 是滚轮路由定位活动卡壳的选择器，data-card-id 是可见性/焦点
     观测与 entry 级 wheelTarget 解析的键
-  source: web/src/WaveGrid.tsx:290-296
-  authoritative_test: web/src/WaveGrid.test.tsx:356
-  owner_slice: features/wave/grid
+  source: web/src/TrackGrid.tsx:290-296
+  authoritative_test: web/src/TrackGrid.test.tsx:356
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2461,15 +2461,15 @@
 
 - id: INV-CARD-136
   kind: invariant
-  family: wave-grid
+  family: track-grid
   statement: >
     新卡片必须按行主序在底部自动打包（超出 12 列换行），已有 stored 位置的卡片
     必须原样复用；nextY 只由计划保留的 stored 条目决定
   why: >
     新卡片不能盖在已有卡片上，也不能把用户排好的布局推乱
-  source: web/src/WaveGrid.tsx:58-111
-  authoritative_test: web/src/WaveGrid.test.tsx:235
-  owner_slice: features/wave/grid
+  source: web/src/TrackGrid.tsx:58-111
+  authoritative_test: web/src/TrackGrid.test.tsx:235
+  owner_slice: features/track/grid
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2477,12 +2477,12 @@
   migration: pending
 
 # ─────────────────────────────────────────────────────────────────────
-# family: wave-list
+# family: track-list
 # ─────────────────────────────────────────────────────────────────────
 
 - id: INV-CARD-137
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     Alt+Arrow 换序的两次 updateCard mutation 必须串行 await，
     绝不可改成 Promise.all
@@ -2490,9 +2490,9 @@
     并发会让两个 onMutate 的缓存快照互相竞争，第二个乐观写覆盖第一个，
     UI 短暂出现两张卡 sort 相同。测试显式钉死：第一次 mutation 未 resolve 时
     只能看到 1 次调用
-  source: web/src/WaveList.tsx:171-195
-  authoritative_test: web/src/WaveList.test.tsx:491
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:171-195
+  authoritative_test: web/src/TrackList.test.tsx:491
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2501,14 +2501,14 @@
 
 - id: INV-CARD-138
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     swap 必须由 swapInFlight ref 串行化：上一次换序未结束时新的换序请求直接丢弃
   why: >
     慢 ack 下用户连按 Alt+Down 会让 activeIndex 漂移，第二次换序作用在陈旧卡片上
-  source: web/src/WaveList.tsx:138-162,193-195
+  source: web/src/TrackList.tsx:138-162,193-195
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2517,14 +2517,14 @@
 
 - id: INV-CARD-139
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     两张卡都必须有 kernel id 且 sort 都非 null 才允许换序；否则静默 no-op
   why: >
     乐观新增（服务端未 ack）的卡片没有 id；router 虽总能填 sort，仍需防御读时缺失
-  source: web/src/WaveList.tsx:82-90,146-158
+  source: web/src/TrackList.tsx:82-90,146-158
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2533,15 +2533,15 @@
 
 - id: INV-CARD-140
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     换序中途失败（第一条成功第二条失败）必须只 console.warn，不弹 toast；
     靠 refetch 按 kernel 顺序收敛
   why: >
     与既有的重命名 / 拖拽错误路径保持同一模式；再按一次 Alt+ArrowUp 即可恢复
-  source: web/src/WaveList.tsx:178-195
+  source: web/src/TrackList.tsx:178-195
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -2550,16 +2550,16 @@
 
 - id: CAP-CARD-141
   kind: capability
-  family: wave-list
+  family: track-list
   statement: >
     列表行必须实现 roving tabindex：只有 activeIndex 那行 tabIndex=0，其余 -1；
     ArrowUp/Down 移动焦点，Home/End 跳首尾
   why: >
     Slice 9 —— RGL 没有键盘故事；列表视图是键盘规范路径。Tab 进入列表只在活动项
     停一次，再按 Tab 就离开
-  source: web/src/WaveList.tsx:123-136,242-258
-  authoritative_test: web/src/WaveList.test.tsx:233,399,424
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:123-136,242-258
+  authoritative_test: web/src/TrackList.test.tsx:233,399,424
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2568,7 +2568,7 @@
 
 - id: INV-CARD-142
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     行的 onKeyDown 必须先处理 Alt+ArrowUp / Alt+ArrowDown / `Delete` 并 return，
     只有未认领的键才委派给 useRovingTabindex 的 handler；`Backspace` 刻意不在认领
@@ -2576,9 +2576,9 @@
   why: >
     非 Alt 的方向键归 hook；Alt 组合归列表。顺序反了 hook 会把 Alt+Arrow 当普通
     方向键消费掉。Backspace 是编辑键，认领它等于给输入场景装一个误删陷阱
-  source: web/src/WaveList.tsx:210-241
-  authoritative_test: web/src/WaveList.test.tsx:446
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:210-241
+  authoritative_test: web/src/TrackList.test.tsx:446
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2587,16 +2587,16 @@
 
 - id: INV-CARD-143
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     行内嵌套的 action / 关闭按钮的 keydown 必须不冒泡到行的 roving handler
     （由 CardHead 的 stopPropagation 保证），且行 handler 不得 preventDefault
     这些事件
   why: >
     否则在卡头 Reload 按钮上按 Enter 会被行 handler 吞掉，按钮永远激活不了
-  source: web/src/WaveList.tsx:215-241 web/src/cards/CardHead.tsx:198,220
-  authoritative_test: web/src/WaveList.test.tsx:323
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:215-241 web/src/cards/CardHead.tsx:198,220
+  authoritative_test: web/src/TrackList.test.tsx:323
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2605,16 +2605,16 @@
 
 - id: CAP-CARD-144
   kind: capability
-  family: wave-list
+  family: track-list
   statement: >
     `Delete` 必须直接删除聚焦卡片，不做二次确认；行级 × 按钮点击等价，且必须
     stopPropagation。`Backspace` 刻意不绑删除
   why: >
     与 grid 视图的 × 行为对齐 —— grid 不确认，list 也不确认。Backspace 作为编辑键
     被刻意排除在破坏性快捷键之外
-  source: web/src/WaveList.tsx:234-240,259-270
-  authoritative_test: web/src/WaveList.test.tsx:620,638,730
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:234-240,259-270
+  authoritative_test: web/src/TrackList.test.tsx:620,638,730
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2623,7 +2623,7 @@
 
 - id: INV-CARD-145
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     每个 <li> 必须带 aria-label（来自 entry.accessibleName，缺失时退化为
     "Card N" 或 "Unknown card: {kind}")、aria-posinset、aria-setsize，
@@ -2631,9 +2631,9 @@
   why: >
     读屏与 Playwright getByRole('listitem', {name}) 都依赖它；快捷键字符串是
     Slice 9 契约的一部分
-  source: web/src/WaveList.tsx:66-80,249-262
-  authoritative_test: web/src/WaveList.test.tsx:250,273
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:66-80,249-262
+  authoritative_test: web/src/TrackList.test.tsx:250,273
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2642,15 +2642,15 @@
 
 - id: INV-CARD-146
   kind: invariant
-  family: wave-list
+  family: track-list
   statement: >
     列表顺序必须直接消费 props.cards（kernel 按 sort 升序返回），
-    WaveList 自己不得排序也不得持有位置状态
+    TrackList 自己不得排序也不得持有位置状态
   why: >
     kernel 是排序的唯一真相源；本地再排会与 WS card.updated 回放竞争
-  source: web/src/WaveList.tsx:115-121
-  authoritative_test: web/src/WaveList.test.tsx:209
-  owner_slice: features/wave/list
+  source: web/src/TrackList.tsx:115-121
+  authoritative_test: web/src/TrackList.test.tsx:209
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3154,7 +3154,7 @@
     Errored/Done）由 kernel 的 card_fsm 任务拥有，客户端只读
     Overlay{entity_kind:'card', kind:'status'}
   why: >
-    kernel 在服务端算 wave 并集；本地再跑一套 FSM 会与并集不一致
+    kernel 在服务端算 track 并集；本地再跑一套 FSM 会与并集不一致
   source: web/src/cards/builtins/codex.tsx:11-17,231-237
   authoritative_test: web/src/cards/useCardOverlay.test.tsx:198
   owner_slice: systems/cards/codex
@@ -3279,7 +3279,7 @@
     spec 卡片必须是无头的（Component: () => null）、defaultSize 1x1、
     create 为 kernel-minted-only
   why: >
-    spec harness 不是用户可见面板，只是让 wave 知道有这个 agent 存在；
+    spec harness 不是用户可见面板，只是让 track 知道有这个 agent 存在；
     有 UI 会在网格里占位
   source: web/src/cards/builtins/spec.tsx:43-51
   authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:42,48
@@ -3314,7 +3314,7 @@
     spec 的 accessibleName 必须在有 goal 时输出 "Spec agent: {goal}"，
     否则 "Spec agent"
   why: >
-    无头卡片在 WaveList 里仍会占一行，读屏需要有意义的名字
+    无头卡片在 TrackList 里仍会占一行，读屏需要有意义的名字
   source: web/src/cards/builtins/spec.tsx:49-50
   authoritative_test: NONE
   owner_slice: systems/cards/builtins
@@ -3324,14 +3324,14 @@
   test_tier: jsdom
   migration: skipped
   skip_reason: >
-    前提已为假：spec entry 声明 `headless: true`，`partitionWaveCards`
+    前提已为假：spec entry 声明 `headless: true`，`partitionTrackCards`
     （`INV-CARD-226`）据此把它从 CARDS 面板剔除，今天 fe 里这个 accessible name
      零消费者——生产 entry 取常量 `accessibleName: () => 'Spec harness'`
     （fe/web/src/systems/cards/builtins/spec.ts:45），既不读 goal 也无处播报。
     需求的后继者是 conversation 行：用户看到的 spec 名字来自
     `fe/web/src/app/router/public.tsx:181` 的会话命名路径，不是卡片的 accessibleName。
     注意本条只陈述今天的事实：S2 的 grid 尚未写，没有任何机器手段保证它会从
-    `partitionWaveCards` 的 visible 分支渲染而不是直接遍历原始 `cards`；
+    `partitionTrackCards` 的 visible 分支渲染而不是直接遍历原始 `cards`；
     S2 必须走 visible 分支，否则本条前提重新成立，须连同措辞一起重开重定
 
 # ─────────────────────────────────────────────────────────────────────
@@ -3635,19 +3635,19 @@
   migration: pending
 
 # ─────────────────────────────────────────────────────────────────────
-# family: card-kind-wave-report
+# family: card-kind-track-report
 # ─────────────────────────────────────────────────────────────────────
 
 - id: INV-CARD-201
   kind: invariant
-  family: card-kind-wave-report
+  family: card-kind-track-report
   statement: >
-    wave-report 卡片必须是无头的（Component: () => null），
+    track-report 卡片必须是无头的（Component: () => null），
     create 为 kernel-minted-only，无 addPanel 入口
   why: >
-    issue #229 PR B —— 每个 wave 只有一张，内容由报告视图渲染，网格里不占面板
-  source: web/src/cards/builtins/wave-report.tsx:213-221
-  authoritative_test: fe/web/src/systems/cards/builtins/wave-report.test.ts:8,18,24
+    issue #229 PR B —— 每个 track 只有一张，内容由报告视图渲染，网格里不占面板
+  source: web/src/cards/builtins/track-report.tsx:213-221
+  authoritative_test: fe/web/src/systems/cards/builtins/track-report.test.ts:8,18,24
   owner_slice: systems/cards/builtins
   intentional_omission: true
   runtime_layer: systems
@@ -3657,17 +3657,17 @@
 
 - id: GATE-CARD-202
   kind: gate
-  family: card-kind-wave-report
+  family: card-kind-track-report
   statement: >
-    wave-report payload 的当前 schemaVersion 为 3（v2 加 blocks 数组，
+    track-report payload 的当前 schemaVersion 为 3（v2 加 blocks 数组，
     v3 加 docRev 文档级乐观并发锚点）；读侧只拒绝高于该常量的版本，
     v1/v2/v3 共用同一套可选块解析器
   why: >
     #960 PR2 / #979 —— 向后兼容读，向前拒绝写；docRev 是整文档写路径的
     乐观并发前提
   source: web/src/cards/builtins/schemaVersions.ts:28-30
-    web/src/cards/builtins/wave-report.tsx:222-261
-  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:64,79
+    web/src/cards/builtins/track-report.tsx:222-261
+  authoritative_test: web/src/cards/builtins/track-report.test.tsx:64,79
   owner_slice: features/report/card
   intentional_omission: false
   runtime_layer: features
@@ -3677,14 +3677,14 @@
 
 - id: INV-CARD-203
   kind: invariant
-  family: card-kind-wave-report
+  family: card-kind-track-report
   statement: >
     单个 block 的 kind 未知、或已知 kind 的 payload 校验失败时，必须落到不透明
     的 catch-all（渲染成占位），绝不能让整张卡片解析失败
   why: >
     一个坏块不该毁掉整份报告
-  source: web/src/cards/builtins/wave-report.tsx:26-31
-  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:56
+  source: web/src/cards/builtins/track-report.tsx:26-31
+  authoritative_test: web/src/cards/builtins/track-report.test.tsx:56
   owner_slice: features/report/card
   intentional_omission: false
   runtime_layer: features
@@ -3694,15 +3694,15 @@
 
 - id: GATE-CARD-204
   kind: gate
-  family: card-kind-wave-report
+  family: card-kind-track-report
   statement: >
     block payload 的 zod 上限必须与 Rust 侧校验一致（strictObject、
     candles 2..5000、columns 1..32、rows ≤500、字符串 ≤2048）
   why: >
     #960 review r1 —— kernel 接受的 payload 必须正好等于前端接受的，
     否则会出现"存得进去但渲染不出来"
-  source: web/src/cards/builtins/wave-report.tsx:46-80
-  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:92,106
+  source: web/src/cards/builtins/track-report.tsx:46-80
+  authoritative_test: web/src/cards/builtins/track-report.test.tsx:92,106
   owner_slice: features/report/card
   intentional_omission: false
   runtime_layer: features
@@ -3817,7 +3817,7 @@
     （显示原始 kernelKind 与 "UI couldn't parse this card's payload"），
     不得被过滤掉
   why: >
-    之前 currentWave 直接滤掉 null，wave 少一个面板而用户与 devtools 都看不见
+    之前 currentTrack 直接滤掉 null，track 少一个面板而用户与 devtools 都看不见
     schema 漂移
   source: web/src/cards/UnknownCard.tsx:1-44
   authoritative_test: web/src/cards/UnknownCard.test.tsx:25
@@ -3874,7 +3874,7 @@
     Tier A 契约：老前端写的无版本 payload 被接受；新前端对老 kernel 打未来
     版本戳会被写边界校验器拒绝
   source: web/src/cards/builtins/schemaVersions.ts:1-19,46-65
-  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:79
+  authoritative_test: web/src/cards/builtins/track-report.test.tsx:79
   owner_slice: systems/cards/schema-versions
   intentional_omission: false
   runtime_layer: systems
@@ -3972,20 +3972,20 @@
   migration: pending
 
 # ─────────────────────────────────────────────────────────────────────
-# family: wave-fs-viewers
+# family: track-fs-viewers
 # ─────────────────────────────────────────────────────────────────────
 
 - id: INV-CARD-219
   kind: invariant
-  family: wave-fs-viewers
+  family: track-fs-viewers
   statement: >
-    wave fs viewer 注册表是模块级数组，resolve 必须返回第一个 match 命中的
+    track fs viewer 注册表是模块级数组，resolve 必须返回第一个 match 命中的
     viewer（注册顺序即优先级）
   why: >
     重叠匹配时用注册顺序决定优先级，是显式契约（测试 "uses the first registered
     viewer when matches overlap"）；index.ts 的注册顺序因此是承重的
-  source: web/src/wave-fs-viewers/registry.ts:16-26 web/src/wave-fs-viewers/index.ts:13-19
-  authoritative_test: web/src/wave-fs-viewers/registry.test.ts:38
+  source: web/src/track-fs-viewers/registry.ts:16-26 web/src/track-fs-viewers/index.ts:13-19
+  authoritative_test: web/src/track-fs-viewers/registry.test.ts:38
   owner_slice: systems/fs-viewers/registry
   intentional_omission: false
   runtime_layer: systems
@@ -3995,13 +3995,13 @@
 
 - id: INV-CARD-220
   kind: invariant
-  family: wave-fs-viewers
+  family: track-fs-viewers
   statement: >
     viewer 是乐观设计：不做版本号也不做迁移；任何形状不匹配 / 漂移 / 畸形
     payload 都必须从 parse 抛出
   why: >
     抛出是与调用方约定的信号 —— 调用方 catch 后保留原始 CodeMirror JSON 兜底视图
-  source: web/src/wave-fs-viewers/registry.ts:1-5
+  source: web/src/track-fs-viewers/registry.ts:1-5
   authoritative_test: NONE
   owner_slice: systems/fs-viewers/registry
   intentional_omission: true
@@ -4012,13 +4012,13 @@
 
 - id: INV-CARD-221
   kind: invariant
-  family: wave-fs-viewers
+  family: track-fs-viewers
   statement: >
-    useWaveFsViewer 必须在 parse 抛出时返回 null（等价于"没有 viewer"），
+    useTrackFsViewer 必须在 parse 抛出时返回 null（等价于"没有 viewer"），
     不得让异常冒泡
   why: >
-    冒泡会炸掉整个 wave 文件浏览面板，而正确降级是显示原始 JSON
-  source: web/src/wave-fs-viewers/useWaveFsViewer.ts:12-25
+    冒泡会炸掉整个 track 文件浏览面板，而正确降级是显示原始 JSON
+  source: web/src/track-fs-viewers/useTrackFsViewer.ts:12-25
   authoritative_test: NONE
   owner_slice: systems/fs-viewers/registry
   intentional_omission: false
@@ -4029,15 +4029,15 @@
 
 - id: GATE-CARD-222
   kind: gate
-  family: wave-fs-viewers
+  family: track-fs-viewers
   statement: >
-    wave-fs-viewers/schemas.ts 的 zod schema 必须与 api/generated 的类型对齐
-    （枚举钉住生成的联合，card/wave/run/hook-event/runtime 钉住生成形状）
+    track-fs-viewers/schemas.ts 的 zod schema 必须与 api/generated 的类型对齐
+    （枚举钉住生成的联合，card/track/run/hook-event/runtime 钉住生成形状）
   why: >
     viewer 直接读 kernel 落盘的 JSON；schema 与生成类型漂移会让 viewer 静默
     退化成原始 JSON 而无人察觉
-  source: web/src/wave-fs-viewers/schemas.ts:1-215
-  authoritative_test: web/src/wave-fs-viewers/schemas.test.ts:42
+  source: web/src/track-fs-viewers/schemas.ts:1-215
+  authoritative_test: web/src/track-fs-viewers/schemas.test.ts:42
   owner_slice: systems/fs-viewers/schemas
   intentional_omission: false
   runtime_layer: systems
@@ -4047,13 +4047,13 @@
 
 - id: CAP-CARD-223
   kind: capability
-  family: wave-fs-viewers
+  family: track-fs-viewers
   statement: >
-    必须提供 __resetWaveFsViewerRegistryForTest() 清空数组
+    必须提供 __resetTrackFsViewerRegistryForTest() 清空数组
   why: >
     index.ts 在导入时就注册七个内置 viewer，模块级数组跨测试泄漏
-  source: web/src/wave-fs-viewers/registry.ts:28-30
-  authoritative_test: web/src/wave-fs-viewers/registry.test.ts:21
+  source: web/src/track-fs-viewers/registry.ts:28-30
+  authoritative_test: web/src/track-fs-viewers/registry.test.ts:21
   owner_slice: systems/fs-viewers/registry
   intentional_omission: false
   runtime_layer: systems
@@ -4091,7 +4091,7 @@
   kind: invariant
   family: builtins-boot
   statement: >
-    内置注册顺序必须是 terminal → codex → spec → claude → wave-report →
+    内置注册顺序必须是 terminal → codex → spec → claude → track-report →
     file-viewer → iframe → plugin-iframe
   why: >
     spec 与 codex 都可能面对 kernel kind 'codex'；虽然靠 payload 判别符区分
@@ -4110,14 +4110,14 @@
   kind: invariant
   family: builtins-boot
   statement: >
-    excludeReportCards 必须在过滤 spec / wave-report 的同时保留 originalIndex，
-    并对 unknown slot 额外按原始 kernelKind === 'wave-report' 防御性过滤
+    excludeReportCards 必须在过滤 spec / track-report 的同时保留 originalIndex，
+    并对 unknown slot 额外按原始 kernelKind === 'track-report' 防御性过滤
   why: >
     onRemoveCard 按 detail.cards[idx] 寻址，丢了原索引就会删错卡。
     spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
     unknown 分支识别 —— 这是已知且接受的缺口
   source: web/src/cards/excludeReportCards.ts:8-24
-  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/systems/cards/builtins/register.contract.test.ts:126,149,198 fe/web/src/app/router/wave-cards-panel.test.tsx:136,148,157,162,169
+  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/systems/cards/builtins/register.contract.test.ts:126,149,198 fe/web/src/app/router/track-cards-panel.test.tsx:136,148,157,162,169
   owner_slice: systems/cards/builtins
   intentional_omission: true
   runtime_layer: systems
@@ -4129,13 +4129,13 @@
   kind: invariant
   family: builtins-boot
   statement: >
-    WaveFileTree 必须以 key={waveId} 包一层，使换 wave 时内部状态
+    TrackFileTree 必须以 key={trackId} 包一层，使换 track 时内部状态
     （expandedDirs / focusedPath）整体重置
   why: >
-    展开状态是路径相关的；跨 wave 保留会指向不存在的目录
-  source: web/src/cards/wave-file-tree.tsx:22-44
-  authoritative_test: web/src/cards/wave-file-tree.test.tsx:100
-  owner_slice: systems/fs-viewers/wave-file-tree
+    展开状态是路径相关的；跨 track 保留会指向不存在的目录
+  source: web/src/cards/track-file-tree.tsx:22-44
+  authoritative_test: web/src/cards/track-file-tree.test.tsx:100
+  owner_slice: systems/fs-viewers/track-file-tree
   intentional_omission: false
   runtime_layer: systems
   verification_owner: unit
@@ -4146,13 +4146,13 @@
   kind: invariant
   family: builtins-boot
   statement: >
-    WaveFileTree 默认隐藏点开头的条目（每一级目录都过滤），且当被聚焦的行因
+    TrackFileTree 默认隐藏点开头的条目（每一级目录都过滤），且当被聚焦的行因
     隐藏而消失时必须把 tab stop 还给根节点
   why: >
     焦点落在已移除的 DOM 上会让键盘导航失效（tabindex 全 -1，Tab 直接跳出树）
-  source: web/src/cards/wave-file-tree.tsx:12-17,58-70
-  authoritative_test: web/src/cards/wave-file-tree.test.tsx:119,195
-  owner_slice: systems/fs-viewers/wave-file-tree
+  source: web/src/cards/track-file-tree.tsx:12-17,58-70
+  authoritative_test: web/src/cards/track-file-tree.test.tsx:119,195
+  owner_slice: systems/fs-viewers/track-file-tree
   intentional_omission: false
   runtime_layer: systems
   verification_owner: unit

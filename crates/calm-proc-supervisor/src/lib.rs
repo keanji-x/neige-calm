@@ -1615,7 +1615,7 @@ async fn try_spawn_pipe(
     // the daemon to apply to its PTY child. Applying it as the daemon
     // process's own cwd breaks callers that name a directory the daemon
     // will create (or that doesn't need to exist for the supervisor /
-    // daemon themselves) — e.g. `wave_create_sync_daemon`'s
+    // daemon themselves) — e.g. `track_create_sync_daemon`'s
     // `/tmp/issue-250-pr2-test`.
     //
     // The field is retained on the wire so future phases can choose to

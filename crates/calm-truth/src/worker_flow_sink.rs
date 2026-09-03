@@ -53,7 +53,7 @@ impl WorkerFlowItemSink for WorkerFlowSink {
             .worker_flow_item_insert(
                 ctx.card_id.as_deref(),
                 Some(ctx.session_id.as_str()),
-                ctx.wave_id.as_deref(),
+                ctx.track_id.as_deref(),
                 Some(ctx.session_id.as_str()),
                 kind,
                 &payload,
@@ -96,7 +96,7 @@ mod tests {
 
     async fn seed_card(repo: &SqlxRepo) -> String {
         use crate::db::sqlite::session_insert_tx;
-        use crate::model::{NewArea, NewCard, NewWave, RequestTheme};
+        use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
 
         let mut tx = repo.pool().begin().await.unwrap();
         let area = crate::db::sqlite::area_create_tx(
@@ -109,9 +109,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let wave = crate::db::sqlite::wave_create_tx(
+        let track = crate::db::sqlite::track_create_tx(
             &mut tx,
-            NewWave {
+            NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "w".into(),
@@ -123,15 +123,15 @@ mod tests {
                 theme: RequestTheme::default_dark(),
             },
             None,
-            &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-            repo.wave_area_cache(),
+            &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+            repo.track_area_cache(),
         )
         .await
         .unwrap();
         let card = crate::db::sqlite::card_create_tx(
             &mut tx,
             NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: Some(0.0),
@@ -145,7 +145,7 @@ mod tests {
             &mut tx,
             WorkerSession {
                 id: WorkerSessionId::from(SESSION_ID),
-                wave_id: wave.id,
+                track_id: track.id,
                 provider: WorkerProviderKind::Codex,
                 mode: SessionMode::Resumable,
                 contract: WorkerContract::Executor,
@@ -185,7 +185,7 @@ mod tests {
 
         let ctx = FlowRowCtx {
             session_id: WorkerSessionId::from(SESSION_ID),
-            wave_id: Some("wave-x".to_string()),
+            track_id: Some("track-x".to_string()),
             card_id: Some(card_id.clone()),
         };
 
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(rows[0].card_id.as_deref(), Some(card_id.as_str()));
         assert_eq!(rows[0].runtime_id.as_deref(), Some(SESSION_ID));
         assert_eq!(rows[0].worker_session_id.as_deref(), Some(SESSION_ID));
-        assert_eq!(rows[0].wave_id.as_deref(), Some("wave-x"));
+        assert_eq!(rows[0].track_id.as_deref(), Some("track-x"));
 
         // Payload deserializes back to the original item.
         for (row, item) in rows.iter().zip(items.iter()) {

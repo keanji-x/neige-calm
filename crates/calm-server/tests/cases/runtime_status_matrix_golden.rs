@@ -41,7 +41,7 @@ use calm_server::db::sqlite::{
     session_complete_for_terminal_tx, session_complete_tx, session_projection_active_for_card_tx,
     session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
 };
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError, WorkerSessionState,
 };
@@ -69,7 +69,7 @@ async fn fresh_repo() -> SqlxRepo {
         .expect("open in-memory sqlite repo")
 }
 
-async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
+async fn make_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
         .area_create(NewArea {
             name: "exit-matrix".into(),
@@ -78,7 +78,7 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         })
         .await
         .expect("create area");
-    repo.wave_create(NewWave {
+    repo.track_create(NewTrack {
         template_input: None,
         area_id: area.id,
         title: "exit matrix".into(),
@@ -90,7 +90,7 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
-    .expect("create wave")
+    .expect("create track")
 }
 
 fn terminal_runtime_init(card_id: String, status: WorkerSessionState) -> WorkerSessionInit {
@@ -131,14 +131,14 @@ enum WriterPath {
 /// and that a deny is exactly `IllegalStatusTransition { attempted: to }`.
 async fn probe(
     repo: &SqlxRepo,
-    wave: &calm_server::model::Wave,
+    track: &calm_server::model::Track,
     from: &(&str, WorkerSessionState),
     to: &(&str, WorkerSessionState),
     path: WriterPath,
 ) -> bool {
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -242,7 +242,7 @@ async fn runtime_status_matrix_matches_golden() {
     // Behavioral assertion: every cell, black-box through the real write
     // paths against a real fixture row.
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
 
     for from in ALL_STATUSES.iter() {
         for to in ALL_STATUSES.iter() {
@@ -251,7 +251,7 @@ async fn runtime_status_matrix_matches_golden() {
             // `session_set_status_tx` consults the kernel for every target
             // (its categorical Superseded refusal coincides with the
             // matrix's all-deny superseded column).
-            let observed = probe(&repo, &wave, from, to, WriterPath::SetStatus).await;
+            let observed = probe(&repo, &track, from, to, WriterPath::SetStatus).await;
             assert_eq!(
                 observed,
                 expected_allow,
@@ -269,7 +269,7 @@ async fn runtime_status_matrix_matches_golden() {
                 to.1,
                 WorkerSessionState::Failed | WorkerSessionState::Exited
             ) {
-                let observed_complete = probe(&repo, &wave, from, to, WriterPath::Complete).await;
+                let observed_complete = probe(&repo, &track, from, to, WriterPath::Complete).await;
                 assert_eq!(
                     observed_complete, expected_allow,
                     "complete path: {} -> {} must arbitrate like set_status",
@@ -301,7 +301,7 @@ async fn running_codex_fixture() -> (
     calm_server::session_projection_repo::RuntimeId,
 ) {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
 
     let mut tx = repo.pool().begin().await.expect("begin mint tx");
     let (card, term, _token) = card_with_codex_create_tx(
@@ -309,7 +309,7 @@ async fn running_codex_fixture() -> (
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "/workspace".into(),
