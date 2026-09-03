@@ -196,6 +196,36 @@ describe('BoardHost lifecycle', () => {
     board.unmount();
     expect(hostB.resolve('card-a')).toBeNull();
   });
+
+  it('replays hidden visibility when replacing the host', () => {
+    const registry = createCardRegistry();
+    registry.register(entry);
+    const hostA = createCardHost(registry);
+    const hostB = createCardHost(registry);
+    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+    const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0 })];
+    const board = render(
+      <BoardHost host={hostA} items={items} activeCardId="card-a" visible={false} />,
+    );
+
+    expect(hostA.resolve('card-a')?.lifecycle.getSnapshot()).toMatchObject({
+      visible: false,
+      focused: false,
+    });
+
+    board.rerender(
+      <BoardHost host={hostB} items={items} activeCardId="card-a" visible={false} />,
+    );
+
+    expect(hostA.resolve('card-a')).toBeNull();
+    expect(hostB.resolve('card-a')?.lifecycle.getSnapshot()).toMatchObject({
+      visible: false,
+      focused: false,
+    });
+
+    board.unmount();
+    expect(hostB.resolve('card-a')).toBeNull();
+  });
 });
 
 /*
