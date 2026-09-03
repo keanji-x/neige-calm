@@ -138,6 +138,64 @@ struct StubServer {
     _task: tokio::task::JoinHandle<()>,
 }
 
+/// A first-hop MCP endpoint that always redirects to another server.
+///
+/// Kept separate from [`StubServer`]: the security regression needs two
+/// independently observable hosts so "the redirect failed" cannot be mistaken
+/// for "the client followed it without the credential".
+struct RedirectServer {
+    addr: std::net::SocketAddr,
+    requests: Arc<std::sync::atomic::AtomicUsize>,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl RedirectServer {
+    async fn start(location: String) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redirect stub");
+        let addr = listener.local_addr().expect("redirect stub address");
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&requests);
+
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let location = location.clone();
+                let seen = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    if read_request(&mut sock).await.is_none() {
+                        return;
+                    }
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    let response = format!(
+                        "HTTP/1.1 302 Found\r\nlocation: {location}\r\n\
+                         content-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    let _ = sock.write_all(response.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+
+        Self {
+            addr,
+            requests,
+            _task: task,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/mcp", self.addr)
+    }
+
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+}
+
 impl StubServer {
     async fn start(mode: StubMode) -> Self {
         Self::start_gated(mode, None).await
@@ -791,6 +849,65 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
         "upstream inputSchema must be carried over: {:?}",
         listed.input_schema
     );
+}
+
+/// #1286 — a connector credential is scoped to the endpoint written in the
+/// manifest. An upstream 302 must not turn that endpoint into an attacker-
+/// selected second host, especially because ureq preserves custom headers such
+/// as `X-API-Key` while following the redirect.
+///
+/// Mutation witness: remove `.redirects(0)` from `HttpMcpClient::new`; the sink
+/// receives both redirected bring-up requests and this test fails.
+#[tokio::test]
+async fn an_upstream_redirect_cannot_send_a_header_api_key_to_another_host() {
+    let sink = StubServer::start(StubMode::Normal).await;
+    let redirector = RedirectServer::start(sink.url()).await;
+    let b = boot().await;
+    let dir = write_connector(&b.plugins_dir, &redirector.url(), 5_000, 0o600);
+
+    // This is the vulnerable placement: ureq already special-cases
+    // `Authorization`, but not a manifest-selected custom header name.
+    let mut manifest = connector_manifest_json(&redirector.url(), Budgets::uniform(5_000));
+    manifest["mcp_http"]["api_key_in"] = json!("header:X-API-Key");
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+    let err = host
+        .spawn(CONNECTOR_ID)
+        .await
+        .expect_err("a redirecting MCP endpoint must fail closed");
+    assert!(
+        matches!(err, HostError::ConnectorUnavailable { .. }),
+        "got {err:?}"
+    );
+
+    assert!(
+        redirector.request_count() > 0,
+        "the first hop must be contacted or the zero-request sink assertion is vacuous"
+    );
+    assert!(
+        sink.methods().is_empty(),
+        "the redirect target must receive zero requests, got {:?}",
+        sink.methods()
+    );
+
+    let status = host
+        .status(CONNECTOR_ID)
+        .await
+        .expect("a refused redirect must leave an observable runtime status");
+    let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+        panic!("expected Unavailable, got {:?}", status.status);
+    };
+    assert!(
+        !reason.contains(SECRET_VALUE),
+        "last_error leaked the key: {reason}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
 // ===========================================================================
