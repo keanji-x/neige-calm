@@ -1,9 +1,19 @@
-//! #1110 S6 — seed template waves; auto-fork on create.
+//! What `template_id` does on `POST /api/waves`.
 //!
-//! Matching `template_id` lazily seeds three system-cove template waves
-//! (overlay `template_key`) and forks that report when `fork_report_from`
-//! is omitted. Lists still hide templates; detail returns them. Explicit
-//! `fork_report_from` is not overwritten.
+//! A matching `template_id` initializes the new wave's report from a **Rust
+//! constant recipe** (`calm_server::templates`) inside the create transaction:
+//! no hidden wave is minted, no overlay is written, and nothing is read from
+//! the database to find the content. An explicit `fork_report_from` still wins
+//! over `template_id`, and an unknown `template_id` is a 400 decided before any
+//! write.
+//!
+//! #1110 S6 wrote this file against the opposite implementation — three seeded
+//! system-cove template waves, discovered through a `template_key` overlay and
+//! forked on create, hidden from lists but returned by detail. #1300 S2 deleted
+//! all of it (that seeding was the last production writer signing a report as
+//! `EditAuthor::User`). Cases that asserted the seeding are inverted rather
+//! than dropped, so the removal itself stays asserted; each one says so in its
+//! own doc comment.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +32,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::validation::{
     OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-    template_overlay_payload_with_key,
+    OVERLAY_TEMPLATE_SCHEMA_VERSION,
 };
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
@@ -37,7 +47,11 @@ use crate::support::git_helpers::attached_repo_fixture;
 const ISSUE_DEVELOPMENT: &str = "issue-development";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
-const TEMPLATE_KEYS: [&str; 3] = [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION];
+// #1300 — a hand-copied `TEMPLATE_KEYS` array lived here, as the expected
+// roster for the seeding assertions. It is gone with them, and deliberately not
+// replaced: `calm_server::templates::TEMPLATES` is the roster, and a second
+// copy in a test file is the drift #1209 spent a slice removing from
+// production. Cases that need the whole roster iterate the real one.
 
 struct Boot {
     app: axum::Router,
@@ -200,7 +214,8 @@ fn create_body(cove_id: &str, title: &str, extra: Value) -> Value {
 /// digest is stable. Deliberately **not** a hand-maintained list of tables or
 /// of overlay entity kinds: the failure mode these tests exist to catch is "a
 /// read quietly wrote something", and a snapshot that enumerates what it looks
-/// at silently stops covering whatever is added next. `seeded_templates` below
+/// at silently stops covering whatever is added next. `template_key_overlays`
+/// below
 /// is the opposite shape — it only sees `kind == "template"` overlays — which
 /// is why these tests do not reuse it.
 ///
@@ -243,7 +258,16 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     snapshot
 }
 
-async fn seeded_templates(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
+/// Every overlay carrying a `template_key`, as `(key, wave_id)`.
+///
+/// #1300 — before S2 this measured "which of the three hidden template waves
+/// has been seeded", and the tests below asserted it was non-empty. It is kept,
+/// renamed, for the opposite job: nothing in the kernel writes a `template_key`
+/// any more (`template_overlay_payload_with_key` is deleted), so this is how
+/// "creating from a template mints no hidden wave" is *observed* rather than
+/// assumed. A removal with no assertion that it happened is not a removal
+/// anyone can keep.
+async fn template_key_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     let overlays = repo
         .overlays_by_kind("view")
         .await
@@ -283,113 +307,472 @@ fn task_blocks(payload: &WaveReportPayload) -> Vec<&Value> {
         .collect()
 }
 
+/// #1300 S2 — creating from a template mints **no** hidden wave.
+///
+/// ## Why this replaced a test of the opposite property
+///
+/// This case used to be `matching_template_id_seeds_one_wave_per_template_key`:
+/// it asserted the three hidden system-cove template waves *appeared*, that
+/// they stayed out of every wave list, and that a second create did not
+/// duplicate them. All three were properties of the seeding this slice deletes.
+///
+/// Deleting them and stopping there would have left the removal unasserted:
+/// the old seeding could have survived in any form — an unused code path still
+/// minting rows, a later change reintroducing it — and every remaining test
+/// would still be green, because the rest of the suite only ever looks at the
+/// wave the caller asked for. So the case is inverted rather than dropped.
+///
+/// ## Both success paths, because they used to differ
+///
+/// `template_id` alone is the obvious one. `template_id` **plus** an explicit
+/// `fork_report_from` is the one worth naming: before #1300 the route seeded
+/// unconditionally on admission and only *then* checked whether an explicit
+/// fork had already claimed the report source (`waves.rs`, the
+/// `if fork_report_from.is_none()` after `ensure_templates`), so that
+/// combination minted three waves it did not use. Only checking the plain path
+/// would leave that one covered by nothing.
+///
+/// `explicit_fork_report_from_is_not_overwritten` remains the test of *which*
+/// report wins; this is the test of what the losing branch costs.
 #[tokio::test]
-async fn matching_template_id_seeds_one_wave_per_template_key() {
+async fn creating_from_a_template_mints_no_hidden_wave() {
     let boot = boot().await;
-    let (status, body) = post(
+
+    // A fork source in the user's own cove, so the second leg can pass an
+    // explicit `fork_report_from` alongside a `template_id`.
+    let (status, source) = post(
         boot.app.clone(),
         "/api/waves",
-        create_body(
-            &boot.cove_id,
-            "first-issue-dev",
-            json!({ "template_id": ISSUE_DEVELOPMENT }),
-        ),
+        create_body(&boot.cove_id, "fork-source", json!({})),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(status, StatusCode::CREATED, "source={source}");
+    let source_id = source["id"].as_str().expect("source wave id").to_string();
 
-    let first = seeded_templates(&boot.repo).await;
-    let first_keys: Vec<&str> = first.iter().map(|(key, _)| key.as_str()).collect();
-    let mut expected = TEMPLATE_KEYS.to_vec();
-    expected.sort_unstable();
-    assert_eq!(first_keys, expected, "seeded keys={first:?}");
-    assert_eq!(first.len(), TEMPLATE_KEYS.len());
-    for (key, wave_id) in &first {
-        let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
-        assert_eq!(status, StatusCode::OK, "key={key} body={detail}");
-        assert_eq!(detail["wave"]["id"], *wave_id);
+    for (leg, extra) in [
+        ("template only", json!({ "template_id": ISSUE_DEVELOPMENT })),
+        (
+            "template plus an explicit fork",
+            json!({ "template_id": ISSUE_DEVELOPMENT, "fork_report_from": source_id }),
+        ),
+    ] {
+        let waves_before = boot
+            .repo
+            .waves_window(None, None, None)
+            .await
+            .unwrap()
+            .len();
+
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(&boot.cove_id, leg, extra),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{leg}: body={body}");
+        let created = body["id"].as_str().expect("wave id").to_string();
+
+        // Exactly one new wave, and it is the one the caller asked for. A
+        // count alone would pass if the create minted one hidden wave and
+        // failed to mint the requested one.
+        let after = boot.repo.waves_window(None, None, None).await.unwrap();
         assert_eq!(
-            spec_harness_ops_for_wave(&boot.repo, wave_id).await,
-            0,
-            "template `{key}` must skip spec-harness-start"
+            after.len(),
+            waves_before + 1,
+            "{leg}: created {} waves, not 1",
+            after.len() - waves_before
         );
-    }
-
-    let (status, listed) = get(
-        boot.app.clone(),
-        &format!("/api/coves/{}/waves", boot.cove_id),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "body={listed}");
-    let user_ids: Vec<&str> = listed
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|wave| wave["id"].as_str().unwrap())
-        .collect();
-    assert!(user_ids.contains(&body["id"].as_str().unwrap()));
-    for (_, wave_id) in &first {
         assert!(
-            !user_ids.contains(&wave_id.as_str()),
-            "template {wave_id} leaked into user cove list; ids={user_ids:?}"
+            after.iter().any(|wave| wave.id.as_str() == created),
+            "{leg}: the requested wave is not among them"
+        );
+
+        assert!(
+            template_key_overlays(&boot.repo).await.is_empty(),
+            "{leg}: a `template_key` overlay was minted; the kernel has no writer for one"
+        );
+        assert!(
+            boot.repo.cove_get_system().await.unwrap().is_none(),
+            "{leg}: creating from a template must not mint the system cove either"
         );
     }
+}
 
-    let system_cove_id = boot
-        .repo
-        .cove_get_system()
-        .await
-        .unwrap()
-        .expect("system cove")
-        .id
+/// Two waves from one template are independent documents with the same content.
+///
+/// The old suite got this for free from the seeding: both forked the same
+/// hidden wave, so "the same content" was true by construction and "independent"
+/// was the interesting half. With the hidden wave gone both halves are claims
+/// about the new path, and neither is implied by the other — a shared mutable
+/// snapshot would satisfy the content check, and two independently *wrong*
+/// documents would satisfy the independence check.
+///
+/// ## Why the write leg exists
+///
+/// Reading both documents once and finding them equal is not independence; it
+/// is the *identical* half stated twice. The escape construction: make a report
+/// write fan out to every wave carrying the same `template_id` (one extra
+/// `UPDATE ... WHERE template_id = ...` after `card_update_with_crdt_tx` in
+/// `wave_report::persist_report`). The two documents are then genuinely one
+/// document behind two ids, and a create-time-only comparison stays green. So
+/// this case edits one wave and re-reads the other; independence is only
+/// asserted about a state the two could actually disagree in.
+///
+/// **Both `summary` and `body` are edited.** An earlier cut moved only the
+/// summary and passed `first.body` back byte-for-byte, which left a narrower
+/// escape open: a fan-out guarded on `incoming.body != current.body` — i.e.
+/// one that copies the body across same-`template_id` waves only when it
+/// actually changed — never entered its own branch, so both body assertions
+/// held at their original values and the case stayed green while a real user
+/// edit would clobber the other wave's document.
+///
+/// ## Which fan-out shapes this case can see, and which it cannot
+///
+/// Every leg goes through the same door — `persist_report` — and what varies
+/// between them is the *shape of the edit*, because a conditional fan-out only
+/// betrays itself on an edit that enters its branch. Four legs, each chosen for
+/// one branch predicate:
+///
+/// 1. **Append a prose paragraph.** The body grows and gains text that was not
+///    there before. Catches a fan-out with no guard at all, and one keyed on
+///    "new text appeared". It is an append rather than a rewrite because
+///    `guard_non_prose_stomp` refuses a prose-channel write that modifies or
+///    deletes a non-prose block and the recipe body is almost entirely `task`
+///    fences: appending after the last fence carries every fence through
+///    verbatim, so the write fails on independence if it fails at all — never
+///    on the guard, whose repair would be to weaken the case.
+/// 2. **Rewrite that paragraph in place at exactly the same byte length.**
+///    Leg one never enters a branch guarded on `next.body.len() ==
+///    current.body.len()`; this one does.
+/// 3. **Edit a block the template itself minted** — the recipe's own intro
+///    prose (`SMALL_CHANGE_INTRO`), rewritten in place. Legs one and two only
+///    ever touch a paragraph leg one introduced, so a fan-out keyed on the
+///    *block identity* of the edited block — firing only for block ids the
+///    recipe minted — would never run. This block is prose, so the guard does
+///    execute here and does check every `task` fence: it permits the edit
+///    because the fences travel through byte-identical, not because it is
+///    bypassed.
+/// 4. **Delete that paragraph, shortening the body.** Legs one to three leave
+///    the body longer, equal, and equal, so an implementation that fans out
+///    only when `body_after.len() < body_before.len()` passes all three. This
+///    leg is the one that enters that branch. Deleting the appended prose is
+///    the only shrinking edit available that leaves every `task` fence intact.
+///
+/// So the covered set is: no guard, "text appeared", "length unchanged",
+/// "template-minted block id", "length shrank". What is **not** covered, and
+/// these are real gaps rather than a rounding error:
+///
+/// * a fan-out that fires only on writes arriving through a *different* door
+///   than `persist_report` — this case drives the document leg only;
+///   `report_write_characterization` is where the per-door behaviour lives;
+/// * a fan-out keyed on a predicate no leg happens to satisfy — an edit that
+///   touches a `task` fence (which this case deliberately never does, since
+///   the guard would reject it on the prose path), a summary-only write, a
+///   specific byte pattern, the Nth write, or the wave's age. Four legs are
+///   four branch predicates, not a proof that the branch space is exhausted.
+#[tokio::test]
+async fn two_waves_from_one_template_are_independent_and_identical() {
+    let boot = boot().await;
+    let mut reports = Vec::new();
+    for leg in ["first", "second"] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(&boot.cove_id, leg, json!({ "template_id": SMALL_CHANGE })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{leg}: body={body}");
+        let wave_id = body["id"].as_str().expect("wave id").to_string();
+        let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+        reports.push((wave_id, report_card_payload(&detail)));
+    }
+    let [(first_id, first), (second_id, second)] = <[_; 2]>::try_from(reports).ok().unwrap();
+
+    assert_ne!(first_id, second_id, "two creates must be two waves");
+    assert_eq!(first.summary, second.summary);
+    assert_eq!(first.body, second.body);
+
+    // ---- independence: edit one, re-read the other ----
+    const EDITED: &str = "first wave's own summary";
+    const APPENDED: &str = "A paragraph only the first wave's author wrote.";
+    assert_ne!(
+        first.summary, EDITED,
+        "the edit must change something, or the re-read below asserts nothing"
+    );
+    assert!(
+        !first.body.contains(APPENDED),
+        "the body edit must change something, or the re-read below asserts nothing"
+    );
+    // Appended after the last task fence: every non-prose block travels
+    // through byte-identical, which is all `guard_non_prose_stomp` asks.
+    let edited_body = format!("{}\n\n{APPENDED}\n", first.body.trim_end());
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, edited_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("edit the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_after = report_card_payload(&first_detail);
+    assert_eq!(
+        first_after.summary, EDITED,
+        "the summary edit did not land, so the re-read below proves nothing"
+    );
+    assert!(
+        first_after.body.contains(APPENDED),
+        "the body edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_after.body
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_after = report_card_payload(&second_detail);
+    assert_eq!(
+        second_after.summary, second.summary,
+        "editing one template-created wave changed the other's summary: the two \
+         waves share a document"
+    );
+    assert_eq!(
+        second_after.body, second.body,
+        "editing one template-created wave changed the other's body: the two \
+         waves share a document"
+    );
+
+    // ---- second edit: same length, no new text ----
+    //
+    // Everything above is an append: the body only ever grew and only ever
+    // gained a paragraph. A fan-out guarded on `next.body.len() ==
+    // current.body.len()` therefore never enters its own branch, and the
+    // assertions above hold while a real same-length user edit clobbers the
+    // other wave. This leg rewrites the paragraph appended above in place,
+    // byte-for-byte the same size, so that branch is the one taken.
+    const REPLACED: &str = "A paragraph only the first wave's author typed.";
+    assert_eq!(
+        APPENDED.len(),
+        REPLACED.len(),
+        "this leg is the equal-length one; if these two ever differ it silently \
+         degrades into a second append"
+    );
+    let same_len_body = first_after.body.replace(APPENDED, REPLACED);
+    assert_eq!(
+        same_len_body.len(),
+        first_after.body.len(),
+        "the replacement changed the document length, so this leg no longer \
+         exercises the equal-length branch"
+    );
+    assert_ne!(
+        same_len_body, first_after.body,
+        "the replacement must change something, or the re-read below asserts nothing"
+    );
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report, again");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, same_len_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("same-length edit to the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_replaced = report_card_payload(&first_detail);
+    assert!(
+        first_replaced.body.contains(REPLACED),
+        "the same-length edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_replaced.body
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_replaced = report_card_payload(&second_detail);
+    assert!(
+        !second_replaced.body.contains(REPLACED),
+        "a same-length edit to one template-created wave reached the other's \
+         body: the two waves share a document; body={}",
+        second_replaced.body
+    );
+    assert_eq!(
+        second_replaced.body, second.body,
+        "a same-length edit to one template-created wave changed the other's \
+         body: the two waves share a document"
+    );
+    assert_eq!(
+        second_replaced.summary, second.summary,
+        "a same-length edit to one template-created wave changed the other's \
+         summary: the two waves share a document"
+    );
+
+    // ---- third edit: a block the template itself minted ----
+    //
+    // Both edits so far touch a paragraph leg one introduced, so a fan-out
+    // keyed on "this block id came from the recipe" would never fire. This one
+    // rewrites the recipe's own intro prose (`SMALL_CHANGE_INTRO`) in place.
+    const RECIPE_PROSE: &str = "Short inspect";
+    const RECIPE_PROSE_EDITED: &str = "Quick inspect";
+    assert!(
+        first_replaced.body.contains(RECIPE_PROSE),
+        "the recipe's intro prose is not in the body, so this leg edits nothing; \
+         body={}",
+        first_replaced.body
+    );
+    let recipe_edited_body = first_replaced
+        .body
+        .replace(RECIPE_PROSE, RECIPE_PROSE_EDITED);
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report, third time");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, recipe_edited_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("edit a template-minted prose block of the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_recipe_edited = report_card_payload(&first_detail);
+    assert!(
+        first_recipe_edited.body.contains(RECIPE_PROSE_EDITED),
+        "the recipe-prose edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_recipe_edited.body
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_recipe_edited = report_card_payload(&second_detail);
+    assert_eq!(
+        second_recipe_edited.body, second.body,
+        "editing a template-minted block of one wave changed the other's body: \
+         the two waves share a document"
+    );
+
+    // ---- fourth edit: the body gets shorter ----
+    //
+    // Legs one to three make the body grow, stay the same length, and stay the
+    // same length again. So a fan-out guarded on `next.body.len() <
+    // current.body.len()` — an ordinary "the user deleted something, propagate
+    // it" shape — never enters its own branch, and all three legs pass while a
+    // real deleting edit clobbers the other wave. This leg deletes the prose
+    // paragraph legs one and two added, which is the only shrinking edit
+    // available that touches nothing but prose: every `task` fence still
+    // travels through verbatim, so `guard_non_prose_stomp` permits it.
+    let appended_suffix = format!("\n\n{REPLACED}\n");
+    let shortened_body = first_recipe_edited
+        .body
+        .strip_suffix(&appended_suffix)
+        .unwrap_or_else(|| {
+            panic!(
+                "the appended paragraph is not the body's suffix, so this leg \
+                 would not be the shrinking one; body={}",
+                first_recipe_edited.body
+            )
+        })
         .to_string();
-    let (status, system_list) = get(
-        boot.app.clone(),
-        &format!("/api/coves/{system_cove_id}/waves"),
+    assert!(
+        shortened_body.len() < first_recipe_edited.body.len(),
+        "this leg is the shrinking one; if it stops shrinking it silently \
+         degrades into a repeat of leg three"
+    );
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report, fourth time");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, shortened_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "body={system_list}");
-    let system_ids: Vec<&str> = system_list
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|wave| wave["id"].as_str().unwrap())
-        .collect();
-    for (_, wave_id) in &first {
-        assert!(
-            !system_ids.contains(&wave_id.as_str()),
-            "template {wave_id} leaked into system cove list; ids={system_ids:?}"
-        );
-    }
+    .await
+    .expect("delete a prose paragraph from the first wave's report");
 
-    let (status, global) = get(boot.app.clone(), "/api/waves").await;
-    assert_eq!(status, StatusCode::OK, "body={global}");
-    let global_ids: Vec<&str> = global
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|wave| wave["id"].as_str().unwrap())
-        .collect();
-    for (_, wave_id) in &first {
-        assert!(
-            !global_ids.contains(&wave_id.as_str()),
-            "template {wave_id} leaked into GET /api/waves; ids={global_ids:?}"
-        );
-    }
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_shortened = report_card_payload(&first_detail);
+    assert!(
+        !first_shortened.body.contains(REPLACED),
+        "the deleting edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_shortened.body
+    );
+    assert!(
+        first_shortened.body.len() < first_recipe_edited.body.len(),
+        "the deleting edit did not shorten the document, so this leg no longer \
+         exercises the shrink branch; body={}",
+        first_shortened.body
+    );
 
-    let (status, _) = post(
-        boot.app.clone(),
-        "/api/waves",
-        create_body(
-            &boot.cove_id,
-            "second-issue-dev",
-            json!({ "template_id": SMALL_CHANGE }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let second = seeded_templates(&boot.repo).await;
-    assert_eq!(first, second, "second matching create must not duplicate");
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_shortened = report_card_payload(&second_detail);
+    assert_eq!(
+        second_shortened.body, second.body,
+        "a deleting edit to one template-created wave changed the other's body: \
+         the two waves share a document"
+    );
+    assert_eq!(
+        second_shortened.summary, second.summary,
+        "a deleting edit to one template-created wave changed the other's \
+         summary: the two waves share a document"
+    );
 }
 
 #[tokio::test]
@@ -555,15 +938,45 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
     }
 }
 
+/// A forged `template_key` in the user's own cove cannot influence what
+/// `template_id` produces.
+///
+/// ## What this used to test, and why the property had to be restated
+///
+/// Before #1300 the create path resolved `template_id` by *searching the
+/// database* for a system-cove wave carrying a matching `template_key` overlay.
+/// That search is an attack surface: this case forges the overlay on a wave in
+/// the user's own cove, stamps a recognizable plan into its report, and
+/// requires the lookup to reject it on the cove check.
+///
+/// #1300 deletes the lookup — a template is a Rust constant, so there is no
+/// query to poison and no cove check to get wrong. Left as written the case
+/// would be **vacuously green**: the forged wave cannot lose a race that no
+/// longer happens.
+///
+/// It is restated rather than deleted, because the property is not "the cove
+/// check works", it is *where the content comes from*. So the same forgery is
+/// set up, and the assertion becomes: the created report is the recipe, byte
+/// for byte, and carries nothing from the forged wave. That stays falsifiable —
+/// reintroducing any database lookup for template content turns it red — while
+/// the old form would have stopped being able to fail.
+///
+/// (The last assertion of the old version was `kernel seed must still mint a
+/// system-cove issue-development`. That one did not go vacuous, it went red,
+/// which is how this case surfaced: it was two properties in one test, and only
+/// one of them was about the attack.)
 #[tokio::test]
-async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
+async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     let boot = boot().await;
+
+    // The forgery, exactly as before: an `as_template` wave in the *user's*
+    // cove, wearing the `issue-development` key, holding recognizable content.
     let (status, stolen) = post(
         boot.app.clone(),
         "/api/waves",
         create_body(
             &boot.cove_id,
-            "stolen-template",
+            "forged-template",
             json!({ "as_template": true }),
         ),
     )
@@ -598,14 +1011,21 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
             entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
             entity_id: stolen_id.clone(),
             kind: OVERLAY_TEMPLATE_KIND.into(),
-            payload: template_overlay_payload_with_key(ISSUE_DEVELOPMENT),
+            // Spelled out rather than built by a helper: #1300 deleted
+            // `template_overlay_payload_with_key` along with the kernel's last
+            // writer of `template_key`, and reviving it as a test-only
+            // constructor would put the forged shape back in production code.
+            payload: json!({
+                "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION,
+                "template_key": ISSUE_DEVELOPMENT,
+            }),
         })
         .await
         .expect("plant stolen template_key");
     let (stolen_wave, report_card, current) =
         resolve_report_for_wave(boot.repo.as_ref(), &stolen_id)
             .await
-            .expect("stolen report");
+            .expect("forged report");
     let if_doc_rev = current.doc_rev;
     persist_report(
         boot.repo.as_ref(),
@@ -616,24 +1036,21 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
         stolen_wave,
         report_card,
         current,
-        WaveReportPayload::new(
-            "stolen user-cove template",
-            "# Stolen\n\nstolen-user-cove-plan\n",
-        ),
+        WaveReportPayload::new("forged template", "# Forged\n\nforged-user-cove-plan\n"),
         if_doc_rev,
         None,
         None,
         false,
     )
     .await
-    .expect("stamp stolen report");
+    .expect("stamp forged report");
 
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
         create_body(
             &boot.cove_id,
-            "after-stolen-key",
+            "after-forged-key",
             json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
@@ -643,22 +1060,15 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
     let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     let payload = report_card_payload(&detail);
-    assert!(
-        payload.body.contains("inspect-issue"),
-        "auto-fork must still use the kernel plan; body={}",
-        payload.body
-    );
-    assert!(
-        !payload.body.contains("stolen-user-cove-plan"),
-        "user-cove stolen template_key must not hijack auto-fork; body={}",
-        payload.body
-    );
-    let templates = seeded_templates(&boot.repo).await;
-    assert!(
-        templates
-            .iter()
-            .any(|(key, id)| key == ISSUE_DEVELOPMENT && id != &stolen_id),
-        "kernel seed must still mint a system-cove issue-development; templates={templates:?}"
+
+    // The positive form, not `!contains("forged-user-cove-plan")`: an
+    // implementation that produced an *empty* report would satisfy the negative
+    // and fail this.
+    let (summary, expected_body, _) = instantiated_recipe(ISSUE_DEVELOPMENT);
+    assert_eq!(payload.summary, summary);
+    assert_eq!(
+        payload.body, expected_body,
+        "a forged template_key must not reach the created report"
     );
 }
 
@@ -986,72 +1396,6 @@ async fn create_accepts_exactly_the_listed_templates() {
     }
 }
 
-/// #1209 test #10 (INV-1209-SEED) — reading the template list must not
-/// materialize seed state.
-///
-/// Seeding is asymmetric on purpose: a *write* that names a template seeds the
-/// three template waves; a *read* never does. Opening the New wave dialog would
-/// otherwise mint a system cove, three waves and three reports, irreversibly,
-/// and make "this database has never used a template" unobservable.
-///
-/// Both start states matter. Against an unseeded database only, a change that
-/// writes solely on the already-seeded branch stays green; against a seeded one
-/// only, a change that seeds stays green.
-///
-/// Only `GET /api/wave-templates` is exercised because it is the only
-/// wave-template read route on this branch — `GET /api/wave-templates/{id}`
-/// arrives with #1230 and this case must grow a leg for it at the merge.
-///
-/// Mutations that must turn this red: calling `ensure_templates` (or
-/// `ensure_system_cove`) from the GET; rewriting a seeded template's report
-/// summary in the GET; minting a wave with no overlay; writing only when
-/// already seeded; appending a single `log_pure_event` pure event. The last
-/// three are green against a `kind == "template"` overlay count, which is why
-/// this uses a whole-database digest instead.
-#[tokio::test]
-async fn listing_wave_templates_does_not_materialize_seed_state() {
-    // State A: nothing seeded.
-    let boot = boot().await;
-    assert!(
-        seeded_templates(&boot.repo).await.is_empty(),
-        "state A must start unseeded"
-    );
-    let before = db_snapshot(&boot.repo).await;
-    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(
-        db_snapshot(&boot.repo).await,
-        before,
-        "listing templates wrote to an unseeded database"
-    );
-
-    // State B: seeded, with readable reports.
-    let (status, body) = post(
-        boot.app.clone(),
-        "/api/waves",
-        create_body(
-            &boot.cove_id,
-            "seed-for-inv-1209",
-            json!({ "template_id": SMALL_CHANGE }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(
-        seeded_templates(&boot.repo).await.len(),
-        TEMPLATE_KEYS.len(),
-        "state B must start seeded"
-    );
-    let before = db_snapshot(&boot.repo).await;
-    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(
-        db_snapshot(&boot.repo).await,
-        before,
-        "listing templates wrote to an already-seeded database"
-    );
-}
-
 /// #1209 test #12 — a whitespace-only `template_id` is rejected **by
 /// admission**.
 ///
@@ -1125,7 +1469,7 @@ async fn assert_pre_transaction_4xx_does_not_seed(
     let (status, body) = post(boot.app.clone(), "/api/waves", body_json).await;
     assert_eq!(status, expected, "{name}: body={body}");
     assert!(
-        seeded_templates(&boot.repo).await.is_empty(),
+        template_key_overlays(&boot.repo).await.is_empty(),
         "{name}: a pre-transaction 4xx seeded template waves"
     );
     assert_eq!(
@@ -1217,34 +1561,85 @@ fn task_keys(template: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// Acceptance 2 — a read of the picker must not mint the template waves.
+/// A read of the picker returns the whole constant roster and writes nothing.
 ///
-/// The count assertion is the whole test: returning the right constants proves
-/// nothing on its own, because the seeding path would also return the right
-/// values. What must hold is that the read left the database as it found it.
+/// The snapshot comparison is the load-bearing half: returning the right
+/// constants proves nothing on its own, because the deleted seeding path would
+/// also have returned the right values. What must hold is that the read left
+/// the database as it found it.
+///
+/// The roster half used to be one title and one task key of `small-change`,
+/// which the name over-sold: a response hard-coded to "the correct
+/// `small-change`, and nothing else" satisfied it. It now asserts the exact set
+/// of ids the roster declares, in the roster's order, and that no fourth entry
+/// rode along. *Which* recipe each id names is
+/// `each_template_key_names_its_own_recipe`'s job, not this one's — this case
+/// owns "the listing is the roster and the read is read-only".
+///
+/// #1300 — this absorbed `listing_wave_templates_does_not_materialize_seed_state`,
+/// which asserted the same "a GET writes nothing" property across an unseeded
+/// and a seeded database. Its second state cannot be built any more (there is
+/// nothing to seed), so it went red rather than vacuous; the two-state shape
+/// survives here as "empty" and "after a create", which is the distinction that
+/// still exists.
 #[tokio::test]
-async fn listing_templates_returns_constants_without_seeding_anything() {
+async fn listing_templates_returns_constants_and_writes_nothing() {
     let boot = boot().await;
-    assert!(
-        seeded_templates(&boot.repo).await.is_empty(),
-        "precondition: nothing seeded before the read"
-    );
 
-    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(
-        listed_template(&body, SMALL_CHANGE)["title"],
-        "Small change"
-    );
-    assert_eq!(
-        task_keys(listed_template(&body, SMALL_CHANGE))[0],
-        "inspect"
-    );
+    // Two states, because a read can only be shown not to write by comparing
+    // the database around it, and "before anything exists" is the easy half.
+    // The second leg runs after a real create, so the read is exercised against
+    // a populated database — which is where the deleted lazy seed used to fire.
+    for leg in ["empty database", "after a create"] {
+        let before = db_snapshot(&boot.repo).await;
+        let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
+        assert_eq!(status, StatusCode::OK, "{leg}: body={body}");
+        let listed_ids: Vec<&str> = body
+            .as_array()
+            .expect("array body")
+            .iter()
+            .map(|entry| entry["id"].as_str().expect("template id"))
+            .collect();
+        let roster_ids: Vec<&str> = calm_server::templates::TEMPLATES
+            .iter()
+            .map(|template| template.key)
+            .collect();
+        assert_eq!(
+            listed_ids, roster_ids,
+            "{leg}: the listing is the roster, in the roster's order"
+        );
+        // Every entry is a usable picker row. A roster id that came back with
+        // no title or no tasks is drift the id set alone cannot see.
+        for entry in body.as_array().expect("array body") {
+            assert!(
+                entry["title"].as_str().is_some_and(|t| !t.is_empty()),
+                "{leg}: {entry} has no title"
+            );
+            assert!(
+                !task_keys(entry).is_empty(),
+                "{leg}: {entry} advertises no tasks"
+            );
+        }
+        assert_eq!(
+            db_snapshot(&boot.repo).await,
+            before,
+            "{leg}: listing templates wrote to the database"
+        );
 
-    assert!(
-        seeded_templates(&boot.repo).await.is_empty(),
-        "a GET must never trigger the lazy seed"
-    );
+        if leg == "empty database" {
+            let (status, created) = post(
+                boot.app.clone(),
+                "/api/waves",
+                create_body(
+                    &boot.cove_id,
+                    "populate",
+                    json!({ "template_id": SMALL_CHANGE }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "body={created}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1370,108 +1765,282 @@ async fn both_spellings_together_are_an_unknown_field() {
     .await;
 }
 
-/// #1300 S1 — the picker still answers from the **seeded report**, not from the
-/// constants.
+// ---------------------------------------------------------------------------
+// #1300 S2 — what "create a wave from a template" produces, derived not
+// transcribed.
+//
+// This is the characterization test the seeding removal is measured against.
+// It is written and verified green **against the old seeding path first**, and
+// must stay green after the implementation is replaced. That order is the whole
+// of the equivalence evidence: a test written after the switch can only say the
+// new code agrees with itself.
+// ---------------------------------------------------------------------------
+
+/// The report a template must instantiate to, derived from the recipe.
 ///
-/// ## Why this test exists at all, given S2 deletes what it pins
+/// ## Why derived and not written out
 ///
-/// S1's whole slicing argument is that the read authority must not move in the
-/// same change as the write side. Collapsing `current_definition` onto the
-/// constants here would leave a releasable state where the picker answers from
-/// one source and `POST /api/waves` forks from another — the picker showing a
-/// plan create does not produce, both sides internally consistent, no test red.
+/// Spelling the expected task payloads into this file would make the test a
+/// **change detector**: rewording one template goal would turn it red with no
+/// defect, and the fix would be to paste the new text — which teaches everyone
+/// that red here means "go update the expectation". Deriving keeps the two
+/// sides moving together for a content edit and apart for an implementation
+/// drift, which is the only difference this test exists to see.
 ///
-/// That argument was, until this case, **unasserted**. #1230's coverage of the
-/// seeded-report read lived in the editor tests, and S1 deleted those with the
-/// editor: afterwards `current_definition` could have been collapsed to the
-/// constants and the entire suite would have stayed green. A slicing decision
-/// nothing can falsify is a comment, not a constraint.
+/// It is still an oracle and not a tautology, because the two sides travel
+/// different roads: this walks the recipe's slices in the test process, while
+/// the value it is compared against came back over HTTP from a wave the server
+/// created.
 ///
-/// So the property is pinned through a path S1 does not touch: the ordinary
-/// wave-report write endpoint, aimed at the seeded template wave. If the read
-/// authority moves, this goes red.
+/// ## The one normalization, stated once
 ///
-/// **S2 deletes this case on purpose**, together with the seeded wave it reads.
-/// That is the visible, reviewable moment the authority changes — which is the
-/// opposite of it changing silently between two slices.
+/// A template's task blocks are instantiated as `declared_by: "spec"` and
+/// `ready: false` — nothing in a recipe was decided for *this* wave. Everything
+/// else about a block is carried verbatim.
+///
+/// ## Why every slice, not just the task fences
+///
+/// Concatenating only the normalized task fences would silently drop the
+/// maintenance-contract prefix (#1185 §1.5 B), the `# Plan` intro, and the
+/// newline-only prose slices that `report_from_tasks` leaves between fences —
+/// and an implementation that lost all of them would still pass. Non-task
+/// slices are therefore carried through byte for byte.
+fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
+    use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
+
+    let recipe = calm_server::templates::template_report(key)
+        .unwrap_or_else(|| panic!("`{key}` is not a known template"));
+    let mut body = String::new();
+    let mut tasks = Vec::new();
+    for slice in split_body(&recipe.body) {
+        match parse_fence(&slice.raw) {
+            Some(fence) if fence.kind == KIND_TASK => {
+                let mut payload = fence.payload;
+                payload["declared_by"] = json!("spec");
+                payload["ready"] = json!(false);
+                body.push_str(&render_fence(KIND_TASK, &payload));
+                tasks.push(payload);
+            }
+            _ => body.push_str(&slice.raw),
+        }
+    }
+    assert!(
+        !tasks.is_empty(),
+        "`{key}`: the recipe parsed to no task fences, so this test would assert nothing"
+    );
+    (recipe.summary, body, tasks)
+}
+
+/// Creating a wave from each template produces exactly that template's recipe,
+/// normalized once.
+///
+/// ## What is deliberately NOT asserted, and why
+///
+/// **`blocks[].id` and `blocks[].rev`.** Both are per-wave bookkeeping, and
+/// neither is a cross-implementation contract. `rev` in particular differs by
+/// construction between the two implementations this test spans: the seeding
+/// path writes the recipe *over* the default report skeleton, so the blocks the
+/// aligner matches come out at `rev: 2`, while a wave initialized straight from
+/// the recipe starts every block at `rev: 1`. A fresh wave whose blocks all
+/// start at 1 is self-consistent, and the readers of `rev` — the block-level
+/// CAS anchors used by the MCP and REST block writers — are all within one
+/// wave. Asserting equality here would make this test red at the moment of the
+/// switch for a difference nobody can observe, and the repair would be to
+/// weaken it, with the reason nowhere on record.
+///
+/// **The CRDT bytes**, for the same reason one layer down.
+///
+/// ## What this cannot see
+///
+/// The fork implementation also rewrites `neige://wave/...` links, normalizes
+/// tombstones, and strips `released_by_user`. None of the three built-in
+/// recipes contains any of that vocabulary, so those branches take no input
+/// here and this test says nothing about them. That is a fact about today's
+/// three recipes, not about templates: a recipe that grew a tombstone would
+/// need its own case.
 #[tokio::test]
-async fn the_picker_answers_from_the_seeded_report_not_the_constants() {
-    const EDITED_TITLE: &str = "Edited seeded title";
+async fn creating_from_a_template_instantiates_its_recipe() {
     let boot = boot().await;
+    for template in &calm_server::templates::TEMPLATES {
+        let key = template.key;
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(&boot.cove_id, key, json!({ "template_id": key })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
+        let wave_id = body["id"].as_str().expect("wave id");
 
-    // Seed by creating from the template — the only remaining way in.
-    let (status, created) = post(
-        boot.app.clone(),
-        "/api/waves",
-        create_body(
-            &boot.cove_id,
-            "seed-it",
-            json!({ "template_id": SMALL_CHANGE }),
+        let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+        assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
+        let payload = report_card_payload(&detail);
+
+        let (summary, expected_body, expected_tasks) = instantiated_recipe(key);
+        assert_eq!(payload.summary, summary, "{key}: report summary");
+
+        // Ordered task payloads FIRST, then the flat body. The body compare
+        // subsumes this one — every difference a fence can carry shows up in
+        // it — but it reports as a single multi-kilobyte string diff, and
+        // these recipes are kilobytes of prose contract. Asserting the parsed
+        // payloads first means the common failure (a field of one task) names
+        // that task and that field. Measured, not assumed: dropping the
+        // `declared_by` normalization printed the whole document twice until
+        // this order was fixed.
+        let actual_tasks: Vec<Value> = task_blocks(&payload).into_iter().cloned().collect();
+        assert_eq!(actual_tasks, expected_tasks, "{key}: task block payloads");
+
+        // The body still has to be compared: the payload list above says
+        // nothing about the contract prefix, the intro, the order the fences
+        // appear in, or the whitespace between them.
+        assert_eq!(payload.body, expected_body, "{key}: report body");
+
+        // Whole-payload equality above already covers these; they are spelled
+        // out because they are the three the removal could plausibly get wrong,
+        // and a named assertion says which one broke.
+        for task in &actual_tasks {
+            assert_eq!(task["declared_by"], "spec", "{key}: {task}");
+            assert_eq!(task["ready"], false, "{key}: {task}");
+            assert!(
+                task.get("released_by_user").is_none(),
+                "{key}: an instantiated task must carry no user release; {task}"
+            );
+        }
+    }
+}
+
+/// The hand-written half: **which** recipe each key names.
+///
+/// ## Why a derived oracle needs this, stated as what each side can and cannot
+/// see
+///
+/// `creating_from_a_template_instantiates_its_recipe` derives its expectation
+/// from `templates::template_report`, which is the production `key → recipe`
+/// match itself. That is the right call for *content* — it is what stops the
+/// case being a change detector over kilobytes of prose — but it means the two
+/// sides of that comparison share the mapping, so a class of drift moves both
+/// and stays green:
+///
+///   * swapping two arms of the `template_report` match (`SMALL_CHANGE` returns
+///     `investigation_report()`);
+///   * a recipe rewritten wholesale into a different workflow;
+///   * a `TEMPLATES` entry whose `title` no longer describes its `key`.
+///
+/// This case anchors part of that class. It pins, per key, only the two facts
+/// that identify *which* recipe answered:
+///
+///   * the roster title, and
+///   * the ordered task keys.
+///
+/// So it catches a swapped match arm, a retitled roster entry, and a renamed
+/// or reordered task. It does **not** catch the middle bullet in general: keep
+/// `inspect` / `implement` / `verify` as the keys and the title `Small change`
+/// while replacing every goal, acceptance criterion, `context` and dependency
+/// meaning, and `small-change` is a different workflow that both the derived
+/// oracle and this table accept. That residue is the same accepted gap the
+/// `templates` module doc records, for the same reason: the only way to close
+/// it is to transcribe the recipes by hand.
+///
+/// The `anchors.len() == TEMPLATES.len()` check below is likewise one-sided
+/// only. It stops a roster entry added or removed *without* touching this
+/// table; a change that edits both passes, as it must, since the table is
+/// hand-maintained. Nothing machine-checks that a row here still describes the
+/// workflow its key promises — human review of this table is the last step, and
+/// it is deliberately kept small enough to review.
+///
+/// ## What is deliberately NOT pinned here
+///
+/// Goals, acceptance criteria, `context`, `depends_on`, `no_gate_reason`, the
+/// intro prose, the contract prefix — none of it. Every one of those is
+/// content, all of it is already compared byte-for-byte by the derived oracle,
+/// and copying any of it here would rebuild the change detector this file's
+/// design note rejects: reword one goal and a maintainer would have two places
+/// to paste it into, which is how "red here means update the expectation" gets
+/// taught. Task keys and titles are the cheapest values that are *identities*
+/// rather than prose — a template's task keys are also what the picker and the
+/// plan projection address blocks by, so they do not churn on an edit.
+///
+/// ## Both roads, because the mapping is read twice
+///
+/// `GET /api/wave-templates` reads the mapping to render the picker, and
+/// `POST /api/waves` reads it to instantiate. A swap in only one of them is a
+/// real defect (the picker advertises one plan, create produces another), so
+/// both are asserted against the same hand-written row.
+#[tokio::test]
+async fn each_template_key_names_its_own_recipe() {
+    // key, roster title, ordered task keys. Hand-written on purpose — this is
+    // the one table in this file that must NOT be derived from production.
+    let anchors: [(&str, &str, &[&str]); 3] = [
+        (
+            ISSUE_DEVELOPMENT,
+            "Issue development",
+            &[
+                "inspect-issue",
+                "review-design-a",
+                "review-design-b",
+                "implement-change",
+                "open-pr",
+                "review-pr-a",
+                "review-pr-b",
+                "merge",
+            ],
         ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={created}");
-    let template_wave_id = seeded_templates(&boot.repo)
-        .await
-        .into_iter()
-        .find(|(key, _)| key == SMALL_CHANGE)
-        .map(|(_, wave_id)| wave_id)
-        .expect("small-change must be seeded by a matching create");
-
-    // A recognizable edit, stamped onto the seeded report.
-    //
-    // The **summary** and not a task goal, for a contract reason rather than
-    // convenience: the prose write path refuses to modify a non-prose block
-    // (`guard_non_prose_stomp`), which is exactly why #1230's editor had to use
-    // `WriteMarkdown`. The summary is enough to falsify the property — the
-    // picker's `title` is the seeded report's summary, and a
-    // `current_definition` that answered from the constants would say
-    // "Small change" here.
-    //
-    // Written through `persist_report` rather than the REST report route: this
-    // file's `post` helper is unauthenticated and that route 401s. Whoever
-    // writes it is not the point; that the *read* comes back from it is.
-    let (wave, report_card, current) =
-        resolve_report_for_wave(boot.repo.as_ref(), &template_wave_id)
-            .await
-            .expect("seeded report");
-    let if_doc_rev = current.doc_rev;
-    let body = current.body.clone();
-    assert_ne!(
-        current.summary, EDITED_TITLE,
-        "the fixture must change the summary"
-    );
-    persist_report(
-        boot.repo.as_ref(),
-        &boot.state.events,
-        boot.state.write(),
-        ActorId::User,
-        EditAuthor::User,
-        wave,
-        report_card,
-        current,
-        WaveReportPayload::new(EDITED_TITLE, body),
-        if_doc_rev,
-        None,
-        None,
-        false,
-    )
-    .await
-    .expect("stamp the edited seeded report");
-
-    // The picker must show the edit. The constants would say "Small change".
-    let (status, listed) = get(boot.app.clone(), "/api/wave-templates").await;
-    assert_eq!(status, StatusCode::OK, "body={listed}");
-    let row = listed_template(&listed, SMALL_CHANGE);
+        (
+            SMALL_CHANGE,
+            "Small change",
+            &["inspect", "implement", "verify"],
+        ),
+        (
+            INVESTIGATION,
+            "Investigation",
+            &["gather-facts", "write-findings"],
+        ),
+    ];
     assert_eq!(
-        row["title"], EDITED_TITLE,
-        "the picker fell back to the constant title, so the read authority moved; row={row}"
+        anchors.len(),
+        calm_server::templates::TEMPLATES.len(),
+        "the roster grew or shrank; this table is the one place that must be \
+         edited by hand when it does"
     );
 
-    // The task list is deliberately NOT part of this assertion. It could only
-    // be made to differ from the constants by editing a task fence, and the
-    // write path available here may not touch one (see above). Pinning the
-    // title is enough: both facts come from the same `current_definition`
-    // branch, so a collapse to the constants cannot take one and leave the
-    // other.
+    let boot = boot().await;
+    let (status, listing) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "listing={listing}");
+
+    for (key, title, expected_task_keys) in anchors {
+        // Road 1 — the picker read.
+        let listed = listed_template(&listing, key);
+        assert_eq!(listed["title"], title, "{key}: picker title");
+        assert_eq!(
+            task_keys(listed),
+            expected_task_keys.to_vec(),
+            "{key}: picker tasks"
+        );
+
+        // Road 2 — the create write.
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(&boot.cove_id, key, json!({ "template_id": key })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
+        let wave_id = body["id"].as_str().expect("wave id");
+        let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+        assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
+        let payload = report_card_payload(&detail);
+        let created_keys: Vec<&str> = task_blocks(&payload)
+            .iter()
+            .map(|task| task["key"].as_str().expect("task key"))
+            .collect();
+        assert_eq!(
+            created_keys,
+            expected_task_keys.to_vec(),
+            "{key}: the wave create instantiated a different recipe than `{key}` names"
+        );
+        assert_eq!(
+            payload.summary, title,
+            "{key}: the instantiated report's summary is another template's"
+        );
+    }
 }

@@ -243,32 +243,11 @@ pub fn template_overlay_payload() -> Value {
     serde_json::json!({ "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION })
 }
 
-/// Seeded-template overlay payload (`schemaVersion: 1` + `template_key`).
-pub fn template_overlay_payload_with_key(template_key: &str) -> Value {
-    serde_json::json!({
-        "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION,
-        "template_key": template_key,
-    })
-}
-
 /// True when `overlay` is the kernel view/template marker for a wave (#1110 S1).
 pub fn is_template_overlay(overlay: &Overlay) -> bool {
     overlay.plugin_id == OVERLAY_TEMPLATE_PLUGIN_ID
         && overlay.entity_kind == OVERLAY_TEMPLATE_ENTITY_KIND
         && overlay.kind == OVERLAY_TEMPLATE_KIND
-}
-
-/// `template_key` from a kernel view/template overlay, if present and non-empty.
-pub fn template_overlay_key(overlay: &Overlay) -> Option<&str> {
-    if !is_template_overlay(overlay) {
-        return None;
-    }
-    overlay
-        .payload
-        .get("template_key")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
 }
 
 fn validate_file_viewer_nav_overlay_payload(payload: &Value) -> Result<()> {
@@ -977,11 +956,13 @@ mod tests {
     fn template_overlay_requires_schema_version_and_denies_unknown_fields() {
         validate_overlay_payload("template", &json!({ "schemaVersion": 1 })).unwrap();
         validate_overlay_payload("template", &template_overlay_payload()).unwrap();
-        validate_overlay_payload(
-            "template",
-            &template_overlay_payload_with_key("issue-development"),
-        )
-        .unwrap();
+        // #1300 deleted `template_overlay_payload_with_key` (the kernel's only
+        // writer of this field) and `template_overlay_key` (its only reader).
+        // The *schema* keeps the optional field, because `POST /api/overlays`
+        // still accepts it — `payload_validation.rs` pins that 200. So the
+        // accepting case is asserted through a literal now: there is no
+        // constructor left, and the thing under test is the schema, not a
+        // constructor.
         validate_overlay_payload(
             "template",
             &json!({ "schemaVersion": 1, "template_key": "small-change" }),

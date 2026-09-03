@@ -149,8 +149,12 @@ test('creates a wave from the cove page with no title, and persists it', async (
  *
  * `small-change` and not `issue-development`: it is a template in every
  * environment, bound to no plugin, so the case does not depend on git-forge
- * running. The wave it creates forks the seeded template report, which is what
- * the assertion on the report's task list below actually checks.
+ * running.
+ *
+ * #1300 — the wave it creates no longer *forks* anything. A template is a
+ * read-only recipe instantiated inside the create transaction, not a hidden
+ * wave to copy. The assertions below moved with it: they check the report the
+ * new wave actually holds, which is what this case's name always promised.
  */
 test('creates a wave from a template and seeds its report', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
@@ -223,7 +227,35 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   expect(waveId).toBeTruthy();
   const detail = await request.get(`/api/waves/${waveId}`);
   expect(detail.ok()).toBe(true);
-  expect((await detail.json() as { wave: { template_id: string | null } }).wave.template_id)
-    .toBe('small-change');
+  const detailBody = await detail.json() as {
+    wave: { template_id: string | null };
+    cards: { kind: string; payload: { body?: string } }[];
+  };
+  expect(detailBody.wave.template_id).toBe('small-change');
+
+  /* #1300 — the assertion this case's name always claimed and never made.
+     `template_id` on the wave row says the kernel accepted the binding; it says
+     nothing about the report, which is the thing "seeds its report" is about.
+     Before #1300 the report came from forking a hidden system-cove wave the
+     kernel lazily seeded; it now comes from instantiating a Rust constant in
+     the create transaction. Both produce the same document — that equivalence
+     is pinned in-process by
+     `wave_template_waves.rs::creating_from_a_template_instantiates_its_recipe`
+     — and this is the live-stack half: through the real kernel, over HTTP, on
+     the wave the browser actually created.
+
+     `ready: false` is asserted alongside the keys because it is the difference
+     between "the plan is present" and "the plan is running". A template's tasks
+     are pre-set, not released; an instantiation that shipped them ready would
+     start dispatching work nobody approved. */
+  const report = detailBody.cards.find((card) => card.kind === 'wave-report');
+  expect(report, 'the created wave must have a wave-report card').toBeTruthy();
+  const reportBody = report?.payload.body ?? '';
+  for (const key of ['inspect', 'implement', 'verify']) {
+    expect(reportBody, `small-change must pre-set the ${key} task`).toContain(`"key": "${key}"`);
+  }
+  expect(reportBody).toContain('"ready": false');
+  expect(reportBody).not.toContain('"ready": true');
+
   expect(errors).toEqual([]);
 });
