@@ -922,6 +922,25 @@ pub trait RepoSyncDomainRaw: RepoRead {
 /// PID-persist sidecar).
 #[async_trait]
 pub trait RepoOutOfDomain: RepoRead {
+    // ---- track recipes (#1292) --------------------------------------
+    //
+    // Out-of-domain rather than event-writing: a recipe is a user's private
+    // authoring artifact, not part of the event-sourced track domain, and it
+    // emits no `Event`. Cross-window staleness is handled by the `revision`
+    // CAS (the loser gets 409) rather than by live invalidation — see the
+    // #1292 design §3.1b for why that trade was taken rather than minting a
+    // new `Event` variant and its frontend invalidation policy.
+    async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe>;
+    async fn track_recipe_update(
+        &self,
+        id: &str,
+        p: NewTrackRecipe,
+        if_revision: i64,
+    ) -> Result<TrackRecipe>;
+    async fn track_recipe_get(&self, id: &str) -> Result<Option<TrackRecipe>>;
+    async fn track_recipe_delete(&self, id: &str) -> Result<()>;
+    async fn track_recipe_list(&self) -> Result<Vec<TrackRecipe>>;
+
     // ---- terminals (writes)
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
     /// Persist the child PID captured by the renderer/supervisor path. The

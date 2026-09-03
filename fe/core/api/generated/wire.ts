@@ -522,6 +522,49 @@ export type TrackId = string;
 export type TrackLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
 
 /**
+ * A user-defined starting point for a new track.
+ *
+ * A recipe is a saved report: `title` doubles as the report summary, and
+ * `body`'s `neige-block` fences **are** its tasks. It is deliberately not a
+ * track — #1300 removed "template = a hidden track" because storing recipes
+ * that way cost seven "this track is special" exceptions across unrelated
+ * subsystems plus a kernel report write that impersonated the user. A
+ * recipe row has neither problem: nothing schedules it, nothing lists it
+ * among tracks, and every byte in one was written by a human.
+ *
+ * The built-in templates (`calm_server::templates::TEMPLATES`) stay Rust
+ * constants and are **not** rows here. Both feed the same instantiation
+ * seam, so "built-in" and "mine" differ only in where the payload came
+ * from — see `routes::track_recipes`.
+ */
+export type TrackRecipe = { id: string, 
+/**
+ * Picker label *and* the instantiated report's summary. One field, not
+ * two: the three built-in templates already write the same string in
+ * both places, so a second column would not preserve an existing
+ * distinction — it would mint a new way for them to disagree.
+ */
+title: string, 
+/**
+ * Report body. Its `neige-block` fences are the tasks.
+ */
+body: string, 
+/**
+ * Optimistic-lock anchor. Writers pass the revision they read and the
+ * UPDATE validates + bumps in one statement.
+ *
+ * Deliberately not `updated_at`: a wall clock is not a version. Two
+ * writes inside the same millisecond are indistinguishable by
+ * timestamp, and a clock that steps backwards makes a stale write look
+ * current.
+ */
+revision: number, created_at: number, 
+/**
+ * Display only — never a lock anchor. See `revision`.
+ */
+updated_at: number, };
+
+/**
  * The payload persisted in a track-report card's `payload` JSON column.
  *
  * Wire shape (camelCase to match the rest of the kernel's payloads):

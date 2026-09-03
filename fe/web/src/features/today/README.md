@@ -1,7 +1,8 @@
 # `features/today`
 
 The landing route: a status bar and **the day's document**, beside a panel
-holding the week calendar's activity agenda and the Running list.
+holding the week calendar's activity agenda, the Running list, and the
+cross-track conversation index.
 
 Two things were removed on 2026-09-03 (owner call) and must not drift back in
 without one:
@@ -11,53 +12,20 @@ without one:
   (INV-TODAYTERM-001/003/005/006) for an implementation that never landed and
   has no `features/today/terminal` to land in. Both are gone. A page does not
   get to keep making a promise it has not kept.
-- **RECENT.** This was a deliberate trade of reach for focus, and it is worth
-  stating as one rather than as a de-duplication, because the two lists were
-  never the same list.
-
-  What *did* overlap: the calendar's agenda one module up is
-  `activeTracksOn(selected)` over the visible tracks — every one of those whose
-  activity interval overlaps the selected day, with no cap on how many rows it
-  draws (the module scrolls at eight) — while RECENT took the same visible
-  tracks minus waiting and running, ordered them by `updatedAt`, and **kept 12**.
-  So on the default selection a quiet track whose interval covers today was
-  drawn twice inside one card, and the cap is the only thing that ever excused
-  it: 13 such tracks put 13 rows in the agenda and 12 in RECENT, and the row
-  RECENT dropped was the least recently touched. The de-dup that existed
-  (`shown`) only excluded waiting and running; it never looked at the agenda,
-  so "one track appearing twice on a page distorts both the counts and the
-  scan" was violated by the card against itself for each of those tracks except
-  the ones the cap had already discarded.
-
-  What did **not** overlap, and is the part being given up: RECENT applied no
-  date filter, so it also carried tracks whose interval had already closed
-  before today, and today's agenda holds none of those. That class is not the
-  clean "finished before today" it sounds like, because `activeTracksOn` closes
-  the interval at
-
-      end = terminalAt ?? (isTerminal(lifecycle) ? updatedAt : nowMs)
-
-  and `terminalAt` is nullable. A terminal track with `terminalAt === null` — a
-  pre-migration row — is closed at `updatedAt` instead, so editing its title
-  today puts it back in *today's* agenda even though the work finished last
-  month. What RECENT could show and today's agenda cannot is therefore the
-  quiet tracks the overlap test rejects for today: those whose `end` fell
-  before today's start, plus the degenerate row whose `createdAt` is still in
-  the future. The `terminalAt` case is worth knowing precisely because it means
-  "what happened while I was away" was never a clean class here — a null
-  `terminalAt` moves a row between the two lists on a metadata edit.
-
-  Those tracks are not lost. A row is in the agenda of the day its own `end`
-  falls on — that day satisfies both endpoints of the overlap test by
-  construction, for any row whose close is not earlier than its creation — and
-  stepping the calendar there costs one `Previous week` press per week back,
-  since a press moves the selection seven days and the grid follows its week.
-  What is given up is the glance, and the price rises with age: a track that
-  closed six weeks ago is six presses away instead of one row on the landing
-  page. It is worth paying because of what this route is for — Today answers
+- **RECENT.** A deliberate trade of reach for focus, recorded as a trade rather
+  than as a de-duplication: RECENT and the calendar agenda were selected by
+  different rules, so the overlap between them and the reach given up follow from
+  `activeTracksOn` — the calendar agenda's selector, whose criterion is in
+  `fe/core/domain/track.ts` — together with RECENT's own `updatedAt` ordering
+  and cap. What the trade buys is what this route is for: Today answers
   *what needs me*, and a list ordered by `updatedAt` with no date bound is an
   archive browser, which is a surface this page is not and should not grow
   into.
+
+  This entry deliberately spells out no set relation between the two lists:
+  four review rounds on #1340 each introduced a fresh falsifiable claim while
+  trying to write that relation down precisely. The criterion belongs to the
+  code.
 
 **The conversation module was proposed for removal in the same pass and kept.**
 It looks like a duplicate of the track pages' module and is not one: on Today it

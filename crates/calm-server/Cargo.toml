@@ -304,6 +304,12 @@ syn = { version = "2.0.117", features = ["full", "visit"] }
 # crates and must re-declare them.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+# #1292 S1 review — the recipe normalizer must not let a dropped task fence
+# splice its two prose neighbours into new Markdown syntax (`foo` + `---`
+# reads as a Setext H2). Asserting that needs a real CommonMark parser:
+# a substring check on the joined text is exactly what missed the bug.
+# Already a workspace dependency (calm-types uses it in production).
+pulldown-cmark.workspace = true
 
 [[bench]]
 name = "event_append"

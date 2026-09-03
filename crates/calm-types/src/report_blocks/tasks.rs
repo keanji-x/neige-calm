@@ -784,7 +784,7 @@ pub fn project_task_declarations(
             .find(|declaration| declaration.key == *key && declaration.tombstone)
             // Frozen document vocabulary, not the kernel's. `tombstoned_by`
             // lives in stored report blocks, so #1316 S3 left its value at
-            // `"spec"` (migration 0082's header says why); this fallback feeds
+            // `"spec"` (migration 0083's header says why); this fallback feeds
             // a diagnostic that is compared against those blocks.
             .and_then(|declaration| declaration.tombstoned_by.as_deref())
             .unwrap_or("spec");

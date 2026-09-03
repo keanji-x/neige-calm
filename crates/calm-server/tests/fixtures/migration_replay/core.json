@@ -286,7 +286,7 @@
             "updated_at": 1300,
             "wave_id": "track-working"
           },
-          "max_version": 81
+          "max_version": 82
         },
         {
           "columns": {
@@ -305,7 +305,7 @@
             "updated_at": 1300,
             "wave_id": "track-working"
           },
-          "min_version": 82
+          "min_version": 83
         },
         {
           "columns": {
@@ -323,7 +323,7 @@
             "updated_at": 1300,
             "wave_id": "track-done"
           },
-          "max_version": 81
+          "max_version": 82
         },
         {
           "columns": {
@@ -341,7 +341,7 @@
             "updated_at": 1300,
             "wave_id": "track-done"
           },
-          "min_version": 82
+          "min_version": 83
         },
         {
           "columns": {

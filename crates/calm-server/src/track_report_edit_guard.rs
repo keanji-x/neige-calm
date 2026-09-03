@@ -38,7 +38,7 @@ fn is_tombstone(block: &ReportBlock) -> bool {
 /// document vocabulary, so the asymmetry is deliberate: the enum variant is
 /// `Planner` (#1316 S3 renamed the actor everywhere the kernel owns it) while
 /// the string stays `"spec"`, because `declared_by` is written by agents into
-/// stored report documents and projected back out of them — migration 0082's
+/// stored report documents and projected back out of them — migration 0083's
 /// header states why those cannot be rewritten. Returning `"planner"` here
 /// deadlocks the two guards against each other: this one demands `planner`
 /// while `report_blocks::kinds::validate_declared_by` accepts only

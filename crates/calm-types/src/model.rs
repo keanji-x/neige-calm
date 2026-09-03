@@ -664,6 +664,53 @@ mod card_role_tests {
     }
 }
 
+// ---------------- TrackRecipe (#1292) ----------------
+
+/// A user-defined starting point for a new track.
+///
+/// A recipe is a saved report: `title` doubles as the report summary, and
+/// `body`'s `neige-block` fences **are** its tasks. It is deliberately not a
+/// track — #1300 removed "template = a hidden track" because storing recipes
+/// that way cost seven "this track is special" exceptions across unrelated
+/// subsystems plus a kernel report write that impersonated the user. A
+/// recipe row has neither problem: nothing schedules it, nothing lists it
+/// among tracks, and every byte in one was written by a human.
+///
+/// The built-in templates (`calm_server::templates::TEMPLATES`) stay Rust
+/// constants and are **not** rows here. Both feed the same instantiation
+/// seam, so "built-in" and "mine" differ only in where the payload came
+/// from — see `routes::track_recipes`.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TrackRecipe {
+    pub id: String,
+    /// Picker label *and* the instantiated report's summary. One field, not
+    /// two: the three built-in templates already write the same string in
+    /// both places, so a second column would not preserve an existing
+    /// distinction — it would mint a new way for them to disagree.
+    pub title: String,
+    /// Report body. Its `neige-block` fences are the tasks.
+    pub body: String,
+    /// Optimistic-lock anchor. Writers pass the revision they read and the
+    /// UPDATE validates + bumps in one statement.
+    ///
+    /// Deliberately not `updated_at`: a wall clock is not a version. Two
+    /// writes inside the same millisecond are indistinguishable by
+    /// timestamp, and a clock that steps backwards makes a stale write look
+    /// current.
+    pub revision: i64,
+    pub created_at: i64,
+    /// Display only — never a lock anchor. See `revision`.
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewTrackRecipe {
+    pub title: String,
+    pub body: String,
+}
+
 #[cfg(test)]
 mod area_kind_tests {
     use super::AreaKind;

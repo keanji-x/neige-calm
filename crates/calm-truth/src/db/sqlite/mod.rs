@@ -69,6 +69,7 @@ mod session_row;
 mod task;
 mod task_projection;
 mod track;
+mod track_recipe;
 mod track_tree;
 mod track_workspace;
 

@@ -26,9 +26,9 @@ pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
     Area, AreaConversationSummary, AreaFolder, AreaKind, AreaResolve, Card, CardRole,
-    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Track,
-    TrackConversationSummary, TrackLifecycle, TrackWorkspace, TrackWorkspaceKind,
-    default_deletable,
+    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, NewTrackRecipe, Overlay,
+    Track, TrackConversationSummary, TrackLifecycle, TrackRecipe, TrackWorkspace,
+    TrackWorkspaceKind, default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the
