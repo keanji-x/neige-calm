@@ -10,10 +10,11 @@
 //
 // **Why the subtree and not the container.** `.mobileListSurface` and
 // `.desktopPanelSurface` are siblings and are both in the DOM in production —
-// the desktop side only takes `inert`. Today a whole-page scan happens to work
-// because the mobile side carries no markers at all; the day S1b-4 marks it,
-// the two would be read as one tree. The root is scoped now so that trap is
-// never set.
+// the desktop side only takes `inert`. A whole-page scan used to work by luck,
+// because the mobile side carried no markers at all; since S1b-4a/4b it carries
+// a full set on both of its row-module pages, so an unscoped scan would now read
+// the two surfaces as one tree. The root was scoped before that landed, which is
+// why nothing here had to change when it did.
 //
 // **What this suite is worth, and what carries the rest.** `checkProjectionIn`
 // takes the painter on trust: it cannot prove this DOM came from that painter,
@@ -81,9 +82,11 @@ const TASKS: readonly ReportTaskRow[] = [
     blockId: 'block-2', key: 'beta-gate', state: 'withdrawn', declaration: 'Withdrawn',
     status: null, statusDetail: null, kind: null, workerCardId: null,
   },
-  /* `status === ''` — a legitimate state upstream (`core/domain/report.ts`), and
-     the one that makes an empty token's text obligation vacuously true. A
-     checker comparing the token by truthiness would never be caught without it.
+  /* `status === ''` — not reachable through today's derivation, which
+     normalises `undefined | null | ''` alike to `null` (`core/domain/report.ts`),
+     but admitted by the row type, and the value that makes an empty token's text
+     obligation vacuously true. A checker comparing the token by truthiness
+     rather than by exact equality would never be caught without it.
      The kind is present with no worker card, so it renders as a label and the
      row carries only `reveal-block`. */
   {

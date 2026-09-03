@@ -22,19 +22,26 @@
 // list disappearing; the domain and bijection checks are its necessary partner,
 // and that is what `mobile-projection.test.tsx` runs.
 //
-// **Scope: Cards.** The mobile Tasks page and the mobile navigation sequence are
-// still hand-composed in `public.tsx` and arrive in S1b-4b. Handed a Tasks
-// module, the pending row leaf therefore throws while the module is finished,
-// rather than guessing — a Task row's composition (a status carrier in the meta
-// lane, `reveal-block` on the row root) is not this file's yet, and silently
-// painting a Cards row for it would be a projection fault reported far from its
-// cause.
+// **Scope: both row modules** since S1b-4b. The Task row lands here with its
+// status carrier in the meta lane and `reveal-block` on the row root, and
+// `public.tsx` composes neither list itself any more. The module *sequence* is
+// the drill-down menu, and since S1b-4b that too is derived — `rowModules.map`,
+// not two written-out entries (Δ2) — so a module the derivation gains, loses or
+// reorders moves the mobile navigation with it.
+//
+// **The two surfaces still word a status differently, and only in their chrome.**
+// The desktop draws a dot, which is a graphic and therefore needs a name; this
+// one prints the token. Both write the same `data-nc-status` and the same
+// `title`, which is the part the projection reads; and since the S1b-4b review
+// this surface also hands the same phrase to the row's accessible description,
+// because its status sits *beside* the generated control rather than inside it —
+// see `statusWord`.
 
 import type { ReactNode } from 'react';
 
 import { FIELD, MARKER, paintModule } from '../../../../../core/view/panel.ts';
 import type {
-  PanelRow, RowBadge, RowModuleView, RowPainter,
+  PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, RowStatus,
 } from '../../../../../core/view/panel.ts';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
@@ -61,9 +68,8 @@ export type MobileLeaf = PendingLeaf | ModuleLeaf;
 export type MobilePainterDeps = Readonly<{
   /**
    * Reveal a task's block in the document. `reveal-block` is the one action
-   * this surface supports, and the Task row that hosts it lands in S1b-4b —
-   * the capability table already says so, because support is a statement about
-   * the surface rather than about which module has been wired yet.
+   * this surface supports, and since S1b-4b the Task row hosts it on the row
+   * root itself.
    */
   onOpenTask?: (blockId: string) => void;
   /** The mobile page chrome: what the back button says, where it goes, and how
@@ -82,6 +88,156 @@ const mark = (name: string, value: string): Readonly<Record<string, string>> => 
 function cardBadge(badge: RowBadge): ReactNode {
   return (
     <span key={badge.id} {...mark(MARKER.badge, badge.id)}>{badge.text}</span>
+  );
+}
+
+/**
+ * A Task row's declaration badge.
+ *
+ * **`struck` is drawn here, and it has to be**: `RowBadge.struck` is a formal
+ * field of the derivation with **no carrier in the projection framework at all**
+ * (`tools/projection/public.ts`'s standing list says so in as many words —
+ * `checkBadges` reads a badge's id, its position and its text and nothing else).
+ * A painter that ignored it would be green under every violation code. So the
+ * desktop pins it with a class assertion outside the projection
+ * (`public.test.tsx`, `taskWithdrawn`), and this surface takes the same shape:
+ * `mobile-painter.test.tsx` asserts the struck class on a withdrawn declaration
+ * and its absence on an ordinary one.
+ */
+function taskBadge(badge: RowBadge): ReactNode {
+  return (
+    <span
+      key={badge.id}
+      className={badge.struck ? styles.mobileRowStruck : undefined}
+      {...mark(MARKER.badge, badge.id)}
+    >{badge.text}</span>
+  );
+}
+
+/**
+ * The status, in the meta lane.
+ *
+ * **The word, not the desktop's dot.** The two carriers the projection reads are
+ * the same on both surfaces — `data-nc-status` holds the bare token and `title`
+ * holds the phrase. The token has to stay bare on both: the desktop's
+ * stylesheet keys the dot's colour off `.taskDot[data-nc-status="failed"]` and
+ * friends, so folding the kernel's reason into the token would leave a failed
+ * row uncoloured. (This surface draws no colour off it — it prints the word
+ * instead — but the attribute is the projection's carrier either way.) What
+ * differs is the chrome around them, and deliberately: the desktop dot is a
+ * graphic with no text, so it needs `role="img"` and an `aria-label` of
+ * `Status: ${phrase}` to be reachable at all. Here the element **prints the
+ * token**, so it is reachable already, and adding an `aria-label` would override
+ * that visible word rather than add to it (the same WCAG 2.5.3 rule the action
+ * wording follows). A dot in a drill-down list would also be a colour with no
+ * legend on the one surface that has no hover.
+ *
+ * **The token on screen is not the whole story a reader is owed.** This element
+ * is `endContent`, which Astryx lays out as a **sibling** of the invisible button
+ * — so the row's accessible name is the task key and the kernel's reason is
+ * nowhere in it, while the desktop's reveal button *encloses* its status dot and
+ * therefore names `Status: failed — wave … is not a git repository` in full.
+ * That asymmetry is missing information, not a wording choice, so `taskRow`
+ * hands the same `phrase` to `MobileListItem`'s `accessibleDescription` channel:
+ * the name stays the visible key, and the reason arrives as the control's
+ * description. It is emitted whenever there is a status — including when
+ * `phrase === token`, where it is the *only* way the status reaches a reader who
+ * is on the button, since the visible word is outside it.
+ *
+ * `RowStatus.phrase` is not this file's to word — `core/view/wave-page.ts` owns
+ * it, and that is the whole reason the mobile surface stopped re-wording state.
+ */
+function statusWord(status: RowStatus): ReactNode {
+  return (
+    <span key="status" {...mark(MARKER.status, status.token)} title={status.phrase}>
+      {status.token}
+    </span>
+  );
+}
+
+/**
+ * The `reveal-block` action, or null when the view model offered none. The
+ * lookup is by kind rather than by position: `paintModule` has already filtered
+ * the array against the capability table, so what survives is not the
+ * derivation's own sequence.
+ *
+ * **All three of the action's fields come back, `label` included.** It would be
+ * true *today* that `deriveWavePageView` words a Task row's reveal with
+ * `label: null` — and a painter that read only `blockId` and `hint` would be
+ * green for exactly that reason, which is a fact about the derivation rather
+ * than about this file. `RowAction` carries `label` as a channel of its own and
+ * the projection checks it on both sides (`action-label`), so the painter
+ * consumes it and lets the view model decide whether there is one.
+ */
+function reveal(
+  row: PanelRow,
+): Readonly<{ blockId: string; label: string | null; hint: string | null }> | null {
+  for (const action of row.actions) {
+    if (action.kind !== 'reveal-block') continue;
+    return { blockId: action.blockId, label: action.label, hint: action.hint };
+  }
+  return null;
+}
+
+/**
+ * A Tasks row.
+ *
+ * **The row root is both the row carrier and the action host**, and that pair is
+ * legal: `data-nc-row-action` is a host annotation, not a content marker, so the
+ * one-content-marker-per-element rule is not engaged and
+ * `tools/projection/public.ts`'s `owned()` counts the container itself. This is
+ * the first production shape to take that path — S1b-2 wrote the fix for it
+ * before anything used it — so `mobile-projection.test.tsx` asserts the co-hosted
+ * `<li>` explicitly rather than leaving it implied by a green run.
+ *
+ * **What the row stopped deciding for itself.** It used to re-word `task.state`
+ * into `Ready` / `Not ready` / `Withdrawn` / `Unreadable` here, which is how this
+ * surface disagreed with the desktop about the same task. Both of
+ * `deriveReportTasks`' rules now arrive through the derivation instead: `ready`
+ * carries no word at all (a column in which every row has a word is a column
+ * nobody reads), and a `status` supersedes the readiness word (a dispatched task
+ * printing `Not ready` beside `running` is a row arguing with itself). D8 —
+ * owner-approved, and the one visible behaviour change in this slice.
+ *
+ * **`label` and `hint` are the action's two wording channels, and both are
+ * consumed.** `label` becomes the host's `aria-label` when the view model offers
+ * one and is **omitted entirely** when it is null — the row has visible text, and
+ * a fabricated second accessible name would override it (WCAG 2.5.3). The
+ * derivation words the Task reveal with `label: null` today, so the emitted
+ * shape is "no attribute"; that is the view model's call, not a rule this file
+ * writes down. `hint` travels through the primitive's `hint` channel to the
+ * `<li>`'s `title` — not through its visible `title` prop, which is the row's
+ * name.
+ *
+ * The `open-card` action the derivation offers on a worker-card task never
+ * reaches here: this painter declares it unsupported, so `paintModule` filters it
+ * out before `row()` is called. The kind is still printed — what is not offered
+ * is the action, not the fact (§3.6).
+ */
+function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
+  const action = reveal(row);
+  const meta: readonly ReactNode[] = [
+    ...row.badges.map(taskBadge),
+    ...(row.status === null ? [] : [statusWord(row.status)]),
+    ...(row.kind === null
+      ? []
+      : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),
+  ];
+  return (
+    <MobileListItem
+      key={row.id}
+      title={row.title}
+      rowMarker={row.id}
+      titleFieldMarker={FIELD.title}
+      {...(row.status === null ? {} : { accessibleDescription: row.status.phrase })}
+      {...(action === null ? {} : {
+        rowActionMarker: 'reveal-block' satisfies RowAction['kind'],
+        onSelect: () => deps.onOpenTask?.(action.blockId),
+        ...(action.label === null ? {} : { ariaLabel: action.label }),
+        ...(action.hint === null ? {} : { hint: action.hint }),
+      })}
+      meta={meta.length === 0 ? undefined : <span className={styles.mobileRowMeta}>{meta}</span>}
+    />
   );
 }
 
@@ -153,13 +309,18 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
       },
     },
 
+    /* Dispatch on the module, never on the row's shape: deciding by sniffing
+       (`does it carry a reveal-block action?`) would make this file correct only
+       by an invariant of `wave-page.ts` that nothing states. A third module key
+       still throws rather than falling back to a Cards row — a projection fault
+       reported far from its cause is the thing the throw exists to prevent. */
     row: (row) => ({
       slot: 'row',
       paint: (moduleKey) => {
-        if (moduleKey !== 'cards') {
-          throw new Error(`the mobile painter has no ${moduleKey} row yet (#1234 S1b-4b)`);
-        }
-        return cardRow(row);
+        if (moduleKey === 'cards') return cardRow(row);
+        if (moduleKey === 'tasks') return taskRow(row, deps);
+        const unknown: never = moduleKey;
+        throw new Error(`the mobile painter has no ${String(unknown)} row`);
       },
     }),
 

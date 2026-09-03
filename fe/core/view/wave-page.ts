@@ -81,18 +81,26 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, WavePageView } from 
  *
  * Moved down from the page component (`public.tsx`'s local `taskStatusPhrase`),
  * which is where the wording used to live and is why the mobile surface had no
- * status at all. **S1b-3b deleted the page's copy**: the desktop panel words
- * its status from here now, so on that surface this is the only authority. The
- * mobile surface still re-words state by hand (S1b-4).
+ * status at all. **S1b-3b deleted the page's copy** and **S1b-4b closed the
+ * other surface**: both painters word a task's status from here, so this is now
+ * the only authority on either surface. Neither surface *prints* this string —
+ * the desktop's status dot is a graphic with no text, and the mobile row's
+ * status carrier prints `status.token`, the bare word. What the phrase reaches
+ * on mobile is that carrier's `title` and, since S1b-4b's
+ * accessible-description channel, the text the row's `aria-describedby` names;
+ * on the desktop it is the dot's `title` and the `Status: ${phrase}` accessible
+ * name. `mobile-projection.test.tsx` carries a source scan holding that the
+ * mobile page words no task state of its own.
  */
 export function taskStatusPhrase(status: string, detail: string | null): string {
   return detail === null ? status : `${status} — ${detail}`;
 }
 
 /**
- * The Cards module. Its renderer is `wave/page/desktop-painter.tsx`'s
+ * The Cards module. Its renderers are `wave/page/desktop-painter.tsx`'s
  * `cardRow`, which is where S1b-3b moved the DOM that `wave/page/public.tsx`
- * used to spell inline under its `Cards` `PanelModule`.
+ * used to spell inline under its `Cards` `PanelModule`, and — since S1b-4a —
+ * `wave/page/mobile-painter.tsx`'s row for the mobile drill-down.
  *
  * (Symbol references, not line numbers: every earlier version of this docstring
  * cited `public.tsx:NNN`, and every one of them was stale by the next edit.)
@@ -101,8 +109,9 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  *
  *  - **`kind` is only a separate field when a title took the name slot.** An
  *    untitled card already shows its kind as its name, and printing it twice is
- *    noise — the mobile list does exactly that today and it is one of the
- *    drifts #1234 exists to remove.
+ *    noise. The hand-composed mobile list did exactly that, and it was one of
+ *    the drifts #1234 exists to remove; since S1b-4a that page is painted from
+ *    this field and the drift is gone.
  *  - **`kernel-owned` is the `deletable === false` case**, not the `true` one:
  *    the badge is the kernel saying it owns this row, printed where the delete
  *    control would otherwise be.
@@ -151,16 +160,18 @@ function cardRow(card: CardWire): PanelRow {
 }
 
 /**
- * The Tasks module. Its renderer is `wave/page/desktop-painter.tsx`'s
+ * The Tasks module. Its renderers are `wave/page/desktop-painter.tsx`'s
  * `taskRow`, which is where S1b-3b moved the DOM that `wave/page/public.tsx`
- * used to spell inline under its `Tasks` `PanelModule`.
+ * used to spell inline under its `Tasks` `PanelModule`, and — since S1b-4b —
+ * `wave/page/mobile-painter.tsx`'s row for the mobile drill-down.
  *
  * `declaration` and `status` are read **independently**, and this function
  * imposes no precedence between them. That a dispatched task stops printing its
  * readiness word is `deriveReportTasks`' ruling, taken upstream where the join
  * happens; re-deciding it here would be a second source of truth about the same
  * question, and it is the discipline that lets the mobile surface inherit the
- * rule for free instead of re-wording state by hand.
+ * rule for free instead of re-wording state by hand — which, since S1b-4b, is
+ * what that surface actually does.
  *
  * The row always reveals its block; the *kind* is the worker-card affordance,
  * and the desktop's condition for painting it as a **control** is two nested
