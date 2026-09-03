@@ -1,5 +1,5 @@
 //! #1252 S1 step 1 — characterization of **today's** observable write
-//! semantics at three of the five report-write decision points.
+//! semantics at every one of the three report-write decision points.
 //!
 //! These tests pin behaviour as it is on `origin/main`, not behaviour as it
 //! ought to be. Every expected value below is a literal that was read off an
@@ -10,7 +10,13 @@
 //! these assertions goes red, the semantics of a decision point changed —
 //! confirm the change was intended before touching the assertion.
 //!
-//! **Covered: 3 of the 5 decision points.**
+//! **Covered: all 3 decision points.** It was 3 of 5 when this file was
+//! written; #1300 S2 removed the other two rather than covering them, so the
+//! set as it stands today is complete. Nothing keeps it that way in any strong
+//! sense: the `persist_report_call_sites` CI ratchet notices a fourth writer
+//! added by someone unaware of this file — it is a per-file text census, and
+//! its own "KNOWN GAPS" section lists what a text scan cannot see — and this
+//! header is a description, not a guard.
 //!
 //! | decision point | production entry driven here |
 //! |---|---|
@@ -29,8 +35,11 @@
 //! `AppContext` the fixture assembles. That is what makes the decision point
 //! genuinely entered rather than simulated.
 //!
-//! Not covered here, on purpose: `seed_template_wave` and
-//! `restamp_template_report_if_placeholder`, which #1300 S2 removes.
+//! Two former decision points are absent rather than uncovered:
+//! `seed_template_wave` and `restamp_template_report_if_placeholder`, deleted
+//! by #1300 S2. Template instantiation is now structural initialization inside
+//! the create transaction (`routes::waves::prepare_template_report`), which
+//! never reaches this boundary and so has no author to characterize.
 //!
 //! There was a sixth, `routes::wave_templates::update_wave_template` (#1230).
 //! This file's first version listed it as "fate undecided, and it carries a
@@ -38,7 +47,7 @@
 //! to be fixed would have made the fix harder. #1300 S1 settled the question by
 //! deleting it along with the template editor it served, which also closed the
 //! #1291 coupling for this path: there is no longer a write endpoint whose
-//! actor gate could be missing. Hence five decision points, not six.
+//! actor gate could be missing. Six became five with S1, and three with S2.
 //!
 //! Per decision point, four things are observed:
 //!
@@ -976,8 +985,23 @@ async fn rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft() {
 /// red, and pointing only the block leg
 /// (`routes::wave_report_blocks::commit`) at one turns this test and
 /// `rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft` red.
-/// That matters because the document leg reaches `persist_report`, whose
-/// `None` shadow argument is shared with the template seed/restamp writers.
+/// That matters because the two legs reach the write boundary by different
+/// doors: the document leg goes through `persist_report`, the wrapper that
+/// hard-codes `recorder_shadow: None`, while the block leg calls
+/// `persist_report_with_shadow` and chooses the argument itself. A single test
+/// covering "one of them" would leave whichever door it did not use unpinned.
+///
+/// #1300 S2 — this sentence used to say the wrapper's `None` was "shared with
+/// the template seed/restamp writers". It is not shared with anything in
+/// production any more: `seed_template_wave` and
+/// `restamp_template_report_if_placeholder` are deleted, leaving
+/// `routes::waves::update_wave_report` as `persist_report`'s only production
+/// caller as of today (the `persist_report_call_sites` census is what would
+/// notice a second one being added inadvertently; it is a text census, not a
+/// proof).
+/// The reason to cover the leg independently survives the sharing, because it
+/// was never about who else passed the argument — it is about this leg not
+/// choosing it.
 ///
 /// This is a statement about *whether* the gate is consulted, not about an
 /// exact invocation count; see the module header's registered gaps.

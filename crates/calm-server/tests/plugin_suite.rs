@@ -4,6 +4,8 @@ mod actor_wiring;
 mod connector_host;
 #[path = "cases/plugin_auth.rs"]
 mod plugin_auth;
+#[path = "cases/plugin_config_delivery.rs"]
+mod plugin_config_delivery;
 #[path = "cases/plugin_host_callbacks.rs"]
 mod plugin_host_callbacks;
 #[path = "cases/plugin_host_smoke.rs"]

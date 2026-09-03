@@ -2081,8 +2081,9 @@ export interface components {
             last_error?: string | null;
             manifest: Record<string, never>;
             /**
-             * @description Same wire-name set as [`PluginListItem::state`], including the
-             *     connector-only `unavailable` — see that field's doc.
+             * @description Same wire-name set as [`PluginListItem::state`], including
+             *     `unavailable` — which is reachable for both connectors and `app`
+             *     plugins; see that field's doc for what the state asserts.
              */
             state: string;
             /** Format: int64 */
@@ -2127,12 +2128,26 @@ export interface components {
              *     `running | spawning | crashed | unavailable | disabled | installing |
              *     installed`.
              *
-             *     `unavailable` is the NORMAL terminal state of a connector
-             *     (`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable
-             *     upstream, rejected `secrets.json`, boot budget exhausted. It is not an
-             *     error state of the kernel, and unlike `crashed` there is no supervisor
-             *     that will retry it: it stands until an operator re-enables. `last_error`
-             *     carries the reason.
+             *     `unavailable` is a NORMAL terminal state, and what it states is
+             *     narrower than "something failed": **no process was started, nothing is
+             *     watching, and so nothing will retry.** Unlike `crashed` there is no
+             *     supervisor and no backoff behind it — it stands until an operator
+             *     intervenes, and `last_error` is their only diagnostic. It is not an
+             *     error state of the kernel.
+             *
+             *     Two families of plugin reach it, and the shared property above is why
+             *     they share the name rather than each getting one:
+             *
+             *       * a connector (`kind: mcp-http` / `cli-query`) whose bring-up failed
+             *         — unreachable upstream, rejected `secrets.json`, boot budget
+             *         exhausted (#1164 §2.2);
+             *       * an `app` the kernel refused to start because its stored
+             *         configuration is unusable — a `config_schema.required` key that
+             *         neither the operator nor a manifest default supplies, or a stored
+             *         configuration that could not be read at all (#1284 §2.4).
+             *
+             *     Recovery is the same operator action in every case: fix the cause,
+             *     then start the plugin again.
              */
             state: string;
             version: string;

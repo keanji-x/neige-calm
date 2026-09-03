@@ -270,7 +270,13 @@ impl ProviderAdapter for ChildWaveAdapter {
             &self.wave_cove_cache,
         )
         .await?;
-        // #1147 S4 — the fifth wave-create entry point. On the managed branch
+        // #1147 S4 — the child-wave adapter, one of the four wave-create entry
+        // points (`POST /api/waves`, cove chat, launchpad, child wave; template
+        // seeding was a fifth until #1300 S2 deleted it). The enumeration lives
+        // once, in `tests/cases/wave_workspace_materialize.rs`; this comment
+        // and `routes/today.rs` both used to call themselves "the fifth",
+        // which is why neither carries an ordinal any more. On the
+        // managed branch
         // it does real work (the child's directory is its own, so nothing else
         // has created it); on the attached branch it is a no-op by contract —
         // `materialize_workspace` never creates, `git init`s or writes to a
@@ -799,8 +805,8 @@ mod tests {
         }
     }
 
-    /// #1147 S4 (design D7) — the child-wave adapter is the fifth
-    /// wave-create entry point and does not go through
+    /// #1147 S4 (design D7) — the child-wave adapter is one of the four
+    /// wave-create entry points and does not go through
     /// `create_wave_structure`, so it carries its own allocation and its own
     /// materialize call.
     ///

@@ -4,10 +4,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Full mutation evidence at 03:17 Asia/Shanghai, away from the normal merge window.
+    - cron: "17 19 * * *"
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'mutation-full' || github.ref }}
+  # New commits supersede PR/push evidence. A scheduled/manual full sweep is the durable backstop
+  # and must not be cancelled by a later main push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -28,16 +34,61 @@ env:
   # keys once (one cold-compile round, then warm).
   CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
   CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
-
 jobs:
+  changes:
+    name: classify changes
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.classify.outputs.code_changed }}
+      rust_changed: ${{ steps.classify.outputs.rust_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: classify documentation-only changes
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.after || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          scripts/ci/classify-code-changes-selftest.sh
+          code_changed=true
+          rust_changed=true
+          if [ -n "${BASE_SHA:-}" ] \
+             && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+             && git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              code_changed="$(git diff --name-only -z "$BASE_SHA"..."$HEAD_SHA" -- \
+                | scripts/ci/classify-code-changes.sh)"
+              rust_changed="$(git diff --name-only -z "$BASE_SHA"..."$HEAD_SHA" -- \
+                | scripts/ci/classify-code-changes.sh rust)"
+            else
+              code_changed="$(git diff --name-only -z "$BASE_SHA".."$HEAD_SHA" -- \
+                | scripts/ci/classify-code-changes.sh)"
+              rust_changed="$(git diff --name-only -z "$BASE_SHA".."$HEAD_SHA" -- \
+                | scripts/ci/classify-code-changes.sh rust)"
+            fi
+          fi
+          echo "code_changed=$code_changed"
+          echo "rust_changed=$rust_changed"
+          echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
+          echo "rust_changed=$rust_changed" >> "$GITHUB_OUTPUT"
+
   # #903 — fmt + grep ratchets + clippy split off the critical path: none of
   # them consume the test build, so they run as a parallel job instead of
   # serializing ~2.5min in front of the test step.
   lint:
     name: lint (fmt + ratchets + clippy)
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The frozen-vector rationale check below audits every commit in the event range.
+          fetch-depth: 0
 
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
       # source of truth shared with local gates); rustup honors it as a
@@ -46,11 +97,6 @@ jobs:
       # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
-
-      # #903 — mold via ld takeover; see the rust job's step for rationale.
-      # clippy is check-mode and links nothing, so mold is idle here — kept
-      # purely for tool consistency across cargo jobs; safe to drop.
-      - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -67,6 +113,34 @@ jobs:
 
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
+
+      # This used to be a standalone, non-required eight-second job. Folding it into the required
+      # lint context removes one runner and makes the security-vector freeze gate enforceable.
+      - name: vectors dir changes require FROZEN-VECTOR-CHANGE rationale
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          VEC_DIR='crates/calm-server/tests/vectors/'
+          if [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA=$(git rev-parse HEAD~1)
+          fi
+          if git diff --quiet "$BASE_SHA"...HEAD -- "$VEC_DIR"; then
+            echo "OK: frozen vectors untouched"
+            exit 0
+          fi
+          bad=0
+          for sha in $(git log --format=%H "$BASE_SHA"..HEAD -- "$VEC_DIR"); do
+            if ! git log -1 --format=%B "$sha" | grep -q 'FROZEN-VECTOR-CHANGE:'; then
+              echo "::error::commit $sha touches $VEC_DIR without a 'FROZEN-VECTOR-CHANGE:' rationale in its message"
+              git log -1 --format='  %h %s' "$sha"
+              bad=1
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: all vector-touching commits carry FROZEN-VECTOR-CHANGE:"
 
       - name: single migrations/ dir gate (#679 PR2)
         run: |
@@ -118,6 +192,15 @@ jobs:
 
       - name: dropped runtimes table reintroduction ratchet (#679 PR10)
         run: scripts/ci/ratchets/dropped_runtimes_table.sh
+
+      # #1300 — the enumeration of report-write call sites, so a new one has to
+      # be declared and a reviewer sees which author it passes. A drift
+      # detector, not a semantic gate; the script states its four blind spots.
+      - name: persist_report census selftest (#1300)
+        run: scripts/ci/ratchets/persist_report_call_sites_selftest.sh
+
+      - name: persist_report call-site census (#1300)
+        run: scripts/ci/ratchets/persist_report_call_sites.sh
 
       - name: no parallel operation-event entrance (#679 PR4)
         run: |
@@ -378,11 +461,19 @@ jobs:
       - name: template rename residual gate (#1209 PR-2, acceptance B10)
         run: ./scripts/gate-1209-template-rename-residual.sh
 
+      - name: terminology ratchet (#1316 S0)
+        run: ./scripts/gate-1316-terminology-ratchet.sh
+
+      - name: terminology ratchet discriminates (#1316 S0)
+        run: ./scripts/gate-1316-terminology-ratchet.sh --selftest
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
   rust:
     name: rust (test)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -413,9 +504,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Shared key so the openapi-drift job (which also builds the
-          # workspace via `cargo run --bin emit-openapi`) reuses this cache.
-          shared-key: workspace
+          # Test artifacts are profile/feature-specific. Sharing this key with the faster OpenAPI
+          # and release jobs made the first finisher persist a partial cache that could never be
+          # augmented (GitHub cache keys are immutable), so every exact "hit" still rebuilt all 105
+          # test binaries. Include workspace crates and rotate on Rust source changes; non-Rust PRs
+          # then restore the complete test graph, while Rust PRs fall back and rebuild what changed.
+          shared-key: rust-test
+          key: ${{ hashFiles('**/*.rs') }}
+          cache-workspace-crates: true
 
       # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
       # .config/nextest.toml; CI uses --profile ci below.
@@ -488,55 +584,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  frozen-vectors:
-    name: frozen security vectors freeze gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Full history so the commit-range walk below can diff against the
-          # PR base / push predecessor.
-          fetch-depth: 0
-
-      # Issue #679 PR0-A — the gate-denial vector corpus under
-      # crates/calm-server/tests/vectors/ is FROZEN characterization data:
-      # it pins the role-gate decision matrix so a future gate rewrite
-      # (#679 PR7) must pass the same files unmodified instead of rewriting
-      # its own tests. Any commit that touches the dir must carry a
-      # `FROZEN-VECTOR-CHANGE:` rationale in its message — same spirit as
-      # the raw_repo grep gate above, but keyed on commit messages so the
-      # change is a conscious, auditable decision.
-      - name: vectors dir changes require FROZEN-VECTOR-CHANGE rationale
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          VEC_DIR='crates/calm-server/tests/vectors/'
-          # Resolve a usable base: PR base sha or push `before`; fall back to
-          # the first parent when unavailable (branch creation pushes report
-          # `before` as 40 zeros).
-          if [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-            BASE_SHA=$(git rev-parse HEAD~1)
-          fi
-          if git diff --quiet "$BASE_SHA"...HEAD -- "$VEC_DIR"; then
-            echo "OK: frozen vectors untouched"
-            exit 0
-          fi
-          # Vectors changed — every commit in range whose diff touches the
-          # dir must carry the rationale marker in its full message.
-          bad=0
-          for sha in $(git log --format=%H "$BASE_SHA"..HEAD -- "$VEC_DIR"); do
-            if ! git log -1 --format=%B "$sha" | grep -q 'FROZEN-VECTOR-CHANGE:'; then
-              echo "::error::commit $sha touches $VEC_DIR without a 'FROZEN-VECTOR-CHANGE:' rationale in its message"
-              git log -1 --format='  %h %s' "$sha"
-              bad=1
-            fi
-          done
-          if [ "$bad" -ne 0 ]; then
-            exit 1
-          fi
-          echo "OK: all vector-touching commits carry FROZEN-VECTOR-CHANGE:"
-
   # #903 — the `web (build + test + a11y)` job split into a parallel pair
   # (this `web-unit` + `a11y` below) to kill the serial bottleneck: vitest
   # (~64s) + the replay build (~47s) + a11y (~149s) used to run back-to-back
@@ -545,6 +592,8 @@ jobs:
   # rust-cache setup that only the `a11y` half needs.
   web-unit:
     name: web-unit (build + test)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -577,6 +626,8 @@ jobs:
 
   fe-unit:
     name: fe-unit (lint + build + test)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -619,6 +670,8 @@ jobs:
 
   fe-browser:
     name: fe-browser (vitest + chromium)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -656,13 +709,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+      MUTATION_TEST_SCOPE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'witness' }}
     defaults:
       run:
         working-directory: fe
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix }}
       total: ${{ steps.plan.outputs.total }}
+      selected: ${{ steps.plan.outputs.selected }}
+      test_scope: ${{ steps.plan.outputs.test_scope }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -677,32 +734,41 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      # Chromium is deliberately NOT installed here: --plan runs no vitest.
-      # `test:mutation:plan` also deliberately does NOT chain
-      # `test:mutation:fixtures` — the fixture e2e stays on the shard jobs.
+      # Run harness fixtures once here, before any fan-out. They used to run once per shard even
+      # though they do not depend on shard contents. Chromium is still unnecessary: the fixtures
+      # and --plan use only the platform-independent project.
       - name: Plan mutation shards
         id: plan
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            plan=$(npm run --silent test:mutation:plan -- --base "$BASE_SHA")
-          else
-            plan=$(npm run --silent test:mutation:plan)
+          npm run test:mutation:fixtures
+          args=(--test-scope "$MUTATION_TEST_SCOPE")
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "push" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              args+=(--base "$BASE_SHA")
+            else
+              echo "::warning::mutation base is unavailable; selecting the full manifest"
+            fi
           fi
+          plan=$(npm run --silent test:mutation:plan -- "${args[@]}")
           echo "plan=$plan"
           # jq parses the WHOLE captured stdout, so any extra line (prefix OR suffix) is a parse
           # error rather than a silently wrong plan. Each value is its own assignment so `set -e`
           # actually fires on a jq failure — inside `echo "x=$(...)"` the status was discarded and
           # the run only died much later at fromJSON('') in the shard matrix, off the required check.
           shards=$(printf '%s' "$plan" | jq -c '.shards')
+          matrix=$(printf '%s' "$plan" | jq -c '.matrix')
           total=$(printf '%s' "$plan" | jq -r '.total')
           selected=$(printf '%s' "$plan" | jq -r '.selected')
           clamped=$(printf '%s' "$plan" | jq -r '.clamped')
+          test_scope=$(printf '%s' "$plan" | jq -r '.test_scope')
           # `selected` is validated alongside `total`: it is arithmetic input below, and under
           # `set -eu` a non-numeric value aborts the step anyway — a malformed plan SHOULD fail here.
           case "$total" in ''|*[!0-9]*) total='' ;; esac
           case "$selected" in ''|*[!0-9]*) selected='' ;; esac
-          if [ -z "$shards" ] || [ -z "$total" ] || [ -z "$selected" ] || [ "$total" = "0" ] || [ "${shards#\[}" = "$shards" ]; then
+          if [ -z "$shards" ] || [ -z "$matrix" ] || [ -z "$total" ] || [ -z "$selected" ] \
+             || [ "$total" = "0" ] || [ "${shards#\[}" = "$shards" ] || [ "${matrix#\[}" = "$matrix" ] \
+             || { [ "$test_scope" != "full" ] && [ "$test_scope" != "witness" ]; }; then
             echo "mutation plan did not produce a usable shard matrix; raw plan: $plan" >&2
             exit 1
           fi
@@ -710,8 +776,14 @@ jobs:
           # {"total":99999,"shards":[1]} passed both, and the single shard job then ran
           # `--shard 1/99999` — about one of 65 entries — and the aggregate gate went green.
           # plan-purity.mjs asserts the same identity but runs in the SHARD job, too late to stop this.
-          if ! printf '%s' "$plan" | jq -e '(.shards | length) == .total and .shards == [range(1; .total + 1)]' >/dev/null; then
-            echo "mutation plan shard list is not exactly 1..total; raw plan: $plan" >&2
+          if ! printf '%s' "$plan" | jq -e '
+            (.shards | length) == .total
+            and .shards == [range(1; .total + 1)]
+            and (.matrix | length) == .total
+            and [.matrix[].shard] == .shards
+            and all(.matrix[]; (.browser | type) == "boolean")
+          ' >/dev/null; then
+            echo "mutation plan shard list/matrix is not exactly 1..total; raw plan: $plan" >&2
             exit 1
           fi
           # The warning below never fails the step; a malformed plan always does, above.
@@ -722,33 +794,28 @@ jobs:
             echo "::warning::fe-mutation: $selected selected entries exceed the $total-shard cap; ~$per_shard entries per shard (cap keeps wall clock from being flat — consider raising maxShards in fe/tools/mutation/runner.ts)"
           fi
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "selected=$selected" >> "$GITHUB_OUTPUT"
+          echo "test_scope=$test_scope" >> "$GITHUB_OUTPUT"
 
   fe-mutation-shard:
     name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}
     runs-on: ubuntu-latest
-    # 15 → 25 (kept from main's #1091 measurement; the headroom stays even
-    # though #1119 makes hitting it far less likely).
-    # This job is inherently expensive: tools/mutation/run.mjs re-runs the
-    # ENTIRE vitest suite once per mutation entry (it shells out to a bare
-    # `npx vitest run`; the manifest's `selection_paths` is metadata and does
-    # not narrow the run), so a shard's cost tracks total suite size, not the
-    # size of the PR under test.
-    # Measured on the old fixed 6-way matrix, shard 3/6: origin/main runs took
-    # 12m58s, 13m06s, 14m17s and 14m50s, and one run hit 15m16s and was
-    # CANCELLED by the old 15m ceiling — the worst shard carried 11 entries.
-    # #1119 caps a shard at ~4 entries (fe/tools/mutation/runner.ts
-    # entriesPerShard) until the manifest passes 128 selected entries, after
-    # which the plan job emits a ::warning:: naming the real entries-per-shard.
-    # 25m is the backstop for that clamped regime.
+    # Full scheduled/manual evidence keeps four entries per shard and the historical timeout.
+    # PR/main witness evidence runs declared test files only, so it uses twelve entries per shard.
+    # Eight-way max-parallel lets the off-hours full sweep make progress without taking every
+    # repository runner slot; witness mode currently produces at most six shards for 66 entries.
     timeout-minutes: 25
     needs: fe-mutation-plan
+    if: needs.fe-mutation-plan.outputs.selected != '0'
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix:
-        shard: ${{ fromJSON(needs.fe-mutation-plan.outputs.shards) }}
+        include: ${{ fromJSON(needs.fe-mutation-plan.outputs.matrix) }}
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
     defaults:
       run:
         working-directory: fe
@@ -767,15 +834,23 @@ jobs:
         run: npm ci
 
       - name: Install Chromium with system dependencies
+        if: matrix.browser
         run: npx playwright install --with-deps chromium
 
-      - name: Run mutation evidence selected by PR target intersection
-        if: github.event_name == 'pull_request'
-        run: npm run test:mutation -- --base "$BASE_SHA" --shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }} --report /tmp/mutation-report-${{ matrix.shard }}.json
-
-      - name: Run all mutation evidence on main
-        if: github.event_name == 'push'
-        run: npm run test:mutation -- --shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }} --report /tmp/mutation-report-${{ matrix.shard }}.json
+      - name: Run mutation evidence
+        run: |
+          set -euo pipefail
+          args=(
+            --test-scope "${{ needs.fe-mutation-plan.outputs.test_scope }}"
+            --shard "${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}"
+            --report "/tmp/mutation-report-${{ matrix.shard }}.json"
+          )
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "push" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              args+=(--base "$BASE_SHA")
+            fi
+          fi
+          npm run test:mutation:run -- "${args[@]}"
 
       - name: Upload mutation report
         if: always()
@@ -787,8 +862,8 @@ jobs:
 
   # #1119 — THE required check. It exists so branch protection can pin ONE
   # stable context name while the shard count floats with the manifest.
-  # Fail-closed: anything that is not exactly `success` (including skipped
-  # and cancelled) fails this job.
+  # Fail-closed except for the deliberate zero-selection shape: the plan succeeds, the shard job is
+  # skipped before provisioning a runner, and this stable required context records success.
   fe-mutation:
     name: fe-mutation (tracked evidence)
     runs-on: ubuntu-latest
@@ -800,10 +875,21 @@ jobs:
         env:
           PLAN_RESULT: ${{ needs.fe-mutation-plan.result }}
           SHARD_RESULT: ${{ needs.fe-mutation-shard.result }}
+          SELECTED: ${{ needs.fe-mutation-plan.outputs.selected }}
+          TEST_SCOPE: ${{ needs.fe-mutation-plan.outputs.test_scope }}
         run: |
           echo "fe-mutation-plan: $PLAN_RESULT"
           echo "fe-mutation-shard: $SHARD_RESULT"
-          if [ "$PLAN_RESULT" != "success" ] || [ "$SHARD_RESULT" != "success" ]; then
+          echo "fe-mutation selected=$SELECTED scope=$TEST_SCOPE"
+          if [ "$PLAN_RESULT" != "success" ]; then
+            echo "fe-mutation evidence plan failed"
+            exit 1
+          fi
+          if [ "$SELECTED" = "0" ] && [ "$SHARD_RESULT" = "skipped" ]; then
+            echo "fe-mutation: no affected evidence entries"
+            exit 0
+          fi
+          if [ "$SELECTED" = "0" ] || [ "$SHARD_RESULT" != "success" ]; then
             echo "fe-mutation evidence gate failed"
             exit 1
           fi
@@ -820,6 +906,8 @@ jobs:
 
   fe-e2e:
     name: fe e2e (playwright + docker stack)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -911,6 +999,8 @@ jobs:
 
   stack-e2e-tier-1:
     name: stack e2e (tier 1)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
     # Match the chromium stack job's runner pin so the host-built release
     # binaries remain ABI-compatible with the bookworm-slim runtime image.
     runs-on: ubuntu-22.04
@@ -988,6 +1078,8 @@ jobs:
 
   openapi-drift:
     name: openapi drift (cargo emit-openapi == checked-in spec)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

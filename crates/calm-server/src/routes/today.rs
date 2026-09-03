@@ -613,11 +613,16 @@ pub(crate) async fn ensure_today_launchpad(
             //
             // Unlike the launchpad arm below, this one is genuinely reachable:
             // `cove_get_system()` runs OUTSIDE any transaction, so two
-            // concurrent `POST /api/today/launchpad/ensure` calls can both read
-            // `None` and both reach the mint. NOT two page loads — a page load
-            // calls only the read-only resolve and never gets here
-            // (INV-TODAYDOC-001); `ensure` has no production caller at all
-            // today, so the race needs two deliberate bootstrap requests.
+            // concurrent entries into this handler can both read `None` and
+            // both reach the mint. NOT two page loads — a page load calls only
+            // the read-only resolve and never gets here (INV-TODAYDOC-001).
+            // What *does* reach here in production is either a deliberate
+            // `POST /api/today/launchpad/ensure`, or `POST /api/today/summary`,
+            // which calls this handler directly
+            // (`routes::today_summary::write_today_summary`, the
+            // `ensure_today_launchpad(State(app.clone()), synthetic_actor())`
+            // call). So the race needs two concurrent such actions, not two
+            // page loads.
             // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
             // drives exactly that.
             Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => {
@@ -693,8 +698,13 @@ pub(crate) async fn ensure_today_launchpad(
         }
         Err(e) => return Err(e),
     };
-    // #1147 S2 (design D3) — the launchpad is the fifth wave-create entry
-    // point and it does **not** go through `create_wave_structure` (raw
+    // #1147 S2 (design D3) — the launchpad is one of the four wave-create
+    // entry points (`POST /api/waves`, cove chat, launchpad, child wave;
+    // template seeding was a fifth until #1300 S2 deleted it). The enumeration
+    // is spelled out once, in `tests/cases/wave_workspace_materialize.rs`,
+    // because an ordinal repeated across files is what drifted: this comment
+    // and `child_wave_adapter.rs` both used to call themselves "the fifth".
+    // It does **not** go through `create_wave_structure` (raw
     // `INSERT INTO waves`), so it carries its own materialize call. Skipping it
     // would leave every codex task on the Today panel dying with
     // `spawn-failed` (`git rev-parse --show-toplevel` on a non-repository),
