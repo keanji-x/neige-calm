@@ -212,6 +212,29 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(screen.getByRole('button', { name: 'New conversation' })).toBeTruthy();
   });
 
+  /*
+   * The symbol, not just the control. It drew `Icon name="chat"` — a speech
+   * bubble — while every other "make a new one" in the app draws `plus`, and
+   * owner looking for a way to add a conversation did not recognise it as one.
+   * A label-only assertion stayed green through that, because the label was
+   * always right; what was wrong was the glyph.
+   *
+   * Pinned against the shell's own add rather than against a copy of the plus
+   * path: the claim is that these two agree, and a literal path here would go
+   * on passing if the icon set changed underneath both.
+   */
+  it('draws the same add glyph the rest of the app draws, not a speech bubble', async () => {
+    renderApp();
+    await screen.findByText('No conversations yet.');
+    const glyphOf = (element: HTMLElement) =>
+      Array.from(element.querySelectorAll('path')).map((path) => path.getAttribute('d'));
+    const conversation = glyphOf(screen.getByRole('button', { name: 'New conversation' }));
+    /* The sidebar's "New area" is the app's reference add control. */
+    const area = glyphOf(screen.getByRole('button', { name: 'New area' }));
+    expect(area.length).toBeGreaterThan(0);
+    expect(conversation).toEqual(area);
+  });
+
   it('offers no + at all while there is no launchpad', async () => {
     renderNoLaunchpad();
     await screen.findByText('No conversations yet.');

@@ -121,7 +121,7 @@ describe('the summary notice answers a control, not the document', () => {
       /></Main>,
     );
     const notice = container.querySelector('[data-nc-role="hint"]');
-    const trigger = container.querySelector('button[data-nc-action="secondary"]');
+    const trigger = container.querySelector('button[data-nc-action="tertiary"]');
     const region = regionOf(container);
     expect(notice).not.toBeNull();
     expect(trigger).not.toBeNull();
@@ -196,7 +196,7 @@ describe('the document region owns the column the report will stand in', () => {
         onWriteSummary={() => undefined}
       /></Main>,
     );
-    const trigger = container.querySelector('button[data-nc-action="secondary"]')
+    const trigger = container.querySelector('button[data-nc-action="tertiary"]')
       ?.parentElement?.parentElement as HTMLElement;
     const column = trigger.parentElement?.parentElement as HTMLElement;
     const triggerBox = trigger.getBoundingClientRect();

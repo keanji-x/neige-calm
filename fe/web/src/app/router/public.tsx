@@ -1311,10 +1311,23 @@ function useConversationPanel(
       />
     ),
     /* The module head's action, composed by the page — same slot the TRACKS and
-       CARDS modules already use, which is why this needed no new mechanism. */
+       CARDS modules already use, which is why this needed no new mechanism.
+     *
+     * `plus`, not `chat`. This drew the speech bubble until owner tried to add a
+     * conversation on Today and did not recognise the control as an add — the
+     * label said `New conversation` and it worked, but every other "make a new
+     * one" in the app is a `+`: `New area` and `New track in {area}` in the
+     * shell sidebar, `New track` on the area page. The bubble named the *noun*
+     * while the rest of the app names the *verb*, so it read as a decoration of
+     * the module title rather than as the module's action.
+     *
+     * One element, and since #1341 all three `'rows'` routes render it — Today,
+     * the area page and the track page — so this is the same symbol in all three
+     * places rather than three that agree by coincidence.
+     */
     action: source.kind === 'elsewhere'
       ? undefined
-      : <PanelAction label="New conversation" onClick={start}><Icon name="chat" size="sm" /></PanelAction>,
+      : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     startConversation: source.kind === 'elsewhere' ? undefined : start,
     drawer: (
       <Drawer

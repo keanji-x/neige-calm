@@ -89,6 +89,36 @@ const WRITING_LABEL = 'Writing\u2026';
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
 
 /**
+ * The week grid's section label, named after the week it actually labels.
+ *
+ * It used to read `weekStart`'s month alone, which put `August 2026` above a
+ * grid of 8/31–9/6 while the page header said `Thursday, September 3` — two
+ * months on one screen, and the reader has to work out which one the calendar
+ * means. A week crossing a month is ordinary (most months produce one), so this
+ * is the common path, not a boundary case.
+ *
+ * Naming both months is what keeps the label a label: the row names the seven
+ * days below it, and on a crossing week those days are in two months. It also
+ * cannot contradict the header, whose month is always one of the two.
+ *
+ * The year is printed once when both ends share it and twice when they do not,
+ * so a New Year's week reads `Dec 2026 – Jan 2027` rather than filing December
+ * under the wrong year. Short month names keep the crossing label inside a
+ * seven-column panel that full names would overrun.
+ */
+function weekLabel(weekStart: Date, weekEnd: Date): string {
+  const long = (date: Date, options: Intl.DateTimeFormatOptions) =>
+    date.toLocaleDateString('en-US', options);
+  if (weekStart.getMonth() === weekEnd.getMonth() && weekStart.getFullYear() === weekEnd.getFullYear()) {
+    return long(weekStart, { month: 'long', year: 'numeric' });
+  }
+  if (weekStart.getFullYear() === weekEnd.getFullYear()) {
+    return `${long(weekStart, { month: 'short' })} – ${long(weekEnd, { month: 'short', year: 'numeric' })}`;
+  }
+  return `${long(weekStart, { month: 'short', year: 'numeric' })} – ${long(weekEnd, { month: 'short', year: 'numeric' })}`;
+}
+
+/**
  * An agenda row spans areas, so it always names one. When the id resolves to
  * nothing the row says so rather than going silent: a row with the area phrase
  * simply missing is indistinguishable from a row that belongs nowhere, and the
@@ -535,21 +565,31 @@ function SummaryTrigger({ label, onWrite, pending, phase, notice }: {
       <p className={styles.summaryCaption}>{SUMMARY_CAPTION}</p>
       <div className={styles.summaryRow}>
         {/*
-          `data-nc-action="secondary"` \u2014 the app's existing framed-but-quiet
-          tier (\u00a74.1), not a button drawn in this module.
+          `data-nc-action="tertiary"` \u2014 \u00a74.1's quiet tier, on its own.
 
-          It was `tertiary` plus `.moreButton`, which is the disclosure recipe:
-          11px, no border, no fill. Owner read it as a phrase rather than as
-          something to press, and asked for a grey rounded button. `secondary`
-          is that button and it already exists \u2014 border, radius and chip fill
-          from base.css \u2014 so taking it costs no new geometry and keeps
-          `[data-nc-action]` the single vocabulary \u00a79's gate measures. `primary`
-          is the one tier that would take the accent and compete with the
-          report, which is the opposite of what was asked for.
+          Two owner readings shaped this, and the second overturned the first.
+          It began as `tertiary` **plus `.moreButton`**, and read as a phrase
+          rather than as something to press; the fix taken then was `secondary`,
+          which is the framed tier. Owner read that frame as too heavy for a
+          control the report should outrank.
+
+          What that pair of readings locates is the shrink, not the tier.
+          `.moreButton` is the disclosure recipe \u2014 `--text-xs`, `--space-2`
+          padding, no border \u2014 so it overrode \u00a74.1's geometry down to something
+          text-sized. `tertiary` alone keeps that geometry: `--control-h`,
+          `--space-6` padding-inline and `--text-base`, which is button-shaped
+          at rest without drawing a frame around it. Its fill and border are
+          transparent until `:hover`/`:focus-visible`, where \u00a74.1 raises it to
+          `--overlay-hover` and `--text` \u2014 quiet on arrival, and it answers when
+          the pointer or the keyboard reaches it.
+
+          Still a tier and not a button drawn here: \u00a79's gate measures
+          `[data-nc-action]` as one vocabulary, and `.moreButton` is exactly the
+          per-module override that got this wrong the first time.
         */}
         <button
           type="button"
-          data-nc-action="secondary"
+          data-nc-action="tertiary"
           // Disabled only while a request is actually in flight, so a double
           // click cannot send two. Not a general "can you press this?" gate:
           // whether there is anything to summarise is the server's answer.
@@ -681,7 +721,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
           <button type="button" data-nc-role="icon" className={styles.navButton}
             aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}><Icon name="chevron-left" /></button>
           <span className={styles.monthLabel}>
-            {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+            {weekLabel(weekStart, addDays(weekStart, 6))}
           </span>
           <button type="button" data-nc-role="icon" className={styles.navButton}
             aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}><Icon name="chevron-right" /></button>

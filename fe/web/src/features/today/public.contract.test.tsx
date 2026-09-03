@@ -376,22 +376,25 @@ describe('#1253 D5 the document’s trigger', () => {
    * The control is a button in the app's own vocabulary, and it says what it
    * does before it is pressed.
    *
-   * Both halves are owner feedback on the 4140 preview: the control read as a
-   * phrase rather than as something pressable (it was `tertiary` plus the
-   * 11px borderless disclosure recipe), and its label alone did not say who
-   * acts or where the result lands. `secondary` is the existing framed-but-
-   * quiet tier — asserted by name, because a button drawn locally in
-   * `today.module.css` is exactly the drift §9's `[data-nc-action]` gate
-   * exists to catch, and it would still look right.
+   * Both halves are owner feedback on the 4140 preview, and the tier took two
+   * rounds. It read as a phrase rather than as something pressable while it was
+   * `tertiary` plus the 11px borderless disclosure recipe; `secondary` fixed
+   * that and then read as too heavy a frame beside the report. It is `tertiary`
+   * alone now — §4.1's geometry without `.moreButton`'s shrink — which is
+   * button-shaped at rest and takes its fill on hover and focus.
+   *
+   * Asserted by name, because a button drawn locally in `today.module.css` is
+   * exactly the drift §9's `[data-nc-action]` gate exists to catch, and it
+   * would still look right.
    */
-  it('is a secondary action carrying a caption for what it does', () => {
+  it('is a tertiary action carrying a caption for what it does', () => {
     render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       onWriteSummary={() => undefined}
     />);
     const button = screen.getByRole('button', { name: WRITE });
-    expect(button.getAttribute('data-nc-action')).toBe('secondary');
+    expect(button.getAttribute('data-nc-action')).toBe('tertiary');
     expect(screen.getByText('An agent reads today’s activity and writes it up here.')).toBeTruthy();
   });
 
