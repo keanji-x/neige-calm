@@ -7,6 +7,7 @@ pub mod auth;
 pub mod callbacks;
 pub mod child_process;
 pub mod cli_query;
+pub mod config;
 pub mod connector;
 pub mod error;
 pub mod events;
@@ -30,10 +31,11 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 pub use auth::{PluginToken, hash_token, verify_token};
 pub use cli_query::{CLI_QUERY_BRINGUP_BUDGET, CliQueryRuntime};
+pub use config::{effective_config, missing_required};
 pub use connector::{ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
 pub use http_mcp::{HttpCredential, HttpMcpClient};
-pub use manifest::{ConnectorKind, Manifest};
+pub use manifest::{CONFIG_SCHEMA_KEY, ConnectorKind, Manifest};
 pub use mcp::{
     CallToolResult, ContentBlock, InboundNotification, InboundRequest, McpClient, RequestId,
     ResourceContent, ResourceContents, RpcError,

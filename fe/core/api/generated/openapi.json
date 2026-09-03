@@ -2155,6 +2155,8 @@
         "tags": [
           "plugins"
         ],
+        "summary": "#1284 §2.2 — a real PATCH with a real validator.",
+        "description": "What this used to be: `Json<Value>` written to the row wholesale, with the\nname PATCH and the semantics of PUT and no validation of any kind. Three\nthings change, all of them observable:\n\n1. **No `config_schema` ⇒ 400.** A plugin that declares no configurable\n   surface has no key this endpoint could meaningfully store; accepting\n   arbitrary JSON there was how \"configuration\" stayed a field with no\n   semantics. This **overturns** the existing assertion in\n   `tests/cases/plugin_routes.rs::patch_config_writes_user_config`, which\n   pinned the 200; that test now drives a plugin that declares a schema,\n   and its sibling pins the 400 for one that does not.\n2. **Patch semantics** per `INV-SETTINGS-001`: absent keys keep their\n   stored value, an explicit `null` deletes the key (and thereby restores\n   its manifest default — see\n   [`effective_config`](crate::plugin_host::effective_config)).\n3. **Validation** against the manifest's `config_schema`, with the byte cap\n   `template_input` already uses.\n\n## Every branch that reaches (or refuses) the write, audited\n\nRound 2 of the S1 review, and the reason this table is in the source rather\nthan in a PR comment. Round 1 introduced two defects **of the class it was\nfixing**: guarding against \"an invisible key locks the operator out\" it\nadded a silent destructive write, and guarding against \"a coerced row\nsilently loses data\" it added a 500 that no API could clear. Patching those\ntwo cells one at a time would have been the same mistake a third time, so\nthe branches are enumerated and each is asked the two questions that\ngenerated both defects. Any cell answering \"yes\" is a bug, not a trade-off.\n\n* **(a) Can this branch lose configuration the operator did not delete?**\n* **(b) If this branch refuses, is the operator then unable to fix it\n  through any API?**\n\n| # | branch | writes? | (a) silent loss | (b) locked out | why |\n|---|---|---|---|---|---|\n| 1 | unknown id ⇒ 404 | no | no | n/a | there is no row to lose or repair |\n| 2 | registry has no `Manifest` ⇒ 409 `plugin_manifest_unloaded` | no | no | **no** | `POST /reload` re-reads the manifest; for the durable half (a `manifest.json` that fails to parse) the message names *that* as the thing to fix, because a reload alone would fail again |\n| 3 | stored `user_config` is not an object ⇒ 409 `plugin_config_corrupt` | no | no | **no** | `?reset=true` replaces it with `{}` from the API. This cell was the round-1 defect: a 500 on the only write path for this field *on an installed row* (round 3 P2-3 moved that claim onto its carrier — `plugin_install`'s upsert no longer resets `user_config`, so it no longer rests on the duplicate-id 409), so every later request failed identically and the outs were uninstall/reinstall or a hand-edited DB |\n| 4 | `?reset=true` ⇒ base is `{}` | yes | **no** | n/a | destructive, but only on an explicit query parameter — the operator *is* the deletion. Without a knob like this, cell 3 has no exit |\n| 5 | manifest declares no `config_schema` ⇒ 400 | no | no | no | permanent by construction; there is no configuration to be locked out of |\n| 6 | body is not a JSON object ⇒ 400 | no | no | no | fixed by resending |\n| 7 | request names an undeclared key ⇒ 400 | no | no | no | fixed by dropping that key; the request document is the operator's and fully visible to them |\n| 8 | request key with a non-`null` value | yes | no | n/a | overwrites exactly the key the operator named |\n| 9 | request key with `null` | yes | no | n/a | deletes exactly the key the operator named |\n| 10 | stored keys the current schema no longer declares | yes | **no** | no | they are **kept** in the row and merely excluded from what is validated. Round 1 pruned them *and wrote the pruned map back*, destroying an operator's values on an unrelated PATCH — and if the manifest ever widens back, the setting returns. `effective_config` ignores them either way, so nothing runs with them and the unlock is identical |\n| 11 | merged declared-key document violates the schema ⇒ 400 | no | no | no | the previous row stands; every key named in the error is one the form shows |\n| 12 | byte cap over the merged declared-key document ⇒ 400 | no | no | **no** | the operator shrinks or clears a declared key and the same request succeeds. It is deliberately **not** taken over the residue in cell 10: those bytes are not shrinkable by an ordinary patch, so refusing on them here would be a lockout — and they are not what a consumer reads, since `effective_config` drops them. **This bounds each write, not the row**: cell 12b is what bounds the row |\n| 12b | total cap over the whole stored document, residue included ⇒ 400 | no | no | **no** | round 3 (P1-1). Cell 12's exclusion of residue is right for *that* cap and says nothing about the total: residue only ever grows (nothing prunes it, the write is whole-document, `reload` does not touch `user_config`), so `declare {a}` → fill `a` → narrow to `{b}` → reload → fill `b` → narrow … adds ~8 KiB per turn with every step a legal 200, and the row is echoed in every detail response. The refusal names the exit and the exit is real: `?reset=true` carrying the operator's current keys keeps their configuration and drops exactly the residue, in one request. That is why this is a cap and not the lockout cell 12 avoids |\n| 13 | `plugin_update_user_config` fails ⇒ 500 | no | no | no | genuinely server-side and transient; the row is untouched |\n| 14 | another lifecycle operation holds the id ⇒ 409 `plugin_busy` | no | no | **no** | round 3 (P1-2). The handler is a read-modify-write and used to take no lock while every other lifecycle entry point does, so **(a) was \"yes\"**: two concurrent PATCHes both read the old row and the loser's key vanished from the winner's write. The other interleaving is PATCH against `reload`: judge against the registry's schema at line N, store for the schema a consumer reads at line N+1 — and `effective_config` type-checks nothing on read, so that value reaches S2/S3a/S3b verbatim. The guard closes both. Retry is the whole remedy: a refused acquisition has done nothing |\n| 15 | the `Query` / `Json` extractors reject (`?reset=x`, malformed JSON, no `application/json`) ⇒ 400 / 415 / 422 | no | no | no | **runs before cell 1** — before the handler exists — so it outranks even the 404, and its body is axum's plain text with no `code`: this row is the one place where a response from this path is *outside* the `ErrorBody` contract the rest of the table assumes. Left as-is deliberately: it is the shape of every extractor in this tree, and a rejection wrapper for one endpoint would make this route the exception rather than the rule. The `utoipa` responses list 415 and 422 so the published contract does not claim they cannot happen |\n\nThree further things the S1 review settled, all of which are semantics\nrather than plumbing:\n\n4. **The request document is judged first, values second.** A key the\n   schema does not declare is refused whatever its value — including\n   `null`. The first cut interpreted `null` as \"delete\" *before* validating\n   and so let `{\"ghost\": null}` through with a 200 on a schema that has no\n   `ghost`, which made \"the request is validated against the schema\" false\n   as written. The key-name rule comes from\n   [`reject_undeclared_keys`](crate::plugin_host::template_input::reject_undeclared_keys),\n   the same function `validate_instance` uses.\n5. **Stored keys the current schema no longer declares are excluded from\n   validation, and kept in the row.** They are residue from an older\n   manifest; [`effective_config`](crate::plugin_host::effective_config)\n   already drops them, so nothing runs with them. Carrying them into\n   validation meant that after a schema narrowed, *every* subsequent PATCH\n   — however legal — failed with \"unknown field `old`\" until the operator\n   guessed to send `{\"old\": null}` for a key no UI shows. An operator must\n   not be locked out by a key they cannot see. **Round 2 corrected the\n   remedy**: round 1 pruned the merged map and wrote the pruned result\n   back, which unlocked the write by *deleting the operator's data* on an\n   unrelated edit. Validating a pruned copy unlocks it identically and\n   keeps the row intact.\n6. **`required` is not enforced here** (design adjudication on the S1\n   review). §2.2.5 says a Save carries only the keys the operator edited,\n   so enforcing `required` on the write would make the first Save of any\n   plugin with two no-default required keys unconditionally 400 — the two\n   rules are incompatible and this is the one that gives. `required` is\n   enforced at **consumption** (S2/S3 bring-up): a plugin missing required\n   configuration does not start, and lands in the `unavailable` +\n   `last_error` terminal state §2.4 already defines. This **overturns**\n   `patch_config_enforces_required_keys_but_lets_defaults_satisfy_them`.\n   With `required` gone, the two validation passes the first cut ran\n   collapse into one — the second existed only to enforce it.\n\n## Refusal priority: `404 → 409 → 400`\n\nThe gates run in that order, and the order is part of the contract. Two\nthings sit outside it and are stated rather than hidden:\n\n* **The extractors run first** (table cell 15). `Query<ConfigPatchQuery>`\n  and `Json<Value>` reject `?reset=x`, malformed JSON and a missing\n  `application/json` before this function is entered, with axum's plain-text\n  400 / 415 / 422 and no `code`. Those responses are *not* `ErrorBody`s;\n  everything the priority list below covers is.\n* **The lifecycle guard is taken before the 404** (cell 14), the same\n  ordering `install` uses. It cannot change any answer below — a\n  nonexistent id's lock is always free — and it exists so this\n  read-modify-write cannot interleave with itself, or with a `reload`.\n\n* **404** — an unknown id is an unknown id regardless of what the body\n  says. Checking anything else first would leak \"this plugin has no config\n  schema\" for plugins that do not exist.\n* **409** — the two *state* refusals (the registry does not hold this\n  manifest; the stored row is corrupt). Both mean \"not right now, and here\n  is the action that changes that\".\n* **400** — everything about this manifest or this request being wrong:\n  no `config_schema` at all, a non-object body, an undeclared key, a value\n  the schema rejects.\n\nThe cell that decides the order is **no schema *and* a registry gap**: it\nanswers **409**, not 400, because the kernel does not know whether this\nplugin declares a schema — it has not loaded the manifest. Answering 400\nthere would tell the operator \"this plugin will never be configurable\" on\nthe strength of a document the kernel never read, which is exactly the\nwrong action (they would stop, rather than reload / fix `manifest.json`).\nThat is why the registry lookup precedes the `config_schema` check in the\nbody below and not the other way round.\n\nTiming is likewise unchanged, but the comment that used to sit in the body\noverstated it: it claimed the new config would be read \"on next spawn\",\nwhich was never true of anything — nothing read `user_config` at all.\n§2.4: the write does not touch the running process or connector, and taking\neffect needs an explicit `POST /api/plugins/{id}/reload`. For a `cli-query`\nconnector that is not a nicety — its command, PATH and entire env are built\nonce at bring-up and cached, so an un-reloaded config change is\n*completely* inert, not partly.",
         "operationId": "patch_plugin_config",
         "parameters": [
           {
@@ -2165,10 +2167,19 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reset",
+            "in": "query",
+            "description": "Discard the stored `user_config` entirely and apply this patch to an\nempty object (#1284 S1 review P0-C).\n\nThe recovery action for a row whose `user_config` is not a JSON object,\nwhich the kernel otherwise refuses to merge into (409\n`plugin_config_corrupt`) precisely so it does not silently discard\ndata. Without an explicit knob that refusal is permanent: this endpoint\nis the only writer of the field on an installed row (`plugin_install`\nsets it once at row creation and its upsert path leaves it alone —\nP2-3), so no request could ever restore it.\n\nIt is destructive on purpose and never implicit — that is what makes it\ncompatible with \"a write path must never be the thing that loses\nconfiguration\": the deletion is the operator's, named in the request.\nIt works on a healthy row too, where it means \"reset this plugin to its\nmanifest defaults\".",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "requestBody": {
-          "description": "Free-form user-config JSON object",
+          "description": "Partial user-config object: only the keys being edited. An explicit `null` deletes a key; absent keys are left alone. Validated against the plugin manifest's `config_schema`.",
           "content": {
             "application/json": {
               "schema": {
@@ -2189,6 +2200,16 @@
               }
             }
           },
+          "400": {
+            "description": "Plugin declares no `config_schema`, or the patched config violates it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Plugin not found",
             "content": {
@@ -2198,6 +2219,22 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Another lifecycle operation holds this plugin (`plugin_busy`); or the plugin row exists but its manifest is not loaded in the kernel registry (`plugin_manifest_unloaded`); or its stored `user_config` is not a JSON object (`plugin_config_corrupt`, clearable with `?reset=true`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Extractor-level rejection (missing/!= `application/json` content type). Raised by axum's `Json` extractor **before** this handler runs, so the body is plain text and carries no `code` — outside the `ErrorBody` contract"
+          },
+          "422": {
+            "description": "Extractor-level rejection (well-formed JSON that is not deserializable into the request type). Same caveat as 415: plain text, no `code`"
           },
           "500": {
             "description": "Internal error",
@@ -5305,7 +5342,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`plugin_manifest_unloaded`, `plugin_config_corrupt`,\n`spec_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -6139,10 +6176,19 @@
           "state",
           "manifest",
           "user_config",
+          "effective_config",
           "installed_at",
           "updated_at"
         ],
         "properties": {
+          "config_schema": {
+            "type": "object",
+            "description": "#1284 §2.5 / §2.7 — the schema the config form renders from, read from\nthe **registry**, i.e. from the same document the PATCH validates\nagainst and every S2/S3 consumer will read.\n\n**Which copy is which, since there are now two.** `manifest` above is\nstill the persisted `plugins.manifest` blob, verbatim, as it has always\nbeen published — it is the row, and rewriting it here would make this\nresponse a document that exists nowhere. This field is the registry's,\nand for `config_schema` specifically it is the authoritative one; when\nthe two disagree (an install by a pre-#1284 kernel dropped the key from\nthe blob; a `reload` refreshed the registry) `manifest.config_schema`\nis stale or absent and this field is not.\n\nRound 1 left this half-done and the contradiction was pinned by a test\nof its own: `has_config` and `effective_config` had moved to the\nregistry while the schema a form needs was still only reachable through\nthe blob, so the API could answer \"yes, this plugin is configurable\"\nand \"here is what is in force\" while being unable to produce the\ndocument §2.5 renders controls from.\n\n`None` means the same thing `has_config: false` means on the list row:\nno schema is in force — either the manifest declares none, or the\nkernel has not loaded it (see [`registry_manifest`])."
+          },
+          "effective_config": {
+            "type": "object",
+            "description": "#1284 §2.3 — `defaults ⊕ user_config`, i.e. what the plugin runs with.\n\nCarried **alongside** `user_config` rather than replacing it, and that\nis a contract, not redundancy. §2.2.4 says defaults are applied on read\nand never persisted, and §2.2.5 says a Save may only carry the keys the\noperator edited; a form that could not tell \"the operator chose `dark`\"\nfrom \"the manifest defaults to `dark`\" would have to post the merged\nobject back, and its very first Save would materialize every default\ninto the DB — killing §2.2.4 outright. `user_config` answers \"what did\nthe operator choose\" (so a default renders as a placeholder and stays\nout of the payload); `effective_config` answers \"what is in force\".\nDropping `user_config` would also be a wire break for the field's\nexisting readers, for no gain."
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -6171,7 +6217,8 @@
             "format": "int64"
           },
           "user_config": {
-            "type": "object"
+            "type": "object",
+            "description": "What the operator has actually **set** — the persisted row, verbatim,\nwith no defaults folded in."
           },
           "version": {
             "type": "string"
@@ -6186,11 +6233,16 @@
           "version",
           "enabled",
           "state",
-          "manifest_name"
+          "manifest_name",
+          "has_config"
         ],
         "properties": {
           "enabled": {
             "type": "boolean"
+          },
+          "has_config": {
+            "type": "boolean",
+            "description": "#1284 §2.5 — does this plugin declare a `config_schema`?\n\nThe list deliberately does not carry the manifest (see the struct doc),\nwhich left \"this plugin has nothing to configure\" and \"the config\nscreen isn't built yet\" indistinguishable from list data alone — so the\nUI could only guess, and guessing wrong produces exactly the empty\nshell this work exists to remove. This is the one bit that makes the\nquestion decidable, read from the **registry** — the same source the\nwrite path validates against, so \"the form is offered\" and \"the write\nis accepted\" cannot disagree. A plugin whose row exists but whose\nmanifest the kernel has not loaded (see [`registry_manifest`]) reports\n`false`: the kernel knows of no configurable key for it, and its\n`PATCH` says so explicitly rather than 400-ing as \"no schema\"."
           },
           "id": {
             "type": "string"
