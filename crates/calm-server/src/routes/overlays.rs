@@ -51,13 +51,19 @@ pub(crate) async fn overlay_scope(
 /// Two reserved namespaces must be unforgeable from outside the process:
 ///
 ///   * **`entity_kind`** — `view` and `system` hold kernel projections that
-///     the kernel reads back as fact. A `kernel/view/template` row decides
-///     whether the scheduler dispatches a track's tasks at all
-///     (`scheduler::…` admission and its in-claim backstop), whether a planner
-///     harness may start, and whether the track appears in `GET /api/tracks`.
-///     Before this gate, any client with a session could POST that row onto
-///     a *running* track and silently strand it — dispatch stops and the track
-///     vanishes from the list, with nothing in the UI to say why.
+///     the kernel reads back as fact. The motivating case was the
+///     `kernel/view/template` row: it decided whether the scheduler dispatched
+///     a track's tasks at all (ready-set admission and its in-claim backstop),
+///     whether a planner harness could start, and whether the track appeared in
+///     `GET /api/tracks`. Before this gate, any client with a session could
+///     POST that row onto a *running* track and silently strand it — dispatch
+///     stops and the track vanishes from the list, with nothing in the UI to
+///     say why. **#1318 S2 retired that row and all six of its readers**, so
+///     that particular escalation no longer exists; the reserved namespace is
+///     kept because the criterion is "the kernel reads this back as fact", not
+///     "one named row is dangerous" — `kernel/view/layout` is read back the
+///     same way, and the next kernel projection under `view` would inherit the
+///     gap the moment it landed.
 ///   * **`plugin_id`** — `"kernel"` is the namespace `card_fsm` stamps on
 ///     its own rows precisely so they are "unambiguously kernel-owned". A
 ///     client writing under it forges that ownership.
@@ -226,8 +232,13 @@ pub(crate) async fn delete_overlay(
     actor: Actor,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
-    // #1297: deleting a kernel-authored row is the second half of the forge
-    // — mark a track as a template, act, then remove the evidence.
+    // #1297: deleting a kernel-authored row is the second half of the forge —
+    // write a kernel projection, act, then remove the evidence. The concrete
+    // case that motivated it was `kernel/view/template`, which #1318 S2
+    // retired; the gate stays on the delete side for the same reason it stays
+    // on the write side (see `ensure_overlay_write_allowed`): the criterion is
+    // "the kernel reads this back as fact", and `kernel/view/layout` still
+    // does.
     ensure_overlay_write_allowed(&b.plugin_id, &b.entity_kind)?;
     let scope = overlay_scope(s.repo.as_ref(), &b.entity_kind, &b.entity_id).await?;
     let (_unit, _id) = write_with_event_typed(

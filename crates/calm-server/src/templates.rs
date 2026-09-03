@@ -699,10 +699,15 @@ mod tests {
     /// `owned` below is a freshly allocated `String` with identical bytes, so
     /// an equality assertion would pass for both and discriminate nothing.
     ///
-    /// The mutation this catches is not hypothetical: rewriting the lookup as
-    /// `TEMPLATES.iter().find(..).map(|_| Template { key, .. })` (or any
-    /// case-folding rule that reflects the caller's spelling back) still
-    /// returns an equal key and turns this test red.
+    /// The mutation this catches is not hypothetical: any case-folding or
+    /// aliasing rule that reflects the caller's spelling back — e.g.
+    /// `TEMPLATES.iter().find(..).map(|t| &*Box::leak(Box::new(Template {
+    /// key: String::leak(key.to_string()), title: t.title })))` — still
+    /// returns an equal key and turns this test red. (The leak is not
+    /// incidental: the signature returns `Option<&'static Template>`, so a
+    /// mutation that rebuilds the entry has to leak it to compile at all. The
+    /// shorter `.map(|_| Template { .. })` spelling in an earlier draft of this
+    /// comment did not type-check.)
     #[test]
     fn template_by_key_returns_the_rosters_own_borrow() {
         for template in &TEMPLATES {

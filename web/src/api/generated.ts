@@ -6704,7 +6704,7 @@ export interface operations {
                     "application/json": components["schemas"]["TrackConversationSummary"];
                 };
             };
-            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
+            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400. */
             400: {
                 headers: {
                     [name: string]: unknown;

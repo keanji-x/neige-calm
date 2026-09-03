@@ -1261,8 +1261,8 @@ async fn list_tracks_window_area_id_filter() {
 }
 
 /// INV-CHAT-005 paired route-boundary contract: NULL-purpose ordinary tracks
-/// and launchpads remain visible in both public lists, while only area-chat is
-/// hidden. The repository still returns the full set.
+/// and launchpads remain visible in all three public list URIs, while only
+/// area-chat is hidden. The repository still returns the full set.
 #[tokio::test]
 async fn public_track_lists_hide_only_area_chat_and_repo_keeps_full_set() {
     let boot = boot().await;
@@ -1281,9 +1281,18 @@ async fn public_track_lists_hide_only_area_chat_and_repo_keeps_full_set() {
         .unwrap();
 
     let expected = [ordinary.id.as_str(), launchpad.id.as_str()];
+    // #1318 S2 (第一轮评审 F8) — the third URI is the bare list. The deleted
+    // `template_tracks_are_hidden_from_lists_and_visible_by_id` walked all
+    // three; this one covered only the two area-scoped ones, so retiring that
+    // test would have dropped `GET /api/tracks` with no `area_id` from every
+    // list-hiding assertion in the suite. It is the same handler and `area_id`
+    // is only an optional query filter, so this is cheap coverage rather than a
+    // new property — but "cheap" is not "already covered". Only tracks in
+    // `boot.area_id` are seeded here, so the expected set is identical.
     for uri in [
         format!("/api/areas/{}/tracks", boot.area_id),
         format!("/api/tracks?area_id={}", boot.area_id),
+        "/api/tracks".to_string(),
     ] {
         let (status, body) = get(boot.app.clone(), &uri).await;
         assert_eq!(status, StatusCode::OK, "body={body}");

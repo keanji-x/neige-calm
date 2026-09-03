@@ -62,7 +62,7 @@ use crate::routes::codex_cards::default_cwd;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::templates::{template_by_key, template_report};
+use crate::templates::{Template, template_by_key, template_report};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_lifecycle::{track_get_tx, validate_transition};
@@ -660,9 +660,10 @@ pub(crate) async fn create_track(
         None => None,
     };
     // #1318 S2 — the stored `template_id` is the roster's key, not the
-    // caller's string. Both consumers of an admitted id now read the same
-    // value: the recipe lookup already did (`TrackInit::Template { key }`),
-    // and the track row does from here on. Under today's exact-match
+    // caller's string. All three consumers of an admitted id now read the same
+    // value: the recipe lookup already did (`TrackInit::Template { key }`), the
+    // plugin binding does since `admit_template` resolves it from
+    // `template.key`, and the track row does from here on. Under today's exact-match
     // `template_by_key` the two strings are equal, so this is not a
     // behaviour change yet — it is the line that keeps them from diverging
     // the moment admission stops being exact (case folding, aliases), which
@@ -854,17 +855,32 @@ pub(crate) async fn create_track(
 pub(crate) struct TemplateAdmission {
     /// The roster's own `&'static` key, not the caller's string.
     ///
-    /// It reaches **both** consumers of an admitted id:
+    /// It reaches **all three** consumers of an admitted id:
     ///
     ///   * the **recipe lookup** (`templates::template_report`) inside the
     ///     create transaction, via `TrackInit::Template { key }`;
     ///   * the **track row**, since #1318 S2: `create_track` overwrites
     ///     `NewTrack::template_id` with `admission.key` before the insert, so
-    ///     `tracks.template_id` stores the roster's spelling.
+    ///     `tracks.template_id` stores the roster's spelling;
+    ///   * the **plugin binding**, also since #1318 S2 (第一轮评审 F5):
+    ///     [`resolve_template_binding`] takes a `&'static Template` rather than
+    ///     the caller's string, so `binding` — and therefore `plugin_scope` and
+    ///     the `template_input` schema check — is decided by the same spelling
+    ///     the other two read, and can no longer be handed anything else.
     ///
     /// That symmetry is what this borrow protects. A future case-folding or
-    /// aliasing admission rule cannot hand an unnormalized key to either side,
-    /// because the value passed on is the roster's, not the caller's.
+    /// aliasing admission rule cannot hand an unnormalized key to any of the
+    /// three, because the value passed on is the roster's, not the caller's.
+    ///
+    /// The third bullet is not decoration. Leaving the binding on the caller's
+    /// string would have re-created, between a different pair of readers, the
+    /// exact divergence the second bullet closes: under a case-folding
+    /// admission rule a `"SMALL-CHANGE"` create would resolve `binding = None`
+    /// (exact match against the manifest's `"small-change"` descriptor fails)
+    /// and store `plugin_scope = NULL`, while the planner harness's
+    /// `bound_template` — which reads the *row's* `template_id`, now normalized
+    /// — would match. Creation-time and run-time would disagree about which
+    /// plugin owns the track.
     ///
     /// Until #1318 S2 the second bullet read the opposite way:
     /// `CreateTrackRequest::into_parts` put the caller's original string on
@@ -887,22 +903,42 @@ pub(crate) struct TemplateAdmission {
 /// gets `None`, i.e. a 400. That is the whole of #1209 — see §5 of
 /// `docs/architecture/1209-template-workflow-unify.md` for why the alternative
 /// (admitting it as a report-less pseudo-template) was rejected.
+///
+/// The binding is resolved from the admitted roster entry, **not** from `id`:
+/// [`resolve_template_binding`] takes a `&'static Template`, so `id` is
+/// structurally unreachable past the lookup above. Under today's exact-match
+/// `template_by_key` the two strings are byte-identical on every input that
+/// reaches this line, so this is not a behaviour change — it is what makes
+/// [`TemplateAdmission::key`]'s third bullet true, and true by type rather than
+/// by review.
 pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
     let template = template_by_key(id)?;
     Some(TemplateAdmission {
         key: template.key,
-        binding: resolve_template_binding(s, id).await,
+        binding: resolve_template_binding(s, template).await,
     })
 }
 
-/// Resolve `template_id` to the owning plugin Manifest iff a running
-/// **trusted** plugin registers it — same filter as
+/// Resolve an admitted roster [`Template`] to the owning plugin Manifest iff a
+/// running **trusted** plugin registers its key — same filter as
 /// `bound_template_descriptor` on the planner harness side. `None` covers
-/// unknown, stopped, and untrusted templates alike (the route
-/// deliberately does not distinguish them in the 400).
+/// stopped and untrusted templates alike (the route deliberately does not
+/// distinguish them in the 400).
+///
+/// #1318 S2 (第一轮评审 F5) — the parameter is the roster entry, not a
+/// `&str`. It used to take the caller's `template_id` string, which was the
+/// last consumer of an admitted id still reading the caller's spelling: with
+/// `tracks.template_id` now normalized to `admission.key`, a future
+/// case-folding or aliasing admission rule would have made creation-time
+/// binding (`plugin_scope`, `template_input` acceptance) disagree with the
+/// planner harness's run-time `bound_template`, which reads the normalized
+/// column. A
+/// `&'static Template` can only come from [`crate::templates::TEMPLATES`], so
+/// the divergence is closed at compile time rather than pinned by a test that
+/// today's exact match makes indiscriminate.
 pub(crate) async fn resolve_template_binding(
     s: &RouteState,
-    template_id: &str,
+    template: &'static Template,
 ) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
@@ -911,7 +947,7 @@ pub(crate) async fn resolve_template_binding(
             && manifest
                 .templates
                 .iter()
-                .any(|template| template.id == template_id)
+                .any(|descriptor| descriptor.id == template.key)
     })
 }
 
@@ -3792,6 +3828,108 @@ mod tests {
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "yolo" })),
                 "template_input.merge_policy",
+            );
+        }
+    }
+
+    /// #1318 S2 (第一轮评审 F4) — `admit_template` itself, not the two ends of
+    /// the chain it sits between.
+    ///
+    /// The first review round found the evidence chain broken exactly here.
+    /// `templates::tests::template_by_key_returns_the_rosters_own_borrow`
+    /// constrains the *lookup*, and `track_template_tracks::
+    /// create_stores_the_roster_key_as_template_id` observes the *column*;
+    /// neither can see the line in between (`key: template.key`). The reviewer
+    /// ran the adversarial construction — a naive case-insensitive
+    /// `admit_template` that reflects the caller's spelling back — and both of
+    /// those tests stayed green (1188 passed).
+    ///
+    /// So this asserts the assignment by data-pointer identity, the one form
+    /// the caller's string cannot satisfy: the fixture below is a freshly
+    /// allocated `String` with identical bytes, so an equality assertion would
+    /// pass for a reflected key and discriminate nothing.
+    ///
+    /// The third consumer of an admitted id — the plugin binding — is NOT
+    /// asserted here and does not need to be: `resolve_template_binding` takes
+    /// a `&'static Template`, so passing the caller's string does not compile.
+    /// That half is closed by the type, not by this test.
+    mod admission {
+        use std::path::Path;
+        use std::sync::Arc;
+
+        use axum::extract::FromRef;
+
+        use crate::card_role_cache::CardRoleCache;
+        use crate::db::sqlite::SqlxRepo;
+        use crate::event::EventBus;
+        use crate::plugin_host::{PluginHost, PluginRegistry};
+        use crate::routes::tracks::admit_template;
+        use crate::state::{AppState, CodexClient, DaemonClient, RouteState, WriteContext};
+        use crate::templates::TEMPLATES;
+        use crate::track_area_cache::TrackAreaCache;
+        use calm_truth::db::Repo;
+
+        async fn route_state() -> RouteState {
+            let repo = Arc::new(
+                SqlxRepo::open("sqlite::memory:")
+                    .await
+                    .expect("open in-memory sqlite"),
+            );
+            let repo_dyn: Arc<dyn Repo> = repo.clone();
+            let events = EventBus::new();
+            let roles = CardRoleCache::new();
+            let tracks = TrackAreaCache::new();
+            let state = AppState::from_parts(
+                repo_dyn.clone(),
+                events.clone(),
+                Arc::new(DaemonClient {
+                    data_dir: std::env::temp_dir().join("calm-admit-template-test"),
+                    proc_supervisor_sock: None,
+                }),
+                Arc::new(PluginHost::new_full(
+                    Arc::new(PluginRegistry::empty()),
+                    repo_dyn,
+                    Path::new("").to_path_buf(),
+                    std::env::temp_dir().join("calm-admit-template-plugin-test"),
+                    Vec::new(),
+                    events,
+                    WriteContext::new(roles.clone(), tracks.clone()),
+                )),
+                Arc::new(CodexClient::new_stub()),
+                Some(roles),
+                Some(tracks),
+            );
+            RouteState::from_ref(&state)
+        }
+
+        #[tokio::test]
+        async fn admission_key_is_the_rosters_own_borrow() {
+            let s = route_state().await;
+            for template in &TEMPLATES {
+                let caller_spelling = String::from(template.key);
+                assert_ne!(
+                    caller_spelling.as_ptr(),
+                    template.key.as_ptr(),
+                    "the fixture must not accidentally be the roster's own buffer"
+                );
+                let admission = admit_template(&s, caller_spelling.as_str())
+                    .await
+                    .unwrap_or_else(|| panic!("`{}` must be admitted", template.key));
+                assert_eq!(
+                    admission.key, template.key,
+                    "`{}`: admitted key changed spelling",
+                    template.key
+                );
+                assert!(
+                    std::ptr::eq(admission.key.as_ptr(), template.key.as_ptr()),
+                    "`{}`: `TemplateAdmission::key` must be the roster's own \
+                     &'static str, not a value derived from the caller's string",
+                    template.key
+                );
+            }
+            assert!(
+                admit_template(&s, "missing-template").await.is_none(),
+                "a non-roster id must not be admitted"
             );
         }
     }

@@ -141,7 +141,7 @@ pub(crate) async fn list_track_templates(
         // advertised with a schema the create path would then refuse to
         // validate against (stopped or untrusted plugin ⇒ `None` on both
         // sides).
-        let input_schema = resolve_template_binding(&s, template.key)
+        let input_schema = resolve_template_binding(&s, template)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
         let definition = current_definition(template.key);

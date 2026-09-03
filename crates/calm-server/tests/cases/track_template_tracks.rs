@@ -213,10 +213,9 @@ fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
 /// digest is stable. Deliberately **not** a hand-maintained list of tables or
 /// of overlay entity kinds: the failure mode these tests exist to catch is "a
 /// read quietly wrote something", and a snapshot that enumerates what it looks
-/// at silently stops covering whatever is added next. `template_key_overlays`
-/// below
-/// is the opposite shape — it only sees `kind == "template"` overlays — which
-/// is why these tests do not reuse it.
+/// at silently stops covering whatever is added next.
+/// `kernel_template_overlays` below is the opposite shape — it only sees
+/// `kind == "template"` overlays — which is why these tests do not reuse it.
 ///
 /// (The #1209 design predicted this had to be assembled from `Repo` trait
 /// accessors because tests "cannot write raw SQL". Not so in this file:
@@ -257,39 +256,39 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     snapshot
 }
 
-/// Every overlay carrying a `template_key`, as `(key, track_id)`.
+/// Every `kernel` / `view` / `template` overlay, whatever its payload shape,
+/// as `(entity_id, payload)`.
 ///
 /// #1300 — before S2 this measured "which of the three hidden template tracks
-/// has been seeded", and the tests below asserted it was non-empty. It is kept,
-/// renamed, for the opposite job: nothing in the kernel writes a `template_key`
-/// any more (`template_overlay_payload_with_key` is deleted), so this is how
-/// "creating from a template mints no hidden track" is *observed* rather than
-/// assumed. A removal with no assertion that it happened is not a removal
-/// anyone can keep.
+/// has been seeded", and the tests below asserted it was non-empty. It is kept
+/// for the opposite job: nothing in the kernel writes this row any more, so
+/// this is how "creating from a template mints no hidden track" is *observed*
+/// rather than assumed. A removal with no assertion that it happened is not a
+/// removal anyone can keep.
 ///
-/// #1318 S2 widened what it observes without changing a line of it: the whole
-/// `kernel` / `view` / `template` overlay is retired, so an empty result now
-/// means "no template overlay of any shape was written", not merely "none
-/// carrying a key". The strings stay literals here deliberately — the
-/// constants they used to come from are deleted, and a test that names a row
-/// production can no longer mint must spell it out itself.
-async fn template_key_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
+/// #1318 S2 (第一轮评审 A2) — it used to be called `template_key_overlays` and
+/// skipped every row without a `template_key`, while its comment already
+/// claimed it observed "a template overlay of any shape". That gap was not
+/// theoretical: the payload the retired `as_template` branch wrote was
+/// `{"schemaVersion": 1}` with no `template_key` at all, so writing the retired
+/// row back onto the create path left every caller below green. The filter is
+/// now the row's identity only — plugin `kernel`, entity kind `view`, kind
+/// `template` — and the payload is returned rather than inspected, so no
+/// payload shape can slip past. The strings stay literals here deliberately:
+/// the constants they used to come from are deleted, and a test that names a
+/// row production can no longer mint must spell it out itself.
+async fn kernel_template_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, Value)> {
     let overlays = repo
         .overlays_by_kind("view")
         .await
         .expect("template overlays");
-    let mut keyed = Vec::new();
-    for overlay in overlays {
-        if overlay.plugin_id != "kernel" || overlay.kind != "template" {
-            continue;
-        }
-        let Some(key) = overlay.payload.get("template_key").and_then(Value::as_str) else {
-            continue;
-        };
-        keyed.push((key.to_string(), overlay.entity_id));
-    }
-    keyed.sort_by(|left, right| left.0.cmp(&right.0));
-    keyed
+    let mut found: Vec<(String, Value)> = overlays
+        .into_iter()
+        .filter(|overlay| overlay.plugin_id == "kernel" && overlay.kind == "template")
+        .map(|overlay| (overlay.entity_id, overlay.payload))
+        .collect();
+    found.sort_by(|left, right| left.0.cmp(&right.0));
+    found
 }
 
 fn report_card_payload(detail: &Value) -> TrackReportPayload {
@@ -394,8 +393,10 @@ async fn creating_from_a_template_mints_no_hidden_track() {
         );
 
         assert!(
-            template_key_overlays(&boot.repo).await.is_empty(),
-            "{leg}: a `template_key` overlay was minted; the kernel has no writer for one"
+            kernel_template_overlays(&boot.repo).await.is_empty(),
+            "{leg}: a kernel/view/template overlay was minted; the kernel has \
+             no writer for one: {:?}",
+            kernel_template_overlays(&boot.repo).await
         );
         assert!(
             boot.repo.area_get_system().await.unwrap().is_none(),
@@ -1482,7 +1483,7 @@ async fn assert_pre_transaction_4xx_does_not_seed(
     let (status, body) = post(boot.app.clone(), "/api/tracks", body_json).await;
     assert_eq!(status, expected, "{name}: body={body}");
     assert!(
-        template_key_overlays(&boot.repo).await.is_empty(),
+        kernel_template_overlays(&boot.repo).await.is_empty(),
         "{name}: a pre-transaction 4xx seeded template tracks"
     );
     assert_eq!(
@@ -1659,10 +1660,11 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
 // #1209 PR-2 test #16 — the write side knows exactly one spelling.
 // ---------------------------------------------------------------------------
 
-/// Shared body of the three legs below. Asserts the request is rejected at the
+/// Shared body of the legs below — the two pre-rename spellings (#1209) and
+/// the retired `as_template` (#1318 S2). Asserts the request is rejected at the
 /// **serde extractor**: `CreateTrackRequest` carries
-/// `#[serde(deny_unknown_fields)]`, so the pre-rename key is an unknown field
-/// and the handler is never entered — `admit_template` does not run.
+/// `#[serde(deny_unknown_fields)]`, so a key it does not declare is an unknown
+/// field and the handler is never entered — `admit_template` does not run.
 ///
 /// **Status is 422, not 400.** The #1209 design predicted 400; the observed
 /// behaviour is axum's `JsonRejection::JsonDataError`, which is
@@ -1751,6 +1753,35 @@ async fn old_template_input_spelling_is_an_unknown_field() {
             "workflow_input": { "issue_url": "https://example.invalid/1" },
         }),
         "workflow_input",
+    )
+    .await;
+}
+
+/// #1318 S2 (第一轮评审 A1) — the retired `as_template` field.
+///
+/// S2 deleted the field from `CreateTrackRequest`, which is a breaking API
+/// change, and the commit stated the consequence without pinning it. This is
+/// the pin, and it pins the **observed** status: `422`, not the `400` the
+/// deletion commit first claimed. The rejection happens in axum's `Json`
+/// extractor (`JsonRejection::JsonDataError`) because of
+/// `#[serde(deny_unknown_fields)]`, exactly like the two pre-rename spellings
+/// above, so it reuses their assertion body — including "no write happened",
+/// which is what says the retired field cannot mint a track by any path.
+///
+/// Mutation: give `CreateTrackRequest` an `as_template: bool` field back and
+/// this goes red on the status assertion (the body would be accepted, 201).
+#[tokio::test]
+async fn retired_as_template_is_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "#1318 S2: as_template retired",
+        json!({
+            "area_id": "",
+            "title": "retired as_template",
+            "attach_folder": false,
+            "theme": theme(),
+            "as_template": true,
+        }),
+        "as_template",
     )
     .await;
 }
