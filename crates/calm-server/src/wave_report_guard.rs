@@ -37,12 +37,14 @@
 //!   reach by construction.
 //!   Production code constructs a `ReportDocOp::UpsertBlock` in exactly
 //!   four places, in three modules. Grep `ReportDocOp::UpsertBlock`: apart
-//!   from those four, the only non-test hits it returns are
-//!   `wave_report::apply_report_op`'s match arm — which *consumes* the op
-//!   rather than building one — and this comment; every other hit is under
-//!   `#[cfg(test)]`. (`calm_types::proposal::ProposalOp::UpsertBlock` is a
-//!   different enum and does not match that grep at all; it only shows up
-//!   under an unqualified `UpsertBlock` grep.)
+//!   from those four, the only non-test hits it returns are the two
+//!   matches inside `wave_report::apply_report_op` — the
+//!   `caller_block_content` read and the `UpsertBlock` arm, both of which
+//!   *consume* the op rather than building one — and this comment; every
+//!   other hit is under `#[cfg(test)]`.
+//!   (`calm_types::proposal::ProposalOp::UpsertBlock` is a different enum
+//!   and does not match that grep at all; it only shows up under an
+//!   unqualified `UpsertBlock` grep.)
 //!
 //!   1. `mcp_server::tools::wave_report_blocks` (#971) — prose content
 //!      goes through `check_prose_markdown`, data content through
@@ -184,14 +186,15 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
 /// is the pin. The module doc carries the full four-site enumeration
 /// this rests on.
 ///
-/// The prose half is deliberately stricter than [`validate_body_fences`], which tolerates
-/// a well-formed, schema-valid fence. The op layer must not be weaker
-/// than the invariant its neighbours rely on: a fence carried **whole in
-/// one prose block** is invisible to `ReportDoc::blocks_snapshot` (prose
-/// projects as `{"markdown": text}`, so `guard_task_declarations`'
-/// `is_task` never sees it), and the next wholesale write splinters it
-/// into a live block — which `guard_non_prose_stomp` cannot object to,
-/// because it early-returns while all *current* blocks are prose.
+/// The prose half is deliberately stricter than
+/// [`validate_body_fences`], which tolerates a well-formed, schema-valid
+/// fence. The op layer must not be weaker than the invariant its
+/// neighbours rely on: a fence carried **whole in one prose block** is
+/// invisible to `ReportDoc::blocks_snapshot` (prose projects as
+/// `{"markdown": text}`, so `guard_task_declarations`' `is_task` never
+/// sees it), and the next wholesale write splinters it into a live block
+/// — which `guard_non_prose_stomp` cannot object to, because it
+/// early-returns while all *current* blocks are prose.
 ///
 /// The scope of that sentence is exact, and is the scope of the prose
 /// half: *whole fence, one block*. That half is a per-block check, while
