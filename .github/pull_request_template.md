@@ -14,6 +14,12 @@
 
 -
 
+## Ownership changes
+
+<!-- If any commit contains OWNERSHIP-CHANGE trailers, copy every exact trailer
+here, one per line. The repository uses the PR body as the default squash commit
+body, so these lines become part of the audited commit on main. -->
+
 ## Verification
 
 <!-- List only commands and manual checks that were actually run. -->

@@ -114,8 +114,16 @@ Neige Calm uses **Squash and merge only**.
 - Do not use merge commits or rebase merges for pull requests.
 - The approved pull request title becomes the squash commit subject, so review
   the title before merging.
+- Copy every `OWNERSHIP-CHANGE` trailer from the branch commits verbatim into
+  the pull request description's **Ownership changes** section. The repository
+  uses the pull request body as the default squash commit body, and the
+  `ownership trailers preserved in squash body` check reruns when that body is
+  edited.
 - Keep useful rationale, issue references, co-author attribution, and required
   trailers in the final squash commit message.
+- Do not override the default squash body with a custom message that drops
+  required trailers. If merge tooling supplies a custom body, it must preserve
+  every `OWNERSHIP-CHANGE` line exactly.
 - Merge only when required checks are green, review feedback is resolved, and
   GitHub reports that the pull request is mergeable.
 - Delete the source branch after the squash merge when it is no longer needed.

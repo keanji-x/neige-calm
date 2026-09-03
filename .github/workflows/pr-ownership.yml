@@ -1,0 +1,65 @@
+name: Ownership audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  squash-trailer-transfer:
+    name: ownership trailers preserved in squash body
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.event.after || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        working-directory: fe
+        run: npm ci
+
+      # Body edits do not change the head SHA, and event deliveries can overlap.
+      # Read metadata immediately before the audit instead of trusting the event snapshot.
+      - name: Resolve current pull request state
+        if: github.event_name == 'pull_request'
+        id: pull_request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('base_sha', pull.base.sha);
+            core.setOutput('head_sha', pull.head.sha);
+            core.setOutput('body_base64', Buffer.from(pull.body ?? '', 'utf8').toString('base64'));
+
+      - name: Reject a stale pull request event
+        if: github.event_name == 'pull_request' && steps.pull_request.outputs.head_sha != github.event.pull_request.head.sha
+        run: |
+          echo "::error::pull request head changed while the ownership audit was starting; use the newer workflow run"
+          exit 1
+
+      - name: Audit ownership trailers for the event range
+        env:
+          OWNERSHIP_BASE_SHA: ${{ steps.pull_request.outputs.base_sha || github.event.before }}
+          OWNERSHIP_HEAD_SHA: ${{ steps.pull_request.outputs.head_sha || github.event.after || github.sha }}
+          OWNERSHIP_EVENT_NAME: ${{ github.event_name }}
+          OWNERSHIP_PR_BODY_BASE64: ${{ steps.pull_request.outputs.body_base64 }}
+          OWNERSHIP_PUSH_FORCED: ${{ github.event.forced || false }}
+        run: node --experimental-strip-types fe/tools/ownership/check-ownership-trailers.mjs

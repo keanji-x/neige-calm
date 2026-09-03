@@ -657,7 +657,7 @@ jobs:
     timeout-minutes: 10
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-      HEAD_SHA: ${{ github.event.after || github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.after || github.sha }}
     defaults:
       run:
         working-directory: fe

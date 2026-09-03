@@ -12,7 +12,7 @@ export interface OwnershipEntry {
 export interface OwnershipCommit { sha: string; message: string; paths: readonly string[] }
 export interface OwnershipViolation { rule: string; message: string }
 export const OWNERSHIP_RULES = Object.freeze([
-  'entry-shape', 'exactly-one-owner', 'coverage', 'readonly-change-trailer',
+  'entry-shape', 'exactly-one-owner', 'coverage', 'readonly-change-trailer', 'readonly-change-pr-body',
 ] as const);
 export const OWNERSHIP_YAML_FIELDS = Object.freeze([
   'entry.path', 'entry.type', 'entry.owner', 'entry.readonly',
@@ -26,6 +26,15 @@ export const OWNERSHIP_CONTROL_FILES = Object.freeze([
 
 function clean(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
+}
+
+interface OwnershipTrailer { text: string; path: string }
+
+function ownershipTrailers(message: string): OwnershipTrailer[] {
+  return Array.from(
+    message.matchAll(/^OWNERSHIP-CHANGE:\s+(\S+)\s+—\s+\S.+\s+\(#\d+\)$/gm),
+    (match) => ({ text: match[0], path: clean(match[1]) }),
+  );
 }
 
 function validPath(path: string): boolean {
@@ -87,7 +96,7 @@ export function validateOwnership(
     if (count !== 1) violations.push({ rule: 'coverage', message: `${file} has ${count} owners` });
   }
   for (const commit of commits) {
-    const approved = new Set(Array.from(commit.message.matchAll(/^OWNERSHIP-CHANGE:\s+(\S+)\s+—\s+\S.+\s+\(#\d+\)$/gm), (match) => clean(match[1])));
+    const approved = new Set(ownershipTrailers(commit.message).map(({ path }) => path));
     for (const path of commit.paths.map(clean).sort()) {
       if (!validEntries.some((entry) => entry.readonly === true && entryMatches(entry, path))) continue;
       if (!approved.has(path)) violations.push({
@@ -97,6 +106,25 @@ export function validateOwnership(
     }
   }
   return violations;
+}
+
+export function validateOwnershipPullRequestBody(
+  eventName: string | undefined,
+  commits: readonly OwnershipCommit[],
+  pullRequestBody: string,
+): OwnershipViolation[] {
+  if (eventName !== 'pull_request') return [];
+  const bodyTrailers = new Set(ownershipTrailers(pullRequestBody).map(({ text }) => text));
+  const missing = new Map<string, string>();
+  for (const commit of commits) {
+    for (const { text: trailer } of ownershipTrailers(commit.message)) {
+      if (!bodyTrailers.has(trailer) && !missing.has(trailer)) missing.set(trailer, commit.sha);
+    }
+  }
+  return Array.from(missing, ([trailer, sha]) => ({
+    rule: 'readonly-change-pr-body',
+    message: `${sha} has ${trailer} but the pull request body does not preserve it for the squash commit`,
+  }));
 }
 
 export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
@@ -113,7 +141,14 @@ export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string
 }
 
 export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef = 'HEAD'): OwnershipCommit[] {
-  const hashes = execFileSync('git', ['log', '--no-merges', '--format=%H', `${baseSha}..${headRef}`, '--'], {
+  const range = `${baseSha}..${headRef}`;
+  const merges = execFileSync('git', ['log', '--merges', '--format=%H', range, '--'], {
+    cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).split(/\r?\n/).filter(Boolean);
+  if (merges.length > 0) {
+    throw new Error(`cannot audit ownership range ${range}; rebase merge commits before review: ${merges.join(', ')}`);
+  }
+  const hashes = execFileSync('git', ['log', '--format=%H', range, '--'], {
     cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).split(/\r?\n/).filter(Boolean);
   return hashes.map((sha) => ({
@@ -139,6 +174,20 @@ export function resolveOwnershipBase(
   eventName?: string,
   pushForced = false,
 ): string {
+  if (eventName === 'pull_request') {
+    if (![injectedBase, headRef].every((sha) => /^[0-9a-f]{40}$/i.test(sha) && !/^0{40}$/.test(sha))) {
+      throw new Error('cannot audit ownership pull request: base or head SHA is missing or zero');
+    }
+    try {
+      execFileSync('git', ['cat-file', '-e', `${injectedBase}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+      execFileSync('git', ['cat-file', '-e', `${headRef}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+      return execFileSync('git', ['merge-base', injectedBase, headRef], {
+        cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      throw new Error(`cannot audit ownership pull request range ${injectedBase}..${headRef}; history is unavailable`);
+    }
+  }
   if (eventName === 'push') {
     if (pushForced) throw new Error('cannot audit ownership for a forced push');
     if (!/^[0-9a-f]{40}$/i.test(injectedBase) || /^0{40}$/.test(injectedBase)) {
