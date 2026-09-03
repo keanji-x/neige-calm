@@ -5483,6 +5483,13 @@
             ],
             "description": "One-time creation instruction: copy this track's report snapshot into\nthe new report inside the track-create transaction."
           },
+          "recipe_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A user-defined recipe (`track_recipes` row, #1292) to start from.\n\nDeliberately **not** folded into `template_id`. That field's value\nlands on `tracks.template_id`, which the spec harness later resolves\nagainst running plugins' manifests to recover a bound template\ndescriptor (`operation::spec_harness_start_adapter`). A recipe id has\nno manifest to resolve against, so putting one there would make every\nrecipe-created track log a resolution failure at harness start — an\nerror record for an entirely normal situation.\n\nSupplying both is a 400: two starting points is not a preference to\nresolve, it is a request that does not name one thing."
+          },
           "sort": {
             "type": [
               "number",
