@@ -52,7 +52,7 @@ export interface MarkdownPaneProps {
    * Notified with the pane's scroll container element (or `null` on unmount).
    * The caller uses this to scope TOC-click heading lookups to THIS pane —
    * heading ids like `md-h-N` are not unique across multiple file-viewer
-   * cards mounted in the same wave, so `document.getElementById` would land
+   * cards mounted in the same track, so `document.getElementById` would land
    * on the first card's heading and misdirect the scroll.
    */
   onContainerRef?: (el: HTMLElement | null) => void;

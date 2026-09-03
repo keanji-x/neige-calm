@@ -35,7 +35,7 @@ export const CODEX_CARD_ENTRY = Object.freeze({
   title: (card: CodexCard) => card.title ?? 'Codex',
   accessibleName: (card: CodexCard) => card.title ?? 'Codex',
   /*
-   * `atomic`, not `kernel-minted-only`: `POST /api/waves/:id/codex-cards` writes
+   * `atomic`, not `kernel-minted-only`: `POST /api/tracks/:id/codex-cards` writes
    * the row and spawns the daemon in one call, so there is exactly one way for
    * this card to come into existence and the UI may use it. It was
    * kernel-minted-only only for as long as the front-end had no create path at
@@ -48,7 +48,7 @@ export const CODEX_CARD_ENTRY = Object.freeze({
    */
   create: Object.freeze({
     mode: 'atomic' as const,
-    submit: (): Promise<{ cardId: string }> => Promise.reject(new Error('CodexCardSubmitViaWaveRoute')),
+    submit: (): Promise<{ cardId: string }> => Promise.reject(new Error('CodexCardSubmitViaTrackRoute')),
   }),
   /*
    * Two fields, and neither is codex's own configuration: an interactive codex
@@ -64,7 +64,7 @@ export const CODEX_CARD_ENTRY = Object.freeze({
         key: 'cwd',
         label: 'Working directory',
         kind: 'directory' as const,
-        hint: "Optional. Left empty, codex runs in the wave's own directory.",
+        hint: "Optional. Left empty, codex runs in the track's own directory.",
       }),
     ]),
   }),
@@ -74,7 +74,7 @@ export const CODEX_CARD_ENTRY = Object.freeze({
       && !isPlainChatPayload(card.payload)
       /* #1189 — and the assistant marker, for the same reason as the two
          above: `codex` is scanned before `assistant`, so without this clause
-         this entry claims every wave-assistant card and the headless
+         this entry claims every track-assistant card and the headless
          `ASSISTANT_CARD_ENTRY` is never reached. The card would then appear in
          CARDS and on the board as an empty terminal. */
       && !isAssistantHarnessPayload(card.payload)

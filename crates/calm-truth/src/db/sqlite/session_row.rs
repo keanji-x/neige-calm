@@ -5,7 +5,7 @@ use sqlx::Transaction;
 use sqlx::sqlite::SqliteRow;
 
 use crate::error::{CalmError, Result};
-use crate::ids::{CardId, WaveId};
+use crate::ids::{CardId, TrackId};
 use crate::model::*;
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionKind, WorkerSessionProjectionRepoError,
@@ -17,30 +17,30 @@ use calm_types::worker::{
 };
 
 pub(super) enum WorkerSessionDeleteScope<'a> {
-    Wave { wave_id: &'a str },
+    Track { track_id: &'a str },
     Card { card_id: &'a str },
 }
 
-pub(super) async fn clear_wave_root_session_refs_for_worker_session_delete_tx(
+pub(super) async fn clear_track_root_session_refs_for_worker_session_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     scope: WorkerSessionDeleteScope<'_>,
 ) -> Result<()> {
     match scope {
-        WorkerSessionDeleteScope::Wave { wave_id } => {
+        WorkerSessionDeleteScope::Track { track_id } => {
             sqlx::query(
-                r#"UPDATE waves
+                r#"UPDATE tracks
                       SET root_session_id = NULL
                     WHERE root_session_id IN (
-                        SELECT id FROM worker_sessions WHERE wave_id = ?1
+                        SELECT id FROM worker_sessions WHERE track_id = ?1
                     )"#,
             )
-            .bind(wave_id)
+            .bind(track_id)
             .execute(&mut **tx)
             .await?;
         }
         WorkerSessionDeleteScope::Card { card_id } => {
             sqlx::query(
-                r#"UPDATE waves
+                r#"UPDATE tracks
                       SET root_session_id = NULL
                     WHERE root_session_id IN (
                         SELECT id FROM worker_sessions WHERE card_id = ?1
@@ -79,18 +79,18 @@ pub async fn session_mcp_token_set_tx(
     Ok(())
 }
 
-pub async fn session_mark_wave_root_tx(
+pub async fn session_mark_track_root_tx(
     tx: &mut SessionTx<'_>,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     session_id: &WorkerSessionId,
 ) -> Result<()> {
-    let res = sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+    let res = sqlx::query("UPDATE tracks SET root_session_id = ?1 WHERE id = ?2")
         .bind(session_id.as_str())
-        .bind(wave_id.as_str())
+        .bind(track_id.as_str())
         .execute(&mut **tx)
         .await?;
     if res.rows_affected() != 1 {
-        return Err(CalmError::NotFound(format!("wave {wave_id}")));
+        return Err(CalmError::NotFound(format!("track {track_id}")));
     }
     Ok(())
 }
@@ -100,7 +100,7 @@ pub async fn session_get_by_active_token_hash(
     hashed_token: &str,
 ) -> Result<Option<WorkerSession>> {
     let row = sqlx::query(
-        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+        r#"SELECT id, track_id, provider, mode, contract, parent_session_id,
                   requester_session_id, state, mcp_token_hash, thread_id,
                   agent_session_id, active_turn_id, terminal_run_id, card_id,
                   handle_state_json, liveness, liveness_probed_at_ms,
@@ -122,7 +122,7 @@ pub async fn session_get_by_id(
     id: &WorkerSessionId,
 ) -> Result<Option<WorkerSession>> {
     let row = sqlx::query(
-        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+        r#"SELECT id, track_id, provider, mode, contract, parent_session_id,
                   requester_session_id, state, mcp_token_hash, thread_id,
                   agent_session_id, active_turn_id, terminal_run_id, card_id,
                   handle_state_json, liveness, liveness_probed_at_ms,
@@ -258,7 +258,7 @@ pub(crate) fn worker_session_from_row(row: &SqliteRow) -> Result<WorkerSession> 
         .transpose()?;
     Ok(WorkerSession {
         id: WorkerSessionId(row.try_get("id")?),
-        wave_id: WaveId(row.try_get("wave_id")?),
+        track_id: TrackId(row.try_get("track_id")?),
         provider: worker_session_parse("provider", row.try_get("provider")?)?,
         mode: worker_session_parse("mode", row.try_get("mode")?)?,
         contract: worker_session_parse("contract", row.try_get("contract")?)?,
@@ -294,7 +294,7 @@ pub async fn session_get_tx(
     id: &WorkerSessionId,
 ) -> Result<Option<WorkerSession>> {
     let row = sqlx::query(
-        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+        r#"SELECT id, track_id, provider, mode, contract, parent_session_id,
                   requester_session_id, state, mcp_token_hash, thread_id,
                   agent_session_id, active_turn_id, terminal_run_id, card_id,
                   handle_state_json, liveness, liveness_probed_at_ms,
@@ -431,7 +431,7 @@ pub async fn session_insert_tx(
         .transpose()?;
     sqlx::query(
         r#"INSERT INTO worker_sessions (
-               id, wave_id, provider, mode, contract, parent_session_id,
+               id, track_id, provider, mode, contract, parent_session_id,
                requester_session_id, state, mcp_token_hash, thread_id,
                agent_session_id, active_turn_id, terminal_run_id,
                handle_state_json, liveness, liveness_probed_at_ms, exit_code,
@@ -445,7 +445,7 @@ pub async fn session_insert_tx(
            )"#,
     )
     .bind(session.id.as_str())
-    .bind(session.wave_id.as_str())
+    .bind(session.track_id.as_str())
     .bind(session.provider.as_db_str())
     .bind(session.mode.as_db_str())
     .bind(session.contract.as_db_str())

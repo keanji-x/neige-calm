@@ -22,7 +22,7 @@
    * same trailing page pad (`--space-10`). Vertically it is not, any more.
    *
    * It used to start at `--header-band + --header-h + --space-8` — the offset
-   * `features/{area,wave}/page` gives the sticky PanelCard — so that the two
+   * `features/{area,track}/page` gives the sticky PanelCard — so that the two
    * cards began on one line. Measured at 1512×950 that put the top edge at
    * **y 68.3** while the bottom sat 28 off the window: 68 above, 28 below, for
    * an object whose whole job is to be read. The alignment was real and the
@@ -37,13 +37,13 @@
    * the geometry now says so too.
    *
    * **The price, stated plainly.** Whatever the page header puts in this
-   * column is unreachable while the card is open — on the wave route that is
-   * *delete wave*, and on any route the trailing end of the title row. You
+   * column is unreachable while the card is open — on the track route that is
+   * *delete track*, and on any route the trailing end of the title row. You
    * close the conversation first (`›`, or Escape), then you rename or delete.
    * (The title itself and its rename control sit at `--document-start`, far
    * inside the card's inline edge, so those stay reachable; do not read this
    * paragraph as "the whole header is gone".) That is a real cost on a real
-   * control, accepted knowingly: acting on the wave mid-conversation is rare,
+   * control, accepted knowingly: acting on the track mid-conversation is rare,
    * and the alternative was paying 40px of dead space on every conversation for
    * it. It settles one thing for free — the earlier round measured the page's
    * destructive ✕ and this card's close landing in the same column 8px apart,
@@ -53,10 +53,10 @@
    * header's topmost ink starts at `--header-band` — measured 20.3px from the
    * window on every route, since the band is a constant and only the rows below
    * it vary. A top inset larger than that leaves a live sliver of whatever is
-   * in this column *above* the card: at 24 the delete-wave button was still
+   * in this column *above* the card: at 24 the delete-track button was still
    * hit-testable across y 22.3–24.0, a 1.7px strip of a destructive control
    * with its own glyph hidden underneath the card. An invisible strip that
-   * deletes a wave is worse than any spacing it buys. So the top is bounded by
+   * deletes a track is worse than any spacing it buys. So the top is bounded by
    * the band, and `--space-9` (20) is the largest tier under it.
    *
    * Compared in the same frame: 16/28 clears the band by more but reads
@@ -243,11 +243,11 @@
    * no ground, so the `backdrop-filter` and its two fallbacks went with it.
    *
    * **Why the close is a chevron and may never be an X.** Measured at
-   * 1512×950 with the drawer open: the page header's *delete wave* button sits
+   * 1512×950 with the drawer open: the page header's *delete track* button sits
    * at y 22.3–50.3 (centre 36.3, right edge 1488); this close sat at
    * y 80.0–108.0 (centre 94.0, right edge 1465). Same column to within 23px,
    * 57.7px apart, identical 28px box, identical X glyph — and the top one
-   * destroys a wave while the bottom one puts a conversation away. Two
+   * destroys a track while the bottom one puts a conversation away. Two
    * controls that look the same, one pointer-flick apart, with opposite
    * consequences, is a mis-click waiting to be reported as data loss. So the
    * shape carries the difference: `chevron-right` is this app's "collapse it

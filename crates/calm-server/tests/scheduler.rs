@@ -7,7 +7,7 @@
 //!
 //! Coverage map (design § → test):
 //!   §5.2 ready set/budget/lifecycle — `budget_holds_second_task_until_first_done`,
-//!     `draft_wave_is_not_scheduled`, plus the pure-fn unit tests in
+//!     `draft_track_is_not_scheduled`, plus the pure-fn unit tests in
 //!     `scheduler.rs`.
 //!   §5.4 claim tx + dispatch — `plan_to_done_end_to_end` (claim event
 //!     actor/kind, Dispatching→Working promotion, running stamp).
@@ -40,20 +40,20 @@ use calm_server::db::sqlite::{
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
 use calm_server::event::{EditAuthor, Event, EventBus};
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
-use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
-use calm_server::mcp_server::tools::wave_report_blocks::{
+use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
+use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
-use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
+use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewOverlay, NewTerminal, NewWave, RequestTheme, Task, TaskKind,
-    TaskStatus, WaveLifecycle, WavePatch, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewOverlay, NewTerminal, NewTrack, RequestTheme, Task, TaskKind,
+    TaskStatus, TrackLifecycle, TrackPatch, new_id, now_ms,
 };
-use calm_server::operation::child_wave_adapter::ChildWaveAdapter;
+use calm_server::operation::child_track_adapter::ChildTrackAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::task_verify_adapter::{TaskVerifyAdapter, TaskVerifyOperationPayload};
@@ -69,7 +69,7 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::scheduler::{
     ClaimFenceTestHook, PostClaimDriveTestHook, Scheduler, TerminalTaskHook,
-    build_child_wave_payload, build_worker_payload,
+    build_child_track_payload, build_worker_payload,
 };
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -78,24 +78,24 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_area_cache::WaveAreaCache;
-use calm_server::wave_report::{persist_report, resolve_report_for_wave, tasks_rebuild_tx};
+use calm_server::track_area_cache::TrackAreaCache;
+use calm_server::track_report::{persist_report, resolve_report_for_track, tasks_rebuild_tx};
 use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::render_fence;
-use calm_types::wave_report::{ReportBlock, WaveReportPayload};
+use calm_types::track_report::{ReportBlock, TrackReportPayload};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-/// #1147 S4 — a REAL managed workspace root for the child-wave adapter.
+/// #1147 S4 — a REAL managed workspace root for the child-track adapter.
 ///
-/// Every child wave now allocates and materializes its own repository under
+/// Every child track now allocates and materializes its own repository under
 /// this root (design D7), so the old "unused workspace root" placeholder would
 /// make these tests write git repositories into a fixed, shared `/tmp` path.
 /// One process-wide `TempDir`, never dropped, so no test can observe a root a
 /// sibling test removed.
-fn child_wave_workspace_root() -> PathBuf {
+fn child_track_workspace_root() -> PathBuf {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| tempfile::TempDir::new().expect("child-wave test workspace root"))
+    ROOT.get_or_init(|| tempfile::TempDir::new().expect("child-track test workspace root"))
         .path()
         .to_path_buf()
 }
@@ -107,11 +107,11 @@ struct Boot {
     /// Same cache instance `write` wraps — kept so tests can register
     /// extra worker cards minted mid-test.
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     area_id: AreaId,
-    wave_id: WaveId,
+    track_id: TrackId,
     spec_card_id: CardId,
     worker_card_id: CardId,
     shared_codex_appserver: Arc<SharedCodexAppServer>,
@@ -132,16 +132,16 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "scheduler-test".into(),
             sort: None,
             // #1147 S6 — a terminal worker with no cwd on its task row lands in
-            // the wave's workspace, and an empty one is a hard error (a wave
+            // the track's workspace, and an empty one is a hard error (a track
             // without a materialized workspace is not a state any creation
-            // route produces). Fixture waves carry a path like production ones.
+            // route produces). Fixture tracks carry a path like production ones.
             cwd: "/neige-fixture-workspace".into(),
             template_id: None,
             plugin_scope: None,
@@ -152,7 +152,7 @@ async fn boot() -> Boot {
         .unwrap();
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -162,7 +162,7 @@ async fn boot() -> Boot {
         .unwrap();
     let worker_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -171,28 +171,28 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
-    // PR-C activated rule 6 and new waves default `require_task_gates
+    // PR-C activated rule 6 and new tracks default `require_task_gates
     // = 1` (migration 0041 DB DEFAULT) — this suite mostly plans
-    // ungated tasks, so the boot wave opts out; gate-specific tests
+    // ungated tasks, so the boot track opts out; gate-specific tests
     // declare real gates regardless of the flag.
-    repo.wave_update(
-        wave.id.as_str(),
-        WavePatch {
+    repo.track_update(
+        track.id.as_str(),
+        TrackPatch {
             require_task_gates: Some(false),
             ..Default::default()
         },
     )
     .await
-    .expect("boot wave opts out of rule 6");
+    .expect("boot track opts out of rule 6");
 
     let events = EventBus::new();
     let shared_codex_appserver =
         SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
         .await;
-    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
     seed_runtime_session(
         &sqlx_repo,
         spec_card.id.as_str(),
@@ -200,11 +200,11 @@ async fn boot() -> Boot {
         "spec-thread",
     )
     .await;
-    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
-        .bind(wave.id.as_str())
+    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(track.id.as_str())
         .execute(sqlx_repo.pool())
         .await
-        .expect("mark spec session as wave root");
+        .expect("mark spec session as track root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -212,16 +212,16 @@ async fn boot() -> Boot {
         "worker-thread",
     )
     .await;
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: repo
+        track_vcs: repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: write.clone(),
         daemon_token_hash: None,
@@ -237,11 +237,11 @@ async fn boot() -> Boot {
         events,
         write,
         card_role_cache,
-        wave_area_cache,
+        track_area_cache,
         ctx,
         registry: Arc::new(registry),
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         shared_codex_appserver,
@@ -268,7 +268,7 @@ fn app_state_for_context_events(boot: &Boot) -> AppState {
         )),
         Arc::new(CodexClient::new_stub()),
         Some(boot.card_role_cache.clone()),
-        Some(boot.wave_area_cache.clone()),
+        Some(boot.track_area_cache.clone()),
     )
 }
 
@@ -428,11 +428,11 @@ fn build_scheduler_unbooted_with_timeouts(
     (runtime, scheduler)
 }
 
-fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task {
+fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Task {
     let now = now_ms();
     Task {
-        id: format!("{}:{key}", wave_id.as_str()),
-        wave_id: wave_id.as_str().to_string(),
+        id: format!("{}:{key}", track_id.as_str()),
+        track_id: track_id.as_str().to_string(),
         key: key.into(),
         kind,
         goal: match kind {
@@ -467,7 +467,7 @@ async fn seed_task(boot: &Boot, task: Task) {
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         r#"INSERT INTO tasks
-           (id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+           (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
             gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
             running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms)
@@ -475,7 +475,7 @@ async fn seed_task(boot: &Boot, task: Task) {
                   ?18,?19,?20,?21,?22,?23,?24)"#,
     )
     .bind(task.id)
-    .bind(task.wave_id)
+    .bind(task.track_id)
     .bind(task.key)
     .bind(task.kind)
     .bind(task.goal)
@@ -504,30 +504,30 @@ async fn seed_task(boot: &Boot, task: Task) {
 }
 
 async fn seed_projected_task(boot: &Boot, task: Task) {
-    seed_projected_task_for(boot, boot.wave_id.as_str(), spec_identity(boot), task).await;
+    seed_projected_task_for(boot, boot.track_id.as_str(), spec_identity(boot), task).await;
 }
 
 async fn seed_projected_task_for(
     boot: &Boot,
-    wave_id: &str,
+    track_id: &str,
     identity: ToolCallIdentity,
     task: Task,
 ) {
     let pool = boot.repo.sqlite_pool().unwrap();
     let report_exists: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE wave_id=?1 AND kind='wave-report'")
-            .bind(wave_id)
+        sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(track_id)
             .fetch_one(&pool)
             .await
             .expect("check report fixture");
     if report_exists == 0 {
         sqlx::query(
-            "INSERT INTO cards(id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-             VALUES(?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+            "INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+             VALUES(?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
         )
         .bind(new_id())
-        .bind(wave_id)
-        .bind(serde_json::to_string(&WaveReportPayload::initial()).unwrap())
+        .bind(track_id)
+        .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
         .execute(&pool)
         .await
         .expect("seed report fixture");
@@ -603,22 +603,22 @@ async fn seed_projected_task_for(
     .expect("restore projected task runtime state");
 }
 
-async fn set_lifecycle(boot: &Boot, lifecycle: WaveLifecycle) {
+async fn set_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 lifecycle: Some(lifecycle),
                 ..Default::default()
             },
         )
         .await
-        .expect("set wave lifecycle");
+        .expect("set track lifecycle");
 }
 
 async fn task_row(boot: &Boot, key: &str) -> Task {
     boot.repo
-        .task_get(&format!("{}:{key}", boot.wave_id.as_str()))
+        .task_get(&format!("{}:{key}", boot.track_id.as_str()))
         .await
         .expect("task_get")
         .expect("task row exists")
@@ -640,7 +640,7 @@ async fn seed_codex_worker_card_with_terminal(
 ) -> (String, String, String) {
     let card_id = format!("card-timeout-{label}-{}", new_id());
     let runtime_id = format!("runtime-timeout-{label}-{}", new_id());
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let card_role_cache = boot.card_role_cache.clone();
     let result = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
         let card_id = card_id.clone();
@@ -652,7 +652,7 @@ async fn seed_codex_worker_card_with_terminal(
                     card_id,
                     &runtime_id,
                     None,
-                    wave_id,
+                    track_id,
                     None,
                     None,
                     "/tmp".to_string(),
@@ -687,14 +687,14 @@ async fn seed_held_workspace_lease(boot: &Boot, card_id: &str, label: &str) -> S
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+               lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .bind(path.display().to_string())
     .bind(now + 60_000)
     .bind(now)
@@ -800,7 +800,7 @@ async fn seed_worker_op_target(boot: &Boot, kind: &str, task_id: &str, card_id: 
         card_id,
         json!({
             "actor": ActorId::KernelDispatcher,
-            "wave_id": boot.wave_id.as_str()
+            "track_id": boot.track_id.as_str()
         }),
     )
     .await;
@@ -850,7 +850,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Worker,
         provider: AgentProvider::Codex,
         session_id: "worker-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".into(),
     }
@@ -862,7 +862,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
@@ -937,7 +937,7 @@ fn context_checked_terminal_adapter(
     Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
         route_repo,
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
+        boot.track_area_cache.clone(),
         hook,
     ))
 }
@@ -1076,16 +1076,16 @@ impl ProviderAdapter for BootstrapAdapter {
         input: &Value,
         _op: &Operation,
     ) -> CalmResult<TxOutput> {
-        let wave_id = input["wave_id"].as_str().unwrap();
-        sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1 AND lifecycle='draft'")
-            .bind(wave_id)
+        let track_id = input["track_id"].as_str().unwrap();
+        sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1 AND lifecycle='draft'")
+            .bind(track_id)
             .execute(&mut **tx)
             .await?;
         self.minted.fetch_add(1, Ordering::SeqCst);
         Ok(TxOutput::new(
-            "wave",
-            Some(wave_id.into()),
-            json!({"id": wave_id}),
+            "track",
+            Some(track_id.into()),
+            json!({"id": track_id}),
         ))
     }
     async fn app_server_interact(
@@ -1321,11 +1321,11 @@ impl ProviderAdapter for FailingSpawnAdapter {
 #[tokio::test]
 async fn plan_to_done_end_to_end() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Dispatching).await;
-    seed_projected_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
+    set_lifecycle(&boot, TrackLifecycle::Dispatching).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "t1", TaskKind::Codex, &[])).await;
     seed_projected_task(
         &boot,
-        plan_task(&boot.wave_id, "t2", TaskKind::Codex, &["t1"]),
+        plan_task(&boot.track_id, "t2", TaskKind::Codex, &["t1"]),
     )
     .await;
     let (_runtime, scheduler) = build_scheduler(
@@ -1336,7 +1336,7 @@ async fn plan_to_done_end_to_end() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     // t1 claimed + spawned + running-stamped; t2 dep-blocked.
     let t1 = task_row(&boot, "t1").await;
@@ -1361,13 +1361,13 @@ async fn plan_to_done_end_to_end() {
     assert_eq!(dispatched[0].1["kind"], json!("codex"));
 
     // Dispatching → Working auto-promotion rode the claim tx.
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+    assert_eq!(track.lifecycle, TrackLifecycle::Working);
 
     // Worker reports success → emit tx flips the row to done.
     call_tool(
@@ -1384,7 +1384,7 @@ async fn plan_to_done_end_to_end() {
 
     // The completion freed budget + satisfied t2's dep — in production
     // the task.completed envelope pokes the scheduler; drive it here.
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let t2 = task_row(&boot, "t2").await;
     assert_eq!(
         t2.status,
@@ -1397,10 +1397,10 @@ async fn plan_to_done_end_to_end() {
 #[tokio::test]
 async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
         &boot,
-        plan_task(&boot.wave_id, "claude-live", TaskKind::Claude, &[]),
+        plan_task(&boot.track_id, "claude-live", TaskKind::Claude, &[]),
     )
     .await;
     let terminal = boot
@@ -1426,7 +1426,7 @@ async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     let row = task_row(&boot, "claude-live").await;
     assert_eq!(row.status, TaskStatus::Running);
@@ -1445,9 +1445,9 @@ async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
 #[tokio::test]
 async fn budget_holds_second_task_until_first_done() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_projected_task(&boot, plan_task(&boot.wave_id, "a", TaskKind::Codex, &[])).await;
-    seed_projected_task(&boot, plan_task(&boot.wave_id, "b", TaskKind::Codex, &[])).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "a", TaskKind::Codex, &[])).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "b", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -1458,34 +1458,34 @@ async fn budget_holds_second_task_until_first_done() {
 
     // Kernel default budget is 1 (no env override in CI): only `a` runs.
     assert_eq!(scheduler.budget_default(), 1);
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Running);
     assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Pending);
 
     // Re-running while `a` occupies the budget changes nothing.
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Pending);
 
-    // Per-wave override: budget 2 admits `b` (a is running, 2-1 = 1 slot).
+    // Per-track override: budget 2 admits `b` (a is running, 2-1 = 1 slot).
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 task_budget: Some(Some(2)),
                 ..Default::default()
             },
         )
         .await
-        .expect("set wave budget");
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+        .expect("set track budget");
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Running);
 }
 
 #[tokio::test]
-async fn draft_wave_is_not_scheduled() {
+async fn draft_track_is_not_scheduled() {
     let boot = boot().await;
-    // Wave stays Draft (the create default) — §5.2 lifecycle gate holds.
-    seed_task(&boot, plan_task(&boot.wave_id, "a", TaskKind::Codex, &[])).await;
+    // Track stays Draft (the create default) — §5.2 lifecycle gate holds.
+    seed_task(&boot, plan_task(&boot.track_id, "a", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -1493,31 +1493,31 @@ async fn draft_wave_is_not_scheduled() {
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Pending);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
 }
 
-/// INV-1110-001: a template wave with a `ready:true` task produces zero
+/// INV-1110-001: a template track with a `ready:true` task produces zero
 /// `TaskDispatched` / worker. A non-template control in the same test still
 /// dispatches, so the scheduler is not just broken.
 #[tokio::test]
-async fn inv_1110_001_template_wave_does_not_dispatch() {
+async fn inv_1110_001_template_track_does_not_dispatch() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
         &boot,
-        plan_task(&boot.wave_id, "control", TaskKind::Codex, &[]),
+        plan_task(&boot.track_id, "control", TaskKind::Codex, &[]),
     )
     .await;
 
-    let template_wave = boot
+    let template_track = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: boot.area_id.clone(),
-            title: "template-wave".into(),
+            title: "template-track".into(),
             sort: None,
             cwd: String::new(),
             template_id: None,
@@ -1528,22 +1528,22 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         .await
         .unwrap();
     boot.repo
-        .wave_update(
-            template_wave.id.as_str(),
-            WavePatch {
+        .track_update(
+            template_track.id.as_str(),
+            TrackPatch {
                 require_task_gates: Some(false),
-                lifecycle: Some(WaveLifecycle::Working),
+                lifecycle: Some(TrackLifecycle::Working),
                 ..Default::default()
             },
         )
         .await
-        .expect("template wave Working + ungated");
-    boot.wave_area_cache
-        .insert(template_wave.id.clone(), boot.area_id.clone());
+        .expect("template track Working + ungated");
+    boot.track_area_cache
+        .insert(template_track.id.clone(), boot.area_id.clone());
     let template_spec = boot
         .repo
         .card_create(NewCard {
-            wave_id: template_wave.id.clone(),
+            track_id: template_track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -1554,7 +1554,7 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
     boot.card_role_cache.insert(
         template_spec.id.clone(),
         CardRole::Spec,
-        template_wave.id.clone(),
+        template_track.id.clone(),
     );
     support::mcp::set_persisted_card_role(
         boot.repo.as_ref(),
@@ -1569,16 +1569,16 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         "template-spec-thread",
     )
     .await;
-    sqlx::query("UPDATE waves SET root_session_id = 'template-spec-session' WHERE id = ?1")
-        .bind(template_wave.id.as_str())
+    sqlx::query("UPDATE tracks SET root_session_id = 'template-spec-session' WHERE id = ?1")
+        .bind(template_track.id.as_str())
         .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
         .await
-        .expect("mark template spec session as wave root");
+        .expect("mark template spec session as track root");
     boot.repo
         .overlay_upsert(NewOverlay {
             plugin_id: "kernel".into(),
             entity_kind: "view".into(),
-            entity_id: template_wave.id.to_string(),
+            entity_id: template_track.id.to_string(),
             kind: "template".into(),
             payload: json!({ "schemaVersion": 1 }),
         })
@@ -1589,15 +1589,15 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: "template-spec-session".to_string(),
-        wave_id: Some(template_wave.id.as_str().to_string()),
+        track_id: Some(template_track.id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "template-spec-thread".into(),
     };
     seed_projected_task_for(
         &boot,
-        template_wave.id.as_str(),
+        template_track.id.as_str(),
         template_identity,
-        plan_task(&template_wave.id, "template-ready", TaskKind::Codex, &[]),
+        plan_task(&template_track.id, "template-ready", TaskKind::Codex, &[]),
     )
     .await;
 
@@ -1608,8 +1608,8 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
-    scheduler.schedule_wave(template_wave.id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    scheduler.schedule_track(template_track.id.clone()).await;
 
     assert_eq!(
         task_row(&boot, "control").await.status,
@@ -1618,7 +1618,7 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
     );
     let template_task = boot
         .repo
-        .task_get(&format!("{}:template-ready", template_wave.id.as_str()))
+        .task_get(&format!("{}:template-ready", template_track.id.as_str()))
         .await
         .expect("task_get")
         .expect("template task row");
@@ -1631,7 +1631,7 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
     assert_eq!(
         dispatched.len(),
         1,
-        "only the control wave may emit TaskDispatched; got {dispatched:?}"
+        "only the control track may emit TaskDispatched; got {dispatched:?}"
     );
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 }
@@ -1643,14 +1643,14 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claim_race_two_schedulers_single_winner() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
         &boot,
-        plan_task(&boot.wave_id, "race", TaskKind::Codex, &[]),
+        plan_task(&boot.track_id, "race", TaskKind::Codex, &[]),
     )
     .await;
-    // Two independent Scheduler instances (separate wave locks — the
-    // per-wave mutex cannot serialize them; the claim UPDATE must).
+    // Two independent Scheduler instances (separate track locks — the
+    // per-track mutex cannot serialize them; the claim UPDATE must).
     let (_rt1, s1) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -1673,19 +1673,19 @@ async fn claim_race_two_schedulers_single_winner() {
     let h1 = tokio::spawn({
         let barrier = Arc::clone(&barrier);
         let s1 = Arc::clone(&s1);
-        let w1 = boot.wave_id.clone();
+        let w1 = boot.track_id.clone();
         async move {
             barrier.wait().await;
-            s1.schedule_wave(w1).await;
+            s1.schedule_track(w1).await;
         }
     });
     let h2 = tokio::spawn({
         let barrier = Arc::clone(&barrier);
         let s2 = Arc::clone(&s2);
-        let w2 = boot.wave_id.clone();
+        let w2 = boot.track_id.clone();
         async move {
             barrier.wait().await;
-            s2.schedule_wave(w2).await;
+            s2.schedule_track(w2).await;
         }
     });
     h1.await.expect("scheduler 1 task");
@@ -1711,8 +1711,8 @@ async fn claim_race_two_schedulers_single_winner() {
 #[tokio::test]
 async fn fast_worker_report_beats_running_stamp() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let task = plan_task(&boot.wave_id, "fast", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "fast", TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
     // The report lands while the row is dispatched + UNSTAMPED, so the
@@ -1737,7 +1737,7 @@ async fn fast_worker_report_beats_running_stamp() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     // The report's emit tx ran during spawn_side_effect — strictly
     // before the scheduler's wait() returned. The report flip
@@ -1764,8 +1764,8 @@ async fn fast_worker_report_beats_running_stamp() {
 #[tokio::test]
 async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let task = plan_task(&boot.wave_id, "doomed", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "doomed", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
     let (_runtime, scheduler) = build_scheduler(
@@ -1775,7 +1775,7 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     let row = task_row(&boot, "doomed").await;
     assert_eq!(row.status, TaskStatus::Failed);
@@ -1804,47 +1804,47 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
     );
 
     // Working → Reviewing promotion rode the same tx.
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 /// Issue #1147 slice ① — the real spawn-failure text must reach
 /// `tasks.status_detail`, not stop at the operation's `last_error`.
 ///
-/// Drives the REAL `CodexWorkerAdapter` against a wave whose `cwd` is an
+/// Drives the REAL `CodexWorkerAdapter` against a track whose `cwd` is an
 /// absolute non-git directory: `prepare_workspace_lease_target_tx` →
-/// `git_repo_root_for_wave_cwd` fails with "is not a git repository", the
+/// `git_repo_root_for_track_cwd` fails with "is not a git repository", the
 /// operation goes `Failed`, and the scheduler flips the row. Before this
 /// slice the row read exactly `spawn-failed` and the reason was
 /// unreachable from the task table.
 #[tokio::test]
 async fn spawn_failure_status_detail_carries_the_real_reason() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // A real, absolute, definitely-not-a-git-repo cwd.
     let non_git = tempfile::tempdir().expect("tempdir");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    // #1147 S1/S3 — the fixture needs this wave pointed at a real non-git
-    // directory *and* frozen, which is the state a production wave reaches by
+    // #1147 S1/S3 — the fixture needs this track pointed at a real non-git
+    // directory *and* frozen, which is the state a production track reaches by
     // running. The production writer refuses a frozen row (S3's latch), and it
     // has no un-freeze path by design, so a fixture that wants to force this
     // state writes it directly. Registered in
-    // `calm-truth/tests/wave_write_point_registry.rs`.
+    // `calm-truth/tests/track_write_point_registry.rs`.
     sqlx::query(
-        "UPDATE waves SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
+        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
     )
     .bind(non_git.path().to_str().unwrap())
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .execute(&pool)
     .await
-    .expect("set wave workspace");
+    .expect("set track workspace");
 
-    let task = plan_task(&boot.wave_id, "nogit", TaskKind::Codex, &[]);
+    let task = plan_task(&boot.track_id, "nogit", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
 
@@ -1855,12 +1855,12 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         boot.shared_codex_appserver.clone(),
         None,
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
+        boot.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let (runtime, scheduler) = build_scheduler(&boot, vec![codex]);
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     // The operation already knows the truth today.
     let op = runtime
@@ -1890,7 +1890,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
 
     // #1149 dependency: and it must reach the wire type both the spec
     // (`calm.report.read` → `taskDiagnostics`) and the FE (`GET
-    // /api/waves/:id`, same `BlockVerdict`) read.
+    // /api/tracks/:id`, same `BlockVerdict`) read.
     let report = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
         .await
         .expect("report read");
@@ -1916,8 +1916,8 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
 #[tokio::test]
 async fn worker_report_flips_row_inside_emit_tx() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "r", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "r", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -1962,8 +1962,8 @@ async fn worker_report_flips_row_inside_emit_tx() {
 #[tokio::test]
 async fn claude_worker_op_target_proves_unstamped_ownership() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "claude-owned", TaskKind::Claude, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "claude-owned", TaskKind::Claude, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -1996,8 +1996,8 @@ async fn claude_worker_op_target_proves_unstamped_ownership() {
 #[tokio::test]
 async fn duplicate_report_is_idempotent() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "dup", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "dup", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2058,8 +2058,8 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
     // auto-promotion is suppressed (the gate-result tx promotes
     // instead, on ANY verdict).
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "gated", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "gated", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.gate_json = Some(json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string());
     let task_id = task.id.clone();
@@ -2088,15 +2088,15 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
         "gated success report flips running → verifying, never done"
     );
     assert_eq!(row.gate_attempt, 0, "no gate attempt prepared yet");
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "Working → Reviewing promotion is suppressed for gated tasks (§3)"
     );
 
@@ -2121,8 +2121,8 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
 #[tokio::test]
 async fn spec_verdict_never_flips_rows() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Reviewing).await;
-    let mut task = plan_task(&boot.wave_id, "v", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Reviewing).await;
+    let mut task = plan_task(&boot.track_id, "v", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2167,7 +2167,7 @@ async fn seed_terminal_worker(boot: &Boot, task_id: &str) -> (CardId, String) {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone(),
+            track_id: boot.track_id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -2176,7 +2176,7 @@ async fn seed_terminal_worker(boot: &Boot, task_id: &str) -> (CardId, String) {
         .await
         .expect("terminal worker card");
     boot.card_role_cache
-        .insert(card.id.clone(), CardRole::Worker, boot.wave_id.clone());
+        .insert(card.id.clone(), CardRole::Worker, boot.track_id.clone());
     let term = boot
         .repo
         .terminal_create(NewTerminal {
@@ -2194,8 +2194,8 @@ async fn seed_terminal_worker(boot: &Boot, task_id: &str) -> (CardId, String) {
 #[tokio::test]
 async fn terminal_hook_completes_task_on_exit() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "term", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "term", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2235,8 +2235,8 @@ async fn terminal_exit_beats_running_stamp() {
     // `idempotency_key` (not `worker_card_id`, which is still NULL),
     // and the late running stamp must then no-op.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "fast-term", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "fast-term", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2292,8 +2292,8 @@ async fn terminal_exit_beats_running_stamp() {
 #[tokio::test]
 async fn terminal_hook_nonzero_exit_fails_task() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "term-fail", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "term-fail", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2328,8 +2328,8 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
     // boot supervisor reconcile persisted `exit_code = -1`; the sweep's
     // running-terminal arm runs the SAME guarded completion tx.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "swept", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "swept", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
@@ -2374,13 +2374,13 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
 #[tokio::test]
 async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired").await;
     let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired").await;
     let lease_path = workspace_lease_path(&boot, &lease_id).await;
 
-    let mut task = plan_task(&boot.wave_id, "expired", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "expired", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(card_id.clone());
     task.running_deadline_ms = Some(now_ms() - 1);
@@ -2419,7 +2419,7 @@ async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row
 #[tokio::test]
 async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-turn").await;
     let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-turn").await;
@@ -2427,7 +2427,7 @@ async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
     let turn_id = "turn-expired-turn";
     seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
 
-    let mut task = plan_task(&boot.wave_id, "expired-turn", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "expired-turn", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(card_id.clone());
     task.running_deadline_ms = Some(now_ms() - 1);
@@ -2455,7 +2455,7 @@ async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
 #[tokio::test]
 async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease_path() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-retry").await;
     let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-retry").await;
@@ -2463,7 +2463,7 @@ async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease
     let turn_id = "turn-expired-retry";
     seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
 
-    let mut task = plan_task(&boot.wave_id, "expired-retry", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "expired-retry", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(card_id.clone());
     task.running_deadline_ms = Some(now_ms() - 1);
@@ -2526,13 +2526,13 @@ async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease
 #[tokio::test]
 async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_reaped() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-missing-terminal").await;
     let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-missing-terminal").await;
 
     let mut task = plan_task(
-        &boot.wave_id,
+        &boot.track_id,
         "expired-missing-terminal",
         TaskKind::Codex,
         &[],
@@ -2603,12 +2603,12 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
 #[tokio::test]
 async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "fresh").await;
     let lease_id = seed_held_workspace_lease(&boot, &card_id, "fresh").await;
 
-    let mut task = plan_task(&boot.wave_id, "fresh", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "fresh", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(card_id.clone());
     task.running_deadline_ms = Some(now_ms() + 60_000);
@@ -2634,8 +2634,8 @@ async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
 #[tokio::test]
 async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "terminal-timeout", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "terminal-timeout", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     task.running_deadline_ms = Some(now_ms() - 1);
     seed_task(&boot, task).await;
@@ -2652,7 +2652,7 @@ async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
 #[tokio::test]
 async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material() {
     let boot = boot().await;
-    let mut task = plan_task(&boot.wave_id, "upgraded-inflight", TaskKind::Terminal, &[]);
+    let mut task = plan_task(&boot.track_id, "upgraded-inflight", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2685,14 +2685,14 @@ async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material()
 #[tokio::test]
 async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
 
-    let mut running = plan_task(&boot.wave_id, "upgrade-running", TaskKind::Codex, &[]);
+    let mut running = plan_task(&boot.track_id, "upgrade-running", TaskKind::Codex, &[]);
     running.status = TaskStatus::Running;
     seed_task(&boot, running).await;
 
     let mut terminal_running =
-        plan_task(&boot.wave_id, "terminal-running", TaskKind::Terminal, &[]);
+        plan_task(&boot.track_id, "terminal-running", TaskKind::Terminal, &[]);
     terminal_running.status = TaskStatus::Running;
     seed_task(&boot, terminal_running).await;
 
@@ -2732,8 +2732,8 @@ async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
 #[tokio::test]
 async fn sweep_running_claude_ignores_recorded_pty_exit() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "claude-swept", TaskKind::Claude, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "claude-swept", TaskKind::Claude, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
@@ -2770,8 +2770,8 @@ async fn sweep_running_claude_ignores_recorded_pty_exit() {
 #[tokio::test]
 async fn sweep_resubmits_dispatched_task_with_missing_operation() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "orphan", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "orphan", TaskKind::Codex, &[]);
     // Simulate the §5.5 crash window: row claimed (`dispatched`) but the
     // worker operation was never inserted.
     task.status = TaskStatus::Dispatched;
@@ -2811,8 +2811,8 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
 #[tokio::test]
 async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget_pin() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stale-orphan", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "stale-orphan", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2852,7 +2852,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         boot.shared_codex_appserver.clone(),
         None,
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
+        boot.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let claude: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
@@ -2860,12 +2860,12 @@ async fn every_registered_task_adapter_refuses_material_context() {
         Arc::new(CodexClient::new_stub()),
         None,
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
+        boot.track_area_cache.clone(),
     ));
     let terminal: Arc<dyn ProviderAdapter> = Arc::new(TerminalWorkerAdapter::new(
         route_repo,
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
+        boot.track_area_cache.clone(),
     ));
 
     let mut cases = Vec::new();
@@ -2874,7 +2874,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         ("meta-claude", TaskKind::Claude, claude),
         ("meta-terminal", TaskKind::Terminal, terminal),
     ] {
-        let mut task = plan_task(&boot.wave_id, key, task_kind, &[]);
+        let mut task = plan_task(&boot.track_id, key, task_kind, &[]);
         task.status = TaskStatus::Dispatched;
         let task_id = task.id.clone();
         let (kind, payload) = build_worker_payload(&task).unwrap();
@@ -2883,7 +2883,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         cases.push((adapter, pending_operation(kind, &task_id, payload)));
     }
 
-    let mut verify_task = plan_task(&boot.wave_id, "meta-verify", TaskKind::Codex, &[]);
+    let mut verify_task = plan_task(&boot.track_id, "meta-verify", TaskKind::Codex, &[]);
     verify_task.status = TaskStatus::Verifying;
     verify_task.gate_json =
         Some(json!({"cwd":"/tmp","steps":[{"name":"legal","cmd":"true"}] }).to_string());
@@ -2892,7 +2892,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
     mark_context_stale(&boot, &verify_task_id).await;
     let verify_payload = serde_json::to_value(TaskVerifyOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: boot.wave_id.to_string(),
+        track_id: boot.track_id.to_string(),
         task_id: verify_task_id.clone(),
         attempt: 1,
     })
@@ -2905,20 +2905,20 @@ async fn every_registered_task_adapter_refuses_material_context() {
             verify_payload,
         ),
     ));
-    let mut child_task = plan_task(&boot.wave_id, "meta-child", TaskKind::Codex, &[]);
+    let mut child_task = plan_task(&boot.track_id, "meta-child", TaskKind::Codex, &[]);
     child_task.status = TaskStatus::Dispatched;
     child_task.spawn = "sub-wave".into();
     let child_task_id = child_task.id.clone();
-    let child_payload = build_child_wave_payload(&child_task).unwrap();
+    let child_payload = build_child_track_payload(&child_task).unwrap();
     seed_task(&boot, child_task).await;
     mark_context_stale(&boot, &child_task_id).await;
     cases.push((
-        Arc::new(ChildWaveAdapter::new(
+        Arc::new(ChildTrackAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_area_cache.clone(),
-            child_wave_workspace_root(),
+            boot.track_area_cache.clone(),
+            child_track_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
-        pending_operation("child-wave", &child_task_id, child_payload),
+        pending_operation("child-track", &child_task_id, child_payload),
     ));
 
     let fenced = cases
@@ -2944,7 +2944,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             std::env::temp_dir().join("calm-plugins-data-context-registry"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
         )),
         Arc::new(CodexClient::new_stub()),
         None,
@@ -2968,7 +2968,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             .await
             .unwrap();
         let before: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+            "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                     (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
         )
         .fetch_one(&mut *tx)
@@ -2984,7 +2984,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             adapter.kind()
         );
         let after: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+            "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                     (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
         )
         .fetch_one(&mut *tx)
@@ -3025,8 +3025,8 @@ async fn every_registered_task_adapter_refuses_material_context() {
 #[tokio::test]
 async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stale-pending", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "stale-pending", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     let (_, payload) = build_worker_payload(&task).unwrap();
@@ -3080,8 +3080,8 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
 #[tokio::test]
 async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stale-started", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "stale-started", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     let (_, payload) = build_worker_payload(&task).unwrap();
@@ -3153,15 +3153,15 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
 #[tokio::test]
 async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_turn() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut pending = plan_task(&boot.track_id, "boot-pending-op", TaskKind::Terminal, &[]);
     pending.status = TaskStatus::Dispatched;
     seed_task(&boot, pending).await;
-    let mut missing = plan_task(&boot.wave_id, "boot-missing-op", TaskKind::Terminal, &[]);
+    let mut missing = plan_task(&boot.track_id, "boot-missing-op", TaskKind::Terminal, &[]);
     missing.status = TaskStatus::Dispatched;
     seed_task(&boot, missing).await;
-    sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE wave_id=?1")
-        .bind(boot.wave_id.as_str())
+    sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id=?1")
+        .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
@@ -3244,8 +3244,8 @@ async fn codex_task_pty_exit_does_not_complete_task() {
     // finish it; the live hook must kind-gate exactly like the sweep's
     // running-terminal arm.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "cx", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "cx", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -3272,8 +3272,8 @@ async fn claude_task_pty_exit_does_not_complete_task() {
     // exit is not a task verdict. Completion must come from
     // `calm.task.complete`.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "claude-exit", TaskKind::Claude, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "claude-exit", TaskKind::Claude, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -3304,8 +3304,8 @@ async fn claude_task_pty_exit_does_not_complete_task() {
 #[tokio::test]
 async fn claim_payload_frozen_against_pre_claim_revision() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "revise", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "revise", TaskKind::Terminal, &[]);
     task.goal = "echo old".into();
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
@@ -3329,8 +3329,8 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
     );
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
-        let wave_id = boot.wave_id.clone();
-        async move { scheduler.schedule_wave(wave_id).await }
+        let track_id = boot.track_id.clone();
+        async move { scheduler.schedule_track(track_id).await }
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -3350,7 +3350,7 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
     );
 
     drop(permit);
-    handle.await.expect("schedule_wave task");
+    handle.await.expect("schedule_track task");
 
     let op = runtime
         .find_by_kind_and_idempotency("terminal-worker", &task_id)
@@ -3368,14 +3368,14 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
 #[tokio::test]
 async fn block_task_production_claim_freezes_nonempty_root_context() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = "block-freeze";
-    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 7,
         summary: String::new(),
         body: "# Task\n".into(),
@@ -3388,11 +3388,11 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     };
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
     )
     .bind(format!("report-{key}"))
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .bind(serde_json::to_string(&report).unwrap())
     .execute(&pool)
     .await
@@ -3405,7 +3405,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     let rows: Vec<(i64, String)> = sqlx::query_as(
         "SELECT id,kind FROM events \
@@ -3431,7 +3431,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     let frozen_events = event_rows(&boot, "task.context_frozen").await;
     assert_eq!(frozen_events.len(), 1);
     assert_eq!(
-        frozen_events[0].1["doc_revs"][boot.wave_id.as_str()],
+        frozen_events[0].1["doc_revs"][boot.track_id.as_str()],
         json!(7),
         "freeze event must preserve the production report's docRev fence baseline"
     );
@@ -3452,10 +3452,10 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
 #[tokio::test]
 async fn claim_missing_task_root_fails_closed_without_dispatch() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_task(
         &boot,
-        plan_task(&boot.wave_id, "missing-root", TaskKind::Terminal, &[]),
+        plan_task(&boot.track_id, "missing-root", TaskKind::Terminal, &[]),
     )
     .await;
     let (_runtime, scheduler) = build_scheduler(
@@ -3466,7 +3466,7 @@ async fn claim_missing_task_root_fails_closed_without_dispatch() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     assert_eq!(
         task_row(&boot, "missing-root").await.status,
@@ -3479,30 +3479,30 @@ async fn claim_missing_task_root_fails_closed_without_dispatch() {
 async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
     )
     .bind(id)
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .bind(payload.to_string())
     .execute(&boot.repo.sqlite_pool().unwrap())
     .await
     .unwrap();
 }
 
-/// `(id, rev)` of the wave's single live task block, straight from the
+/// `(id, rev)` of the track's single live task block, straight from the
 /// stored report payload — the ids the document assigns, not the marker
 /// hints the test writes.
 async fn live_task_block(boot: &Boot) -> (String, u64) {
     let card = boot
         .repo
-        .cards_by_wave(boot.wave_id.as_str())
+        .cards_by_track(boot.track_id.as_str())
         .await
         .unwrap()
         .into_iter()
-        .find(|card| card.kind == "wave-report")
+        .find(|card| card.kind == "track-report")
         .expect("report card");
-    let payload: WaveReportPayload = serde_json::from_value(card.payload).unwrap();
+    let payload: TrackReportPayload = serde_json::from_value(card.payload).unwrap();
     let block = payload
         .blocks
         .expect("blocks cache")
@@ -3548,7 +3548,7 @@ async fn report_without_doc_rev_is_retryable_malformed_instead_of_revision_zero(
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     assert!(matches!(
         monitor
-            .resolve_task_closure(boot.wave_id.as_str(), "missing")
+            .resolve_task_closure(boot.track_id.as_str(), "missing")
             .await,
         Err(ResolveError::MalformedStoredReport(_))
     ));
@@ -3567,7 +3567,7 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     assert!(matches!(
         monitor
-            .resolve_task_closure(boot.wave_id.as_str(), "missing")
+            .resolve_task_closure(boot.track_id.as_str(), "missing")
             .await,
         Err(ResolveError::RootAbsent)
     ));
@@ -3594,7 +3594,7 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
     )
     .await;
     let closure = monitor
-        .resolve_task_closure(boot.wave_id.as_str(), "target")
+        .resolve_task_closure(boot.track_id.as_str(), "target")
         .await
         .expect("an unrelated malformed block must not poison the target");
     assert_eq!(closure.refs[0].block_id, "b_target");
@@ -3607,25 +3607,25 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
     .unwrap();
     assert!(matches!(
         monitor
-            .resolve_task_closure(boot.wave_id.as_str(), "target")
+            .resolve_task_closure(boot.track_id.as_str(), "target")
             .await,
         Err(ResolveError::MalformedStoredReport(_))
     ));
 }
 
-async fn assert_claim_fence_race_lost(cross_wave: bool) {
+async fn assert_claim_fence_race_lost(cross_track: bool) {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let key = if cross_wave {
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let key = if cross_track {
         "fence-cross"
     } else {
         "fence-same"
     };
     let mut refs = Vec::new();
-    if cross_wave {
+    if cross_track {
         let child = boot
             .repo
-            .wave_create(NewWave {
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: boot.area_id.clone(),
                 title: "fence child".into(),
@@ -3639,8 +3639,8 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
             .await
             .unwrap();
         refs.push(format!("neige://wave/{}#b_2000", child.id));
-        let child_report = WaveReportPayload {
-            schema_version: WaveReportPayload::SCHEMA_VERSION,
+        let child_report = TrackReportPayload {
+            schema_version: TrackReportPayload::SCHEMA_VERSION,
             doc_rev: 4,
             summary: String::new(),
             body: "child".into(),
@@ -3653,8 +3653,8 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
         };
         sqlx::query(
             "INSERT INTO cards \
-             (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-             VALUES ('fence-child-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+             (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+             VALUES ('fence-child-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
         )
         .bind(child.id.as_str())
         .bind(serde_json::to_string(&child_report).unwrap())
@@ -3662,8 +3662,8 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
         .await
         .unwrap();
     }
-    let root_report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let root_report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 7,
         summary: String::new(),
         body: "root".into(),
@@ -3683,16 +3683,16 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
         serde_json::to_value(root_report).unwrap(),
     )
     .await;
-    let task = plan_task(&boot.wave_id, key, TaskKind::Codex, &[]);
+    let task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let resolved_closure =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
-            .resolve_task_closure(boot.wave_id.as_str(), key)
+            .resolve_task_closure(boot.track_id.as_str(), key)
             .await
             .expect("fence fixture closure must resolve");
-    assert_eq!(resolved_closure.refs.len(), if cross_wave { 2 } else { 1 });
+    assert_eq!(resolved_closure.refs.len(), if cross_track { 2 } else { 1 });
 
     let spawned = Arc::new(AtomicUsize::new(0));
     let (_runtime, scheduler) = build_scheduler(
@@ -3707,16 +3707,16 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
     });
     let scheduled = {
         let scheduler = scheduler.clone();
-        let wave_id = boot.wave_id.clone();
-        tokio::spawn(async move { scheduler.schedule_wave(wave_id).await })
+        let track_id = boot.track_id.clone();
+        tokio::spawn(async move { scheduler.schedule_track(track_id).await })
     };
     resolved.notified().await;
-    let card_id = if cross_wave {
+    let card_id = if cross_track {
         "fence-child-report"
     } else {
         "fence-root-report"
     };
-    let (block_path, replacement) = if cross_wave {
+    let (block_path, replacement) = if cross_track {
         ("$.blocks[0].payload.markdown", "edited after resolve")
     } else {
         ("$.blocks[0].payload.spawn", "sub-wave")
@@ -3759,7 +3759,7 @@ async fn acceptance_2_claim_fence_rejects_spawn_edit_after_resolution_without_si
 }
 
 #[tokio::test]
-async fn claim_fence_rejects_cross_wave_edit_after_resolution_without_side_effects() {
+async fn claim_fence_rejects_cross_track_edit_after_resolution_without_side_effects() {
     assert_claim_fence_race_lost(true).await;
 }
 
@@ -3767,7 +3767,7 @@ async fn claim_fence_rejects_cross_wave_edit_after_resolution_without_side_effec
 async fn deterministic_root_location_failures_do_not_freeze_or_index() {
     for case in ["duplicate", "tombstoned", "absent", "invalid-root-ref"] {
         let boot = boot().await;
-        set_lifecycle(&boot, WaveLifecycle::Draft).await;
+        set_lifecycle(&boot, TrackLifecycle::Draft).await;
         let key = format!("root-{case}");
         let valid_root = json!({
             "key": key, "kind": "terminal", "goal": "true",
@@ -3776,8 +3776,8 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         insert_report_payload(
             &boot,
             &format!("report-{case}"),
-            serde_json::to_value(WaveReportPayload {
-                schema_version: WaveReportPayload::SCHEMA_VERSION,
+            serde_json::to_value(TrackReportPayload {
+                schema_version: TrackReportPayload::SCHEMA_VERSION,
                 doc_rev: 0,
                 summary: String::new(),
                 body: String::new(),
@@ -3789,8 +3789,8 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         let root_id = "b_1001";
         let initial = vec![(root_id, "task", valid_root.clone())];
         edit_report_blocks(&boot, &initial, 0).await;
-        set_lifecycle(&boot, WaveLifecycle::Draft).await;
-        let task_id = format!("{}:{key}", boot.wave_id);
+        set_lifecycle(&boot, TrackLifecycle::Draft).await;
+        let task_id = format!("{}:{key}", boot.track_id);
         assert!(
             boot.repo.task_get(&task_id).await.unwrap().is_some(),
             "initial projection for case {case}"
@@ -3802,7 +3802,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 card_id: boot.worker_card_id.to_string(),
             })],
         );
-        scheduler.schedule_wave(boot.wave_id.clone()).await;
+        scheduler.schedule_track(boot.track_id.clone()).await;
 
         let broken = match case {
             "duplicate" => vec![
@@ -3835,8 +3835,8 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             // an older/corrupt stored report, then run the production rebuild
             // projection boundary; the task row itself was still created by the
             // real report edit above.
-            let malformed = WaveReportPayload {
-                schema_version: WaveReportPayload::SCHEMA_VERSION,
+            let malformed = TrackReportPayload {
+                schema_version: TrackReportPayload::SCHEMA_VERSION,
                 doc_rev: 2,
                 summary: String::new(),
                 body: String::new(),
@@ -3850,14 +3850,14 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             let mut tx = pool.begin().await.unwrap();
             sqlx::query(
                 "UPDATE cards SET payload = ?1, body_crdt = NULL \
-                 WHERE wave_id = ?2 AND kind = 'wave-report'",
+                 WHERE track_id = ?2 AND kind = 'track-report'",
             )
             .bind(serde_json::to_string(&malformed).unwrap())
-            .bind(boot.wave_id.as_str())
+            .bind(boot.track_id.as_str())
             .execute(&mut *tx)
             .await
             .unwrap();
-            tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
+            tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
@@ -3878,8 +3878,8 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         } else {
             edit_report_blocks(&boot, &broken, 1).await;
         }
-        set_lifecycle(&boot, WaveLifecycle::Working).await;
-        scheduler.schedule_wave(boot.wave_id.clone()).await;
+        set_lifecycle(&boot, TrackLifecycle::Working).await;
+        scheduler.schedule_track(boot.track_id.clone()).await;
         assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
         assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
         let indexed: i64 =
@@ -3909,12 +3909,12 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
 #[tokio::test]
 async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     insert_report_payload(
         &boot,
         "blocked-head-report",
-        serde_json::to_value(WaveReportPayload {
-            schema_version: WaveReportPayload::SCHEMA_VERSION,
+        serde_json::to_value(TrackReportPayload {
+            schema_version: TrackReportPayload::SCHEMA_VERSION,
             doc_rev: 1,
             summary: String::new(),
             body: String::new(),
@@ -3926,14 +3926,14 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
                     payload: json!({
                         "key": "blocked-head", "kind": "terminal", "goal": "true",
                         "declared_by": "spec", "ready": true,
-                        "refs": [format!("neige://wave/{}#b_cafe", boot.wave_id)]
+                        "refs": [format!("neige://wave/{}#b_cafe", boot.track_id)]
                     }),
                 },
                 ReportBlock {
                     id: "b_cafe".into(),
                     kind: "prose".into(),
                     rev: 1,
-                    payload: json!({"markdown": format!("[leaf](neige://wave/{}#b_dead)", boot.wave_id)}),
+                    payload: json!({"markdown": format!("[leaf](neige://wave/{}#b_dead)", boot.track_id)}),
                 },
                 ReportBlock {
                     id: "b_dead".into(),
@@ -3955,23 +3955,23 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
         .unwrap(),
     )
     .await;
-    let mut blocked = plan_task(&boot.wave_id, "blocked-head", TaskKind::Terminal, &[]);
+    let mut blocked = plan_task(&boot.track_id, "blocked-head", TaskKind::Terminal, &[]);
     blocked.priority = 10;
     let blocked_id = blocked.id.clone();
     seed_task(&boot, blocked).await;
-    let healthy = plan_task(&boot.wave_id, "healthy-tail", TaskKind::Terminal, &[]);
+    let healthy = plan_task(&boot.track_id, "healthy-tail", TaskKind::Terminal, &[]);
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
-        "UPDATE cards SET payload=json_remove(json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1),'$.blocks[2]') WHERE wave_id=?1 AND kind='wave-report'",
+        "UPDATE cards SET payload=json_remove(json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1),'$.blocks[2]') WHERE track_id=?1 AND kind='track-report'",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE waves SET task_budget = 1 WHERE id = ?1")
-        .bind(boot.wave_id.as_str())
+    sqlx::query("UPDATE tracks SET task_budget = 1 WHERE id = ?1")
+        .bind(boot.track_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
@@ -3983,7 +3983,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     let blocked = boot.repo.task_get(&blocked_id).await.unwrap().unwrap();
     let healthy = boot.repo.task_get(&healthy_id).await.unwrap().unwrap();
@@ -4017,19 +4017,19 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
         "payload": {"markdown": "restored"}
     });
     sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1,'$.blocks',json_insert(json_extract(payload,'$.blocks'),'$[#]',json(?1))) WHERE wave_id=?2 AND kind='wave-report'",
+        "UPDATE cards SET payload=json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1,'$.blocks',json_insert(json_extract(payload,'$.blocks'),'$[#]',json(?1))) WHERE track_id=?2 AND kind='track-report'",
     )
     .bind(restored.to_string())
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .execute(&pool)
     .await
     .unwrap();
     TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
-        .resolve_task_closure(boot.wave_id.as_str(), "blocked-head")
+        .resolve_task_closure(boot.track_id.as_str(), "blocked-head")
         .await
         .expect("the repaired depth-two closure resolves");
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert!(
         event_rows(&boot, "task.context_frozen")
             .await
@@ -4042,10 +4042,10 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
 #[tokio::test]
 async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = "hash-shapes";
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
         body: String::new(),
@@ -4056,7 +4056,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
                 rev: 1,
                 payload: json!({
                     "key": key, "kind": "terminal", "goal": "true", "priority": 1,
-                    "refs": [format!("neige://wave/{}#b_3002", boot.wave_id)]
+                    "refs": [format!("neige://wave/{}#b_3002", boot.track_id)]
                 }),
             },
             ReportBlock {
@@ -4073,7 +4073,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
         serde_json::to_value(report).unwrap(),
     )
     .await;
-    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let (_runtime, scheduler) = build_scheduler(
@@ -4083,7 +4083,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
             card_id: boot.worker_card_id.to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert!(
         scheduler.context_metrics().snapshot().closure_total > 0,
         "one production claim must increment the exported closure counter"
@@ -4098,7 +4098,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     .await
     .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
@@ -4110,16 +4110,16 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     .await
     .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
 }
 
 async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
-    set_lifecycle(boot, WaveLifecycle::Working).await;
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    set_lifecycle(boot, TrackLifecycle::Working).await;
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 3,
         summary: String::new(),
         body: "# Task\n".into(),
@@ -4133,15 +4133,15 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES ('context-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('context-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .bind(serde_json::to_string(&report).unwrap())
     .execute(&pool)
     .await
     .unwrap();
-    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
     let (_runtime, scheduler) = build_scheduler(
@@ -4151,7 +4151,7 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let claimed = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_ne!(
         claimed.status,
@@ -4171,20 +4171,20 @@ async fn seed_production_report_context_fixture(
     boot: &Boot,
     key: &str,
 ) -> (TaskContextMonitor, String, String) {
-    set_lifecycle(boot, WaveLifecycle::Working).await;
+    set_lifecycle(boot, TrackLifecycle::Working).await;
     let target_id = "b_2000";
     let task_payload = json!({
         "key": key,
         "kind": "terminal",
         "goal": "use the referenced contract",
-        "refs": [format!("neige://wave/{}#{target_id}", boot.wave_id)],
+        "refs": [format!("neige://wave/{}#{target_id}", boot.track_id)],
         "ready": true,
         "declared_by": "spec",
     });
     let task_fence = render_fence("task", &task_payload);
     let original_body = format!("referenced original\n\n{task_fence}");
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 0,
         summary: String::new(),
         body: original_body.clone(),
@@ -4209,7 +4209,7 @@ async fn seed_production_report_context_fixture(
         serde_json::to_value(report).unwrap(),
     )
     .await;
-    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
     sqlx::query("UPDATE tasks SET decl_ready=1 WHERE id=?1")
@@ -4224,7 +4224,7 @@ async fn seed_production_report_context_fixture(
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert!(matches!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
@@ -4244,11 +4244,11 @@ async fn seed_production_report_context_fixture(
 }
 
 async fn persist_context_report_body(boot: &Boot, body: String) {
-    let (wave, report_card, current) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+    let (track, report_card, current) =
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
-    let next = WaveReportPayload::new(current.summary.clone(), body);
+    let next = TrackReportPayload::new(current.summary.clone(), body);
     let doc_rev = current.doc_rev;
     persist_report(
         boot.repo.as_ref(),
@@ -4256,7 +4256,7 @@ async fn persist_context_report_body(boot: &Boot, body: String) {
         &boot.write,
         ActorId::User,
         EditAuthor::User,
-        wave,
+        track,
         report_card,
         current,
         next,
@@ -4306,10 +4306,10 @@ async fn seed_fresh_context_copies(
         .unwrap();
     for index in 0..count {
         let key = format!("fresh-budget-{index:04}");
-        let task_id = format!("{}:{key}", boot.wave_id);
+        let task_id = format!("{}:{key}", boot.track_id);
         sqlx::query(
             "INSERT INTO tasks \
-             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+             (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
               declared_by,claim_context_json,context_closure_truncated,\
               decl_ready,decl_released_by_user,context_verify_failures,spawn,\
               created_at_ms,updated_at_ms) \
@@ -4317,7 +4317,7 @@ async fn seed_fresh_context_copies(
                      'spec',?4,0,0,0,0,'in-wave',1,1)",
         )
         .bind(&task_id)
-        .bind(boot.wave_id.as_str())
+        .bind(boot.track_id.as_str())
         .bind(key)
         .bind(&frozen)
         .execute(&mut *tx)
@@ -4325,10 +4325,10 @@ async fn seed_fresh_context_copies(
         .unwrap();
         if index_destination {
             sqlx::query(
-                "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,?3)",
+                "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) VALUES (?1,?2,?3)",
             )
             .bind(task_id)
-            .bind(refs[0].wave_id.as_str())
+            .bind(refs[0].track_id.as_str())
             .bind(&refs[0].block_id)
             .execute(&mut *tx)
             .await
@@ -4359,9 +4359,9 @@ async fn seed_stale_context_copies(
         .fetch_one(&pool)
         .await
         .unwrap();
-    let source_wave = boot
+    let source_track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
@@ -4377,13 +4377,13 @@ async fn seed_stale_context_copies(
         refs[0].hash = "permanent-mismatch".into();
     }
     let frozen = serde_json::to_string(&refs).unwrap();
-    let mut clone_wave_ids = Vec::with_capacity(count);
+    let mut clone_track_ids = Vec::with_capacity(count);
     for index in 0..count {
-        let wave = boot
+        let track = boot
             .repo
-            .wave_create(NewWave {
+            .track_create(NewTrack {
                 template_input: None,
-                area_id: source_wave.area_id.clone(),
+                area_id: source_track.area_id.clone(),
                 title: format!("restore cursor fixture {key_prefix} {index}"),
                 sort: None,
                 cwd: String::new(),
@@ -4394,17 +4394,17 @@ async fn seed_stale_context_copies(
             })
             .await
             .unwrap();
-        clone_wave_ids.push(wave.id);
+        clone_track_ids.push(track.id);
     }
     let mut ids = Vec::with_capacity(count);
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
-    for (index, clone_wave_id) in clone_wave_ids.iter().enumerate() {
+    for (index, clone_track_id) in clone_track_ids.iter().enumerate() {
         let task_id = format!("{key_prefix}-{index:04}");
         sqlx::query(
             "INSERT INTO tasks \
-             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+             (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
               declared_by,claim_context_json,context_stale_at_ms,context_closure_truncated,\
               decl_ready,decl_released_by_user,context_verify_failures,spawn,\
               created_at_ms,updated_at_ms) \
@@ -4412,7 +4412,7 @@ async fn seed_stale_context_copies(
                      'spec',?4,1,0,0,0,0,'in-wave',1,1)",
         )
         .bind(&task_id)
-        .bind(clone_wave_id.as_str())
+        .bind(clone_track_id.as_str())
         .bind(&source_key)
         .bind(&frozen)
         .execute(&mut *tx)
@@ -4420,10 +4420,10 @@ async fn seed_stale_context_copies(
         .unwrap();
         if index_destination {
             sqlx::query(
-                "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,?3)",
+                "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) VALUES (?1,?2,?3)",
             )
             .bind(&task_id)
-            .bind(source_refs[0].wave_id.as_str())
+            .bind(source_refs[0].track_id.as_str())
             .bind(&source_refs[0].block_id)
             .execute(&mut *tx)
             .await
@@ -4449,7 +4449,7 @@ async fn materialize_then_restore_root_bytes(
     .await
     .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let stale: Option<i64> =
@@ -4476,7 +4476,7 @@ async fn fresh_and_stale_event_fanout_budgets_are_independent() {
     let boot = boot().await;
     let key = "aa-event-restore-liveness";
     let monitor = seed_frozen_context_fixture(&boot, key).await;
-    let task_id = format!("{}:{key}", boot.wave_id);
+    let task_id = format!("{}:{key}", boot.track_id);
     materialize_then_restore_root_bytes(&boot, &monitor, &task_id).await;
     seed_fresh_context_copies(
         &boot,
@@ -4487,7 +4487,7 @@ async fn fresh_and_stale_event_fanout_budgets_are_independent() {
     .await;
 
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
 
@@ -4508,7 +4508,7 @@ async fn consecutive_sweeps_restore_after_a_full_fresh_budget_without_starvation
     let boot = boot().await;
     let key = "aa-sweep-restore-liveness";
     let monitor = seed_frozen_context_fixture(&boot, key).await;
-    let task_id = format!("{}:{key}", boot.wave_id);
+    let task_id = format!("{}:{key}", boot.track_id);
     materialize_then_restore_root_bytes(&boot, &monitor, &task_id).await;
     seed_fresh_context_copies(
         &boot,
@@ -4552,7 +4552,7 @@ async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
     let boot = boot().await;
     let key = "zz-event-budget-recovery";
     let monitor = seed_frozen_context_fixture(&boot, key).await;
-    let task_id = format!("{}:{key}", boot.wave_id);
+    let task_id = format!("{}:{key}", boot.track_id);
     seed_fresh_context_copies(
         &boot,
         &task_id,
@@ -4562,7 +4562,7 @@ async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
     .await;
 
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert!(
@@ -4584,7 +4584,7 @@ async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -4608,7 +4608,7 @@ async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
         ]
     );
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -4628,7 +4628,7 @@ async fn sweep_budget_material_verdict_recovers_and_metrics_stay_split() {
     let boot = boot().await;
     let key = "zz-sweep-budget-recovery";
     let monitor = seed_frozen_context_fixture(&boot, key).await;
-    let task_id = format!("{}:{key}", boot.wave_id);
+    let task_id = format!("{}:{key}", boot.track_id);
     seed_fresh_context_copies(
         &boot,
         &task_id,
@@ -4687,7 +4687,7 @@ async fn event_restore_cursor_reaches_multiple_targets_beyond_stale_fanout_share
     let boot = boot().await;
     let source_key = "zz-event-cursor-source";
     let monitor = seed_frozen_context_fixture(&boot, source_key).await;
-    let source_task_id = format!("{}:{source_key}", boot.wave_id);
+    let source_task_id = format!("{}:{source_key}", boot.track_id);
     seed_stale_context_copies(&boot, &source_task_id, "a-blocker", 64, 1, true, true).await;
     let first = seed_stale_context_copies(&boot, &source_task_id, "b-target", 1, 1, false, true)
         .await
@@ -4699,7 +4699,7 @@ async fn event_restore_cursor_reaches_multiple_targets_beyond_stale_fanout_share
 
     for _ in 0..3 {
         monitor
-            .detect_wave_edit(boot.wave_id.as_str())
+            .detect_track_edit(boot.track_id.as_str())
             .await
             .unwrap();
     }
@@ -4726,7 +4726,7 @@ async fn sweep_restore_cursor_reaches_multiple_targets_beyond_stale_tuple_share(
     let boot = boot().await;
     let source_key = "zz-sweep-cursor-source";
     let monitor = seed_frozen_context_fixture(&boot, source_key).await;
-    let source_task_id = format!("{}:{source_key}", boot.wave_id);
+    let source_task_id = format!("{}:{source_key}", boot.track_id);
     seed_stale_context_copies(&boot, &source_task_id, "a-blocker", 64, 64, true, false).await;
     let first = seed_stale_context_copies(&boot, &source_task_id, "b-target", 1, 1, false, false)
         .await
@@ -4768,7 +4768,7 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
 
     persist_context_report_body(&boot, temporary_body).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let stale_after_first_detection: Option<i64> =
@@ -4789,8 +4789,8 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
 
     persist_context_report_body(&boot, original_body).await;
     let (restore_winner, duplicate_restore) = tokio::join!(
-        monitor.detect_wave_edit(boot.wave_id.as_str()),
-        monitor.detect_wave_edit(boot.wave_id.as_str())
+        monitor.detect_track_edit(boot.track_id.as_str()),
+        monitor.detect_track_edit(boot.track_id.as_str())
     );
     restore_winner.unwrap();
     duplicate_restore.unwrap();
@@ -4824,7 +4824,7 @@ async fn terminal_transition_during_stale_episode_never_clears_or_emits_restored
         original_body.replacen("referenced original", "referenced terminal edit", 1);
     persist_context_report_body(&boot, temporary_body).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -4848,7 +4848,7 @@ async fn terminal_transition_during_stale_episode_never_clears_or_emits_restored
         .unwrap();
     persist_context_report_body(&boot, original_body).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -4868,9 +4868,10 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, "material-a5-fence").await;
-    let (_, original_card, _) = resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
-        .await
-        .unwrap();
+    let (_, original_card, _) =
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
+            .await
+            .unwrap();
     let original_payload = original_card.payload.to_string();
     let temporary_body =
         original_body.replacen("referenced original", "referenced original temporary", 1);
@@ -4887,8 +4888,8 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     let metrics = monitor.metrics();
     let detector = {
         let monitor = Arc::clone(&monitor);
-        let wave_id = boot.wave_id.clone();
-        tokio::spawn(async move { monitor.detect_wave_edit(wave_id.as_str()).await })
+        let track_id = boot.track_id.clone();
+        tokio::spawn(async move { monitor.detect_track_edit(track_id.as_str()).await })
     };
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -4941,7 +4942,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, "restore-race-fence").await;
-    let (_, report_card, _) = resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+    let (_, report_card, _) = resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
         .await
         .unwrap();
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -4949,10 +4950,10 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
         original_body.replacen("referenced original", "referenced first material", 1);
     persist_context_report_body(&boot, first_material).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
-    let mut restored_report: WaveReportPayload = serde_json::from_str(
+    let mut restored_report: TrackReportPayload = serde_json::from_str(
         &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
             .bind(report_card.id.as_str())
             .fetch_one(&pool)
@@ -4982,8 +4983,8 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     let metrics = monitor.metrics();
     let mut old_restore = {
         let monitor = Arc::clone(&monitor);
-        let wave_id = boot.wave_id.clone();
-        tokio::spawn(async move { monitor.detect_wave_edit(wave_id.as_str()).await })
+        let track_id = boot.track_id.clone();
+        tokio::spawn(async move { monitor.detect_track_edit(track_id.as_str()).await })
     };
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -5003,7 +5004,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     );
     let second_material =
         original_body.replacen("referenced original", "referenced W3 material", 1);
-    let mut w3_report: WaveReportPayload = serde_json::from_str(
+    let mut w3_report: TrackReportPayload = serde_json::from_str(
         &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
             .bind(report_card.id.as_str())
             .fetch_one(&mut *w3)
@@ -5057,7 +5058,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let stale_after_r: Option<i64> =
@@ -5078,7 +5079,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert!(
@@ -5110,11 +5111,11 @@ async fn context_verdicts_alternate_material_restored_material_once_per_episode(
         original_body.replacen("referenced original", "referenced original first edit", 1);
     persist_context_report_body(&boot, first_edit).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5123,7 +5124,7 @@ async fn context_verdicts_alternate_material_restored_material_once_per_episode(
     persist_context_report_body(&boot, original_body.clone()).await;
     monitor.sweep().await.unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5133,11 +5134,11 @@ async fn context_verdicts_alternate_material_restored_material_once_per_episode(
         original_body.replacen("referenced original", "referenced original second edit", 1);
     persist_context_report_body(&boot, second_edit).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5162,12 +5163,12 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         original_body.replacen("referenced original", "referenced original temporary", 1);
     persist_context_report_body(&boot, temporary_body).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
 
     let (_, report_card, current) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
     let blocks = current.blocks.as_ref().unwrap();
@@ -5187,7 +5188,7 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
     .await
     .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5240,15 +5241,15 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
 async fn assert_excluded_root_field_vetoes_restore(
     key: &str,
     align_frozen_root: bool,
-    prepare: impl FnOnce(&mut WaveReportPayload),
-    withdraw: impl FnOnce(&mut WaveReportPayload),
+    prepare: impl FnOnce(&mut TrackReportPayload),
+    withdraw: impl FnOnce(&mut TrackReportPayload),
 ) {
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, key).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let (_, report_card, current) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
     let mut prepared = current;
@@ -5266,11 +5267,11 @@ async fn assert_excluded_root_field_vetoes_restore(
     )
     .await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let (_, report_card, mut restored) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
     restored.body = original_body;
@@ -5320,7 +5321,7 @@ async fn assert_excluded_root_field_vetoes_restore(
             .unwrap();
     }
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
 
@@ -5382,7 +5383,7 @@ async fn released_by_user_withdrawal_vetoes_restore() {
         .await
         .unwrap();
     let (_, report_card, mut report) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
     report.blocks.as_mut().unwrap()[1].payload["released_by_user"] = json!(true);
@@ -5398,11 +5399,11 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     )
     .await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let (_, report_card, mut restored) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
     restored.body = original_body;
@@ -5416,7 +5417,7 @@ async fn released_by_user_withdrawal_vetoes_restore() {
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
 
@@ -5444,7 +5445,7 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
         original_body.replacen("referenced original", "referenced original lasting edit", 1);
     persist_context_report_body(&boot, material_body.clone()).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -5463,7 +5464,7 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
 
     persist_context_report_body(&boot, material_body).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5526,7 +5527,7 @@ async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_mater
     .unwrap();
 
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5545,8 +5546,8 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
 
     let pool = boot.repo.sqlite_pool().unwrap();
     let card_id: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE wave_id = ?1 AND kind = 'wave-report'")
-            .bind(boot.wave_id.as_str())
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND kind = 'track-report'")
+            .bind(boot.track_id.as_str())
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -5568,7 +5569,7 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
     );
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
-            .bind(format!("{}:stale-once", boot.wave_id))
+            .bind(format!("{}:stale-once", boot.track_id))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -5581,7 +5582,7 @@ async fn context_sweep_marks_material_when_closure_was_truncated() {
     let monitor = seed_frozen_context_fixture(&boot, "truncated-still-matches").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query("UPDATE tasks SET context_closure_truncated = 1 WHERE id = ?1")
-        .bind(format!("{}:truncated-still-matches", boot.wave_id))
+        .bind(format!("{}:truncated-still-matches", boot.track_id))
         .execute(&pool)
         .await
         .unwrap();
@@ -5594,7 +5595,7 @@ async fn context_sweep_marks_material_when_closure_was_truncated() {
         "a truncated closure has an unverifiable suffix and is fail-closed"
     );
     monitor.sweep().await.unwrap();
-    let task_id = format!("{}:truncated-still-matches", boot.wave_id);
+    let task_id = format!("{}:truncated-still-matches", boot.track_id);
     assert!(
         boot.repo
             .task_get(&task_id)
@@ -5619,7 +5620,7 @@ async fn malformed_stored_report_is_deterministic_and_marks_material_immediately
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "retryable-verify").await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    let task_id = format!("{}:retryable-verify", boot.wave_id);
+    let task_id = format!("{}:retryable-verify", boot.track_id);
     sqlx::query(
         "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
     )
@@ -5643,7 +5644,7 @@ async fn storage_unavailable_during_system_area_lookup_is_retryable() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "storage-retry").await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    let task_id = format!("{}:storage-retry", boot.wave_id);
+    let task_id = format!("{}:storage-retry", boot.track_id);
 
     sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
         .execute(&pool)
@@ -5682,7 +5683,7 @@ async fn successful_context_verification_resets_retry_streak() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "storage-reset").await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    let task_id = format!("{}:storage-reset", boot.wave_id);
+    let task_id = format!("{}:storage-reset", boot.track_id);
     sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
         .execute(&pool)
         .await
@@ -5703,15 +5704,15 @@ async fn successful_context_verification_resets_retry_streak() {
     assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
 }
 
-async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {
+async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id: &str, key: &str) {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let referenced = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: boot.area_id.clone(),
-            title: deleted_wave_id.into(),
+            title: deleted_track_id.into(),
             sort: None,
             cwd: String::new(),
             template_id: None,
@@ -5721,8 +5722,8 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
         })
         .await
         .unwrap();
-    let child_report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let child_report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
         body: String::new(),
@@ -5736,8 +5737,8 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
     )
     .bind(format!("deleted-report-{key}"))
     .bind(referenced.id.as_str())
@@ -5745,8 +5746,8 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
     .execute(&pool)
     .await
     .unwrap();
-    let root_report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let root_report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
         body: String::new(),
@@ -5766,10 +5767,10 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
         serde_json::to_value(root_report).unwrap(),
     )
     .await;
-    let task_id = format!("{}:{key}", boot.wave_id);
+    let task_id = format!("{}:{key}", boot.track_id);
     seed_task(
         &boot,
-        plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]),
+        plan_task(&boot.track_id, key, TaskKind::Terminal, &[]),
     )
     .await;
     let (_runtime, scheduler) = build_scheduler(
@@ -5779,7 +5780,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
             card_id: boot.worker_card_id.to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
         .fetch_one(&pool)
@@ -5796,7 +5797,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
     ));
-    sqlx::query("DELETE FROM waves WHERE id = ?1")
+    sqlx::query("DELETE FROM tracks WHERE id = ?1")
         .bind(referenced.id.as_str())
         .execute(&pool)
         .await
@@ -5804,14 +5805,14 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
     let state = app_state_for_context_events(&boot);
 
     let event = match event {
-        Event::WaveDeleted { .. } => Event::WaveDeleted {
+        Event::TrackDeleted { .. } => Event::TrackDeleted {
             id: referenced.id.clone(),
             area_id: boot.area_id.clone(),
         },
         Event::AreaDeleted { .. } => Event::AreaDeleted {
             id: boot.area_id.clone(),
         },
-        _ => unreachable!("deletion fixture only accepts wave/area deletion"),
+        _ => unreachable!("deletion fixture only accepts track/area deletion"),
     };
     boot.events.emit(ActorId::Kernel, event);
     for _ in 0..500 {
@@ -5829,14 +5830,14 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
 }
 
 #[tokio::test]
-async fn wave_deleted_event_runs_context_sweep_end_to_end() {
+async fn track_deleted_event_runs_context_sweep_end_to_end() {
     assert_deletion_event_runs_context_sweep(
-        Event::WaveDeleted {
-            id: WaveId::from("deleted-destination"),
+        Event::TrackDeleted {
+            id: TrackId::from("deleted-destination"),
             area_id: AreaId::from("deleted-destination-area"),
         },
         "deleted-destination",
-        "wave-deleted-event",
+        "track-deleted-event",
     )
     .await;
 }
@@ -5847,7 +5848,7 @@ async fn area_deleted_event_runs_context_sweep_end_to_end() {
         Event::AreaDeleted {
             id: AreaId::from("deleted-destination-area"),
         },
-        "deleted-wave-under-area",
+        "deleted-track-under-area",
         "area-deleted-event",
     )
     .await;
@@ -5860,14 +5861,14 @@ async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'new incarnation') \
-         WHERE wave_id = ?1 AND kind = 'wave-report'",
+         WHERE track_id = ?1 AND kind = 'track-report'",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .execute(&pool)
     .await
     .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
@@ -5880,14 +5881,14 @@ async fn referenced_block_deletion_is_material_even_without_changed_ids() {
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks', json('[]')) \
-         WHERE wave_id = ?1 AND kind = 'wave-report'",
+         WHERE track_id = ?1 AND kind = 'track-report'",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .execute(&pool)
     .await
     .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
@@ -5900,7 +5901,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
         seed_production_report_context_fixture(&boot, "absent-same-id-restores").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let (_, report_card, original_report) =
-        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
     let frozen_json: String =
@@ -5929,7 +5930,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -5944,7 +5945,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
         .await
         .unwrap();
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -5991,7 +5992,7 @@ async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
     let body_without_child = original_body.replacen("referenced original\n\n", "", 1);
     persist_context_report_body(&boot, body_without_child).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -6002,11 +6003,11 @@ async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
 
     persist_context_report_body(&boot, original_body).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
-    let (_, _, rebuilt) = resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+    let (_, _, rebuilt) = resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
         .await
         .unwrap();
     let rebuilt_child = rebuilt
@@ -6038,7 +6039,7 @@ async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
 #[tokio::test]
 async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
     let boot = boot().await;
-    let mut task = plan_task(&boot.wave_id, "missing", TaskKind::Terminal, &[]);
+    let mut task = plan_task(&boot.track_id, "missing", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -6089,7 +6090,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
             let markdown = if index == 4 {
                 "leaf".to_string()
             } else {
-                format!("[next](neige://wave/{}#b_{:04})", boot.wave_id, index + 1)
+                format!("[next](neige://wave/{}#b_{:04})", boot.track_id, index + 1)
             };
             json!({
                 "id": format!("b_{index:04}"),
@@ -6101,10 +6102,10 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
         .collect();
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES ('closure-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('closure-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .bind(json!({"docRev": 1, "blocks": blocks}).to_string())
     .execute(&pool)
     .await
@@ -6112,7 +6113,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
     let monitor =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     let closure = monitor
-        .resolve_closure(boot.wave_id.as_str(), "b_0000")
+        .resolve_closure(boot.track_id.as_str(), "b_0000")
         .await
         .unwrap();
     assert_eq!(closure.refs.len(), 4, "depth zero through depth three");
@@ -6127,9 +6128,9 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
         })
         .await
         .unwrap();
-    let foreign_wave = boot
+    let foreign_track = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: foreign_area.id,
             title: "foreign".into(),
@@ -6144,10 +6145,10 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
         .unwrap();
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES ('foreign-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('foreign-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
     )
-    .bind(foreign_wave.id.as_str())
+    .bind(foreign_track.id.as_str())
     .bind(
         json!({"docRev": 1, "blocks": [{
             "id":"b_f000","kind":"prose","rev":1,"payload":{"markdown":"foreign"}
@@ -6162,13 +6163,13 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
     )
     .bind(json!({"docRev": 2, "blocks": [{
         "id":"b_0000","kind":"prose","rev":1,
-        "payload":{"markdown": format!("[foreign](neige://wave/{}#b_f000)", foreign_wave.id)}
+        "payload":{"markdown": format!("[foreign](neige://wave/{}#b_f000)", foreign_track.id)}
     }]}).to_string())
     .execute(&pool)
     .await
     .unwrap();
     let error = monitor
-        .resolve_closure(boot.wave_id.as_str(), "b_0000")
+        .resolve_closure(boot.track_id.as_str(), "b_0000")
         .await
         .expect_err("cross-area closure must fail closed");
     assert!(matches!(error, ResolveError::CrossArea(_)));
@@ -6181,7 +6182,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     let pool = boot.repo.sqlite_pool().unwrap();
     let frozen_json: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
-            .bind(format!("{}:fanout-00", boot.wave_id))
+            .bind(format!("{}:fanout-00", boot.track_id))
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6190,7 +6191,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    let mut report: WaveReportPayload = serde_json::from_str(&payload).unwrap();
+    let mut report: TrackReportPayload = serde_json::from_str(&payload).unwrap();
     for index in 1..65 {
         let key = format!("fanout-{index:02}");
         report.blocks.as_mut().unwrap().push(ReportBlock {
@@ -6199,10 +6200,10 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             rev: 1,
             payload: json!({
                 "key": key, "kind": "terminal", "goal": "true",
-                "refs": [format!("neige://wave/{}#b_1000", boot.wave_id)]
+                "refs": [format!("neige://wave/{}#b_1000", boot.track_id)]
             }),
         });
-        let task = plan_task(&boot.wave_id, &key, TaskKind::Terminal, &[]);
+        let task = plan_task(&boot.track_id, &key, TaskKind::Terminal, &[]);
         seed_task(&boot, task).await;
     }
     report.doc_rev += 1;
@@ -6211,8 +6212,8 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET task_budget = 65 WHERE id = ?1")
-        .bind(boot.wave_id.as_str())
+    sqlx::query("UPDATE tracks SET task_budget = 65 WHERE id = ?1")
+        .bind(boot.track_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
@@ -6223,11 +6224,11 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             card_id: boot.worker_card_id.to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let claimed: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM tasks WHERE wave_id = ?1 AND status != 'pending' ",
+        "SELECT count(*) FROM tasks WHERE track_id = ?1 AND status != 'pending' ",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -6236,7 +6237,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         "fanout rows must all come from production claim"
     );
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -6257,15 +6258,15 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET task_budget = 66 WHERE id = ?1")
-        .bind(boot.wave_id.as_str())
+    sqlx::query("UPDATE tracks SET task_budget = 66 WHERE id = ?1")
+        .bind(boot.track_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
-    let cap_task = plan_task(&boot.wave_id, "sweep-cap", TaskKind::Terminal, &[]);
+    let cap_task = plan_task(&boot.track_id, "sweep-cap", TaskKind::Terminal, &[]);
     let cap_id = cap_task.id.clone();
     seed_task(&boot, cap_task).await;
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let one: Value = serde_json::from_str::<Vec<Value>>(&frozen_json).unwrap()[0].clone();
     let oversized = vec![one; calm_server::task_context::MAX_SWEEP_NODES + 1];
     // This is the dedicated sweep-limit corruption fixture: no production
@@ -6310,20 +6311,20 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
 #[tokio::test]
 async fn sibling_card_report_cannot_flip_other_tasks_row() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "owned", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "owned", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     // Stamped: the scheduler recorded which card owns this task.
     task.worker_card_id = Some(boot.worker_card_id.as_str().to_string());
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
 
-    // Mint a sibling worker card in the SAME wave — wave-pinning alone
+    // Mint a sibling worker card in the SAME track — track-pinning alone
     // would let it terminalize the row.
     let sibling = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone(),
+            track_id: boot.track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -6332,7 +6333,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         .await
         .expect("sibling worker card");
     boot.card_role_cache
-        .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+        .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     seed_runtime_session_in_pool(
         &pool,
@@ -6346,7 +6347,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         role: CardRole::Worker,
         provider: AgentProvider::Codex,
         session_id: "sibling-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "sibling-thread".into(),
     };
@@ -6389,15 +6390,15 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
     .expect_err("sibling fail report must be rejected");
     assert_eq!(task_row(&boot, "owned").await.status, TaskStatus::Running);
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "rejected reports must not run the Working → Reviewing transition"
     );
 
@@ -6415,21 +6416,21 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
 }
 
 // ---------------------------------------------------------------------------
-// Review round 1 — F4: the claim tx re-checks the wave lifecycle
+// Review round 1 — F4: the claim tx re-checks the track lifecycle
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_task(
         &boot,
-        plan_task(&boot.wave_id, "held", TaskKind::Codex, &[]),
+        plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
     )
     .await;
 
     // Park the pass between the (passing) pre-claim lifecycle read and
-    // the claim tx, then move the wave out of the schedulable set.
+    // the claim tx, then move the track out of the schedulable set.
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
     let permit = Arc::clone(&semaphore)
         .acquire_owned()
@@ -6445,14 +6446,14 @@ async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
     );
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
-        let wave_id = boot.wave_id.clone();
-        async move { scheduler.schedule_wave(wave_id).await }
+        let track_id = boot.track_id.clone();
+        async move { scheduler.schedule_track(track_id).await }
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    set_lifecycle(&boot, WaveLifecycle::Canceled).await;
+    set_lifecycle(&boot, TrackLifecycle::Canceled).await;
     drop(permit);
-    handle.await.expect("schedule_wave task");
+    handle.await.expect("schedule_track task");
 
     assert_eq!(
         task_row(&boot, "held").await.status,
@@ -6467,13 +6468,13 @@ async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
 }
 
 // ---------------------------------------------------------------------------
-// Review round 1 — F5: claiming from a Planning wave promotes it along
+// Review round 1 — F5: claiming from a Planning track promotes it along
 // Planning → Dispatching → Working in the claim tx
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn planning_wave_promotes_to_working_on_claim() {
-    let boot = boot().await; // wave is Draft (create default)
+async fn planning_track_promotes_to_working_on_claim() {
+    let boot = boot().await; // track is Draft (create default)
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -6483,11 +6484,11 @@ async fn planning_wave_promotes_to_working_on_claim() {
     );
 
     // Writing a ready report task block without a lifecycle arg auto-promotes
-    // Draft to Planning and leaves the wave there — the F5 scenario.
+    // Draft to Planning and leaves the track there — the F5 scenario.
     insert_report_payload(
         &boot,
         "report-planning-claim",
-        serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        serde_json::to_value(TrackReportPayload::initial()).unwrap(),
     )
     .await;
     edit_report_blocks(
@@ -6503,34 +6504,34 @@ async fn planning_wave_promotes_to_working_on_claim() {
         0,
     )
     .await;
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Planning,
-        "task block write with no lifecycle arg leaves the wave Planning"
+        track.lifecycle,
+        TrackLifecycle::Planning,
+        "task block write with no lifecycle arg leaves the track Planning"
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = task_row(&boot, "p1").await;
     assert_eq!(
         row.status,
         TaskStatus::Running,
-        "Planning waves schedule (§5.2)"
+        "Planning tracks schedule (§5.2)"
     );
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "claim tx chains Planning → Dispatching → Working"
     );
 
@@ -6544,29 +6545,29 @@ async fn planning_wave_promotes_to_working_on_claim() {
     .await
     .expect("worker report");
     assert_eq!(task_row(&boot, "p1").await.status, TaskStatus::Done);
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 // ---------------------------------------------------------------------------
-// Review round 5 — F1: a dependent task claimed while the wave sits in
+// Review round 5 — F1: a dependent task claimed while the track sits in
 // Reviewing (the first worker's completion promoted it) rides the legal
 // Reviewing → Working edge in the claim tx
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
+async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_projected_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "t1", TaskKind::Codex, &[])).await;
     seed_projected_task(
         &boot,
-        plan_task(&boot.wave_id, "t2", TaskKind::Codex, &["t1"]),
+        plan_task(&boot.track_id, "t2", TaskKind::Codex, &["t1"]),
     )
     .await;
     let (_runtime, scheduler) = build_scheduler(
@@ -6577,12 +6578,12 @@ async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
         })],
     );
 
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let t1 = task_row(&boot, "t1").await;
     assert_eq!(t1.status, TaskStatus::Running);
 
     // First worker reports → emit tx flips t1 done AND promotes the
-    // wave Working → Reviewing.
+    // track Working → Reviewing.
     call_tool(
         &boot,
         TOOL_TASK_COMPLETE,
@@ -6591,31 +6592,31 @@ async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
     )
     .await
     .expect("t1 complete");
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 
     // t2's dep is now satisfied; in production the task.completed
-    // envelope pokes the scheduler. The claim from a Reviewing wave
+    // envelope pokes the scheduler. The claim from a Reviewing track
     // must promote it back to Working in the same tx — otherwise the
-    // wave reads `Reviewing` while new work runs and the second
+    // track reads `Reviewing` while new work runs and the second
     // completion's Working → Reviewing transition can never fire.
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let t2 = task_row(&boot, "t2").await;
     assert_eq!(t2.status, TaskStatus::Running, "dependent task claimed");
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "claim tx must ride the legal Reviewing → Working edge"
     );
 
@@ -6629,13 +6630,13 @@ async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
     .await
     .expect("t2 complete");
     assert_eq!(task_row(&boot, "t2").await.status, TaskStatus::Done);
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 // ---------------------------------------------------------------------------
@@ -6646,8 +6647,8 @@ async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
 #[tokio::test]
 async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "crashed", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "crashed", TaskKind::Terminal, &[]);
     // Claimed before the crash; the PTY exited while the kernel was
     // down and the supervisor reconcile persisted the synthetic -1.
     task.status = TaskStatus::Dispatched;
@@ -6693,8 +6694,8 @@ async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass(
 #[tokio::test]
 async fn sweep_boot_dispatches_pending_without_blocking() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_projected_task(&boot, plan_task(&boot.wave_id, "bg", TaskKind::Codex, &[])).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "bg", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -6730,8 +6731,8 @@ async fn sweep_marks_running_when_op_succeeded_before_crash() {
     // Crash window: the worker op ran to success but the kernel died
     // before the running stamp — the sweep must stamp, not respawn.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stamped", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "stamped", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task.clone()).await;
     let (runtime, scheduler) = build_scheduler(
@@ -6790,8 +6791,8 @@ async fn sweep_redrives_half_driven_operation() {
     // (crash right after insert, or a lease-stuck driver). The sweep's
     // `wait()` is the steady-state re-drive.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stalled", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "stalled", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task.clone()).await;
     let (_runtime, scheduler) = build_scheduler(
@@ -6841,8 +6842,8 @@ async fn sweep_fails_task_when_preexisting_op_failed() {
     // whose task reconcile was lost to a crash) — the sweep must mark
     // the row failed('spawn-failed'), not leave it dispatched forever.
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "wedged", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "wedged", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task.clone()).await;
     let (runtime, scheduler) = build_scheduler(
@@ -6899,8 +6900,8 @@ async fn sweep_fails_task_when_preexisting_op_failed() {
 #[tokio::test]
 async fn claim_aborts_when_dep_added_pre_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let task = plan_task(&boot.wave_id, "revised", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "revised", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
 
@@ -6921,8 +6922,8 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     );
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
-        let wave_id = boot.wave_id.clone();
-        async move { scheduler.schedule_wave(wave_id).await }
+        let track_id = boot.track_id.clone();
+        async move { scheduler.schedule_track(track_id).await }
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -6930,7 +6931,7 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     // and revises the still-pending row to depend on it.
     seed_task(
         &boot,
-        plan_task(&boot.wave_id, "prereq", TaskKind::Codex, &[]),
+        plan_task(&boot.track_id, "prereq", TaskKind::Codex, &[]),
     )
     .await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
@@ -6944,7 +6945,7 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     assert_eq!(revised.rows_affected(), 1, "dep added while parked");
 
     drop(permit);
-    handle.await.expect("schedule_wave task");
+    handle.await.expect("schedule_track task");
 
     assert_eq!(
         task_row(&boot, "revised").await.status,
@@ -6961,10 +6962,10 @@ async fn claim_aborts_when_dep_added_pre_claim() {
 #[tokio::test]
 async fn claim_aborts_when_budget_shrunk_pre_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_task(
         &boot,
-        plan_task(&boot.wave_id, "held", TaskKind::Codex, &[]),
+        plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
     )
     .await;
 
@@ -6983,16 +6984,16 @@ async fn claim_aborts_when_budget_shrunk_pre_claim() {
     );
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
-        let wave_id = boot.wave_id.clone();
-        async move { scheduler.schedule_wave(wave_id).await }
+        let track_id = boot.track_id.clone();
+        async move { scheduler.schedule_track(track_id).await }
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    // `PATCH /api/waves` shrinks the budget to 0 mid-window.
+    // `PATCH /api/tracks` shrinks the budget to 0 mid-window.
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 task_budget: Some(Some(0)),
                 ..Default::default()
             },
@@ -7001,7 +7002,7 @@ async fn claim_aborts_when_budget_shrunk_pre_claim() {
         .expect("shrink budget");
 
     drop(permit);
-    handle.await.expect("schedule_wave task");
+    handle.await.expect("schedule_track task");
 
     assert_eq!(
         task_row(&boot, "held").await.status,
@@ -7021,20 +7022,20 @@ async fn claim_aborts_when_budget_shrunk_pre_claim() {
 #[tokio::test]
 async fn unstamped_dispatched_row_rejects_sibling_report() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Claimed but the running stamp hasn't landed yet — the
     // report-beats-stamp window round 1 left open for siblings.
-    let mut task = plan_task(&boot.wave_id, "unstamped", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "unstamped", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
 
-    // Sibling worker in the SAME wave whose payload binds a DIFFERENT
+    // Sibling worker in the SAME track whose payload binds a DIFFERENT
     // idempotency key — it echoes this task's id in its report.
     let sibling = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone(),
+            track_id: boot.track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -7043,7 +7044,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         .await
         .expect("sibling worker card");
     boot.card_role_cache
-        .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+        .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     seed_runtime_session_in_pool(
         &pool,
@@ -7057,7 +7058,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         role: CardRole::Worker,
         provider: AgentProvider::Codex,
         session_id: "sibling-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "sibling-thread".into(),
     };
@@ -7092,15 +7093,15 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         TaskStatus::Dispatched
     );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "rejected reports must not promote Working → Reviewing"
     );
 
@@ -7141,9 +7142,9 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
 #[tokio::test]
 async fn forged_payload_sibling_report_rejected_without_op_target() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Dispatched + unstamped: the report-beats-running-stamp window.
-    let mut task = plan_task(&boot.wave_id, "forged", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "forged", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -7156,13 +7157,13 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
     )
     .await;
 
-    // Same-wave sibling whose payload was PATCHed to claim THIS task's
+    // Same-track sibling whose payload was PATCHed to claim THIS task's
     // idempotency key — the round-2 payload-comparison proof would have
     // accepted it; no worker op targets it.
     let sibling = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone(),
+            track_id: boot.track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -7171,7 +7172,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         .await
         .expect("forged sibling card");
     boot.card_role_cache
-        .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+        .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     seed_runtime_session_in_pool(
         &pool,
@@ -7185,7 +7186,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         role: CardRole::Worker,
         provider: AgentProvider::Codex,
         session_id: "forged-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "forged-thread".into(),
     };
@@ -7219,15 +7220,15 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         TaskStatus::Dispatched
     );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "rejected forged reports must not promote Working → Reviewing"
     );
 
@@ -7252,8 +7253,8 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
 #[tokio::test]
 async fn forged_payload_terminal_exit_rejected_without_op_target() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "forged-term", TaskKind::Terminal, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "forged-term", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -7300,10 +7301,10 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
 #[tokio::test]
 async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Dispatched + unstamped: the window the scheduler has not yet
     // classified the payload conflict as spawn-failed.
-    let mut task = plan_task(&boot.wave_id, "legacy-owned", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "legacy-owned", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -7319,7 +7320,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
         boot.worker_card_id.as_str(),
         json!({
             "actor": ActorId::AiSpec(boot.spec_card_id.clone()),
-            "wave_id": boot.wave_id.as_str()
+            "track_id": boot.track_id.as_str()
         }),
     )
     .await;
@@ -7354,15 +7355,15 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
         TaskStatus::Dispatched
     );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        wave.lifecycle,
-        WaveLifecycle::Working,
+        track.lifecycle,
+        TrackLifecycle::Working,
         "rejected reports must not promote Working → Reviewing"
     );
 }
@@ -7375,7 +7376,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
 #[tokio::test]
 async fn legacy_report_without_task_row_still_emits() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // No tasks row exists for this key, and the boot worker card's
     // payload carries no binding — the legacy dispatch shape.
     call_tool(
@@ -7389,13 +7390,13 @@ async fn legacy_report_without_task_row_still_emits() {
     let completed = event_rows(&boot, "task.completed").await;
     assert_eq!(completed.len(), 1, "event persisted exactly as before");
     // ... including the Working → Reviewing first-report promotion.
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 // ---------------------------------------------------------------------------
@@ -7409,10 +7410,10 @@ async fn legacy_report_without_task_row_still_emits() {
 #[tokio::test]
 async fn legacy_report_with_pending_task_row_still_emits() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Pending plan row under the key; legacy-style worker — no
     // worker-spawn op target, no payload binding (owns_key = false).
-    let task = plan_task(&boot.wave_id, "pending-collide", TaskKind::Codex, &[]);
+    let task = plan_task(&boot.track_id, "pending-collide", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
 
@@ -7453,19 +7454,19 @@ async fn legacy_report_with_pending_task_row_still_emits() {
 // ---------------------------------------------------------------------------
 // Review round 3 — F1: a foreign operation owning the task's idempotency
 // key with a DIFFERENT payload is a PERMANENT spawn error — fail the
-// task and free the wave budget instead of retrying forever
+// task and free the track budget instead of retrying forever
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let legacy = plan_task(&boot.wave_id, "legacy", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let legacy = plan_task(&boot.track_id, "legacy", TaskKind::Codex, &[]);
     let legacy_id = legacy.id.clone();
     seed_projected_task(&boot, legacy).await;
     seed_projected_task(
         &boot,
-        plan_task(&boot.wave_id, "next", TaskKind::Codex, &[]),
+        plan_task(&boot.track_id, "next", TaskKind::Codex, &[]),
     )
     .await;
 
@@ -7493,7 +7494,7 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
 
     // PERMANENT classification: the same spawn-failure path as an op
     // Failed/Stuck outcome — guarded failed('spawn-failed') + kernel
@@ -7522,8 +7523,8 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 
     // Budget freed (kernel default 1): the second pending task now
-    // dispatches instead of the wave stalling behind the dead row.
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    // dispatches instead of the track stalling behind the dead row.
+    scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(
         task_row(&boot, "next").await.status,
         TaskStatus::Running,
@@ -7540,10 +7541,10 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
 #[tokio::test]
 async fn backstop_sweep_noops_until_boot_sweep_completes() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Claimed pre-crash; the worker op was never inserted — exactly the
     // row an early tick would re-drive against unrecovered op state.
-    let mut task = plan_task(&boot.wave_id, "early", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "early", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task).await;
     let (_runtime, scheduler) = build_scheduler_unbooted(
@@ -7615,7 +7616,7 @@ fn unique_gate_dir(tag: &str) -> std::path::PathBuf {
 }
 
 fn gate_task(boot: &Boot, key: &str, gate_json: &str) -> Task {
-    let mut task = plan_task(&boot.wave_id, key, TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
     task.status = TaskStatus::Verifying;
     task.gate_json = Some(gate_json.to_string());
     task
@@ -7636,9 +7637,9 @@ async fn wait_for_terminal_row(boot: &Boot, key: &str, timeout_secs: u64) -> Tas
     }
 }
 
-async fn wave_lifecycle(boot: &Boot) -> WaveLifecycle {
+async fn track_lifecycle(boot: &Boot) -> TrackLifecycle {
     boot.repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap()
@@ -7649,7 +7650,7 @@ async fn wave_lifecycle(boot: &Boot) -> WaveLifecycle {
 async fn green_gate_flips_verifying_to_done_and_promotes() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("green");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -7669,7 +7670,7 @@ async fn green_gate_flips_verifying_to_done_and_promotes() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "green", 30).await;
 
     assert_eq!(row.status, TaskStatus::Done, "{row:?}");
@@ -7701,7 +7702,7 @@ async fn green_gate_flips_verifying_to_done_and_promotes() {
     assert_eq!(data["passed"], true);
 
     // §3: exactly one promotion per gated task, in the gate-result tx.
-    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Reviewing);
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Reviewing);
 
     // Disk artifacts: full log with sentinels, exit file "0".
     let log = std::fs::read_to_string(dir.join(format!("{task_id}-g1.log"))).unwrap();
@@ -7715,12 +7716,12 @@ async fn green_gate_flips_verifying_to_done_and_promotes() {
 async fn seed_child_parent(
     boot: &Boot,
     key: &str,
-    lifecycle: WaveLifecycle,
+    lifecycle: TrackLifecycle,
     gate_json: Option<String>,
 ) -> (String, String) {
     let child = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: boot.area_id.clone(),
             title: format!("child {key}"),
             sort: None,
@@ -7733,20 +7734,20 @@ async fn seed_child_parent(
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET parent_wave_id=?1,lifecycle=?2 WHERE id=?3")
-        .bind(boot.wave_id.as_str())
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,lifecycle=?2 WHERE id=?3")
+        .bind(boot.track_id.as_str())
         .bind(lifecycle.as_db_str())
         .bind(child.id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let mut task = plan_task(&boot.wave_id, key, TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Running;
     task.gate_json = gate_json;
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    sqlx::query("UPDATE tasks SET child_wave_id=?1 WHERE id=?2")
+    sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
         .bind(child.id.as_str())
         .bind(&task_id)
         .execute(&boot.repo.sqlite_pool().unwrap())
@@ -7757,7 +7758,7 @@ async fn seed_child_parent(
 
 async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskStatus) {
     sqlx::query(
-        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,status,declared_by,spawn,created_at_ms,updated_at_ms) \
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,?3,'codex','child work','{}',?4,'spec','in-wave',?5,?5)",
     )
     .bind(format!("{child_id}:{key}")).bind(child_id).bind(key).bind(status)
@@ -7765,11 +7766,11 @@ async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskSta
 }
 
 #[tokio::test]
-async fn acceptance_11_sub_wave_parent_survives_two_timeout_sweeps_without_deadline() {
+async fn acceptance_11_sub_track_parent_survives_two_timeout_sweeps_without_deadline() {
     let boot = boot().await;
     let (_runtime, scheduler) =
         build_scheduler_with_timeouts(&boot, vec![], Duration::from_millis(1));
-    let (task_id, _) = seed_child_parent(&boot, "long-child", WaveLifecycle::Working, None).await;
+    let (task_id, _) = seed_child_parent(&boot, "long-child", TrackLifecycle::Working, None).await;
     for _ in 0..2 {
         tokio::time::sleep(Duration::from_millis(3)).await;
         scheduler.sweep_all().await;
@@ -7780,14 +7781,14 @@ async fn acceptance_11_sub_wave_parent_survives_two_timeout_sweeps_without_deadl
 }
 
 #[tokio::test]
-async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
+async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
     let boot = boot().await;
-    let mut task = plan_task(&boot.wave_id, "stamp-child", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "stamp-child", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    sqlx::query("UPDATE tasks SET child_wave_id='child-stamp' WHERE id=?1")
+    sqlx::query("UPDATE tasks SET child_track_id='child-stamp' WHERE id=?1")
         .bind(&task_id)
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -7796,7 +7797,7 @@ async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
-    calm_server::db::sqlite::task_mark_sub_wave_running_tx(&mut tx, &task_id, now_ms())
+    calm_server::db::sqlite::task_mark_sub_track_running_tx(&mut tx, &task_id, now_ms())
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -7805,7 +7806,7 @@ async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
     assert_eq!(row.worker_card_id, None);
     assert_eq!(row.running_deadline_ms, None);
 
-    for (key, status, spawn, child_wave_id, guard) in [
+    for (key, status, spawn, child_track_id, guard) in [
         (
             "stamp-failed",
             TaskStatus::Failed,
@@ -7814,10 +7815,10 @@ async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
             "status='dispatched'",
         ),
         (
-            "stamp-in-wave",
+            "stamp-in-track",
             TaskStatus::Dispatched,
             "in-wave",
-            Some("child-in-wave"),
+            Some("child-in-track"),
             "spawn='sub-wave'",
         ),
         (
@@ -7825,17 +7826,17 @@ async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
             TaskStatus::Dispatched,
             "sub-wave",
             None,
-            "child_wave_id IS NOT NULL",
+            "child_track_id IS NOT NULL",
         ),
     ] {
-        let mut task = plan_task(&boot.wave_id, key, TaskKind::Codex, &[]);
+        let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
         task.status = status;
         task.spawn = spawn.into();
         let id = task.id.clone();
         seed_task(&boot, task).await;
-        if let Some(child_wave_id) = child_wave_id {
-            sqlx::query("UPDATE tasks SET child_wave_id=?1 WHERE id=?2")
-                .bind(child_wave_id)
+        if let Some(child_track_id) = child_track_id {
+            sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                .bind(child_track_id)
                 .bind(&id)
                 .execute(&boot.repo.sqlite_pool().unwrap())
                 .await
@@ -7846,7 +7847,7 @@ async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
             .await
             .unwrap();
         let changed =
-            calm_server::db::sqlite::task_mark_sub_wave_running_tx(&mut tx, &id, now_ms())
+            calm_server::db::sqlite::task_mark_sub_track_running_tx(&mut tx, &id, now_ms())
                 .await
                 .unwrap();
         tx.commit().await.unwrap();
@@ -7872,9 +7873,9 @@ async fn acceptance_13_done_quiescent_child_routes_parent_through_gate() {
     })
     .to_string();
     let (task_id, child) =
-        seed_child_parent(&boot, "gated-child", WaveLifecycle::Done, Some(gate)).await;
+        seed_child_parent(&boot, "gated-child", TrackLifecycle::Done, Some(gate)).await;
     scheduler
-        .reconcile_child_wave_for_test(&child)
+        .reconcile_child_track_for_test(&child)
         .await
         .unwrap();
     assert_eq!(
@@ -7882,7 +7883,7 @@ async fn acceptance_13_done_quiescent_child_routes_parent_through_gate() {
         TaskStatus::Verifying
     );
     assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "gated-child", 30).await;
     assert_eq!(row.status, TaskStatus::Done, "{row:?}");
     assert_eq!(row.gate_attempt, 1, "the parent gate actually ran");
@@ -7898,32 +7899,32 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
     let (task_id, child) = seed_child_parent(
         &boot,
         "interleaved-child",
-        WaveLifecycle::Done,
+        TrackLifecycle::Done,
         Some(gate_without_cwd.clone()),
     )
     .await;
     seed_child_task(&boot, &child, "gate-still-running", TaskStatus::Verifying).await;
-    sqlx::query("UPDATE tasks SET gate_json=?1 WHERE wave_id=?2")
+    sqlx::query("UPDATE tasks SET gate_json=?1 WHERE track_id=?2")
         .bind(&gate_without_cwd)
         .bind(&child)
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
     scheduler
-        .reconcile_child_wave_for_test(&child)
+        .reconcile_child_track_for_test(&child)
         .await
         .unwrap();
     let blocked = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(blocked.status, TaskStatus::Running);
     assert_eq!(blocked.gate_attempt, 0, "parent gate must not start early");
     assert_eq!(operation_count(&boot, "task-verify").await, 0);
-    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1")
+    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1")
         .bind(&child)
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
     scheduler
-        .reconcile_child_wave_for_test(&child)
+        .reconcile_child_track_for_test(&child)
         .await
         .unwrap();
     assert_eq!(
@@ -7937,15 +7938,15 @@ async fn acceptance_13d_done_child_with_pending_block_fails_with_count() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     let (task_id, child) =
-        seed_child_parent(&boot, "pending-child", WaveLifecycle::Done, None).await;
+        seed_child_parent(&boot, "pending-child", TrackLifecycle::Done, None).await;
     seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
     scheduler
-        .reconcile_child_wave_for_test(&child)
+        .reconcile_child_track_for_test(&child)
         .await
         .unwrap();
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("child-wave-incomplete"));
+    assert_eq!(row.status_detail.as_deref(), Some("child-track-incomplete"));
     assert!(
         event_rows(&boot, "task.failed").await[0].1["reason"]
             .as_str()
@@ -7957,14 +7958,14 @@ async fn acceptance_13d_done_child_with_pending_block_fails_with_count() {
 #[tokio::test]
 async fn acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_reasons() {
     for (lifecycle, expected) in [
-        (WaveLifecycle::Failed, "child-wave-failed"),
-        (WaveLifecycle::Canceled, "child-wave-canceled"),
+        (TrackLifecycle::Failed, "child-track-failed"),
+        (TrackLifecycle::Canceled, "child-track-canceled"),
     ] {
         let boot = boot().await;
         let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
         let (task_id, child) = seed_child_parent(&boot, expected, lifecycle, None).await;
         scheduler
-            .reconcile_child_wave_for_test(&child)
+            .reconcile_child_track_for_test(&child)
             .await
             .unwrap();
         assert_eq!(
@@ -7980,14 +7981,14 @@ async fn acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_re
     }
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, child) = seed_child_parent(&boot, "deleted", WaveLifecycle::Working, None).await;
-    sqlx::query("DELETE FROM waves WHERE id=?1")
+    let (task_id, child) = seed_child_parent(&boot, "deleted", TrackLifecycle::Working, None).await;
+    sqlx::query("DELETE FROM tracks WHERE id=?1")
         .bind(&child)
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
     scheduler
-        .reconcile_child_wave_for_test(&child)
+        .reconcile_child_track_for_test(&child)
         .await
         .unwrap();
     assert_eq!(
@@ -7998,7 +7999,7 @@ async fn acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_re
             .unwrap()
             .status_detail
             .as_deref(),
-        Some("child-wave-deleted")
+        Some("child-track-deleted")
     );
 }
 
@@ -8006,7 +8007,7 @@ async fn acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_re
 async fn acceptance_15_lost_event_sweep_closes_child_parent() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, _) = seed_child_parent(&boot, "sweep", WaveLifecycle::Done, None).await;
+    let (task_id, _) = seed_child_parent(&boot, "sweep", TrackLifecycle::Done, None).await;
     scheduler.sweep_all().await;
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
@@ -8019,9 +8020,9 @@ async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     let (live_task, live_child) =
-        seed_child_parent(&boot, "live", WaveLifecycle::Failed, None).await;
-    let (sweep_task, _) = seed_child_parent(&boot, "sweep2", WaveLifecycle::Failed, None).await;
-    scheduler.reconcile_child_wave(live_child.clone().into());
+        seed_child_parent(&boot, "live", TrackLifecycle::Failed, None).await;
+    let (sweep_task, _) = seed_child_parent(&boot, "sweep2", TrackLifecycle::Failed, None).await;
+    scheduler.reconcile_child_track(live_child.clone().into());
     for _ in 0..100 {
         if boot
             .repo
@@ -8059,25 +8060,25 @@ async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
 async fn acceptance_18_success_flip_rechecks_done_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;
-        let (task_id, child) = seed_child_parent(&boot, mutation, WaveLifecycle::Done, None).await;
+        let (task_id, child) = seed_child_parent(&boot, mutation, TrackLifecycle::Done, None).await;
         let pool = boot.repo.sqlite_pool().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
-        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
             .bind(&child)
             .fetch_one(&mut *tx)
             .await
             .unwrap();
         assert_eq!(observed, "done", "fixture must first observe Done");
         if mutation == "delete" {
-            sqlx::query("DELETE FROM waves WHERE id=?1")
+            sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
                 .unwrap();
         } else {
-            sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
+            sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
@@ -8101,9 +8102,9 @@ async fn acceptance_18_production_reconcile_keeps_the_child_guard_wired() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     let (task_id, child) =
-        seed_child_parent(&boot, "production-guard", WaveLifecycle::Done, None).await;
+        seed_child_parent(&boot, "production-guard", TrackLifecycle::Done, None).await;
 
-    // This drives the real reconcile_child_wave_task entry and changes the child
+    // This drives the real reconcile_child_track_task entry and changes the child
     // after its advisory snapshot but before the production flip call. Today both
     // happen in one BEGIN IMMEDIATE transaction, so concurrent writers cannot make
     // this guard load-bearing. If a future refactor splits the snapshot and flip
@@ -8111,7 +8112,7 @@ async fn acceptance_18_production_reconcile_keeps_the_child_guard_wired() {
     // this fixture also ensures removing it from the production call site fails now.
     scheduler.reopen_child_after_reconcile_snapshot_for_test();
     scheduler
-        .reconcile_child_wave_for_test(&child)
+        .reconcile_child_track_for_test(&child)
         .await
         .unwrap();
 
@@ -8126,26 +8127,26 @@ async fn acceptance_18_production_reconcile_keeps_the_child_guard_wired() {
 async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;
-        let (task_id, child) = seed_child_parent(&boot, mutation, WaveLifecycle::Done, None).await;
+        let (task_id, child) = seed_child_parent(&boot, mutation, TrackLifecycle::Done, None).await;
         seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
         let pool = boot.repo.sqlite_pool().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
-        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
             .bind(&child)
             .fetch_one(&mut *tx)
             .await
             .unwrap();
         assert_eq!(observed, "done", "fixture must first observe Done");
         if mutation == "delete" {
-            sqlx::query("DELETE FROM waves WHERE id=?1")
+            sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
                 .unwrap();
         } else {
-            sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
+            sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
@@ -8154,7 +8155,7 @@ async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
         let changed = calm_server::scheduler::guarded_child_incomplete_flip_for_test(
             &mut tx,
             &task_id,
-            boot.wave_id.as_str(),
+            boot.track_id.as_str(),
             &child,
         )
         .await
@@ -8171,19 +8172,23 @@ async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
 #[tokio::test]
 async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snapshot() {
     for (label, seed_lifecycle, expected_lifecycle) in [
-        ("deleted", WaveLifecycle::Working, None),
-        ("failed", WaveLifecycle::Failed, Some(WaveLifecycle::Failed)),
+        ("deleted", TrackLifecycle::Working, None),
+        (
+            "failed",
+            TrackLifecycle::Failed,
+            Some(TrackLifecycle::Failed),
+        ),
         (
             "canceled",
-            WaveLifecycle::Canceled,
-            Some(WaveLifecycle::Canceled),
+            TrackLifecycle::Canceled,
+            Some(TrackLifecycle::Canceled),
         ),
     ] {
         let boot = boot().await;
         let (task_id, child) = seed_child_parent(&boot, label, seed_lifecycle, None).await;
         let pool = boot.repo.sqlite_pool().unwrap();
         if label == "deleted" {
-            sqlx::query("DELETE FROM waves WHERE id=?1")
+            sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
                 .execute(&pool)
                 .await
@@ -8194,37 +8199,37 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
             .await
             .unwrap();
         let observed: Option<String> =
-            sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+            sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
                 .bind(&child)
                 .fetch_optional(&mut *tx)
                 .await
                 .unwrap();
         assert_eq!(
             observed.as_deref(),
-            expected_lifecycle.map(WaveLifecycle::as_db_str),
+            expected_lifecycle.map(TrackLifecycle::as_db_str),
             "fixture must first observe the selected {label} outcome"
         );
 
         if label == "deleted" {
             sqlx::query(
-                // #1147 S1 — this clones a wave row, so it must clone the
+                // #1147 S1 — this clones a track row, so it must clone the
                 // whole workspace, not just its `cwd` projection. Copying
                 // `cwd` alone left `workspace_path=''` beside a non-empty
                 // `cwd`: a state design D1's single writer cannot produce, and
                 // one S2/S5 would later read to decide materialization and
                 // recycling.
-                "INSERT INTO waves(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
+                "INSERT INTO tracks(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
                  SELECT ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
-                   FROM waves WHERE id=?3",
+                   FROM tracks WHERE id=?3",
             )
             .bind(&child)
             .bind(now_ms())
-            .bind(boot.wave_id.as_str())
+            .bind(boot.track_id.as_str())
             .execute(&mut *tx)
             .await
             .unwrap();
         } else {
-            sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
+            sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
@@ -8234,7 +8239,7 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
         let changed = calm_server::scheduler::guarded_child_terminal_flip_for_test(
             &mut tx,
             &task_id,
-            boot.wave_id.as_str(),
+            boot.track_id.as_str(),
             &child,
             expected_lifecycle,
         )
@@ -8250,66 +8255,66 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
     }
 }
 
-/// #1147 S4 — give this boot's wave a REAL attached workspace directory.
+/// #1147 S4 — give this boot's track a REAL attached workspace directory.
 ///
-/// `boot()` mints its wave with an empty `cwd`, which was harmless while
+/// `boot()` mints its track with an empty `cwd`, which was harmless while
 /// nothing read it. Since S4 a child of an attached parent inherits the
 /// parent's path, so a test asserting inheritance against the default fixture
 /// would be pinning the empty string as expected output. The tests below care
 /// that the path is inherited, not what it is — so they give the parent an
 /// ordinary directory and assert against that.
-async fn attach_boot_wave_to_a_real_directory(boot: &Boot) -> (tempfile::TempDir, String) {
+async fn attach_boot_track_to_a_real_directory(boot: &Boot) -> (tempfile::TempDir, String) {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().to_string_lossy().into_owned();
     let pool = boot.repo.sqlite_pool().unwrap();
-    // Written directly, not through `wave_workspace_write_tx`: S3's freeze
-    // latch refuses a frozen row, and `boot()`'s wave may already be frozen by
+    // Written directly, not through `track_workspace_write_tx`: S3's freeze
+    // latch refuses a frozen row, and `boot()`'s track may already be frozen by
     // the time a test calls this. The state being forced here (attached, real
-    // path, frozen) is exactly what a production attached wave looks like.
-    // Registered in `calm-truth/tests/wave_write_point_registry.rs`.
+    // path, frozen) is exactly what a production attached track looks like.
+    // Registered in `calm-truth/tests/track_write_point_registry.rs`.
     sqlx::query(
-        "UPDATE waves SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
+        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
     )
     .bind(&path)
     .bind(now_ms())
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .execute(&pool)
     .await
     .unwrap();
     (dir, path)
 }
 
-/// #1147 S4 — the child-wave bootstrap's idempotency key must follow the
+/// #1147 S4 — the child-track bootstrap's idempotency key must follow the
 /// workspace path, so a child whose workspace is re-pointed between drives can
 /// still be re-driven.
 ///
 /// The bootstrap payload carries `cwd`, and the operation runtime treats "same
 /// key, different payload hash" as a **permanent** conflict. A key that did
 /// not name the path would therefore turn the first re-drive after any
-/// re-point into `child-wave-bootstrap-failed` forever — operation rows are
+/// re-point into `child-track-bootstrap-failed` forever — operation rows are
 /// never deleted, so nothing would clear it. This is the same failure S2
 /// measured on the launchpad and fixed the same way.
 ///
 /// The re-point here is done by the fixture rather than by a particular
 /// re-pointer's code: S3's workspace PATCH is the caller that will produce
 /// this state, and the key's correctness must not depend on which one it is.
-/// Measured: mutating the digest out of `drive_child_wave`'s key fails this
+/// Measured: mutating the digest out of `drive_child_track`'s key fails this
 /// test.
 #[tokio::test]
 async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     let boot = boot().await;
-    let (_attached_dir, attached_path) = attach_boot_wave_to_a_real_directory(&boot).await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "repaired-bootstrap", TaskKind::Codex, &[]);
+    let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "repaired-bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
-    let child_adapter = Arc::new(ChildWaveAdapter::new(
+    let child_adapter = Arc::new(ChildTrackAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
-        child_wave_workspace_root(),
+        boot.track_area_cache.clone(),
+        child_track_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let bootstrap_adapter =
         Arc::new(BootstrapAdapter::new(minted.clone())) as Arc<dyn ProviderAdapter>;
@@ -8321,7 +8326,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     );
     assert_eq!(operation_count(&boot, "spec-harness-start").await, 1);
     let pool = boot.repo.sqlite_pool().unwrap();
-    let child_id: String = sqlx::query_scalar("SELECT child_wave_id FROM tasks WHERE id=?1")
+    let child_id: String = sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
         .bind(&task_id)
         .fetch_one(&pool)
         .await
@@ -8330,20 +8335,20 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
         let mut hasher = Sha256::new();
         hasher.update(cwd.as_bytes());
         format!(
-            "child-wave:{child_id}:bootstrap:{}",
+            "child-track:{child_id}:bootstrap:{}",
             &hex::encode(hasher.finalize())[..16]
         )
     };
-    // The path the first bootstrap ran on: this fixture's wave is attached, so
+    // The path the first bootstrap ran on: this fixture's track is attached, so
     // the child inherited it (design D7 as amended).
-    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
         .bind(&child_id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(child_cwd, attached_path);
 
-    // Re-point the child's workspace, and with it the stored `child-wave`
+    // Re-point the child's workspace, and with it the stored `child-track`
     // result the scheduler reads its cwd from. Any re-pointer produces this
     // state — S3's workspace PATCH is the one that will — so the fixture moves
     // the row directly rather than borrowing some particular mover's code.
@@ -8351,7 +8356,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     // The already-recorded `spec-harness-start` stays behind on the OLD path:
     // that row is what the re-drive below has to get past.
     let repointed_cwd = calm_server::workspace_materialize::managed_workspace_path(
-        &child_wave_workspace_root(),
+        &child_track_workspace_root(),
         boot.area_id.as_str(),
         &child_id,
     )
@@ -8359,13 +8364,13 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     .into_owned();
     assert_ne!(repointed_cwd, child_cwd);
     let mut tx = pool.begin().await.unwrap();
-    // #1147 S3 — child waves are frozen at creation (S4), and the production
+    // #1147 S3 — child tracks are frozen at creation (S4), and the production
     // writer refuses a frozen row. This fixture is simulating exactly the
     // thing the freeze forbids, in order to pin what happens to the
     // *idempotency key* afterwards, so it writes the row directly.
-    // Registered in `calm-truth/tests/wave_write_point_registry.rs`.
+    // Registered in `calm-truth/tests/track_write_point_registry.rs`.
     sqlx::query(
-        "UPDATE waves SET workspace_kind='managed', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
+        "UPDATE tracks SET workspace_kind='managed', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
     )
     .bind(&repointed_cwd)
     .bind(now_ms())
@@ -8375,7 +8380,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     .unwrap();
     sqlx::query(
         "UPDATE operations SET tx_output_json = \
-         json_set(tx_output_json,'$.result.cwd',?1,'$.data.cwd',?1) WHERE kind='child-wave'",
+         json_set(tx_output_json,'$.result.cwd',?1,'$.data.cwd',?1) WHERE kind='child-track'",
     )
     .bind(&repointed_cwd)
     .execute(&mut *tx)
@@ -8396,7 +8401,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
         "re-driving a re-pointed child must not fail the parent task: {:?}",
         row.status_detail
     );
-    assert_eq!(operation_count(&boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(
         operation_count(&boot, "spec-harness-start").await,
         2,
@@ -8415,19 +8420,19 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
 #[tokio::test]
 async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive() {
     let boot = boot().await;
-    let (_attached_dir, attached_path) = attach_boot_wave_to_a_real_directory(&boot).await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "bootstrap", TaskKind::Codex, &[]);
+    let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
-    let child_payload = build_child_wave_payload(&task).unwrap();
+    let child_payload = build_child_track_payload(&task).unwrap();
     seed_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
-    let child_adapter = Arc::new(ChildWaveAdapter::new(
+    let child_adapter = Arc::new(ChildTrackAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
-        child_wave_workspace_root(),
+        boot.track_area_cache.clone(),
+        child_track_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let block = BootstrapBlockHook {
         wait_entered: Arc::new(tokio::sync::Notify::new()),
@@ -8441,11 +8446,11 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     )) as Arc<dyn ProviderAdapter>;
     let (runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
 
-    // Crash point 1: child-wave committed, before bootstrap submit and the
+    // Crash point 1: child-track committed, before bootstrap submit and the
     // parent running flip. Recovery must consume the durable child op.
     let child_op = runtime
         .submit(
-            "child-wave",
+            "child-track",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: Some(task_id.clone()),
@@ -8486,12 +8491,12 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Running);
     assert_eq!(row.running_deadline_ms, None);
-    let child_id: String = sqlx::query_scalar("SELECT child_wave_id FROM tasks WHERE id=?1")
+    let child_id: String = sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
         .bind(&task_id)
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let child_lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+    let child_lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
         .bind(&child_id)
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -8508,7 +8513,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .await
         .unwrap();
     scheduler.sweep_all().await;
-    assert_eq!(operation_count(&boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(operation_count(&boot, "spec-harness-start").await, 1);
     assert_eq!(minted.load(Ordering::SeqCst), 1);
     let idem: String = sqlx::query_scalar(
@@ -8522,7 +8527,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     // and both are asserted: the key is stable for an unchanged path (the
     // re-drive above deduped, `spec-harness-start` count is still 1), and it
     // *moves* when the path does — see the repair scenario below.
-    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
         .bind(&child_id)
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -8531,12 +8536,12 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         let mut hasher = Sha256::new();
         hasher.update(cwd.as_bytes());
         format!(
-            "child-wave:{child_id}:bootstrap:{}",
+            "child-track:{child_id}:bootstrap:{}",
             &hex::encode(hasher.finalize())[..16]
         )
     };
     assert_eq!(idem, bootstrap_key(&child_cwd));
-    // #1147 S4 (D7 as amended) — this fixture's wave is ATTACHED, so the child
+    // #1147 S4 (D7 as amended) — this fixture's track is ATTACHED, so the child
     // inherits its path verbatim rather than allocating one.
     assert_eq!(
         child_cwd, attached_path,
@@ -8547,8 +8552,13 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     // the first runtime, recover the durable operation with a new runtime,
     // and prove both operation rows and the harness mint remain exactly once.
     let crash_boot = self::boot().await;
-    set_lifecycle(&crash_boot, WaveLifecycle::Working).await;
-    let mut crash_task = plan_task(&crash_boot.wave_id, "bootstrap-crash", TaskKind::Codex, &[]);
+    set_lifecycle(&crash_boot, TrackLifecycle::Working).await;
+    let mut crash_task = plan_task(
+        &crash_boot.track_id,
+        "bootstrap-crash",
+        TaskKind::Codex,
+        &[],
+    );
     crash_task.spawn = "sub-wave".into();
     crash_task.status = TaskStatus::Dispatched;
     let crash_task_id = crash_task.id.clone();
@@ -8563,10 +8573,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let (crash_runtime, crash_scheduler) = build_scheduler(
         &crash_boot,
         vec![
-            Arc::new(ChildWaveAdapter::new(
+            Arc::new(ChildTrackAdapter::new(
                 crash_boot.card_role_cache.clone(),
-                crash_boot.wave_area_cache.clone(),
-                child_wave_workspace_root(),
+                crash_boot.track_area_cache.clone(),
+                child_track_workspace_root(),
             )),
             Arc::new(BootstrapAdapter::new_blocking(
                 crash_minted.clone(),
@@ -8592,7 +8602,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             .status,
         TaskStatus::Dispatched
     );
-    assert_eq!(operation_count(&crash_boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&crash_boot, "child-track").await, 1);
     assert_eq!(operation_count(&crash_boot, "spec-harness-start").await, 1);
     assert_eq!(crash_minted.load(Ordering::SeqCst), 1);
     crashed_sweep.abort();
@@ -8603,10 +8613,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let (_recovered_runtime, recovered_scheduler) = build_scheduler(
         &crash_boot,
         vec![
-            Arc::new(ChildWaveAdapter::new(
+            Arc::new(ChildTrackAdapter::new(
                 crash_boot.card_role_cache.clone(),
-                crash_boot.wave_area_cache.clone(),
-                child_wave_workspace_root(),
+                crash_boot.track_area_cache.clone(),
+                child_track_workspace_root(),
             )),
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
         ],
@@ -8643,7 +8653,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             .status,
         TaskStatus::Running
     );
-    assert_eq!(operation_count(&crash_boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&crash_boot, "child-track").await, 1);
     assert_eq!(operation_count(&crash_boot, "spec-harness-start").await, 1);
     assert_eq!(crash_minted.load(Ordering::SeqCst), 1);
 }
@@ -8651,15 +8661,15 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
 #[tokio::test]
 async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
     for (stage, phase, expected) in [
-        ("create", "failed", "child-wave-create-failed"),
-        ("create", "stuck", "child-wave-create-stuck"),
-        ("bootstrap", "failed", "child-wave-bootstrap-failed"),
-        ("bootstrap", "stuck", "child-wave-bootstrap-stuck"),
+        ("create", "failed", "child-track-create-failed"),
+        ("create", "stuck", "child-track-create-stuck"),
+        ("bootstrap", "failed", "child-track-bootstrap-failed"),
+        ("bootstrap", "stuck", "child-track-bootstrap-stuck"),
     ] {
         let boot = boot().await;
-        set_lifecycle(&boot, WaveLifecycle::Working).await;
+        set_lifecycle(&boot, TrackLifecycle::Working).await;
         let mut task = plan_task(
-            &boot.wave_id,
+            &boot.track_id,
             &format!("{stage}-{phase}"),
             TaskKind::Codex,
             &[],
@@ -8671,16 +8681,16 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         let task_id = task.id.clone();
         seed_projected_task(&boot, task).await;
         let minted = Arc::new(AtomicUsize::new(0));
-        let child_adapter = Arc::new(ChildWaveAdapter::new(
+        let child_adapter = Arc::new(ChildTrackAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_area_cache.clone(),
-            child_wave_workspace_root(),
+            boot.track_area_cache.clone(),
+            child_track_workspace_root(),
         )) as Arc<dyn ProviderAdapter>;
         let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
         let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
         if stage == "create" {
             // Drive the real child adapter first. This preserves the
-            // production post-commit tx_output and child_wave_id that the
+            // production post-commit tx_output and child_track_id that the
             // failure cleanup must discover from durable task state.
             scheduler.sweep_all().await;
             assert_eq!(
@@ -8702,7 +8712,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             };
             sqlx::query(
                 "UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 \
-                 WHERE kind='child-wave' AND idempotency_key=?4",
+                 WHERE kind='child-track' AND idempotency_key=?4",
             )
             .bind(phase)
             .bind(detail)
@@ -8712,7 +8722,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             .await
             .unwrap();
         } else {
-            scheduler.schedule_wave(boot.wave_id.clone()).await;
+            scheduler.schedule_track(boot.track_id.clone()).await;
             sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
                 .bind(&task_id)
                 .execute(&boot.repo.sqlite_pool().unwrap())
@@ -8740,13 +8750,13 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         );
         if stage == "create" {
             let child_id: String =
-                sqlx::query_scalar("SELECT child_wave_id FROM tasks WHERE id=?1")
+                sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
                     .bind(&task_id)
                     .fetch_one(&boot.repo.sqlite_pool().unwrap())
                     .await
                     .unwrap();
             let child_lifecycle: String =
-                sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+                sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
                     .bind(&child_id)
                     .fetch_one(&boot.repo.sqlite_pool().unwrap())
                     .await
@@ -8755,12 +8765,15 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                 child_lifecycle, "failed",
                 "post-commit {phase} must close the durable child"
             );
-            boot.repo.wave_delete(&child_id).await.unwrap();
-            boot.repo.wave_delete(boot.wave_id.as_str()).await.unwrap();
-            assert!(boot.repo.wave_get(&child_id).await.unwrap().is_none());
+            boot.repo.track_delete(&child_id).await.unwrap();
+            boot.repo
+                .track_delete(boot.track_id.as_str())
+                .await
+                .unwrap();
+            assert!(boot.repo.track_get(&child_id).await.unwrap().is_none());
             assert!(
                 boot.repo
-                    .wave_get(boot.wave_id.as_str())
+                    .track_get(boot.track_id.as_str())
                     .await
                     .unwrap()
                     .is_none()
@@ -8778,17 +8791,17 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
 #[tokio::test]
 async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "frozen-route", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "frozen-route", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
     let adapters = vec![
-        Arc::new(ChildWaveAdapter::new(
+        Arc::new(ChildTrackAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_area_cache.clone(),
-            child_wave_workspace_root(),
+            boot.track_area_cache.clone(),
+            child_track_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>,
         Arc::new(CardSpawnAdapter {
@@ -8797,24 +8810,24 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
         }) as Arc<dyn ProviderAdapter>,
     ];
     let (_runtime, scheduler) = build_scheduler(&boot, adapters);
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
-    assert_eq!(operation_count(&boot, "child-wave").await, 1, "live route");
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    assert_eq!(operation_count(&boot, "child-track").await, 1, "live route");
     assert_eq!(
         operation_count(&boot, "codex-worker").await,
         0,
         "live route"
     );
-    // Simulate a post-claim report whose mutable declaration now says in-wave.
+    // Simulate a post-claim report whose mutable declaration now says in-track.
     // Recovery never reads it; only the frozen tasks row is authoritative.
-    sqlx::query("UPDATE cards SET payload=?1 WHERE wave_id=?2 AND kind='wave-report'")
-        .bind(serde_json::to_string(&WaveReportPayload::initial()).unwrap())
-        .bind(boot.wave_id.as_str())
+    sqlx::query("UPDATE cards SET payload=?1 WHERE track_id=?2 AND kind='track-report'")
+        .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
+        .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE wave_id=?2 AND kind='wave-report'")
+    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE track_id=?2 AND kind='track-report'")
         .bind(json!([{"id":"b_route","kind":"task","rev":2,"payload":{"key":"frozen-route","kind":"codex","goal":"changed","ready":true,"declared_by":"spec","spawn":"in-wave"}}]).to_string())
-        .bind(boot.wave_id.as_str()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        .bind(boot.track_id.as_str()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
         .bind(&task_id)
         .execute(&boot.repo.sqlite_pool().unwrap())
@@ -8822,7 +8835,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
         .unwrap();
     scheduler.sweep_all().await;
     assert_eq!(
-        operation_count(&boot, "child-wave").await,
+        operation_count(&boot, "child-track").await,
         1,
         "recovery route"
     );
@@ -8836,9 +8849,9 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
 #[tokio::test]
 async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_edit() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
         body: String::new(),
@@ -8858,14 +8871,14 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
         serde_json::to_value(report).unwrap(),
     )
     .await;
-    let mut task = plan_task(&boot.wave_id, "frozen-live", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "frozen-live", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     seed_task(&boot, task).await;
     let adapters = vec![
-        Arc::new(ChildWaveAdapter::new(
+        Arc::new(ChildTrackAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_area_cache.clone(),
-            child_wave_workspace_root(),
+            boot.track_area_cache.clone(),
+            child_track_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
@@ -8878,8 +8891,8 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     });
     let scheduled = tokio::spawn({
         let scheduler = scheduler.clone();
-        let wave = boot.wave_id.clone();
-        async move { scheduler.schedule_wave(wave).await }
+        let track = boot.track_id.clone();
+        async move { scheduler.schedule_track(track).await }
     });
     claimed.notified().await;
     sqlx::query(
@@ -8891,32 +8904,32 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     .unwrap();
     resume.notify_one();
     scheduled.await.unwrap();
-    assert_eq!(operation_count(&boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
 }
 
 #[tokio::test]
 async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let task = plan_task(&boot.wave_id, "tx-reread", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "tx-reread", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
     let permit = semaphore.clone().acquire_owned().await.unwrap();
     let adapters = vec![
-        Arc::new(ChildWaveAdapter::new(
+        Arc::new(ChildTrackAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_area_cache.clone(),
-            child_wave_workspace_root(),
+            boot.track_area_cache.clone(),
+            child_track_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
     let (_runtime, scheduler) = build_scheduler_with_semaphore(&boot, adapters, semaphore);
     let handle = tokio::spawn({
         let scheduler = scheduler.clone();
-        let wave = boot.wave_id.clone();
-        async move { scheduler.schedule_wave(wave).await }
+        let track = boot.track_id.clone();
+        async move { scheduler.schedule_track(track).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     sqlx::query("UPDATE tasks SET spawn='sub-wave' WHERE id=?1 AND status='pending'")
@@ -8926,18 +8939,18 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         .unwrap();
     drop(permit);
     handle.await.unwrap();
-    assert_eq!(operation_count(&boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
 }
 
 #[tokio::test]
 async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     insert_report_payload(
         &boot,
         "stale-child-report",
-        serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        serde_json::to_value(TrackReportPayload::initial()).unwrap(),
     )
     .await;
     let original = json!({
@@ -8945,14 +8958,14 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
         "spawn":"sub-wave", "ready":true, "declared_by":"spec"
     });
     edit_report_blocks(&boot, &[("b_stale_child", "task", original.clone())], 0).await;
-    let task_id = format!("{}:stale-child", boot.wave_id);
+    let task_id = format!("{}:stale-child", boot.track_id);
 
     // Claim through production, but simulate a crash before op insertion by
     // dropping the runtime held only weakly by the scheduler.
     let (runtime, claim_only_scheduler) = build_scheduler(&boot, vec![]);
     drop(runtime);
     claim_only_scheduler
-        .schedule_wave(boot.wave_id.clone())
+        .schedule_track(boot.track_id.clone())
         .await;
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
@@ -8967,7 +8980,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let monitor =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert!(
@@ -8980,18 +8993,18 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
             .is_some()
     );
 
-    let child_adapter = Arc::new(ChildWaveAdapter::new(
+    let child_adapter = Arc::new(ChildTrackAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
-        child_wave_workspace_root(),
+        boot.track_area_cache.clone(),
+        child_track_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
     scheduler.sweep_all().await;
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
@@ -9001,7 +9014,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let stale_after_operation_rejection = failed.context_stale_at_ms;
     assert!(stale_after_operation_rejection.is_some());
     let operation_phase: String = sqlx::query_scalar(
-        "SELECT phase FROM operations WHERE kind='child-wave' ORDER BY created_at_ms DESC LIMIT 1",
+        "SELECT phase FROM operations WHERE kind='child-track' ORDER BY created_at_ms DESC LIMIT 1",
     )
     .fetch_one(&boot.repo.sqlite_pool().unwrap())
     .await
@@ -9013,7 +9026,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 
     edit_report_blocks(&boot, &[("b_stale_child", "task", original)], 2).await;
     monitor
-        .detect_wave_edit(boot.wave_id.as_str())
+        .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -9046,19 +9059,19 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 }
 
 #[tokio::test]
-async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
+async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "depth-fail", TaskKind::Codex, &[]);
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "depth-fail", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
-    let payload = build_child_wave_payload(&task).unwrap();
+    let payload = build_child_track_payload(&task).unwrap();
     seed_task(&boot, task).await;
     let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
     let op_id = op_repo
         .insert_operation(
-            "child-wave",
+            "child-track",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: Some(task_id.clone()),
@@ -9068,12 +9081,12 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET phase='failed',last_error='sub-wave-depth-exceeded',phase_detail_json='{}' WHERE id=?1")
+    sqlx::query("UPDATE operations SET phase='failed',last_error='sub-track-depth-exceeded',phase_detail_json='{}' WHERE id=?1")
         .bind(op_id).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
-    let child_adapter = Arc::new(ChildWaveAdapter::new(
+    let child_adapter = Arc::new(ChildTrackAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
-        child_wave_workspace_root(),
+        boot.track_area_cache.clone(),
+        child_track_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     scheduler.sweep_all().await;
@@ -9081,7 +9094,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
     assert_eq!(row.status, TaskStatus::Failed);
     assert_eq!(
         row.status_detail.as_deref(),
-        Some("sub-wave-depth-exceeded")
+        Some("sub-track-depth-exceeded")
     );
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
 }
@@ -9090,7 +9103,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
 async fn red_gate_fails_with_failing_step_and_log_tail() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("red");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9108,7 +9121,7 @@ async fn red_gate_fails_with_failing_step_and_log_tail() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "red", 30).await;
 
     assert_eq!(
@@ -9133,7 +9146,7 @@ async fn red_gate_fails_with_failing_step_and_log_tail() {
     assert_eq!(rows[0].1["passed"], false);
     assert_eq!(rows[0].1["failing_step"], "boom");
     // Promotion fires on ANY verdict (§3) — red included.
-    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Reviewing);
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Reviewing);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -9141,7 +9154,7 @@ async fn red_gate_fails_with_failing_step_and_log_tail() {
 async fn gate_timeout_group_kills_and_fails_gate_timeout() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("timeout");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9158,7 +9171,7 @@ async fn gate_timeout_group_kills_and_fails_gate_timeout() {
         )],
     );
     let started = std::time::Instant::now();
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "hang", 30).await;
 
     assert_eq!(row.status, TaskStatus::Failed);
@@ -9170,7 +9183,7 @@ async fn gate_timeout_group_kills_and_fails_gate_timeout() {
     let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
     assert_eq!(verdict["status_detail"], "gate-timeout");
     // No exit file — the group was SIGKILLed mid-step.
-    let task_id = format!("{}:hang", boot.wave_id.as_str());
+    let task_id = format!("{}:hang", boot.track_id.as_str());
     assert!(!dir.join(format!("{task_id}-g1.exit")).exists());
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -9179,7 +9192,7 @@ async fn gate_timeout_group_kills_and_fails_gate_timeout() {
 async fn gate_spawn_kills_prior_recorded_group() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("killprior");
 
     // A live `setsid` group recorded on the tasks row — the stand-in
@@ -9218,7 +9231,7 @@ async fn gate_spawn_kills_prior_recorded_group() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "killprior", 30).await;
     assert_eq!(row.status, TaskStatus::Done);
 
@@ -9240,9 +9253,9 @@ async fn gate_spawn_kills_prior_recorded_group() {
 async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("forge");
-    let task_id = format!("{}:forge", boot.wave_id.as_str());
+    let task_id = format!("{}:forge", boot.track_id.as_str());
     let exit_path = dir.join(format!("{task_id}-g1.exit"));
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9260,7 +9273,7 @@ async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "forge", 30).await;
 
     assert_eq!(
@@ -9288,7 +9301,7 @@ async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
 async fn step_exit_ends_step_and_still_writes_exit_file() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("stepexit");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9303,7 +9316,7 @@ async fn step_exit_ends_step_and_still_writes_exit_file() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "stepexit", 30).await;
 
     assert_eq!(row.status, TaskStatus::Failed, "{row:?}");
@@ -9313,7 +9326,7 @@ async fn step_exit_ends_step_and_still_writes_exit_file() {
     assert_eq!(verdict["failing_step"], "bail");
     // The finish handler ran despite the step's `exit`: the durable
     // recovery hint exists and carries the real code.
-    let task_id = format!("{}:stepexit", boot.wave_id.as_str());
+    let task_id = format!("{}:stepexit", boot.track_id.as_str());
     let exit = std::fs::read_to_string(dir.join(format!("{task_id}-g1.exit"))).unwrap();
     assert_eq!(exit.trim(), "7");
     std::fs::remove_dir_all(&dir).ok();
@@ -9332,7 +9345,7 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
         "test must run under cargo for the kernel-env sentinel"
     );
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("env");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9351,7 +9364,7 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "env", 30).await;
     let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
     assert_eq!(
@@ -9364,14 +9377,14 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
 
 /// PR #685 review F6 — gates are in-flight machinery, not new claims:
 /// §5.2 scopes lifecycle gating to claims, so a gated task that
-/// reported while the wave is Blocked must have its gate driven by the
+/// reported while the track is Blocked must have its gate driven by the
 /// very pass the report poked — not sit `verifying` until the slow
 /// reconcile tick.
 #[tokio::test]
-async fn blocked_wave_still_drives_verifying_gate() {
+async fn blocked_track_still_drives_verifying_gate() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    set_lifecycle(&boot, TrackLifecycle::Blocked).await;
     let dir = unique_gate_dir("blocked");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9386,12 +9399,12 @@ async fn blocked_wave_still_drives_verifying_gate() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "blocked", 30).await;
     assert_eq!(row.status, TaskStatus::Done, "{row:?}");
     // Lifecycle promotion is still guarded on Working → Reviewing: a
-    // Blocked wave stays Blocked (the user gets unblocked explicitly).
-    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Blocked);
+    // Blocked track stays Blocked (the user gets unblocked explicitly).
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Blocked);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -9402,15 +9415,15 @@ async fn blocked_wave_still_drives_verifying_gate() {
 /// flip the row `failed('gate-infra')` and emit the gate result.
 /// Repro: a verifying row whose `gate_json` is gone — prepare_tx
 /// raises Conflict before `task_gate_attempt_bump_tx` (same pre-bump
-/// class as "wave row gone").
+/// class as "track row gone").
 #[tokio::test]
 async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("prebump");
 
-    let mut task = plan_task(&boot.wave_id, "prebump", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.track_id, "prebump", TaskKind::Codex, &[]);
     task.status = TaskStatus::Verifying;
     task.gate_json = None; // pre-bump Conflict: "task declares no gate"
     seed_task(&boot, task).await;
@@ -9421,7 +9434,7 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
             calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
         )],
     );
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "prebump", 30).await;
 
     assert_eq!(row.status, TaskStatus::Failed, "{row:?}");
@@ -9433,7 +9446,7 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
     let rows = event_rows(&boot, "task.gate_result").await;
     assert_eq!(rows.len(), 1, "exactly one gate result: {rows:?}");
     // The dead op is terminal-failed and no second attempt was minted.
-    let task_id = format!("{}:prebump", boot.wave_id.as_str());
+    let task_id = format!("{}:prebump", boot.track_id.as_str());
     let op = runtime
         .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
         .await
@@ -9452,7 +9465,7 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
 async fn stale_gate_before_first_attempt_fails_without_running_shell() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("context-stale");
     let marker = dir.join("must-not-exist");
     let gate = json!({
@@ -9497,7 +9510,7 @@ async fn stale_gate_before_first_attempt_fails_without_running_shell() {
 async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("bootdead");
 
     // A `verifying` row whose attempt-1 op is parked with artifacts of
@@ -9533,7 +9546,7 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     let mut output = TxOutput::new("task", Some(task_id.clone()), json!({}));
     output.data = json!({
         "task_id": task_id,
-        "wave_id": boot.wave_id.as_str(),
+        "track_id": boot.track_id.as_str(),
         "area_id": "area-x",
         "key": "bootdead",
         "attempt": 1,
@@ -9639,7 +9652,7 @@ async fn seed_parked_gate_op(
     let mut output = TxOutput::new("task", Some(task_id.to_string()), json!({}));
     output.data = json!({
         "task_id": task_id,
-        "wave_id": boot.wave_id.as_str(),
+        "track_id": boot.track_id.as_str(),
         "area_id": "area-x",
         "key": key,
         "attempt": 1,
@@ -9679,7 +9692,7 @@ async fn seed_parked_gate_op(
 async fn boot_reattach_live_gate_lands_verdict_after_exit() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("reattach");
 
     let gate = json!({
@@ -9777,7 +9790,7 @@ async fn boot_reattach_live_gate_lands_verdict_after_exit() {
 async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("deadexit");
 
     let gate = json!({
@@ -9854,7 +9867,7 @@ async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
 async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("predead");
 
     let gate = json!({
@@ -9927,7 +9940,7 @@ async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
 async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("obsdrop");
 
     let mut task = gate_task(
@@ -9968,7 +9981,7 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     let mut output = TxOutput::new("task", Some(task_id.clone()), json!({}));
     output.data = json!({
         "task_id": task_id,
-        "wave_id": boot.wave_id.as_str(),
+        "track_id": boot.track_id.as_str(),
         "area_id": "area-x",
         "key": "obsdrop",
         "attempt": 1,

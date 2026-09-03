@@ -21,7 +21,7 @@ import {
 } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { useTheme } from '../../app/theme';
-import type { AppBlockPayload } from '../../cards/builtins/wave-report';
+import type { AppBlockPayload } from '../../cards/builtins/track-report';
 
 const HOST_INFO: Implementation = {
   name: 'neige-calm',

@@ -13,7 +13,7 @@ import {
   type CardEntry,
   type CardInstanceCtx,
 } from '../cards/registry';
-import type { WaveCardData } from '../types';
+import type { TrackCardData } from '../types';
 import {
   getActiveCardShell,
   pixelDelta,
@@ -107,13 +107,13 @@ function fakeInstance(): WheelInstance {
   };
 }
 
-function fakeCard(): WaveCardData {
+function fakeCard(): TrackCardData {
   return {
     type: 'terminal',
     id: 'card_1',
     title: 'terminal',
     lines: [],
-  } as unknown as WaveCardData;
+  } as unknown as TrackCardData;
 }
 
 function fakeLifecycleWriter(): CardLifecycleWriter {
@@ -142,7 +142,7 @@ function fakeResolvedCard(): CardEntryResolverValue {
 
 function registerWheelEntry(
   wheelTarget: (
-    card: WaveCardData,
+    card: TrackCardData,
     instance: WheelInstance,
   ) => CardWheelTargetDecl | null,
 ) {

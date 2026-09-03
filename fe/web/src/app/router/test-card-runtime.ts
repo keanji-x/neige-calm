@@ -5,7 +5,7 @@
 // ones, so "forgot to wire it" must be a compile error rather than a fallback.
 // This helper keeps that requirement from costing every router test five lines.
 // It is deliberately the real registry with the real built-ins — a stub here
-// would let the wave route's filtering drift from production.
+// would let the track route's filtering drift from production.
 
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
 import { bootCards } from '../cards.ts';

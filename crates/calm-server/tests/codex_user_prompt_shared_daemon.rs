@@ -10,7 +10,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewTrack};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -36,7 +36,7 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     codex_homes_dir: PathBuf,
     _tmp: TempDir,
 }
@@ -84,8 +84,8 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "prompt-shared".into(),
@@ -119,7 +119,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         codex,
@@ -159,18 +159,18 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         app,
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         codex_homes_dir,
         _tmp: tmp,
     }
 }
 
-async fn post(app: axum::Router, wave_id: &str, body: Value) -> (StatusCode, Value) {
+async fn post(app: axum::Router, track_id: &str, body: Value) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/waves/{wave_id}/codex-cards"))
+                .uri(format!("/api/tracks/{track_id}/codex-cards"))
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
@@ -239,7 +239,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
 
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "explain this", "theme": theme() }),
     )
     .await;
@@ -272,7 +272,7 @@ async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
     let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "persist me", "theme": theme() }),
     )
     .await;
@@ -299,7 +299,7 @@ async fn create_prompt_card_spawns_remote_resume_tui() {
     let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "attach me", "theme": theme() }),
     )
     .await;
@@ -323,7 +323,7 @@ async fn create_prompt_card_skips_per_card_codex_home_seeding() {
     let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "no seed", "theme": theme() }),
     )
     .await;
@@ -341,14 +341,14 @@ async fn empty_path_errors_when_shared_daemon_not_running() {
     let boot = boot_with_shared_daemon(false).await;
     let (status, body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
     assert!(
         boot.repo
-            .cards_by_wave(&boot.wave_id)
+            .cards_by_track(&boot.track_id)
             .await
             .unwrap()
             .is_empty()
@@ -361,7 +361,7 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
     let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "theme": theme() }),
     )
     .await;
@@ -416,7 +416,7 @@ async fn empty_user_card_respawns_daemon_when_proxy_changed() {
 
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "theme": theme() }),
     )
     .await;
@@ -449,7 +449,7 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
 
     let (status, body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "theme": theme() }),
     )
     .await;
@@ -459,7 +459,7 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
-    let mut failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let mut failed_cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     project_runtime_into_cards_payload(boot.repo.as_ref(), &mut failed_cards)
         .await
         .unwrap();
@@ -481,7 +481,7 @@ async fn prompt_card_thread_start_respawn_failure_marks_runtime_failed() {
 
     let (status, body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "respawn then fail", "theme": theme() }),
     )
     .await;
@@ -490,7 +490,7 @@ async fn prompt_card_thread_start_respawn_failure_marks_runtime_failed() {
     }
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert_eq!(cards.len(), 1);
     assert_eq!(
         runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
@@ -508,7 +508,7 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
 
     let (status, body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "turn should fail", "theme": theme() }),
     )
     .await;
@@ -517,7 +517,7 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
     }
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert_eq!(cards.len(), 1);
     assert_eq!(
         runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
@@ -538,11 +538,11 @@ async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
     let boot = boot().await;
 
     let app = boot.app.clone();
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let post_task = tokio::spawn(async move {
         post(
             app,
-            &wave_id,
+            &track_id,
             json!({ "cwd": "/workspace", "prompt": "lifecycle should fail", "theme": theme() }),
         )
         .await
@@ -571,7 +571,7 @@ async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
         has_interrupt(&rows, "fake-thread-0001", "fake-turn-0001"),
         "prompt lifecycle rollback must interrupt the in-flight shared turn: {rows:?}"
     );
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert_eq!(cards.len(), 1);
     assert_eq!(
         runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
@@ -597,14 +597,14 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
 
     let (status, failed) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/", "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={failed:?}");
     let pending = &boot.state.pending_codex_threads;
     assert_eq!(pending.pending_count().await, 0);
-    let mut failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let mut failed_cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     project_runtime_into_cards_payload(boot.repo.as_ref(), &mut failed_cards)
         .await
         .unwrap();
@@ -617,7 +617,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone().into(),
+            track_id: boot.track_id.clone().into(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -692,7 +692,7 @@ async fn create_prompt_card_errors_when_shared_daemon_not_running() {
 
     let (status, body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         json!({ "cwd": "/workspace", "prompt": "legacy degraded", "theme": theme() }),
     )
     .await;
@@ -700,7 +700,7 @@ async fn create_prompt_card_errors_when_shared_daemon_not_running() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
     assert!(
         boot.repo
-            .cards_by_wave(&boot.wave_id)
+            .cards_by_track(&boot.track_id)
             .await
             .unwrap()
             .is_empty()

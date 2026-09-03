@@ -1,11 +1,11 @@
-//! In-memory `CardId -> (CardRole, home WaveId)` cache used by
+//! In-memory `CardId -> (CardRole, home TrackId)` cache used by
 //! `role_gate::enforce_role`.
 //!
 //! ## Why a cache
 //!
 //! The role gate runs at every audited write — see
 //! `db::sqlite::SqlxRepo::write_with_event` and `log_pure_event`. Looking
-//! up `cards.role` (and `cards.wave_id`) from sqlite on the hot path
+//! up `cards.role` (and `cards.track_id`) from sqlite on the hot path
 //! would block every emit on the connection pool *inside* the
 //! transaction the gate is meant to protect. A small in-process map
 //! keyed by `CardId` is fast (DashMap shards lock per-key), and the
@@ -13,7 +13,7 @@
 //! transaction that mints / mutates the card, so we keep the cache
 //! strictly write-through:
 //!
-//!   * `card_create_with_id_tx` calls `cache.insert(card_id, role, wave_id)`
+//!   * `card_create_with_id_tx` calls `cache.insert(card_id, role, track_id)`
 //!     right after the SQL insert succeeds, *before* the transaction
 //!     commits. A subsequent emit inside the same `write_with_event`
 //!     closure therefore sees the freshly-minted role without waiting
@@ -27,9 +27,9 @@
 //! ## What the cache stores
 //!
 //! Per card: the [`CardRole`] **and** the card's immutable home
-//! [`WaveId`]. The home wave is captured at card-mint and never changes
-//! (a card can't migrate waves), so caching it is safe. The role gate
-//! cross-checks `scope.wave == cache.wave_of(card)` for Worker actors —
+//! [`TrackId`]. The home track is captured at card-mint and never changes
+//! (a card can't migrate tracks), so caching it is safe. The role gate
+//! cross-checks `scope.track == cache.track_of(card)` for Worker actors —
 //! see issue #232.
 //!
 //! ## What the cache is *not*
@@ -43,17 +43,17 @@
 //! rather drop the write than admit a sketchy one).
 
 use crate::error::Result;
-use crate::ids::{CardId, WaveId};
+use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 use dashmap::DashMap;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
-/// Per-card cache row: persisted `CardRole` + immutable home `WaveId`.
+/// Per-card cache row: persisted `CardRole` + immutable home `TrackId`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardCacheEntry {
     pub role: CardRole,
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
 }
 
 /// Concurrent `CardId -> CardCacheEntry` map populated at boot from the
@@ -81,20 +81,20 @@ impl CardRoleCache {
     ///
     /// Projects the entry to just the role to avoid forcing every
     /// existing caller through the entry shape — only `enforce_role`
-    /// needs the wave id, and it has [`wave_of`](Self::wave_of) for that.
+    /// needs the track id, and it has [`track_of`](Self::track_of) for that.
     pub fn get(&self, id: &CardId) -> Option<CardRole> {
         self.0.get(id).map(|e| e.role)
     }
 
-    /// Look up the card's home wave id (the wave_id captured at card
+    /// Look up the card's home track id (the track_id captured at card
     /// mint; immutable for the card's lifetime). `None` matches `get`:
     /// either the card is unknown to the cache, or it has been removed.
     ///
-    /// Used by `role_gate::enforce_role` to cross-check `scope.wave`
-    /// against the Worker card's actual home wave — closes the
+    /// Used by `role_gate::enforce_role` to cross-check `scope.track`
+    /// against the Worker card's actual home track — closes the
     /// scope-spoof gap from issue #232.
-    pub fn wave_of(&self, id: &CardId) -> Option<WaveId> {
-        self.0.get(id).map(|e| e.wave_id.clone())
+    pub fn track_of(&self, id: &CardId) -> Option<TrackId> {
+        self.0.get(id).map(|e| e.track_id.clone())
     }
 
     /// Write-through insert. Called from `card_create_with_id_tx` after
@@ -102,9 +102,9 @@ impl CardRoleCache {
     /// the same-tx visibility lets a follow-up emit inside the same
     /// `write_with_event` closure see the freshly-minted role.
     ///
-    /// `wave_id` is **required** — Worker scope enforcement depends on
+    /// `track_id` is **required** — Worker scope enforcement depends on
     /// it. There's no Option/default escape hatch on purpose: a
-    /// silently-missing wave_id would re-open the issue #232 foot-gun.
+    /// silently-missing track_id would re-open the issue #232 foot-gun.
     ///
     /// If the txn rolls back the cache will hold a stale entry until
     /// `seed_from_db` (next boot) overwrites it — see
@@ -114,8 +114,8 @@ impl CardRoleCache {
     /// worst an `enforce_role` that *permits* a write the DB would have
     /// rejected on its FK (the card row no longer exists), which the
     /// transactional layer surfaces as `NotFound` anyway.
-    pub fn insert(&self, id: CardId, role: CardRole, wave_id: WaveId) {
-        self.0.insert(id, CardCacheEntry { role, wave_id });
+    pub fn insert(&self, id: CardId, role: CardRole, track_id: TrackId) {
+        self.0.insert(id, CardCacheEntry { role, track_id });
     }
 
     /// Remove a card's role entry. Called from the card-delete path so
@@ -136,7 +136,7 @@ impl CardRoleCache {
         self.0.is_empty()
     }
 
-    /// Boot-time seed: read every `(id, role, wave_id)` from `cards`
+    /// Boot-time seed: read every `(id, role, track_id)` from `cards`
     /// into the map. Clears the existing contents first so a re-seed
     /// during a long-lived test process (e.g. `AppState::from_parts`
     /// with a fresh pool) doesn't carry stale entries from a previous
@@ -153,16 +153,16 @@ impl CardRoleCache {
         // to calm-types (zero-IO rule); decode the TEXT column and parse
         // via the calm-types `TryFrom<String>` (same legal value set).
         let rows: Vec<(String, String, String)> =
-            sqlx::query_as(r#"SELECT id, role, wave_id FROM cards"#)
+            sqlx::query_as(r#"SELECT id, role, track_id FROM cards"#)
                 .fetch_all(pool)
                 .await?;
-        for (id, role, wave_id) in rows {
+        for (id, role, track_id) in rows {
             let role = CardRole::try_from(role).map_err(|e| sqlx::Error::Decode(e.into()))?;
             self.0.insert(
                 CardId::from(id),
                 CardCacheEntry {
                     role,
-                    wave_id: WaveId::from(wave_id),
+                    track_id: TrackId::from(track_id),
                 },
             );
         }
@@ -179,8 +179,8 @@ mod tests {
         CardId::from(s)
     }
 
-    fn wid(s: &str) -> WaveId {
-        WaveId::from(s)
+    fn wid(s: &str) -> TrackId {
+        TrackId::from(s)
     }
 
     #[test]
@@ -197,13 +197,13 @@ mod tests {
         assert_eq!(c.get(&cid("c")), Some(CardRole::Worker));
         assert_eq!(c.get(&cid("missing")), None);
 
-        assert_eq!(c.wave_of(&cid("a")), Some(wid("w1")));
-        assert_eq!(c.wave_of(&cid("c")), Some(wid("w2")));
-        assert_eq!(c.wave_of(&cid("missing")), None);
+        assert_eq!(c.track_of(&cid("a")), Some(wid("w1")));
+        assert_eq!(c.track_of(&cid("c")), Some(wid("w2")));
+        assert_eq!(c.track_of(&cid("missing")), None);
 
         c.remove(&cid("b"));
         assert_eq!(c.get(&cid("b")), None);
-        assert_eq!(c.wave_of(&cid("b")), None);
+        assert_eq!(c.track_of(&cid("b")), None);
         assert_eq!(c.len(), 2);
 
         // Removing a missing key is a no-op.
@@ -217,7 +217,7 @@ mod tests {
         c.insert(cid("a"), CardRole::Worker, wid("w1"));
         c.insert(cid("a"), CardRole::Spec, wid("w2"));
         assert_eq!(c.get(&cid("a")), Some(CardRole::Spec));
-        assert_eq!(c.wave_of(&cid("a")), Some(wid("w2")));
+        assert_eq!(c.track_of(&cid("a")), Some(wid("w2")));
         assert_eq!(c.len(), 1);
     }
 
@@ -231,7 +231,7 @@ mod tests {
         let b = a.clone();
         a.insert(cid("x"), CardRole::Worker, wid("w-x"));
         assert_eq!(b.get(&cid("x")), Some(CardRole::Worker));
-        assert_eq!(b.wave_of(&cid("x")), Some(wid("w-x")));
+        assert_eq!(b.track_of(&cid("x")), Some(wid("w-x")));
     }
 
     #[tokio::test]
@@ -243,7 +243,7 @@ mod tests {
         sqlx::query(
             r#"CREATE TABLE cards (
                 id TEXT PRIMARY KEY,
-                wave_id TEXT NOT NULL,
+                track_id TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'plain'
             )"#,
         )
@@ -251,7 +251,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO cards (id, wave_id, role) VALUES \
+            "INSERT INTO cards (id, track_id, role) VALUES \
                 ('a', 'w1', 'worker'), \
                 ('b', 'w1', 'spec'), \
                 ('c', 'w2', 'worker')",
@@ -266,9 +266,9 @@ mod tests {
         assert_eq!(cache.get(&cid("a")), Some(CardRole::Worker));
         assert_eq!(cache.get(&cid("b")), Some(CardRole::Spec));
         assert_eq!(cache.get(&cid("c")), Some(CardRole::Worker));
-        assert_eq!(cache.wave_of(&cid("a")), Some(wid("w1")));
-        assert_eq!(cache.wave_of(&cid("b")), Some(wid("w1")));
-        assert_eq!(cache.wave_of(&cid("c")), Some(wid("w2")));
+        assert_eq!(cache.track_of(&cid("a")), Some(wid("w1")));
+        assert_eq!(cache.track_of(&cid("b")), Some(wid("w1")));
+        assert_eq!(cache.track_of(&cid("c")), Some(wid("w2")));
     }
 
     #[tokio::test]
@@ -277,12 +277,12 @@ mod tests {
         // them — protects long-lived test processes that swap pools.
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::query(
-            "CREATE TABLE cards (id TEXT PRIMARY KEY, wave_id TEXT NOT NULL, role TEXT NOT NULL)",
+            "CREATE TABLE cards (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, role TEXT NOT NULL)",
         )
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO cards (id, wave_id, role) VALUES ('only', 'w-only', 'spec')")
+        sqlx::query("INSERT INTO cards (id, track_id, role) VALUES ('only', 'w-only', 'spec')")
             .execute(&pool)
             .await
             .unwrap();
@@ -292,7 +292,7 @@ mod tests {
         cache.seed_from_db(&pool).await.unwrap();
         assert_eq!(cache.get(&cid("stale")), None);
         assert_eq!(cache.get(&cid("only")), Some(CardRole::Spec));
-        assert_eq!(cache.wave_of(&cid("only")), Some(wid("w-only")));
+        assert_eq!(cache.track_of(&cid("only")), Some(wid("w-only")));
         assert_eq!(cache.len(), 1);
     }
 }

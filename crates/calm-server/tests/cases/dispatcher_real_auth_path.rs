@@ -4,7 +4,7 @@
 //!
 //! What this catches that the other dispatcher / role tests don't:
 //!
-//!   * `tests/dispatcher.rs` and `tests/wave_as_actor_smoke.rs` both
+//!   * `tests/dispatcher.rs` and `tests/track_as_actor_smoke.rs` both
 //!     call `Repo::log_pure_event` directly — they skip the actor
 //!     middleware, the request body extraction, and the scope
 //!     derivation that lives in the route. A regression in any of
@@ -17,7 +17,7 @@
 //!
 //! Composition under test, exercised in ONE flow:
 //!
-//!   1. Area → wave → codex card seeded. The wave-create route
+//!   1. Area → track → codex card seeded. The track-create route
 //!      mints a spec card with `CardRole::Spec`; we add a second
 //!      `kind: 'codex'` card via the route surface to get a worker-
 //!      adjacent `CardRole::Worker` row whose `card_id` is valid for
@@ -27,7 +27,7 @@
 //!      `hook.codex.*` events row records:
 //!        * `actor = "ai:codex"` (middleware + scope-β reattribution)
 //!        * `scope` resolves to `Card` (codex.rs scope derivation
-//!          followed `card → wave → area` correctly).
+//!          followed `card → track → area` correctly).
 //!   3. POST `/internal/codex/hook?card_id=<worker>` WITHOUT the
 //!      `X-Calm-Actor` header lands `actor = "user"` (middleware
 //!      default), and the gate accepts it — `ActorId::User` is the
@@ -38,14 +38,14 @@
 //!      any event row is appended. The 403 propagates; the events
 //!      table count is unchanged from step 3. This is the "errored
 //!      scope writes are rejected" verdict the issue calls out.
-//!   5. POST `/internal/codex/hook?card_id=<wave_id>` (a card id
+//!   5. POST `/internal/codex/hook?card_id=<track_id>` (a card id
 //!      that doesn't resolve to a card row — the route falls back
 //!      to `EventScope::System`) with the `ai:codex` header is
 //!      rejected for the same reason (unknown card id → role gate
 //!      denies the typed `AiCodex(CardId)` actor it can't look up).
 //!
 //! The `CardRole` cache write-through invariant is verified
-//! transitively: step 1's wave-create has to put the spec card
+//! transitively: step 1's track-create has to put the spec card
 //! into the cache for the dispatcher / role gate to see it; step 2's
 //! success and step 4's failure both depend on that cache being
 //! seeded correctly.
@@ -108,8 +108,8 @@ async fn boot() -> Boot {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -121,18 +121,21 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-auth-path"),
             Vec::new(),
             events,
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         {
             // Deterministically-broken codex bin (absolute, absent) so the
-            // spec-push app-server boot fails fast regardless of PATH. Wave
+            // spec-push app-server boot fails fast regardless of PATH. Track
             // create tolerates this (#293 / PR #311) and returns 201.
             let mut codex = CodexClient::new_stub();
             codex.codex_bin = "/nonexistent-codex-bin-dispatcher-real-auth".into();
             Arc::new(codex)
         },
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -187,33 +190,33 @@ async fn event_count(repo: &SqlxRepo) -> i64 {
 async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     let boot = boot().await;
 
-    // ---- 1. Wave create through the route → spec card lands with
+    // ---- 1. Track create through the route → spec card lands with
     //         CardRole::Spec, role cache reflects it.
-    let (status, _wave_body) = post_with_actor(
+    let (status, _track_body) = post_with_actor(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         Some("user"),
-        json!({"area_id": boot.area_id, "title": "real-auth wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "real-auth track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "wave create returns 201 even when the spec app-server boot fails (issue #293 / PR #311 — boot is non-fatal); spec card + role-cache write-through still happen pre-boot so the assertions below still hold",
+        "track create returns 201 even when the spec app-server boot fails (issue #293 / PR #311 — boot is non-fatal); spec card + role-cache write-through still happen pre-boot so the assertions below still hold",
     );
 
-    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
-    assert_eq!(waves.len(), 1);
-    let wave = waves.into_iter().next().unwrap();
-    let cards_after_wave = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    // Issue #229 PR B — wave create now mints two kernel-owned cards
-    // (spec + wave-report). Find the spec card by kind.
+    let tracks = boot.repo.tracks_by_area(&boot.area_id).await.unwrap();
+    assert_eq!(tracks.len(), 1);
+    let track = tracks.into_iter().next().unwrap();
+    let cards_after_track = boot.repo.cards_by_track(track.id.as_str()).await.unwrap();
+    // Issue #229 PR B — track create now mints two kernel-owned cards
+    // (spec + track-report). Find the spec card by kind.
     assert_eq!(
-        cards_after_wave.len(),
+        cards_after_track.len(),
         2,
-        "wave create mints spec + wave-report cards",
+        "track create mints spec + track-report cards",
     );
-    let spec_card_id = cards_after_wave
+    let spec_card_id = cards_after_track
         .iter()
         .find(|c| c.kind == "codex")
         .expect("spec card present")
@@ -222,7 +225,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     assert_eq!(
         boot.card_role_cache.get(&spec_card_id),
         Some(CardRole::Spec),
-        "spec card's role lives in the cache after wave create",
+        "spec card's role lives in the cache after track create",
     );
 
     // Seed a worker `kind: 'codex'` card so we have a card_id the codex
@@ -233,7 +236,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     // never sees AppState writes. The route's `card_create_with_id_tx`
     // call threads `s.card_role_cache` explicitly, which is the one
     // we need to query below.
-    let uri_cards = format!("/api/waves/{}/cards", wave.id);
+    let uri_cards = format!("/api/tracks/{}/cards", track.id);
     let (status, card_body) = post_with_actor(
         boot.app.clone(),
         &uri_cards,
@@ -272,9 +275,9 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     );
 
     // The route stamps `actor = "ai:codex"` and resolves the scope
-    // through `card → wave → area`. Confirm both at the SQL level —
+    // through `card → track → area`. Confirm both at the SQL level —
     // the scope is decomposed across `scope_kind`, `scope_card`,
-    // `scope_wave`, `scope_area` (migration 0007).
+    // `scope_track`, `scope_area` (migration 0007).
     // events.kind is the `Event` enum's `kind_tag()` — `"codex.hook"`
     // for `Event::CodexHook` (the inner `kind` field, formatted as
     // "hook.codex.<event_name>", lives in the JSON payload). Filter
@@ -288,7 +291,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         Option<String>,
         String,
     ) = sqlx::query_as(
-        "SELECT actor, kind, scope_kind, scope_card, scope_wave, scope_area, payload \
+        "SELECT actor, kind, scope_kind, scope_card, scope_track, scope_area, payload \
          FROM events WHERE kind = 'codex.hook' ORDER BY id DESC LIMIT 1",
     )
     .fetch_one(boot.repo.pool())
@@ -326,7 +329,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         Some(worker_codex_id.as_str()),
         "scope_card must point at the codex card we POSTed against",
     );
-    assert!(row.4.is_some(), "scope_wave populated for card scope");
+    assert!(row.4.is_some(), "scope_track populated for card scope");
     assert!(row.5.is_some(), "scope_area populated for card scope");
 
     let after_ok = event_count(&boot.repo).await;
@@ -349,8 +352,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     let upsert_uri = "/api/overlays";
     let upsert_body = json!({
         "plugin_id": "core",
-        "entity_kind": "wave",
-        "entity_id": wave.id.as_str(),
+        "entity_kind": "track",
+        "entity_id": track.id.as_str(),
         "kind": "status",
         "payload": {"state": "ok"},
     });
@@ -412,8 +415,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     //         events-table invariant as step 4.
     let (status, _) = post_with_actor(
         boot.app.clone(),
-        // wave id is not a card id → unresolvable
-        &format!("/internal/codex/hook?card_id={}", wave.id),
+        // track id is not a card id → unresolvable
+        &format!("/internal/codex/hook?card_id={}", track.id),
         Some("ai:codex"),
         json!({"hook_event_name": "PreToolUse"}),
     )

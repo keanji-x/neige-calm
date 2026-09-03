@@ -15,7 +15,7 @@ use calm_truth::db::sqlite::{
 };
 use calm_truth::session_repo::SessionRepo;
 use calm_truth_test_harness::FakeProvider;
-use calm_types::ids::{CardId, WaveId};
+use calm_types::ids::{CardId, TrackId};
 use calm_types::worker::{
     ExitEvidence, ExitSource, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind,
     WorkerSession, WorkerSessionId, WorkerSessionState,
@@ -23,18 +23,18 @@ use calm_types::worker::{
 use serde_json::json;
 
 use crate::model::{
-    Card, NewArea, NewCard, NewWave, RequestTheme, Task, TaskKind, TaskStatus, WaveLifecycle,
+    Card, NewArea, NewCard, NewTrack, RequestTheme, Task, TaskKind, TaskStatus, TrackLifecycle,
     new_id,
 };
 use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::WriteContext;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 
 static REAPER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
-    let wave_cwd = tempfile::tempdir().expect("wave cwd tempdir").keep();
-    init_git_repo(&wave_cwd);
+async fn seeded_repo() -> (Arc<SqlxRepo>, TrackId) {
+    let track_cwd = tempfile::tempdir().expect("track cwd tempdir").keep();
+    init_git_repo(&track_cwd);
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -50,14 +50,14 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
     )
     .await
     .expect("seed area");
-    let wave = RepoSyncDomainRaw::wave_create(
+    let track = RepoSyncDomainRaw::track_create(
         repo.as_ref(),
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: "reaper-test".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -65,11 +65,11 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
         },
     )
     .await
-    .expect("seed wave");
+    .expect("seed track");
     let spec_card = RepoSyncDomainRaw::card_create(
         repo.as_ref(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: Some("spec".into()),
             kind: "codex".into(),
             sort: None,
@@ -83,13 +83,13 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
         .execute(repo.pool())
         .await
         .expect("mark seeded card as spec");
-    (repo, wave.id)
+    (repo, track.id)
 }
 
-fn session(id: &str, wave_id: WaveId, created_at_ms: i64) -> WorkerSession {
+fn session(id: &str, track_id: TrackId, created_at_ms: i64) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
-        wave_id,
+        track_id,
         provider: WorkerProviderKind::Terminal,
         mode: SessionMode::Ephemeral,
         contract: WorkerContract::Executor,
@@ -120,7 +120,7 @@ async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) -> Card {
     let card = RepoSyncDomainRaw::card_create(
         repo,
         NewCard {
-            wave_id: session.wave_id.clone(),
+            track_id: session.track_id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -166,23 +166,23 @@ fn registry_for(kind: WorkerProviderKind, fake: Arc<FakeProvider>) -> WorkerProv
 
 async fn write_context(repo: &SqlxRepo) -> WriteContext {
     let role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
+    let track_area_cache = TrackAreaCache::new();
     repo.seed_card_role_cache(&role_cache)
         .await
         .expect("seed card role cache");
-    repo.seed_wave_area_cache(&wave_area_cache)
+    repo.seed_track_area_cache(&track_area_cache)
         .await
-        .expect("seed wave area cache");
-    WriteContext::new(role_cache, wave_area_cache)
+        .expect("seed track area cache");
+    WriteContext::new(role_cache, track_area_cache)
 }
 
 async fn route_state(repo: Arc<SqlxRepo>) -> crate::state::RouteState {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let events = EventBus::new();
     let roles = CardRoleCache::new();
-    let waves = WaveAreaCache::new();
+    let tracks = TrackAreaCache::new();
     repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_wave_area_cache(&waves).await.unwrap();
+    repo.seed_track_area_cache(&tracks).await.unwrap();
     let state = crate::state::AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
@@ -197,29 +197,29 @@ async fn route_state(repo: Arc<SqlxRepo>) -> crate::state::RouteState {
             std::env::temp_dir().join("calm-reaper-ensure-plugin-test"),
             Vec::new(),
             events,
-            WriteContext::new(roles.clone(), waves.clone()),
+            WriteContext::new(roles.clone(), tracks.clone()),
         )),
         Arc::new(crate::state::CodexClient::new_stub()),
         Some(roles),
-        Some(waves),
+        Some(tracks),
     );
     crate::state::RouteState::from_ref(&state)
 }
 
-async fn set_wave_lifecycle(repo: &SqlxRepo, wave_id: &WaveId, lifecycle: WaveLifecycle) {
-    sqlx::query("UPDATE waves SET lifecycle = ?1 WHERE id = ?2")
+async fn set_track_lifecycle(repo: &SqlxRepo, track_id: &TrackId, lifecycle: TrackLifecycle) {
+    sqlx::query("UPDATE tracks SET lifecycle = ?1 WHERE id = ?2")
         .bind(lifecycle.as_db_str())
-        .bind(wave_id.as_str())
+        .bind(track_id.as_str())
         .execute(repo.pool())
         .await
-        .expect("set wave lifecycle");
+        .expect("set track lifecycle");
 }
 
-async fn insert_task(repo: &SqlxRepo, wave_id: &WaveId, key: &str, status: TaskStatus) -> Task {
+async fn insert_task(repo: &SqlxRepo, track_id: &TrackId, key: &str, status: TaskStatus) -> Task {
     let now = now_ms();
     let task = Task {
-        id: format!("{}:{key}", wave_id.as_str()),
-        wave_id: wave_id.as_str().to_string(),
+        id: format!("{}:{key}", track_id.as_str()),
+        track_id: track_id.as_str().to_string(),
         key: key.into(),
         kind: TaskKind::Terminal,
         goal: "test worker".into(),
@@ -292,13 +292,13 @@ async fn insert_spawn_operation(
 async fn acquire_test_workspace_lease(
     repo: &SqlxRepo,
     card_id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     lease_owner: &str,
 ) -> (String, String) {
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
     let target = crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
         &mut tx,
-        wave_id.as_str(),
+        track_id.as_str(),
         card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
@@ -307,7 +307,7 @@ async fn acquire_test_workspace_lease(
     let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
         &mut tx,
         card_id,
-        wave_id.as_str(),
+        track_id.as_str(),
         lease_owner,
         &target,
     )
@@ -376,40 +376,40 @@ async fn task_failed_events(repo: &SqlxRepo, task_id: &str) -> Vec<Event> {
         .collect()
 }
 
-async fn lifecycle_changes(repo: &SqlxRepo, wave_id: &WaveId) -> Vec<Event> {
+async fn lifecycle_changes(repo: &SqlxRepo, track_id: &TrackId) -> Vec<Event> {
     RepoEventWrite::events_since(repo, 0, i64::MAX)
         .await
         .expect("events")
         .into_iter()
         .filter_map(|(_id, _version, scope, event)| {
-            if scope.wave_id() != Some(wave_id) {
+            if scope.track_id() != Some(track_id) {
                 return None;
             }
-            matches!(event, Event::WaveLifecycleChanged { .. }).then_some(event)
+            matches!(event, Event::TrackLifecycleChanged { .. }).then_some(event)
         })
         .collect()
 }
 
 // ----- #741-4 dead-root convergence test helpers -----------------------
 
-/// Insert a `spec-harness-start` operation for `wave_id` and stamp its
+/// Insert a `spec-harness-start` operation for `track_id` and stamp its
 /// terminal `phase` (DR-4's positive dead signal keys on `phase='failed'`).
-/// The payload carries `wave_id` at top level — the immutable op→wave link
+/// The payload carries `track_id` at top level — the immutable op→track link
 /// `dead_root_candidates` queries via `json_extract(payload_json,
-/// '$.wave_id')`.
-async fn insert_spec_harness_start_op(repo: &SqlxRepo, wave_id: &WaveId, phase: &str) {
+/// '$.track_id')`.
+async fn insert_spec_harness_start_op(repo: &SqlxRepo, track_id: &TrackId, phase: &str) {
     let spec_card_id: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE wave_id = ?1 AND role = 'spec'")
-            .bind(wave_id.as_str())
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'spec'")
+            .bind(track_id.as_str())
             .fetch_one(repo.pool())
             .await
-            .expect("wave has a real spec card");
-    insert_harness_start_op_for_card(repo, wave_id, &spec_card_id, phase).await;
+            .expect("track has a real spec card");
+    insert_harness_start_op_for_card(repo, track_id, &spec_card_id, phase).await;
 }
 
 async fn insert_harness_start_op_for_card(
     repo: &SqlxRepo,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     card_id: &str,
     phase: &str,
 ) {
@@ -424,7 +424,7 @@ async fn insert_harness_start_op_for_card(
             },
             json!({
                 "actor": ActorId::KernelDispatcher,
-                "wave_id": wave_id.as_str(),
+                "track_id": track_id.as_str(),
                 "spec_card_id": card_id,
                 "cwd": "/tmp",
             }),
@@ -478,36 +478,36 @@ async fn insert_harness_start_op_with_payload(
         .expect("stamp malformed operation phase");
 }
 
-async fn set_wave_purpose(repo: &SqlxRepo, wave_id: &WaveId, purpose: &str) {
-    sqlx::query("UPDATE waves SET purpose = ?1 WHERE id = ?2")
+async fn set_track_purpose(repo: &SqlxRepo, track_id: &TrackId, purpose: &str) {
+    sqlx::query("UPDATE tracks SET purpose = ?1 WHERE id = ?2")
         .bind(purpose)
-        .bind(wave_id.as_str())
+        .bind(track_id.as_str())
         .execute(repo.pool())
         .await
-        .expect("set wave purpose");
+        .expect("set track purpose");
 }
 
 /// Insert a planner-contract session in `state` and (optionally) mark it the
-/// wave's `root_session_id`.
+/// track's `root_session_id`.
 async fn insert_planner_session(
     repo: &SqlxRepo,
     id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     state: WorkerSessionState,
     mark_root: bool,
 ) {
-    let mut sess = session(id, wave_id.clone(), 1);
+    let mut sess = session(id, track_id.clone(), 1);
     sess.provider = WorkerProviderKind::Codex;
     sess.mode = SessionMode::Resumable;
     sess.contract = WorkerContract::Planner;
     sess.state = state;
-    let wave_id = wave_id.clone();
+    let track_id = track_id.clone();
     let session_id = WorkerSessionId::from(id);
     crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             session_insert_tx(tx, sess).await?;
             if mark_root {
-                calm_truth::db::sqlite::session_mark_wave_root_tx(tx, &wave_id, &session_id)
+                calm_truth::db::sqlite::session_mark_track_root_tx(tx, &track_id, &session_id)
                     .await?;
             }
             Ok(())
@@ -517,30 +517,30 @@ async fn insert_planner_session(
     .expect("insert planner session");
 }
 
-async fn wave_lifecycle_now(repo: &SqlxRepo, wave_id: &WaveId) -> WaveLifecycle {
-    repo.wave_get(wave_id.as_str())
+async fn track_lifecycle_now(repo: &SqlxRepo, track_id: &TrackId) -> TrackLifecycle {
+    repo.track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists")
+        .expect("track get")
+        .expect("track exists")
         .lifecycle
 }
 
-/// DR-4 failed-start: a `Draft` wave whose `spec-harness-start` op resolved
+/// DR-4 failed-start: a `Draft` track whose `spec-harness-start` op resolved
 /// to `phase='failed'`, with NO active planner session, converges
-/// `Draft → Failed` — exactly one `WaveLifecycleChanged` (KernelDispatcher),
+/// `Draft → Failed` — exactly one `TrackLifecycleChanged` (KernelDispatcher),
 /// and NO `TaskFailed` (a dead root has no task row).
 #[tokio::test]
 async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    // Wave starts Draft (default); record a FAILED start-op for it.
+    let (repo, track_id) = seeded_repo().await;
+    // Track starts Draft (default); record a FAILED start-op for it.
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Draft
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Draft
     );
-    insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -555,16 +555,16 @@ async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
     reaper.sweep_dead_roots().await;
 
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Failed,
-        "failed-start Draft wave must converge to Failed"
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Failed,
+        "failed-start Draft track must converge to Failed"
     );
-    let changes = lifecycle_changes(&repo, &wave_id).await;
+    let changes = lifecycle_changes(&repo, &track_id).await;
     assert_eq!(changes.len(), 1, "exactly one lifecycle change");
     match &changes[0] {
-        Event::WaveLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, WaveLifecycle::Draft);
-            assert_eq!(*to, WaveLifecycle::Failed);
+        Event::TrackLifecycleChanged { from, to, .. } => {
+            assert_eq!(*from, TrackLifecycle::Draft);
+            assert_eq!(*to, TrackLifecycle::Failed);
         }
         other => panic!("expected lifecycle change, got {other:?}"),
     }
@@ -581,17 +581,17 @@ async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
 }
 
 /// A failed start operation aimed at a Worker card is not a failed true-root
-/// start, even on an otherwise ordinary Draft wave.
+/// start, even on an otherwise ordinary Draft track.
 #[tokio::test]
 async fn sweep_dead_roots_failed_worker_start_stays_draft() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     let chat_card = RepoSyncDomainRaw::card_create(
         repo.as_ref(),
         NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: Some("chat".into()),
             kind: "codex".into(),
             sort: None,
@@ -600,7 +600,7 @@ async fn sweep_dead_roots_failed_worker_start_stays_draft() {
     )
     .await
     .expect("seed chat card");
-    insert_harness_start_op_for_card(&repo, &wave_id, chat_card.id.as_str(), "failed").await;
+    insert_harness_start_op_for_card(&repo, &track_id, chat_card.id.as_str(), "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -614,23 +614,23 @@ async fn sweep_dead_roots_failed_worker_start_stays_draft() {
     reaper.sweep_dead_roots().await;
 
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Draft
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Draft
     );
     reset_reaper_boot_gate_for_test();
 }
 
-/// INV-CHAT-017(a,c): the purpose fence independently protects a chat wave
+/// INV-CHAT-017(a,c): the purpose fence independently protects a chat track
 /// whose failed start points at its own real spec card. The production ensure
-/// endpoint must then return that same usable Draft wave.
+/// endpoint must then return that same usable Draft track.
 #[tokio::test]
-async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_same_wave() {
+async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_same_track() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_purpose(&repo, &wave_id, crate::AREA_CHAT_PURPOSE).await;
-    insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_purpose(&repo, &track_id, crate::AREA_CHAT_PURPOSE).await;
+    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -644,23 +644,23 @@ async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_s
     reaper.sweep_dead_roots().await;
 
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Draft
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Draft
     );
     let area_id = repo
-        .wave_get(wave_id.as_str())
+        .track_get(track_id.as_str())
         .await
         .unwrap()
         .unwrap()
         .area_id;
     let state = route_state(repo.clone()).await;
-    let response = crate::routes::waves::ensure_area_chat_wave(
+    let response = crate::routes::tracks::ensure_area_chat_track(
         State(state),
         crate::actor::Actor(crate::actor::Actor::DEFAULT.into()),
         AxumPath(area_id.to_string()),
     )
     .await
-    .expect("ensure existing chat wave")
+    .expect("ensure existing chat track")
     .into_response();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = http_body_util::BodyExt::collect(response.into_body())
@@ -668,7 +668,7 @@ async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_s
         .unwrap()
         .to_bytes();
     let ensured: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ensured["id"], wave_id.as_str());
+    assert_eq!(ensured["id"], track_id.as_str());
     assert_eq!(ensured["lifecycle"], "draft");
     reset_reaper_boot_gate_for_test();
 }
@@ -680,9 +680,9 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_purpose(&repo, &wave_id, "area-chat").await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_purpose(&repo, &track_id, "area-chat").await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let reaper = Reaper::new(
@@ -695,11 +695,11 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
     reaper.sweep_dead_roots().await;
 
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Planning
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Planning
     );
     assert_eq!(
-        repo.wave_get(wave_id.as_str())
+        repo.track_get(track_id.as_str())
             .await
             .unwrap()
             .unwrap()
@@ -711,18 +711,18 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
 }
 
 /// A newer Worker/chat start must not mask an older failed true-root start:
-/// the MAX(rowid) subquery considers only start ops for this wave's spec card.
+/// the MAX(rowid) subquery considers only start ops for this track's spec card.
 #[tokio::test]
 async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+    let (repo, track_id) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
     let worker = RepoSyncDomainRaw::card_create(
         repo.as_ref(),
         NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: Some("worker".into()),
             kind: "codex".into(),
             sort: None,
@@ -731,7 +731,7 @@ async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     )
     .await
     .unwrap();
-    insert_harness_start_op_for_card(&repo, &wave_id, worker.id.as_str(), "succeeded").await;
+    insert_harness_start_op_for_card(&repo, &track_id, worker.id.as_str(), "succeeded").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -744,8 +744,8 @@ async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     reaper_on_boot();
     reaper.sweep_dead_roots().await;
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Failed
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Failed
     );
     reset_reaper_boot_gate_for_test();
 }
@@ -757,15 +757,15 @@ async fn sweep_dead_roots_non_text_spec_card_id_fails_closed() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    sqlx::query("UPDATE cards SET id = '7' WHERE wave_id = ?1 AND role = 'spec'")
-        .bind(wave_id.as_str())
+    let (repo, track_id) = seeded_repo().await;
+    sqlx::query("UPDATE cards SET id = '7' WHERE track_id = ?1 AND role = 'spec'")
+        .bind(track_id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
     insert_harness_start_op_with_payload(
         &repo,
-        json!({"wave_id": wave_id.as_str(), "spec_card_id": 7}),
+        json!({"track_id": track_id.as_str(), "spec_card_id": 7}),
         "failed",
     )
     .await;
@@ -781,13 +781,13 @@ async fn sweep_dead_roots_non_text_spec_card_id_fails_closed() {
     reaper_on_boot();
     reaper.sweep_dead_roots().await;
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Draft
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Draft
     );
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 SAFETY (the false-converge guard): a fresh `Draft` wave whose
+/// DR-4 SAFETY (the false-converge guard): a fresh `Draft` track whose
 /// start-op is PENDING (or SUCCEEDED, or absent) is NOT a positive dead
 /// signal — it must stay `Draft`.
 #[tokio::test]
@@ -796,20 +796,20 @@ async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_conv
     reset_reaper_boot_gate_for_test();
 
     // (a) pending start-op
-    let (repo_pending, wave_pending) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_pending, &wave_pending, "pending").await;
-    // (b) succeeded start-op (the wave hasn't advanced past Draft yet, but
+    let (repo_pending, track_pending) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo_pending, &track_pending, "pending").await;
+    // (b) succeeded start-op (the track hasn't advanced past Draft yet, but
     //     the start succeeded — definitely not dead).
-    let (repo_succeeded, wave_succeeded) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_succeeded, &wave_succeeded, "succeeded").await;
+    let (repo_succeeded, track_succeeded) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
     // (c) NO start-op row at all (just-created / in-flight — absence is
     //     ambiguous, must NOT converge).
-    let (repo_absent, wave_absent) = seeded_repo().await;
+    let (repo_absent, track_absent) = seeded_repo().await;
 
-    for (repo, wave_id, label) in [
-        (repo_pending, wave_pending, "pending"),
-        (repo_succeeded, wave_succeeded, "succeeded"),
-        (repo_absent, wave_absent, "absent"),
+    for (repo, track_id, label) in [
+        (repo_pending, track_pending, "pending"),
+        (repo_succeeded, track_succeeded, "succeeded"),
+        (repo_absent, track_absent, "absent"),
     ] {
         let fake = Arc::new(FakeProvider::new());
         let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -824,12 +824,12 @@ async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_conv
         reaper.sweep_dead_roots().await;
 
         assert_eq!(
-            wave_lifecycle_now(&repo, &wave_id).await,
-            WaveLifecycle::Draft,
-            "Draft wave with {label} start-op must NOT converge (false-converge guard)"
+            track_lifecycle_now(&repo, &track_id).await,
+            TrackLifecycle::Draft,
+            "Draft track with {label} start-op must NOT converge (false-converge guard)"
         );
         assert_eq!(
-            lifecycle_changes(&repo, &wave_id).await.len(),
+            lifecycle_changes(&repo, &track_id).await.len(),
             0,
             "no lifecycle change for {label} start-op"
         );
@@ -840,7 +840,7 @@ async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_conv
 
 /// DR-4 latest-start-op guard (the stale-failed-plus-newer-retry hole):
 /// start/reset re-submit `spec-harness-start` with a FRESH op id, so a
-/// Draft wave can carry a STALE `failed` start-op AND a NEWER retry
+/// Draft track can carry a STALE `failed` start-op AND a NEWER retry
 /// (`pending` or `succeeded`) start-op simultaneously. During the retry's
 /// setup window the planner session is not yet created, so the
 /// `no_active_planner` guard is momentarily true — convergence must still
@@ -853,22 +853,22 @@ async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged()
 
     // (a) STALE failed start-op, then a NEWER pending retry start-op
     //     (retry in flight, planner session not yet created).
-    let (repo_pending, wave_pending) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_pending, &wave_pending, "failed").await;
-    insert_spec_harness_start_op(&repo_pending, &wave_pending, "pending").await;
+    let (repo_pending, track_pending) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo_pending, &track_pending, "failed").await;
+    insert_spec_harness_start_op(&repo_pending, &track_pending, "pending").await;
     // (b) STALE failed start-op, then a NEWER succeeded retry start-op
     //     (start ultimately succeeded — definitely not dead).
-    let (repo_succeeded, wave_succeeded) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_succeeded, &wave_succeeded, "failed").await;
-    insert_spec_harness_start_op(&repo_succeeded, &wave_succeeded, "succeeded").await;
+    let (repo_succeeded, track_succeeded) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo_succeeded, &track_succeeded, "failed").await;
+    insert_spec_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
 
-    for (repo, wave_id, label) in [
-        (repo_pending, wave_pending, "newer-pending"),
-        (repo_succeeded, wave_succeeded, "newer-succeeded"),
+    for (repo, track_id, label) in [
+        (repo_pending, track_pending, "newer-pending"),
+        (repo_succeeded, track_succeeded, "newer-succeeded"),
     ] {
         assert_eq!(
-            wave_lifecycle_now(&repo, &wave_id).await,
-            WaveLifecycle::Draft
+            track_lifecycle_now(&repo, &track_id).await,
+            TrackLifecycle::Draft
         );
         let fake = Arc::new(FakeProvider::new());
         let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -883,13 +883,13 @@ async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged()
         reaper.sweep_dead_roots().await;
 
         assert_eq!(
-            wave_lifecycle_now(&repo, &wave_id).await,
-            WaveLifecycle::Draft,
+            track_lifecycle_now(&repo, &track_id).await,
+            TrackLifecycle::Draft,
             "stale-failed + {label} retry start-op must NOT converge \
                  (latest start-op is non-failed)"
         );
         assert_eq!(
-            lifecycle_changes(&repo, &wave_id).await.len(),
+            lifecycle_changes(&repo, &track_id).await.len(),
             0,
             "no lifecycle change for stale-failed + {label} retry"
         );
@@ -899,7 +899,7 @@ async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged()
 }
 
 /// DR-4 mid-respawn exclusion: a Draft (failed start-op) OR Planning
-/// (NULL root) wave that has an ACTIVE planner-contract session is NOT
+/// (NULL root) track that has an ACTIVE planner-contract session is NOT
 /// converged — a respawn is in flight.
 #[tokio::test]
 async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
@@ -907,32 +907,32 @@ async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
     reset_reaper_boot_gate_for_test();
 
     // Draft + failed start-op, but a fresh planner session is `running`.
-    let (repo_draft, wave_draft) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_draft, &wave_draft, "failed").await;
+    let (repo_draft, track_draft) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo_draft, &track_draft, "failed").await;
     insert_planner_session(
         &repo_draft,
         "planner-respawn-draft",
-        &wave_draft,
+        &track_draft,
         WorkerSessionState::Running,
         false,
     )
     .await;
 
     // Planning + NULL root, but a planner session is `starting` (respawn).
-    let (repo_planning, wave_planning) = seeded_repo().await;
-    set_wave_lifecycle(&repo_planning, &wave_planning, WaveLifecycle::Planning).await;
+    let (repo_planning, track_planning) = seeded_repo().await;
+    set_track_lifecycle(&repo_planning, &track_planning, TrackLifecycle::Planning).await;
     insert_planner_session(
         &repo_planning,
         "planner-respawn-planning",
-        &wave_planning,
+        &track_planning,
         WorkerSessionState::Starting,
         false,
     )
     .await;
 
-    for (repo, wave_id, from) in [
-        (repo_draft, wave_draft, WaveLifecycle::Draft),
-        (repo_planning, wave_planning, WaveLifecycle::Planning),
+    for (repo, track_id, from) in [
+        (repo_draft, track_draft, TrackLifecycle::Draft),
+        (repo_planning, track_planning, TrackLifecycle::Planning),
     ] {
         let fake = Arc::new(FakeProvider::new());
         let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -947,31 +947,31 @@ async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
         reaper.sweep_dead_roots().await;
 
         assert_eq!(
-            wave_lifecycle_now(&repo, &wave_id).await,
+            track_lifecycle_now(&repo, &track_id).await,
             from,
-            "{from:?} wave with an ACTIVE planner session must NOT converge (mid-respawn)"
+            "{from:?} track with an ACTIVE planner session must NOT converge (mid-respawn)"
         );
-        assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+        assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
     }
 
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 lost-root: a `Planning` wave whose root session is TERMINAL
+/// DR-4 lost-root: a `Planning` track whose root session is TERMINAL
 /// (failed) with no active planner session converges `Planning → Failed`.
 #[tokio::test]
 async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
     // Root session exists but is TERMINAL (Failed) — the worker reaper
     // already terminalized it (S1/S2 for codex). No active planner.
     insert_planner_session(
         &repo,
         "planner-dead-root",
-        &wave_id,
+        &track_id,
         WorkerSessionState::Failed,
         true,
     )
@@ -990,16 +990,16 @@ async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
     reaper.sweep_dead_roots().await;
 
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Failed,
-        "Planning wave with a terminal root + no active planner must converge to Failed"
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Failed,
+        "Planning track with a terminal root + no active planner must converge to Failed"
     );
-    let changes = lifecycle_changes(&repo, &wave_id).await;
+    let changes = lifecycle_changes(&repo, &track_id).await;
     assert_eq!(changes.len(), 1);
     match &changes[0] {
-        Event::WaveLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, WaveLifecycle::Planning);
-            assert_eq!(*to, WaveLifecycle::Failed);
+        Event::TrackLifecycleChanged { from, to, .. } => {
+            assert_eq!(*from, TrackLifecycle::Planning);
+            assert_eq!(*to, TrackLifecycle::Failed);
         }
         other => panic!("expected lifecycle change, got {other:?}"),
     }
@@ -1007,15 +1007,15 @@ async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 lost-root NULL: a `Planning` wave whose `root_session_id IS NULL`
+/// DR-4 lost-root NULL: a `Planning` track whose `root_session_id IS NULL`
 /// with no active planner session converges `Planning → Failed`.
 #[tokio::test]
 async fn sweep_dead_roots_lost_root_null_planning_converges() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
     // No root session at all, no active planner — a lost root.
 
     let fake = Arc::new(FakeProvider::new());
@@ -1031,11 +1031,11 @@ async fn sweep_dead_roots_lost_root_null_planning_converges() {
     reaper.sweep_dead_roots().await;
 
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Failed,
-        "Planning wave with NULL root + no active planner must converge to Failed"
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Failed,
+        "Planning track with NULL root + no active planner must converge to Failed"
     );
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 1);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 1);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1046,9 +1046,9 @@ async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     // A genuinely-dead failed-start root that WOULD converge post-boot.
-    insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -1062,21 +1062,21 @@ async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
     // Gate closed: must NOT converge.
     reaper.sweep_dead_roots().await;
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Draft,
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Draft,
         "dead-root scan must no-op before boot gate opens"
     );
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     // Gate open: now it converges.
     reaper_on_boot();
     reaper.sweep_dead_roots().await;
     assert_eq!(
-        wave_lifecycle_now(&repo, &wave_id).await,
-        WaveLifecycle::Failed,
+        track_lifecycle_now(&repo, &track_id).await,
+        TrackLifecycle::Failed,
         "dead-root scan converges once the boot gate opens"
     );
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 1);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 1);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1086,12 +1086,12 @@ async fn sweep_records_non_exit_liveness_and_terminals_exited_without_spawn_op()
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo().await;
     for (idx, id) in ["ws-alive", "ws-idle", "ws-unknown", "ws-exited"]
         .into_iter()
         .enumerate()
     {
-        insert_session(&repo, session(id, wave_id.clone(), idx as i64 + 1)).await;
+        insert_session(&repo, session(id, track_id.clone(), idx as i64 + 1)).await;
     }
 
     let fake = Arc::new(FakeProvider::new().with_probe_script([
@@ -1173,11 +1173,11 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "dead-worker", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "dead-worker", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-dead-worker", wave_id.clone(), 1);
+    let mut worker = session("ws-dead-worker", track_id.clone(), 1);
     worker.spawn_op_id = Some(op_id);
     insert_session(&repo, worker).await;
 
@@ -1243,21 +1243,21 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
         other => panic!("expected task.failed, got {other:?}"),
     }
 
-    let changes = lifecycle_changes(&repo, &wave_id).await;
+    let changes = lifecycle_changes(&repo, &track_id).await;
     assert_eq!(changes.len(), 1);
     match &changes[0] {
-        Event::WaveLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, WaveLifecycle::Working);
-            assert_eq!(*to, WaveLifecycle::Reviewing);
+        Event::TrackLifecycleChanged { from, to, .. } => {
+            assert_eq!(*from, TrackLifecycle::Working);
+            assert_eq!(*to, TrackLifecycle::Reviewing);
         }
         other => panic!("expected lifecycle change, got {other:?}"),
     }
-    let wave = repo
-        .wave_get(wave_id.as_str())
+    let track = repo
+        .track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists");
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+        .expect("track get")
+        .expect("track exists");
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1272,13 +1272,13 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "codex-dead", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "codex-dead", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     // `created_at_ms = 1` ⇒ `now - last` (NULL last_activity ⇒ created_at)
     // is far past the deadline, so the pre-gate does not short-circuit.
-    let mut worker = session("ws-codex-dead", wave_id.clone(), 1);
+    let mut worker = session("ws-codex-dead", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-dead".into());
@@ -1341,21 +1341,21 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     let failed = task_failed_events(&repo, &task.id).await;
     assert_eq!(failed.len(), 1);
 
-    let changes = lifecycle_changes(&repo, &wave_id).await;
+    let changes = lifecycle_changes(&repo, &track_id).await;
     assert_eq!(changes.len(), 1);
     match &changes[0] {
-        Event::WaveLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, WaveLifecycle::Working);
-            assert_eq!(*to, WaveLifecycle::Reviewing);
+        Event::TrackLifecycleChanged { from, to, .. } => {
+            assert_eq!(*from, TrackLifecycle::Working);
+            assert_eq!(*to, TrackLifecycle::Reviewing);
         }
         other => panic!("expected lifecycle change, got {other:?}"),
     }
-    let wave = repo
-        .wave_get(wave_id.as_str())
+    let track = repo
+        .track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists");
-    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+        .expect("track get")
+        .expect("track exists");
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1365,18 +1365,18 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "codex-lease-dead", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "codex-lease-dead", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-codex-lease-dead", wave_id.clone(), 1);
+    let mut worker = session("ws-codex-lease-dead", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-lease-dead".into());
     worker.spawn_op_id = Some(op_id.clone());
     let card = insert_session(&repo, worker).await;
     let (lease_id, lease_path) =
-        acquire_test_workspace_lease(&repo, card.id.as_str(), &wave_id, &op_id).await;
+        acquire_test_workspace_lease(&repo, card.id.as_str(), &track_id, &op_id).await;
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
         "leased cwd exists before reaping"
@@ -1416,7 +1416,7 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
             ["rev-parse", "--abbrev-ref", "HEAD"]
         )
         .trim(),
-        format!("neige/{}/{}", wave_id.as_str(), card.id.as_str()),
+        format!("neige/{}/{}", track_id.as_str(), card.id.as_str()),
         "reaper release preserves the slice branch"
     );
     let released_events: i64 =
@@ -1439,15 +1439,15 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
 async fn converge_dead_worker_without_spawn_op_releases_workspace_lease() {
     let _guard = REAPER_TEST_LOCK.lock().await;
 
-    let (repo, wave_id) = seeded_repo().await;
-    let mut worker = session("ws-codex-no-spawn-op", wave_id.clone(), 1);
+    let (repo, track_id) = seeded_repo().await;
+    let mut worker = session("ws-codex-no-spawn-op", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-no-spawn-op".into());
     let card = insert_session(&repo, worker.clone()).await;
     worker.card_id = Some(CardId(card.id.to_string()));
     let (lease_id, lease_path) =
-        acquire_test_workspace_lease(&repo, card.id.as_str(), &wave_id, "missing-spawn-op").await;
+        acquire_test_workspace_lease(&repo, card.id.as_str(), &track_id, "missing-spawn-op").await;
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
         "leased cwd exists before converge guard"
@@ -1477,7 +1477,7 @@ async fn converge_dead_worker_without_spawn_op_releases_workspace_lease() {
             ["rev-parse", "--abbrev-ref", "HEAD"]
         )
         .trim(),
-        format!("neige/{}/{}", wave_id.as_str(), card.id.as_str()),
+        format!("neige/{}/{}", track_id.as_str(), card.id.as_str()),
         "spawn_op_id guard release preserves the slice branch"
     );
     let released_events: i64 =
@@ -1501,11 +1501,11 @@ async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "codex-alive", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "codex-alive", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-codex-alive", wave_id.clone(), 1);
+    let mut worker = session("ws-codex-alive", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-alive".into());
@@ -1549,7 +1549,7 @@ async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
     assert!(worker.completed_at_ms.is_none());
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
     let task_row = repo
         .task_get(&task.id)
         .await
@@ -1567,11 +1567,11 @@ async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "codex-unknown", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "codex-unknown", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-codex-unknown", wave_id.clone(), 1);
+    let mut worker = session("ws-codex-unknown", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-unknown".into());
@@ -1615,7 +1615,7 @@ async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
     assert!(worker.completed_at_ms.is_none());
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1628,11 +1628,11 @@ async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "codex-recent", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "codex-recent", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-codex-recent", wave_id.clone(), 1);
+    let mut worker = session("ws-codex-recent", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-recent".into());
@@ -1682,7 +1682,7 @@ async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     assert_eq!(worker.exit_interpretation, None);
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1699,11 +1699,11 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "spawn-window", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "spawn-window", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-starting", wave_id.clone(), 1);
+    let mut worker = session("ws-starting", track_id.clone(), 1);
     // EPHEMERAL terminal worker still in the spawn/startup window: the
     // `worker_session` row exists before the PTY registers with the
     // proc-supervisor, so the probe's `proc_running:false` is "not spawned
@@ -1742,21 +1742,21 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     assert_eq!(worker.exit_interpretation, None);
     assert!(worker.completed_at_ms.is_none());
 
-    // No convergence: no task.failed, task stays running, wave stays Working.
+    // No convergence: no task.failed, task stays running, track stays Working.
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
     let task_row = repo
         .task_get(&task.id)
         .await
         .expect("task get")
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Running);
-    let wave = repo
-        .wave_get(wave_id.as_str())
+    let track = repo
+        .track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists");
-    assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+        .expect("track get")
+        .expect("track exists");
+    assert_eq!(track.lifecycle, TrackLifecycle::Working);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1766,11 +1766,11 @@ async fn sweep_exited_with_null_spawn_op_task_key_terminalizes_without_task_fail
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "null-op-key", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "null-op-key", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, None, None).await;
-    let mut worker = session("ws-null-op-key", wave_id.clone(), 1);
+    let mut worker = session("ws-null-op-key", track_id.clone(), 1);
     worker.spawn_op_id = Some(op_id);
     insert_session(&repo, worker).await;
 
@@ -1793,13 +1793,13 @@ async fn sweep_exited_with_null_spawn_op_task_key_terminalizes_without_task_fail
         .expect("session exists");
     assert_eq!(worker.state, WorkerSessionState::Failed);
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
-    let wave = repo
-        .wave_get(wave_id.as_str())
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
+    let track = repo
+        .track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists");
-    assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+        .expect("track get")
+        .expect("track exists");
+    assert_eq!(track.lifecycle, TrackLifecycle::Working);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1809,10 +1809,10 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "race", TaskStatus::Running).await;
-    let mut worker = session("ws-race", wave_id.clone(), 1);
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "race", TaskStatus::Running).await;
+    let mut worker = session("ws-race", track_id.clone(), 1);
     let worker_card = insert_session(&repo, worker.clone()).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), Some(worker_card.id.as_str())).await;
     worker.spawn_op_id = Some(op_id);
@@ -1830,7 +1830,7 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
         &events,
         &write,
         &task.id,
-        wave_id.as_str(),
+        track_id.as_str(),
         worker_card.id.as_str(),
         Some(0),
         false,
@@ -1861,7 +1861,7 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
         })
         .count();
     assert_eq!(completed, 1);
-    let changes = lifecycle_changes(&repo, &wave_id).await;
+    let changes = lifecycle_changes(&repo, &track_id).await;
     assert_eq!(changes.len(), 1);
     let worker = repo
         .session_get(&WorkerSessionId::from("ws-race"))
@@ -1878,11 +1878,11 @@ async fn sweep_unknown_liveness_records_t2_without_death_convergence() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-    let task = insert_task(&repo, &wave_id, "unknown", TaskStatus::Running).await;
+    let (repo, track_id) = seeded_repo().await;
+    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
+    let task = insert_task(&repo, &track_id, "unknown", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    let mut worker = session("ws-unknown-death", wave_id.clone(), 1);
+    let mut worker = session("ws-unknown-death", track_id.clone(), 1);
     worker.spawn_op_id = Some(op_id);
     insert_session(&repo, worker).await;
 
@@ -1914,7 +1914,7 @@ async fn sweep_unknown_liveness_records_t2_without_death_convergence() {
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Running);
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1924,8 +1924,8 @@ async fn sweep_noops_until_reaper_on_boot_opens_gate() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, wave_id) = seeded_repo().await;
-    insert_session(&repo, session("ws-gated", wave_id, 1)).await;
+    let (repo, track_id) = seeded_repo().await;
+    insert_session(&repo, session("ws-gated", track_id, 1)).await;
     let fake = Arc::new(FakeProvider::new().with_probe_script([Liveness::Alive {
         active_turn_id: None,
     }]));

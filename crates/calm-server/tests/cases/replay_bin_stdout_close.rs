@@ -30,7 +30,7 @@ fn replay_survives_stdout_pipe_close() {
             .args([
                 "--serve",
                 "--file",
-                "crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json",
+                "crates/calm-server/tests/fixtures/events/track-grid-layout-trace.events.json",
                 "--port",
                 port_arg.as_str(),
             ])

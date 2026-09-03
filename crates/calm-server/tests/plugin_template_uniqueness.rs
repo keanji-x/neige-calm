@@ -29,7 +29,7 @@ use calm_server::model::NewPlugin;
 use calm_server::plugin_host::{
     HostError, Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus,
 };
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::json;
 use support::forge_env::{EnvGuard, FORGE_ENV_LOCK};
 use tokio::sync::Barrier;
@@ -137,7 +137,7 @@ async fn duplicate_template_id_is_rejected_at_spawn_for_trusted_plugins_only() {
 /// spawns of trusted plugins declaring the same template id must admit
 /// exactly one. Pre-fix, both passed the (unlocked, Running-only) conflict
 /// check before either inserted its processes-map entry, yielding duplicate
-/// running owners and a nondeterministic `plugin_scope_for_wave` winner.
+/// running owners and a nondeterministic `plugin_scope_for_track` winner.
 /// Also proves the loser's admission reservation is released: a third
 /// same-template spawn conflicts against the REAL winner (a leaked
 /// reservation would name the loser), and once the winner stops, the loser
@@ -377,7 +377,7 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
         plugins_data_dir,
         Vec::new(),
         events,
-        calm_server::state::WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+        calm_server::state::WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
     ))
 }
 

@@ -1,7 +1,7 @@
 // TanStack Query persistence — IndexedDB-backed cache survival across reloads.
 //
 // What this gives us:
-//   - On reload, the cached areas / waves / overlays paint immediately from
+//   - On reload, the cached areas / tracks / overlays paint immediately from
 //     IndexedDB before any HTTP request goes out. React Query still refetches
 //     in the background per the normal staleTime / refetchOnMount rules, so
 //     fresh data eventually replaces the cached snapshot without anyone
@@ -20,9 +20,9 @@
 //
 // Key shapes (kept in sync with `api/queries.ts` — see `queryKeys` there):
 //   ['areas']                         — list of all areas
-//   ['waves', areaId]                 — waves in an area
-//   ['wave', waveId]                  — wave detail (cards + overlays)
-//   ['overlays', 'wave' | 'card']     — workspace-wide overlay snapshot
+//   ['tracks', areaId]                 — tracks in an area
+//   ['track', trackId]                  — track detail (cards + overlays)
+//   ['overlays', 'track' | 'card']     — workspace-wide overlay snapshot
 //   ['overlay', ...]                  — reserved future per-entity overlay key
 //
 // Buster strategy: cache schema + the web app's `package.json` version.
@@ -99,8 +99,8 @@ export function createIDBPersister(opts: { throttleTime?: number } = {}) {
  *
  * Matched shapes (in sync with `queryKeys` in `api/queries.ts`):
  *   ['areas']
- *   ['waves', *]
- *   ['wave', *]
+ *   ['tracks', *]
+ *   ['track', *]
  *   ['overlays', *]
  *   ['overlay', *]
  *
@@ -112,7 +112,7 @@ export function isPersistableQueryKey(query: Pick<Query, 'queryKey'>): boolean {
   if (!Array.isArray(key) || key.length === 0) return false;
   const root = key[0];
   if (root === 'areas') return key.length === 1;
-  if (root === 'waves' || root === 'wave') return key.length >= 2;
+  if (root === 'tracks' || root === 'track') return key.length >= 2;
   if (root === 'overlays' || root === 'overlay') return key.length >= 2;
   return false;
 }

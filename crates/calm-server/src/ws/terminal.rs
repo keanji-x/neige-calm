@@ -5,7 +5,7 @@
 //! Frames carry the `calm_session::ClientMsg` / `DaemonMsg` enums encoded as
 //! JSON text. Each WS text frame is exactly one serde-JSON `ClientMsg` (going
 //! up) or `DaemonMsg` (coming down). Binary WS frames are not used in this
-//! bridge today — the wave's own xterm.js client handles VT replay on top of
+//! bridge today — the track's own xterm.js client handles VT replay on top of
 //! `DaemonMsg::ServerHello.snapshot.data` / subsequent `RenderPatch.data`
 //! byte arrays delivered as JSON byte-arrays. A future PR may introduce a
 //! binary-frame fast path for `Input`; the wire format is reserved.

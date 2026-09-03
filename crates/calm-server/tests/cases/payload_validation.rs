@@ -20,7 +20,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
-use calm_server::model::{NewArea, NewCard, NewOverlay, NewWave};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -28,17 +28,17 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Build a minimal AppState + seed one area + wave + (optional) card. Returns
-/// the wave id (and an optional card id) the test will hit.
+/// Build a minimal AppState + seed one area + track + (optional) card. Returns
+/// the track id (and an optional card id) the test will hit.
 async fn boot() -> (AppState, String) {
-    let (state, wave_id, _repo) = boot_with_repo().await;
-    (state, wave_id)
+    let (state, track_id, _repo) = boot_with_repo().await;
+    (state, track_id)
 }
 
 /// [`boot`] variant that also hands back the full-capability repo —
 /// `AppState.repo` is the narrower `RouteRepo`, which deliberately has
-/// no `sqlite_pool` escape hatch, but the #644 WavePatch tests need raw
-/// column reads (the `Wave` row struct doesn't carry the new columns).
+/// no `sqlite_pool` escape hatch, but the #644 TrackPatch tests need raw
+/// column reads (the `Track` row struct doesn't carry the new columns).
 async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -53,8 +53,8 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "demo".into(),
@@ -80,14 +80,14 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None,
         None,
     );
-    (state, wave.id.to_string(), repo)
+    (state, track.id.to_string(), repo)
 }
 
 fn app(state: AppState) -> axum::Router {
@@ -95,15 +95,15 @@ fn app(state: AppState) -> axum::Router {
     // extensions, which means the middleware that populates it must be
     // present. Mirror main.rs by layering it on the REST router.
     //
-    // `waves::router` is also merged here so the PR #214 follow-up tests
-    // can exercise `GET /api/waves/{id}` for the wave-detail read-side
+    // `tracks::router` is also merged here so the PR #214 follow-up tests
+    // can exercise `GET /api/tracks/{id}` for the track-detail read-side
     // schemaVersion guard. Adding the router is a no-op for the existing
-    // card/overlay tests; we only ever hit the wave route from the tests
+    // card/overlay tests; we only ever hit the track route from the tests
     // that explicitly construct that URI.
     axum::Router::new()
         .merge(routes::cards::router())
         .merge(routes::overlays::router())
-        .merge(routes::waves::router())
+        .merge(routes::tracks::router())
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -133,11 +133,11 @@ async fn collect_envelopes(events: EventBus, n: usize) -> Vec<BroadcastEnvelope>
     out
 }
 
-async fn post_card(app: axum::Router, wave_id: &str, body: Value) -> axum::http::Response<Body> {
+async fn post_card(app: axum::Router, track_id: &str, body: Value) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("POST")
-            .uri(format!("/api/waves/{wave_id}/cards"))
+            .uri(format!("/api/tracks/{track_id}/cards"))
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap(),
@@ -198,10 +198,10 @@ async fn get_overlays(
 
 #[tokio::test]
 async fn post_terminal_card_with_bad_payload_returns_400() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_card(
         app(state),
-        &wave_id,
+        &track_id,
         json!({
             "kind": "terminal",
             // terminal_id must be a string when present.
@@ -220,10 +220,10 @@ async fn post_terminal_card_with_bad_payload_returns_400() {
 
 #[tokio::test]
 async fn post_terminal_card_with_valid_payload_creates() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_card(
         app(state),
-        &wave_id,
+        &track_id,
         json!({
             "kind": "terminal",
             "payload": { "terminal_id": "t1" }
@@ -237,8 +237,8 @@ async fn post_terminal_card_with_valid_payload_creates() {
 async fn post_terminal_card_with_no_payload_is_accepted() {
     // Payload defaults to null on the wire — validator must accept that
     // because freshly-created terminal cards have no PTY yet.
-    let (state, wave_id) = boot().await;
-    let resp = post_card(app(state), &wave_id, json!({ "kind": "terminal" })).await;
+    let (state, track_id) = boot().await;
+    let resp = post_card(app(state), &track_id, json!({ "kind": "terminal" })).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
@@ -246,10 +246,10 @@ async fn post_terminal_card_with_no_payload_is_accepted() {
 async fn post_ui_kind_card_with_junk_payload_is_accepted() {
     // D4 acceptance criterion: `ui://*` cards stay opaque — a junk payload
     // must NOT be rejected. Proves the plugin-defined opt-out works.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_card(
         app(state),
-        &wave_id,
+        &track_id,
         json!({
             "kind": "ui://example/view",
             "payload": { "junk": "ok", "any": [1, 2, 3] }
@@ -266,11 +266,11 @@ async fn post_ui_kind_card_with_junk_payload_is_accepted() {
 #[tokio::test]
 async fn patch_terminal_card_with_bad_payload_returns_400() {
     // Seed a terminal card directly via the repo so we can patch it.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let seeded = state
         .raw_repo()
         .card_create(NewCard {
-            wave_id: wave_id.clone().into(),
+            track_id: track_id.clone().into(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -293,11 +293,11 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
 #[tokio::test]
 async fn patch_ui_card_with_junk_payload_is_accepted() {
     // Patching a ui://* card must remain opaque too.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let seeded = state
         .raw_repo()
         .card_create(NewCard {
-            wave_id: wave_id.clone().into(),
+            track_id: track_id.clone().into(),
             title: None,
             kind: "ui://example/view".into(),
             sort: None,
@@ -321,13 +321,13 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
 
 #[tokio::test]
 async fn post_status_overlay_with_bad_payload_returns_400() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
         json!({
             "plugin_id": "p1",
-            "entity_kind": "wave",
-            "entity_id": wave_id,
+            "entity_kind": "track",
+            "entity_id": track_id,
             "kind": "status",
             "payload": {} // missing required `state` field
         }),
@@ -340,13 +340,13 @@ async fn post_status_overlay_with_bad_payload_returns_400() {
 
 #[tokio::test]
 async fn post_status_overlay_with_valid_payload_returns_200() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
         json!({
             "plugin_id": "p1",
-            "entity_kind": "wave",
-            "entity_id": wave_id,
+            "entity_kind": "track",
+            "entity_id": track_id,
             "kind": "status",
             "payload": { "state": "running" }
         }),
@@ -368,7 +368,7 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
 /// so a valid payload and a malformed one are indistinguishable from outside.
 #[tokio::test]
 async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     for payload in [
         json!({ "schemaVersion": 1 }),
         json!({ "schemaVersion": 1, "template_key": "issue-development" }),
@@ -381,7 +381,7 @@ async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
             json!({
                 "plugin_id": "kernel",
                 "entity_kind": "view",
-                "entity_id": wave_id,
+                "entity_id": track_id,
                 "kind": "template",
                 "payload": payload
             }),
@@ -399,11 +399,11 @@ async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
 /// `entity_kind` is refused too.
 #[tokio::test]
 async fn post_overlay_reserved_namespaces_are_independently_enforced() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let cases = [
         ("p1", "view", "template", json!({ "schemaVersion": 1 })),
         ("p1", "system", "status", json!({ "state": "ok" })),
-        ("kernel", "wave", "status", json!({ "state": "ok" })),
+        ("kernel", "track", "status", json!({ "state": "ok" })),
     ];
     for (plugin_id, entity_kind, kind, payload) in cases {
         let resp = post_overlay(
@@ -411,7 +411,7 @@ async fn post_overlay_reserved_namespaces_are_independently_enforced() {
             json!({
                 "plugin_id": plugin_id,
                 "entity_kind": entity_kind,
-                "entity_id": wave_id,
+                "entity_id": track_id,
                 "kind": kind,
                 "payload": payload
             }),
@@ -431,13 +431,13 @@ async fn post_overlay_reserved_namespaces_are_independently_enforced() {
 /// stay green.
 #[tokio::test]
 async fn post_overlay_still_accepts_non_reserved_plugin_and_entity_kind() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
         json!({
             "plugin_id": "p1",
-            "entity_kind": "wave",
-            "entity_id": wave_id,
+            "entity_kind": "track",
+            "entity_id": track_id,
             "kind": "plugin-private-kind",
             "payload": { "anything": true }
         }),
@@ -450,8 +450,8 @@ async fn post_overlay_still_accepts_non_reserved_plugin_and_entity_kind() {
 /// — so the same gate covers it.
 #[tokio::test]
 async fn delete_overlay_rejects_reserved_namespaces() {
-    let (state, wave_id) = boot().await;
-    for (plugin_id, entity_kind) in [("kernel", "view"), ("p1", "view"), ("kernel", "wave")] {
+    let (state, track_id) = boot().await;
+    for (plugin_id, entity_kind) in [("kernel", "view"), ("p1", "view"), ("kernel", "track")] {
         let resp = app(state.clone())
             .oneshot(
                 Request::builder()
@@ -462,7 +462,7 @@ async fn delete_overlay_rejects_reserved_namespaces() {
                         json!({
                             "plugin_id": plugin_id,
                             "entity_kind": entity_kind,
-                            "entity_id": wave_id,
+                            "entity_id": track_id,
                             "kind": "template"
                         })
                         .to_string(),
@@ -481,17 +481,17 @@ async fn delete_overlay_rejects_reserved_namespaces() {
 
 #[tokio::test]
 async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
-    let (state, wave_id) = boot().await;
-    let wave = state
+    let (state, track_id) = boot().await;
+    let track = state
         .raw_repo()
-        .wave_get(&wave_id)
+        .track_get(&track_id)
         .await
         .unwrap()
-        .expect("seeded wave");
+        .expect("seeded track");
     let card = state
         .raw_repo()
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -506,16 +506,16 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
             card.id.as_str(),
             EventScope::Card {
                 card: card.id.clone(),
-                wave: wave.id.clone(),
-                area: wave.area_id.clone(),
+                track: track.id.clone(),
+                area: track.area_id.clone(),
             },
         ),
         (
-            "wave",
-            wave.id.as_str(),
-            EventScope::Wave {
-                wave: wave.id.clone(),
-                area: wave.area_id.clone(),
+            "track",
+            track.id.as_str(),
+            EventScope::Track {
+                track: track.id.clone(),
+                area: track.area_id.clone(),
             },
         ),
         // `view` / `system` are kernel-reserved since #1297 and can no
@@ -556,13 +556,13 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
 
 #[tokio::test]
 async fn post_progress_overlay_with_string_value_returns_400() {
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
         json!({
             "plugin_id": "p1",
-            "entity_kind": "wave",
-            "entity_id": wave_id,
+            "entity_kind": "track",
+            "entity_id": track_id,
             "kind": "progress",
             "payload": { "value": "fast" }
         }),
@@ -574,13 +574,13 @@ async fn post_progress_overlay_with_string_value_returns_400() {
 #[tokio::test]
 async fn post_unknown_overlay_kind_with_arbitrary_payload_returns_200() {
     // Plugin-defined overlay kinds remain opaque.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let resp = post_overlay(
         app(state),
         json!({
             "plugin_id": "p1",
-            "entity_kind": "wave",
-            "entity_id": wave_id,
+            "entity_kind": "track",
+            "entity_id": track_id,
             "kind": "my-plugin-badge",
             "payload": { "anything": [1, 2, 3], "nested": { "ok": true } }
         }),
@@ -626,18 +626,18 @@ async fn seed_overlay(
 async fn list_overlays_filters_kernel_owned_future_schema_version() {
     // A kernel-owned overlay with `schemaVersion = MAX + 1` (simulating a
     // row written by a newer binary) must not appear in the read response.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "status",
         json!({ "schemaVersion": 999, "state": "running" }),
     )
     .await;
 
-    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let resp = get_overlays(app(state), "track", Some(&track_id)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     let arr = body.as_array().expect("array body");
@@ -650,18 +650,18 @@ async fn list_overlays_filters_kernel_owned_future_schema_version() {
 #[tokio::test]
 async fn list_overlays_keeps_kernel_owned_supported_schema_version() {
     // Sanity check: a row at the supported version still comes through.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "status",
         json!({ "schemaVersion": 1, "state": "running" }),
     )
     .await;
 
-    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let resp = get_overlays(app(state), "track", Some(&track_id)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     let arr = body.as_array().expect("array body");
@@ -674,18 +674,18 @@ async fn list_overlays_keeps_kernel_owned_missing_schema_version() {
     // Historical rows written before `schemaVersion` was stamped should
     // still surface — `payload_schema_version` defaults absent to `1`,
     // which is `<= MAX` for every kernel-owned kind today.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "status",
         json!({ "state": "idle" }),
     )
     .await;
 
-    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let resp = get_overlays(app(state), "track", Some(&track_id)).await;
     let body = body_to_json(resp).await;
     let arr = body.as_array().unwrap();
     assert_eq!(arr.len(), 1, "row without schemaVersion must pass through");
@@ -696,18 +696,18 @@ async fn list_overlays_passes_through_plugin_kind_with_future_schema_version() {
     // Plugin-defined overlay kinds are opaque — the kernel has no version
     // policy for them, so a "future" value on the schemaVersion field must
     // not cause the read guard to drop the row.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "p1",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "my-plugin-badge",
         json!({ "schemaVersion": 9999, "anything": true }),
     )
     .await;
 
-    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let resp = get_overlays(app(state), "track", Some(&track_id)).await;
     let body = body_to_json(resp).await;
     let arr = body.as_array().unwrap();
     assert_eq!(
@@ -724,12 +724,12 @@ async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
     // one kernel-owned overlay at the supported version, one plugin-owned
     // overlay with an arbitrary schemaVersion. Only the future kernel row
     // is filtered.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "progress",
         json!({ "schemaVersion": 42, "value": 0.5 }),
     )
@@ -737,8 +737,8 @@ async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "eta",
         json!({ "schemaVersion": 1, "text": "5m" }),
     )
@@ -746,14 +746,14 @@ async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
     seed_overlay(
         &state,
         "p1",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "plugin-thing",
         json!({ "schemaVersion": 7, "any": "thing" }),
     )
     .await;
 
-    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let resp = get_overlays(app(state), "track", Some(&track_id)).await;
     let body = body_to_json(resp).await;
     let arr = body.as_array().unwrap();
     let kinds: Vec<&str> = arr.iter().map(|o| o["kind"].as_str().unwrap()).collect();
@@ -776,18 +776,18 @@ async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
 async fn list_overlays_by_kind_also_filters_future_versions() {
     // The `entity_id`-omitted branch (`overlays_by_kind`) shares the same
     // guard — sidebar fetches go through this code path.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "status",
         json!({ "schemaVersion": 100, "state": "running" }),
     )
     .await;
 
-    let resp = get_overlays(app(state), "wave", None).await;
+    let resp = get_overlays(app(state), "track", None).await;
     let body = body_to_json(resp).await;
     let arr = body.as_array().unwrap();
     let has_status = arr.iter().any(|o| o["kind"] == "status");
@@ -798,21 +798,21 @@ async fn list_overlays_by_kind_also_filters_future_versions() {
 }
 
 // --------------------------------------------------------------------------
-// Wave detail read-side guard (PR #214 review follow-up, issue #198 concern 4)
+// Track detail read-side guard (PR #214 review follow-up, issue #198 concern 4)
 //
-// `GET /api/waves/{id}` returns `WaveDetail { wave, cards, overlays }` and is
+// `GET /api/tracks/{id}` returns `TrackDetail { track, cards, overlays }` and is
 // the primary read path the frontend uses to render status/progress/eta/now
-// overlays on a wave's detail view. The PR #214 reviewer flagged that the
+// overlays on a track's detail view. The PR #214 reviewer flagged that the
 // initial fix only guarded `GET /api/overlays` — a future-`schemaVersion`
-// row would still sail through the wave-detail route. These tests assert
+// row would still sail through the track-detail route. These tests assert
 // the same filter applies there.
 // --------------------------------------------------------------------------
 
-async fn get_wave_detail(app: axum::Router, wave_id: &str) -> axum::http::Response<Body> {
+async fn get_track_detail(app: axum::Router, track_id: &str) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("GET")
-            .uri(format!("/api/waves/{wave_id}"))
+            .uri(format!("/api/tracks/{track_id}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -821,78 +821,78 @@ async fn get_wave_detail(app: axum::Router, wave_id: &str) -> axum::http::Respon
 }
 
 #[tokio::test]
-async fn wave_detail_filters_kernel_owned_future_schema_version() {
+async fn track_detail_filters_kernel_owned_future_schema_version() {
     // Seed a kernel-owned status overlay with `schemaVersion = MAX + 1`
     // (simulating a row a newer kernel binary left in the DB), then hit
-    // `GET /api/waves/{id}` and assert the future-version row is filtered
-    // out of `WaveDetail.overlays`. The frontend's `adaptWave` consumes
+    // `GET /api/tracks/{id}` and assert the future-version row is filtered
+    // out of `TrackDetail.overlays`. The frontend's `adaptTrack` consumes
     // exactly this field — without this guard a future row would defeat
-    // the PR #214 read-side check for the primary wave-rendering path.
-    let (state, wave_id) = boot().await;
+    // the PR #214 read-side check for the primary track-rendering path.
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "status",
         json!({ "schemaVersion": 999, "state": "running" }),
     )
     .await;
 
-    let resp = get_wave_detail(app(state), &wave_id).await;
+    let resp = get_track_detail(app(state), &track_id).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     let overlays = body["overlays"].as_array().expect("overlays array");
     assert!(
         overlays.is_empty(),
-        "future-version kernel-owned overlay must be filtered from wave detail, got {overlays:?}"
+        "future-version kernel-owned overlay must be filtered from track detail, got {overlays:?}"
     );
 }
 
 #[tokio::test]
-async fn wave_detail_keeps_kernel_owned_supported_schema_version() {
+async fn track_detail_keeps_kernel_owned_supported_schema_version() {
     // Paired sanity check: a kernel-owned overlay at the supported version
-    // still surfaces through `GET /api/waves/{id}`, so the guard is not
+    // still surfaces through `GET /api/tracks/{id}`, so the guard is not
     // accidentally dropping everything.
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     seed_overlay(
         &state,
         "kernel",
-        "wave",
-        &wave_id,
+        "track",
+        &track_id,
         "status",
         json!({ "schemaVersion": 1, "state": "running" }),
     )
     .await;
 
-    let resp = get_wave_detail(app(state), &wave_id).await;
+    let resp = get_track_detail(app(state), &track_id).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     let overlays = body["overlays"].as_array().expect("overlays array");
     assert_eq!(
         overlays.len(),
         1,
-        "supported-version overlay must pass through wave detail"
+        "supported-version overlay must pass through track detail"
     );
     assert_eq!(overlays[0]["kind"], "status");
 }
 
 // --------------------------------------------------------------------------
-// Wave lifecycle PATCH — issue #145 followup, idempotent same-state semantics
+// Track lifecycle PATCH — issue #145 followup, idempotent same-state semantics
 //
-// `PATCH /api/waves/{id}` with `{"lifecycle": "<current>"}` from an
+// `PATCH /api/tracks/{id}` with `{"lifecycle": "<current>"}` from an
 // authorized actor (default = user via missing header) must succeed
-// silently: HTTP 200, no `WaveLifecycleChanged` event, no `WaveUpdated`
+// silently: HTTP 200, no `TrackLifecycleChanged` event, no `TrackUpdated`
 // event (lifecycle was the only field), and the row's `updated_at`
 // stays put. This pins the idempotent contract on the REST surface so
 // a client retry doesn't pollute the event log.
 // --------------------------------------------------------------------------
 
-async fn patch_wave(app: axum::Router, wave_id: &str, body: Value) -> axum::http::Response<Body> {
+async fn patch_track(app: axum::Router, track_id: &str, body: Value) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("PATCH")
-            .uri(format!("/api/waves/{wave_id}"))
+            .uri(format!("/api/tracks/{track_id}"))
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap(),
@@ -902,28 +902,28 @@ async fn patch_wave(app: axum::Router, wave_id: &str, body: Value) -> axum::http
 }
 
 #[tokio::test]
-async fn wave_patch_same_state_lifecycle_is_idempotent_no_event() {
-    let (state, wave_id) = boot().await;
+async fn track_patch_same_state_lifecycle_is_idempotent_no_event() {
+    let (state, track_id) = boot().await;
 
     // Subscribe BEFORE the patch so we don't race the bus.
     let mut rx = state.events.subscribe();
 
     let pre = state
         .repo
-        .wave_get(&wave_id)
+        .track_get(&track_id)
         .await
         .unwrap()
-        .expect("seeded wave exists");
+        .expect("seeded track exists");
     assert_eq!(
         pre.lifecycle,
-        calm_server::model::WaveLifecycle::Draft,
+        calm_server::model::TrackLifecycle::Draft,
         "boot fixture lands in Draft",
     );
 
     // Default actor (no `X-Calm-Actor` header → "user"). User is
     // an authorized actor for lifecycle, so a same-state request
     // takes the idempotent path.
-    let resp = patch_wave(app(state.clone()), &wave_id, json!({"lifecycle": "draft"})).await;
+    let resp = patch_track(app(state.clone()), &track_id, json!({"lifecycle": "draft"})).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     assert_eq!(body["lifecycle"], "draft");
@@ -936,8 +936,8 @@ async fn wave_patch_same_state_lifecycle_is_idempotent_no_event() {
     );
 
     // Row untouched.
-    let post = state.repo.wave_get(&wave_id).await.unwrap().unwrap();
-    assert_eq!(post.lifecycle, calm_server::model::WaveLifecycle::Draft);
+    let post = state.repo.track_get(&track_id).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, calm_server::model::TrackLifecycle::Draft);
     assert_eq!(
         post.updated_at, pre.updated_at,
         "updated_at must not advance on a lifecycle-only no-op",
@@ -945,18 +945,18 @@ async fn wave_patch_same_state_lifecycle_is_idempotent_no_event() {
 }
 
 #[tokio::test]
-async fn wave_patch_same_state_lifecycle_with_title_still_writes_title() {
+async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
     // Companion: lifecycle is a no-op but `title` legitimately changes
-    // — we still bump the row, emit `WaveUpdated`, but NOT
-    // `WaveLifecycleChanged`. Verifies the strip-and-continue path in
-    // `routes::waves::update_wave`.
+    // — we still bump the row, emit `TrackUpdated`, but NOT
+    // `TrackLifecycleChanged`. Verifies the strip-and-continue path in
+    // `routes::tracks::update_track`.
     use calm_server::event::Event;
-    let (state, wave_id) = boot().await;
+    let (state, track_id) = boot().await;
     let mut rx = state.events.subscribe();
 
-    let resp = patch_wave(
+    let resp = patch_track(
         app(state.clone()),
-        &wave_id,
+        &track_id,
         json!({"lifecycle": "draft", "title": "renamed-via-rest"}),
     )
     .await;
@@ -965,15 +965,15 @@ async fn wave_patch_same_state_lifecycle_with_title_still_writes_title() {
     assert_eq!(body["title"], "renamed-via-rest");
     assert_eq!(body["lifecycle"], "draft");
 
-    // Exactly one envelope: WaveUpdated. The lifecycle envelope is
+    // Exactly one envelope: TrackUpdated. The lifecycle envelope is
     // suppressed because from == to.
     let env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
         .expect("bus open");
     assert!(
-        matches!(env.event, Event::WaveUpdated(_)),
-        "first envelope is WaveUpdated, got {:?}",
+        matches!(env.event, Event::TrackUpdated(_)),
+        "first envelope is TrackUpdated, got {:?}",
         env.event,
     );
 
@@ -981,60 +981,60 @@ async fn wave_patch_same_state_lifecycle_with_title_still_writes_title() {
     let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         bus.is_err(),
-        "no WaveLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
+        "no TrackLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
     );
 }
 
 // --------------------------------------------------------------------------
-// Wave scheduler-policy PATCH — issue #644 `task_budget` / `require_task_gates`
+// Track scheduler-policy PATCH — issue #644 `task_budget` / `require_task_gates`
 //
-// Route-level coverage for the new WavePatch fields: a valid patch lands in
-// the DB columns (the `Wave` row struct doesn't carry them, so persistence is
+// Route-level coverage for the new TrackPatch fields: a valid patch lands in
+// the DB columns (the `Track` row struct doesn't carry them, so persistence is
 // asserted against the table), and a negative budget is rejected with 400
 // before anything is written.
 // --------------------------------------------------------------------------
 
-async fn wave_policy_columns(repo: &Arc<dyn Repo>, wave_id: &str) -> (Option<i64>, i64) {
+async fn track_policy_columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, i64) {
     let pool = repo.sqlite_pool().expect("sqlite pool");
     let (budget, require_gates): (Option<i64>, i64) =
-        sqlx::query_as("SELECT task_budget, require_task_gates FROM waves WHERE id = ?1")
-            .bind(wave_id)
+        sqlx::query_as("SELECT task_budget, require_task_gates FROM tracks WHERE id = ?1")
+            .bind(track_id)
             .fetch_one(&pool)
             .await
-            .expect("read wave policy columns");
+            .expect("read track policy columns");
     (budget, require_gates)
 }
 
 #[tokio::test]
-async fn wave_patch_task_budget_and_require_task_gates_persist() {
-    let (state, wave_id, repo) = boot_with_repo().await;
+async fn track_patch_task_budget_and_require_task_gates_persist() {
+    let (state, track_id, repo) = boot_with_repo().await;
 
-    let resp = patch_wave(
+    let resp = patch_track(
         app(state.clone()),
-        &wave_id,
+        &track_id,
         json!({"task_budget": 3, "require_task_gates": false}),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let (budget, require_gates) = wave_policy_columns(&repo, &wave_id).await;
+    let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
     assert_eq!(budget, Some(3));
     assert_eq!(require_gates, 0);
 
     // `task_budget: null` clears back to the kernel default; the other
     // column is left alone.
-    let resp = patch_wave(app(state.clone()), &wave_id, json!({"task_budget": null})).await;
+    let resp = patch_track(app(state.clone()), &track_id, json!({"task_budget": null})).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let (budget, require_gates) = wave_policy_columns(&repo, &wave_id).await;
+    let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
     assert_eq!(budget, None);
     assert_eq!(require_gates, 0, "untouched by the budget-only patch");
 }
 
 #[tokio::test]
-async fn wave_patch_negative_task_budget_rejected_with_400() {
-    let (state, wave_id, repo) = boot_with_repo().await;
+async fn track_patch_negative_task_budget_rejected_with_400() {
+    let (state, track_id, repo) = boot_with_repo().await;
 
-    let resp = patch_wave(app(state.clone()), &wave_id, json!({"task_budget": -1})).await;
+    let resp = patch_track(app(state.clone()), &track_id, json!({"task_budget": -1})).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = body_to_json(resp).await;
     assert_eq!(body["code"], "bad_request");
@@ -1047,7 +1047,7 @@ async fn wave_patch_negative_task_budget_rejected_with_400() {
     );
 
     // Nothing was written.
-    let (budget, require_gates) = wave_policy_columns(&repo, &wave_id).await;
+    let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
     assert_eq!(budget, None);
     assert_eq!(
         require_gates, 1,

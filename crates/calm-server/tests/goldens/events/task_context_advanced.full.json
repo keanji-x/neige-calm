@@ -3,12 +3,12 @@
   "wire": {
     "ev": "task.context_advanced",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "task_key": "build-step",
-      "task_id": "wave-01:build-step",
+      "task_id": "track-01:build-step",
       "changed_refs": [
         {
-          "wave_id": "wave-context",
+          "track_id": "track-context",
           "block_id": "block-01",
           "from_rev": 7,
           "to_rev": 8,

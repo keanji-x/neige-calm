@@ -66,7 +66,7 @@ function keyframeOpacityFloor(url, name) {
 }
 
 const taskDotPulseFloor = keyframeOpacityFloor(
-  new URL('../../web/src/features/wave/page/page.module.css', import.meta.url),
+  new URL('../../web/src/features/track/page/page.module.css', import.meta.url),
   'task-dot-pulse',
 );
 
@@ -91,7 +91,7 @@ const pairs = [
   { label: 'error text on soft error over ground', foreground: '--error-text', background: '--error-soft', underlay: '--bg' },
 ];
 /*
- * The TASKS panel's status dot (`features/wave/page`), as a second list rather
+ * The TASKS panel's status dot (`features/track/page`), as a second list rather
  * than four more entries above — and the difference is what each list governs.
  *
  * A dot is a non-text graphic, so 3:1 is the bar; it is a real bar, because the
@@ -116,7 +116,7 @@ const pairs = [
  * is unchanged — a fill against the surface it is painted on — and the labels
  * keep it honest about which mark each number belongs to. The form channel
  * itself is measured where forms exist, in a real engine:
- * `features/wave/page/task-row.browser.test.tsx`.
+ * `features/track/page/task-row.browser.test.tsx`.
  *
  * The in-flight ring is the same `--accent` as its core, so it needs no fifth
  * entry; and there is deliberately none for a soft halo, because there is no

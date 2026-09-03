@@ -16,8 +16,8 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, HookKind, Observation,
     SpecHarness, SpecHarnessParams,
 };
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -26,7 +26,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -36,9 +36,9 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     area_id: AreaId,
-    wave_id: WaveId,
+    track_id: TrackId,
     spec_card_id: CardId,
     worker_card_id: CardId,
     runtime_id: String,
@@ -65,8 +65,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "spec wake on worker stop".into(),
@@ -81,7 +81,7 @@ async fn boot() -> Boot {
         .unwrap();
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -91,7 +91,7 @@ async fn boot() -> Boot {
         .unwrap();
     let worker_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -101,16 +101,16 @@ async fn boot() -> Boot {
         .unwrap();
 
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
         spec_card.id.as_str(),
         CardRole::Spec,
     )
     .await;
-    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let codex = Arc::new(CodexClient::new_stub());
@@ -122,7 +122,7 @@ async fn boot() -> Boot {
         std::env::temp_dir().join(format!("calm-plugins-data-spec-wake-{}", new_id())),
         Vec::new(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
     let state = AppState::from_parts(
         repo.clone(),
@@ -131,7 +131,7 @@ async fn boot() -> Boot {
         plugin_host,
         codex.clone(),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
     let app = axum::Router::new()
         .merge(routes::router())
@@ -168,13 +168,13 @@ async fn boot() -> Boot {
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: wave.id.clone(),
+        track_id: track.id.clone(),
         card_id: spec_card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo.clone(),
         events: events.clone(),
         card_role_cache: card_role_cache.clone(),
-        wave_area_cache: wave_area_cache.clone(),
+        track_area_cache: track_area_cache.clone(),
         daemon: shared.clone(),
         config: HarnessConfig::default(),
         snapshot,
@@ -190,9 +190,9 @@ async fn boot() -> Boot {
         repo,
         events,
         card_role_cache,
-        wave_area_cache,
+        track_area_cache,
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         runtime_id,
@@ -211,7 +211,7 @@ fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
         boot.events.clone(),
         calm_server::state::WriteContext::new(
             boot.card_role_cache.clone(),
-            boot.wave_area_cache.clone(),
+            boot.track_area_cache.clone(),
         ),
         boot.codex.clone(),
         boot.daemon.clone(),
@@ -308,12 +308,12 @@ async fn worker_codex_stop_hook_reaches_spec_harness_observation_queue() {
 
     match worker_stop_observations[0] {
         Observation::WorkerHookStop {
-            wave_id,
+            track_id,
             card_id,
             kind,
             idempotency_key,
         } => {
-            assert_eq!(wave_id, &boot.wave_id);
+            assert_eq!(track_id, &boot.track_id);
             assert_eq!(card_id, &boot.worker_card_id);
             assert_eq!(kind, &HookKind::CodexStop);
             assert!(!idempotency_key.is_empty());
@@ -335,16 +335,16 @@ async fn live_review_round_event_reaches_spec_harness_and_issues_turn() {
     boot.repo
         .log_pure_event(
             ActorId::AiSpec(boot.spec_card_id.clone()),
-            EventScope::Wave {
-                wave: boot.wave_id.clone(),
+            EventScope::Track {
+                track: boot.track_id.clone(),
                 area: boot.area_id.clone(),
             },
             None,
             &boot.events,
             &boot.card_role_cache,
-            &boot.wave_area_cache,
+            &boot.track_area_cache,
             Event::ReviewRound {
-                wave_id: boot.wave_id.clone(),
+                track_id: boot.track_id.clone(),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: "5b".into(),
@@ -365,7 +365,7 @@ async fn live_review_round_event_reaches_spec_harness_and_issues_turn() {
                     },
                 ],
                 root_cause: Some("tests failing".into()),
-                idempotency_key: format!("review.round:{}:impl:5b:760:1", boot.wave_id),
+                idempotency_key: format!("review.round:{}:impl:5b:760:1", boot.track_id),
             },
         )
         .await

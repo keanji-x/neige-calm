@@ -6,7 +6,7 @@
 //! |---|---|
 //! | G-B2 | an assistant drives `blocks.upsert` / `.move` / `.delete` / `write_markdown` end to end; a Worker token is still refused at the entry |
 //! | §3.4 | its edits persist as `EditAuthor::Assistant`, never as the spec |
-//! | P1   | an assistant's block write leaves a Draft wave in Draft |
+//! | P1   | an assistant's block write leaves a Draft track in Draft |
 //! | P2   | its writes may not create, modify, or delete a task block — including the whole-document shapes — while a prose-only rewrite that carries the task fences through unchanged succeeds |
 //!
 //! Every negative here has a Spec-token control next to it. Without one,
@@ -15,16 +15,16 @@
 
 #![cfg(unix)]
 
-use crate::mcp_wave_report::{
+use crate::mcp_track_report::{
     Boot, assistant_identity, boot, call_tool, spec_identity, worker_identity,
 };
 use calm_server::event::{EditAuthor, Event};
 use calm_server::mcp_server::registry::ToolCallIdentity;
-use calm_server::mcp_server::tools::wave_report_blocks::{
+use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
-use calm_server::model::{WaveLifecycle, WavePatch};
+use calm_server::model::{TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_types::report_blocks::{KIND_TASK, marker_line, render_fence};
 use serde_json::{Value, json};
@@ -52,20 +52,20 @@ async fn body_text(boot: &Boot) -> String {
         .to_string()
 }
 
-async fn lifecycle(boot: &Boot) -> WaveLifecycle {
+async fn lifecycle(boot: &Boot) -> TrackLifecycle {
     boot.repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
-        .expect("wave row")
+        .expect("track row")
         .lifecycle
 }
 
-async fn set_lifecycle(boot: &Boot, to: WaveLifecycle) {
+async fn set_lifecycle(boot: &Boot, to: TrackLifecycle) {
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 lifecycle: Some(to),
                 ..Default::default()
             },
@@ -74,7 +74,7 @@ async fn set_lifecycle(boot: &Boot, to: WaveLifecycle) {
         .expect("set fixture lifecycle");
 }
 
-/// The `author` of every `wave.report_edited` in the persisted log, oldest
+/// The `author` of every `track.report_edited` in the persisted log, oldest
 /// first. Reading the stored event (not the tool's return value) is the
 /// point: attribution is what lands in the log, goldens, and the
 /// spec-wake decision.
@@ -85,7 +85,7 @@ async fn report_edit_authors(boot: &Boot) -> Vec<EditAuthor> {
         .expect("read event log")
         .into_iter()
         .filter_map(|(_, _, _, event)| match event {
-            Event::WaveReportEdited { author, .. } => Some(author),
+            Event::TrackReportEdited { author, .. } => Some(author),
             _ => None,
         })
         .collect()
@@ -105,7 +105,7 @@ fn task_fence(declared_by: &str, key: &str) -> String {
 }
 
 /// A task declaration that is **gate-clean**: it carries a `no_gate_reason`,
-/// so it satisfies the wave's default `require_task_gates` policy and its
+/// so it satisfies the track's default `require_task_gates` policy and its
 /// only remaining barrier to schedulability is the `ready` flag.
 ///
 /// `task_fence` above is deliberately *not* this: it has no gate and no
@@ -127,16 +127,16 @@ fn gated_task_fence(key: &str, ready: bool) -> String {
     )
 }
 
-/// `(key, status)` of every row in the wave's task projection, which is what
+/// `(key, status)` of every row in the track's task projection, which is what
 /// "a schedulable task" means concretely: `tasks_rebuild_tx` runs inside the
 /// same write transaction as the report edit, and the scheduler reads these
 /// rows and nothing else.
 async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
     let pool = boot.repo.sqlite_pool().expect("sqlite-backed fixture repo");
     sqlx::query_as::<_, (String, String)>(
-        "SELECT key, status FROM tasks WHERE wave_id = ?1 ORDER BY key",
+        "SELECT key, status FROM tasks WHERE track_id = ?1 ORDER BY key",
     )
-    .bind(boot.wave_id.as_str())
+    .bind(boot.track_id.as_str())
     .fetch_all(&pool)
     .await
     .expect("read the task projection")
@@ -167,29 +167,29 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
     // `EditAuthor::User` — the attribution rules pin `declared_by` to the
     // writer, so there is no way to mint a user task as anyone else.
     let with_user = format!("{}\n{user_fence}", body_text(boot).await.trim_end());
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
-        .expect("wave row");
+        .expect("track row");
     let card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
         .await
         .unwrap()
         .expect("report card row");
-    let current: calm_server::wave_report::WaveReportPayload =
+    let current: calm_server::track_report::TrackReportPayload =
         serde_json::from_value(card.payload.clone()).expect("report payload");
-    let next = calm_server::wave_report::WaveReportPayload::new("seed", &with_user);
+    let next = calm_server::track_report::TrackReportPayload::new("seed", &with_user);
     let route_repo: std::sync::Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-    calm_server::wave_report::persist_report(
+    calm_server::track_report::persist_report(
         route_repo.as_ref(),
         &boot.ctx.events,
         &boot.ctx.write,
         calm_server::ids::ActorId::User,
         EditAuthor::User,
-        wave,
+        track,
         card,
         current,
         next,
@@ -372,9 +372,9 @@ async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn an_assistant_block_write_does_not_promote_a_draft_wave() {
+async fn an_assistant_block_write_does_not_promote_a_draft_track() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Draft).await;
+    set_lifecycle(&boot, TrackLifecycle::Draft).await;
 
     call_tool(
         &boot,
@@ -387,20 +387,20 @@ async fn an_assistant_block_write_does_not_promote_a_draft_wave() {
 
     assert_eq!(
         lifecycle(&boot).await,
-        WaveLifecycle::Draft,
-        "an assistant must not walk the wave out of Draft; auto-promote is \
+        TrackLifecycle::Draft,
+        "an assistant must not walk the track out of Draft; auto-promote is \
          one of the two implicit routes from the block channel into the \
          state machine (§3.2a)"
     );
 }
 
 /// P1's control. Auto-promote is suppressed *for the assistant*, not
-/// removed — a Draft wave still leaves Draft on the spec's first block
+/// removed — a Draft track still leaves Draft on the spec's first block
 /// write, so the assertion above is about the role.
 #[tokio::test]
-async fn a_spec_block_write_still_promotes_a_draft_wave() {
+async fn a_spec_block_write_still_promotes_a_draft_track() {
     let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Draft).await;
+    set_lifecycle(&boot, TrackLifecycle::Draft).await;
 
     call_tool(
         &boot,
@@ -411,7 +411,7 @@ async fn a_spec_block_write_still_promotes_a_draft_wave() {
     .await
     .expect("spec block write succeeds");
 
-    assert_eq!(lifecycle(&boot).await, WaveLifecycle::Planning);
+    assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
 }
 
 // ---------------------------------------------------------------------------
@@ -502,16 +502,16 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// 3. the **spec** makes the identical edit — a `pending` row appears.
 ///
 /// Step 3 is what makes step 2 mean something. Without it "no task row after
-/// the assistant's write" would stay green if the wave simply could not carry
+/// the assistant's write" would stay green if the track simply could not carry
 /// a schedulable task at all (which is exactly the state the earlier P2
 /// fixtures are in: their fences carry neither a gate nor a `no_gate_reason`,
-/// so under the wave's default `require_task_gates` they project no
+/// so under the track's default `require_task_gates` they project no
 /// schedulable row regardless of the writer).
 ///
 /// What removing the P2 guard actually does, verified by mutation: step 2's
 /// write is no longer stopped at the guard and runs into the task projection.
 /// Because this particular edit *changes the projected key set*, the write
-/// emits `Event::PlanUpdated` (`wave_report.rs`, guarded by
+/// emits `Event::PlanUpdated` (`track_report.rs`, guarded by
 /// `!task_projection.changed_keys.is_empty()`), and the in-tx *role gate*
 /// refuses that event with "only spec cards (or User/Kernel) may emit
 /// dispatch-request events (actor=AiCodex(<assistant card>))". So the row does
@@ -523,7 +523,7 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// `TerminalWorkerRequested` and reuses one `NotSpecForDispatch` string for
 /// all three. The mutation therefore does **not** exercise the real
 /// worker-request emission path; what it shows is that the released task
-/// reached wave-level plan authority, no more than that.
+/// reached track-level plan authority, no more than that.
 ///
 /// **And that second layer is not a reason to drop P2 — it is strictly
 /// narrower.** It exists only when the edit changes the projected key set. A
@@ -631,8 +631,8 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
 /// counting task rows, and that is sufficient — but only because of a fact
 /// worth writing down, since the assertion is otherwise strictly weaker than
 /// the one in `an_assistant_may_not_flip_a_spec_task_to_ready` above:
-/// `tasks_rebuild_with_tree_term_tx` (`wave_report.rs:128-151`) projects the
-/// task table from the wave-report card's `payload` + `body_crdt` and nothing
+/// `tasks_rebuild_with_tree_term_tx` (`track_report.rs:128-151`) projects the
+/// task table from the track-report card's `payload` + `body_crdt` and nothing
 /// else. It is a pure function of the report document. All three attempts
 /// here are refused as whole writes, so the document is bit-identical before
 /// and after; an unchanged input to a pure function cannot yield a changed

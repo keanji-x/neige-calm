@@ -1,6 +1,6 @@
 //! Minimal fake `codex app-server` for the OSC-roundtrip tests (#293).
 //!
-//! Since the #293 push cutover, `POST /api/waves` ALWAYS boots a real
+//! Since the #293 push cutover, `POST /api/tracks` ALWAYS boots a real
 //! `codex app-server` (the kernel-owned push channel) before spawning the
 //! spec card's PTY. The OSC-roundtrip tests can't ship a real codex, so this
 //! stub stands in: invoked as `codex app-server --listen unix://<sock>`, it

@@ -851,17 +851,17 @@ fn target_from_payload(payload: &Value) -> (String, Option<String>, Value) {
             json!({ "type": "runtime", "id": runtime_id }),
         );
     }
-    let wave_id = payload.get("wave_id").and_then(Value::as_str).or_else(|| {
+    let track_id = payload.get("track_id").and_then(Value::as_str).or_else(|| {
         payload
             .get("request")
-            .and_then(|request| request.get("wave_id"))
+            .and_then(|request| request.get("track_id"))
             .and_then(Value::as_str)
     });
-    if let Some(wave_id) = wave_id {
+    if let Some(track_id) = track_id {
         return (
-            "wave".to_string(),
-            Some(wave_id.to_string()),
-            json!({ "type": "wave", "id": wave_id }),
+            "track".to_string(),
+            Some(track_id.to_string()),
+            json!({ "type": "track", "id": track_id }),
         );
     }
     (

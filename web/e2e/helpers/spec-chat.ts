@@ -1,7 +1,7 @@
 // Spec-chat E2E helpers — issue #682 PR-2.
 //
 // The replay binary boots the shared codex app-server as a stub, so the
-// `spec-harness-start` operation submitted by `POST /api/waves` fails at
+// `spec-harness-start` operation submitted by `POST /api/tracks` fails at
 // `validate` — the spec card exists but has no runtime row and no
 // registered harness, and the harness FSM can never progress organically.
 // `POST /dev/force-spec-phase` (issue #682 PR-1, see
@@ -67,7 +67,7 @@ export interface ForceSpecPhaseResult {
 /**
  * Force the spec card's harness into `to` via the replay binary's dev
  * hook. Stands the harness up automatically when none is registered
- * (first call after wave creation / reset). Throws on non-2xx so an
+ * (first call after track creation / reset). Throws on non-2xx so an
  * unsupported tag or a non-spec card surfaces in the test that triggered
  * it rather than as a confusing later assertion failure.
  */
@@ -91,24 +91,24 @@ export async function forceSpecPhase(
 }
 
 /**
- * Discover the spec card auto-created by `POST /api/waves`. The wave
- * detail (`GET /api/waves/{id}` → `{wave, cards, overlays}`) carries every
+ * Discover the spec card auto-created by `POST /api/tracks`. The track
+ * detail (`GET /api/tracks/{id}` → `{track, cards, overlays}`) carries every
  * card row; the spec card is the `kind: "codex"` row whose payload has the
- * `spec_harness: true` marker (`routes/waves.rs::spec_harness_card_payload`)
- * — the same predicate `WaveReportPage.selectSpecCard` resolves against
- * the FE card slots. Throws when the wave has no spec card so a seeding
+ * `spec_harness: true` marker (`routes/tracks.rs::spec_harness_card_payload`)
+ * — the same predicate `TrackReportPage.selectSpecCard` resolves against
+ * the FE card slots. Throws when the track has no spec card so a seeding
  * regression fails the test at setup rather than at a later locator.
  */
 export async function getSpecCardId(
   request: APIRequestContext,
-  waveId: string,
+  trackId: string,
 ): Promise<string> {
-  const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves/${encodeURIComponent(waveId)}`;
+  const url = `http://127.0.0.1:${REPLAY_PORT}/api/tracks/${encodeURIComponent(trackId)}`;
   const response = await request.get(url);
   if (!response.ok()) {
     const body = await response.text().catch(() => '<unreadable body>');
     throw new Error(
-      `getSpecCardId(${waveId}): GET ${url} → ${response.status()} ${response.statusText()}: ${body}`,
+      `getSpecCardId(${trackId}): GET ${url} → ${response.status()} ${response.statusText()}: ${body}`,
     );
   }
   const detail = (await response.json()) as {
@@ -119,7 +119,7 @@ export async function getSpecCardId(
   );
   if (!spec) {
     throw new Error(
-      `getSpecCardId(${waveId}): no spec codex card in wave detail (cards: ${detail.cards
+      `getSpecCardId(${trackId}): no spec codex card in track detail (cards: ${detail.cards
         .map((c) => `${c.id}:${c.kind}`)
         .join(', ')})`,
     );

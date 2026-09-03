@@ -29,9 +29,9 @@
 //! ## Concurrency
 //!
 //! `DashMap` per-key locking. The dispatcher additionally serializes the
-//! `(get → compare → bump → push)` sequence per-wave (see
+//! `(get → compare → bump → push)` sequence per-track (see
 //! `Inner.push_locks`) so the read-modify-write is atomic against other
-//! same-wave pushes.
+//! same-track pushes.
 
 use crate::ids::CardId;
 use dashmap::DashMap;

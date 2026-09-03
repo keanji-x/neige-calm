@@ -21,7 +21,7 @@
 #       captured as E2E-CAP-SCROLL-001/002 + E2E-INV-SCROLL-003 (authoritative_test: NONE)
 #       because the new fe must still own those surfaces even though nothing gates them today.
 #   authoritative_test: NONE appears on 7 entries — behaviours the specs DOCUMENT as
-#     deliberately ungated (wave archive UI, area-folder management UI, the resolve
+#     deliberately ungated (track archive UI, area-folder management UI, the resolve
 #     longest-prefix tiebreak, the folder-overlap 409, the dormant-spec-input 409, and the
 #     scroll-probe inventory). Each is an intentional scope decision, not an oversight.
 #   ONLY-E2E signal: entries whose `why` contains "ONLY e2e" have no unit/vitest counterpart
@@ -135,7 +135,7 @@
     The e2e run must use exactly one worker.
   why: >
     playwright.config.ts:81-82 — multiple workers would mutate the same shared MockRepo /
-    replay kernel concurrently and make area/wave seed state unpredictable.
+    replay kernel concurrently and make area/track seed state unpredictable.
   source: web/playwright.config.ts:83
   authoritative_test: web/playwright.config.ts:83
   owner_slice: none/e2e/infra
@@ -263,7 +263,7 @@
   family: replay-server
   statement: >
     The default fixture must be
-    `crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json`, overridable
+    `crates/calm-server/tests/fixtures/events/track-grid-layout-trace.events.json`, overridable
     via `NEIGE_FIXTURE`, and a missing fixture path must fail setup loudly.
   why: >
     _setup/replay-server.shared.ts:15-19 — the default stays pinned so existing tests never
@@ -369,13 +369,13 @@
   kind: capability
   family: seed-helpers
   statement: >
-    Test helpers must be able to mint a user area (`POST /api/areas`), a wave inside an area
-    (`POST /api/waves` with area_id/title/cwd/attach_folder/theme), a wave report
-    (`POST /api/waves/:id/report`), a renderer-free iframe worker card
-    (`POST /api/waves/:id/cards`), and a per-wave view-mode overlay (`POST /api/overlays`).
+    Test helpers must be able to mint a user area (`POST /api/areas`), a track inside an area
+    (`POST /api/tracks` with area_id/title/cwd/attach_folder/theme), a track report
+    (`POST /api/tracks/:id/report`), a renderer-free iframe worker card
+    (`POST /api/tracks/:id/cards`), and a per-track view-mode overlay (`POST /api/overlays`).
   why: >
     helpers/reset.ts:42-59,81-87,125,148-153,178-190 — post-#175 the sidebar has no seeded
-    area, so every spec must create the areas/waves it needs; the iframe card exists so card
+    area, so every spec must create the areas/tracks it needs; the iframe card exists so card
     surfaces can be populated without a terminal/codex daemon.
   source: web/e2e/helpers/reset.ts:61-219
   authoritative_test: web/e2e/helpers/reset.ts:61
@@ -390,7 +390,7 @@
   kind: invariant
   family: seed-helpers
   statement: >
-    The shared seed helper `createWaveInArea` posts every wave it mints through one body
+    The shared seed helper `createTrackInArea` posts every track it mints through one body
     literal — `area_id`, `title`, `cwd`, `attach_folder`, and an inert dark theme sentinel —
     so every caller of this helper sends exactly that key set, and no caller can vary it.
   why: >
@@ -398,7 +398,7 @@
     theme required end-to-end. Funnelling this helper's
     callers through one literal is what keeps the shared seed path from drifting away from the
     server's accepted body. Scope is exactly this helper: specs that inline their own
-    `POST /api/waves` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
+    `POST /api/tracks` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
     do not go through it, and this entry does not claim anything about them. The server-side
     contract itself (a body missing theme is rejected 422) is
     a Rust-side fact proven by crates/calm-server/tests/cases/theme_required.rs and has no
@@ -407,13 +407,13 @@
     #1148 第三轮:两处据实收口。(a) 原 `authoritative_test` 指的 reset.ts:105 是 helper 自己的
     `request.post`,既不是 `it` 也没有断言,按 SCHEMA.md:15「无测试写 NONE」改为 NONE。
     (b) statement 原来枚举 `area_id`/`cwd`/`attach_folder`/theme 四个键、并声称「no caller can
-    seed a wave that omits a field the kernel requires」,两头都不准:`title`(reset.ts:108 实际有传)
-    是服务端必填却没被枚举,而 `cwd` 自 #1131 起在 `crates/calm-server/src/routes/waves.rs:195-214`
+    seed a track that omits a field the kernel requires」,两头都不准:`title`(reset.ts:108 实际有传)
+    是服务端必填却没被枚举,而 `cwd` 自 #1131 起在 `crates/calm-server/src/routes/tracks.rs:195-214`
     是 `Option<String>`(可选)。现在枚举补上 `title`,并把断言收回到本条真正的载体 —— helper body
     字面量的形状本身;kernel 的必填集是服务端契约,这段 TypeScript 见证不了,另开 issue 立条目。
   source: web/e2e/helpers/reset.ts:88-93,101-112
   authoritative_test: NONE
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -424,11 +424,11 @@
   kind: invariant
   family: seed-helpers
   statement: >
-    `seedWaveViewMode` must use a RELATIVE `/api/overlays` path while every other replay
+    `seedTrackViewMode` must use a RELATIVE `/api/overlays` path while every other replay
     helper pins `http://127.0.0.1:4141`.
   why: >
     helpers/reset.ts:196-201 — it is the only helper also called from the chromium docker
-    project (wave-report-view.spec.ts) where port 4141 does not exist; the a11y Vite server
+    project (track-report-view.spec.ts) where port 4141 does not exist; the a11y Vite server
     proxies /api to the replay binary via VITE_API_PROXY_TARGET.
   source: web/e2e/helpers/reset.ts:191-219
   authoritative_test: web/e2e/helpers/reset.ts:202
@@ -443,8 +443,8 @@
   kind: capability
   family: view-mode-overlay
   statement: >
-    Per-wave view mode must be storable as an overlay row with plugin_id `kernel`,
-    entity_kind `view`, entity_id = waveId, kind `view-mode`, payload
+    Per-track view mode must be storable as an overlay row with plugin_id `kernel`,
+    entity_kind `view`, entity_id = trackId, kind `view-mode`, payload
     `{schemaVersion: 1, mode: 'grid'|'list'|'report'}`.
   why: >
     helpers/reset.ts:178-190 — byte-for-byte the write the header's Cards↔Report switch makes;
@@ -452,7 +452,7 @@
     `validate_overlay_payload` as an opaque plugin-style kind.
   source: web/e2e/helpers/reset.ts:191-219
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:757
-  owner_slice: features/wave/view-mode
+  owner_slice: features/track/view-mode
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -502,16 +502,16 @@
   kind: capability
   family: lifecycle-hook
   statement: >
-    `POST /dev/force-wave-lifecycle {wave_id, to}` must stamp the transition as
+    `POST /dev/force-track-lifecycle {track_id, to}` must stamp the transition as
     `ActorId::Kernel` (classified SpecAgent), route through the same
-    `write_with_events_typed` pipeline as production `update_wave`, and return
-    `{wave, emitted_events}`.
+    `write_with_events_typed` pipeline as production `update_track`, and return
+    `{track, emitted_events}`.
   why: >
     helpers/lifecycle.ts:1-18 (#269 P1) — the spec daemon does not run in the replay binary,
     so spec-only edges can never happen organically; the hook changes only WHO drives the
     edge, never whether the edge is legal.
   source: web/e2e/helpers/lifecycle.ts:53-92
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:74
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:74
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -524,13 +524,13 @@
   family: lifecycle-hook
   statement: >
     User-driven lifecycle edges (kickoff, cancel, reopen) must go through plain
-    `PATCH /api/waves/:id` with NO `X-Calm-Actor` header, never through the dev force hook.
+    `PATCH /api/tracks/:id` with NO `X-Calm-Actor` header, never through the dev force hook.
   why: >
     helpers/lifecycle.ts:15-18,94-99 — only then does the kernel attribute the write to
     `ActorId::User`, matching production event-log attribution.
   source: web/e2e/helpers/lifecycle.ts:100-117
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:87
-  owner_slice: features/wave/lifecycle
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:87
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -548,7 +548,7 @@
     helper would defeat the point; the actor header is how the Worker-rejection case is
     reachable from e2e at all.
   source: web/e2e/helpers/lifecycle.ts:82-92,129-144
-  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:190
+  authoritative_test: web/e2e/a11y-track-lifecycle-rejections.spec.ts:190
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -560,15 +560,15 @@
   kind: gate
   family: lifecycle-types
   statement: >
-    The full `WaveLifecycle` variant set (draft|planning|dispatching|working|blocked|
+    The full `TrackLifecycle` variant set (draft|planning|dispatching|working|blocked|
     reviewing|done|canceled|failed) must be pinned as a TS string-literal union in the e2e
     tree, mirroring the Rust enum's lowercase serde tags.
   why: >
     helpers/lifecycle.ts:24-30 — compile-time typo detection in specs instead of runtime
     404/403 confusion.
   source: web/e2e/helpers/lifecycle.ts:31-40
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:80
-  owner_slice: features/wave/lifecycle
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:80
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -653,10 +653,10 @@
   kind: capability
   family: spec-chat-hook
   statement: >
-    Helpers must resolve the auto-created spec card from wave detail by the predicate
+    Helpers must resolve the auto-created spec card from track detail by the predicate
     `kind === 'codex' && payload.spec_harness === true`, and throw when absent.
   why: >
-    helpers/spec-chat.ts:93-101 — the same predicate `WaveReportPage.selectSpecCard` resolves
+    helpers/spec-chat.ts:93-101 — the same predicate `TrackReportPage.selectSpecCard` resolves
     against FE card slots; throwing makes a seeding regression fail at setup, not at a later
     locator.
   source: web/e2e/helpers/spec-chat.ts:102-128
@@ -734,10 +734,10 @@
     `?testMounts=1` must be re-appended on EVERY navigation; SPA sidebar navigation drops it
     and the hooks de-register.
   why: >
-    wheel-wave-switch.spec.ts:126-129 — after sidebar nav the `__xtermDumps__` hook is gone,
+    wheel-track-switch.spec.ts:126-129 — after sidebar nav the `__xtermDumps__` hook is gone,
     so persistence assertions must fall back to reading rendered DOM text.
-  source: web/e2e/wheel-wave-switch.spec.ts:126-135
-  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:130
+  source: web/e2e/wheel-track-switch.spec.ts:126-135
+  authoritative_test: web/e2e/wheel-track-switch.spec.ts:130
   owner_slice: systems/terminal/card
   intentional_omission: false
   runtime_layer: systems
@@ -753,10 +753,10 @@
     `{username, password}` defaulting to owner/dev and overridable via PROBE_USERNAME /
     PROBE_PASSWORD.
   why: >
-    wave-report-view.spec.ts:27-36 — the `make dev` docker stack requires a cookie session
+    track-report-view.spec.ts:27-36 — the `make dev` docker stack requires a cookie session
     before REST writes; the replay binary uses dev-autologin instead.
-  source: web/e2e/wave-report-view.spec.ts:27-36
-  authoritative_test: web/e2e/wave-report-sidebar-files.spec.ts:27
+  source: web/e2e/track-report-view.spec.ts:27-36
+  authoritative_test: web/e2e/track-report-sidebar-files.spec.ts:27
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -771,11 +771,11 @@
     Every chromium-project spec that mints areas must track their ids and
     `DELETE /api/areas/<id>` them in `afterEach`, tolerating 404.
   why: >
-    wave-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break specs
+    track-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break specs
     that assume a zero-area baseline (notably golden-path). The delete cascades through
-    waves → cards → terminals.
-  source: web/e2e/wave-create.spec.ts:27-43
-  authoritative_test: web/e2e/wave-create.spec.ts:33
+    tracks → cards → terminals.
+  source: web/e2e/track-create.spec.ts:27-43
+  authoritative_test: web/e2e/track-create.spec.ts:33
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -788,7 +788,7 @@
   family: locators
   statement: >
     Every locator matching an entity name must use `exact: true` (or an anchored regex),
-    because per-row `Delete area "<name>"` / `Expand area <name>` / `Delete wave "<title>"`
+    because per-row `Delete area "<name>"` / `Expand area <name>` / `Delete track "<title>"`
     buttons embed the same name in their accessible names.
   why: >
     golden-path.spec.ts:60-63, a11y-deep-link-after-reset.spec.ts:71-74 — a loose substring
@@ -808,11 +808,11 @@
   statement: >
     In-dialog button locators must match accessible names EXACTLY, never by substring regex.
   why: >
-    wave-create-browse-cwd.spec.ts:97-105 (#891) — `.calm-select-trigger` buttons surface in
+    track-create-browse-cwd.spec.ts:97-105 (#891) — `.calm-select-trigger` buttons surface in
     Chromium's AX tree named by their cloned selected-option content, so a substring match
     strict-mode-collides with the intended button.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:97-108
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:106
+  source: web/e2e/track-create-browse-cwd.spec.ts:97-108
+  authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:106
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -833,7 +833,7 @@
     separate `<nav aria-label="Areas">`.
   why: >
     golden-path.spec.ts:19-29 — the two named navigation landmarks are what let role-scoped
-    queries disambiguate a sidebar `Today` button from a wave row also named "Today".
+    queries disambiguate a sidebar `Today` button from a track row also named "Today".
   source: web/e2e/golden-path.spec.ts:14-49
   authoritative_test: web/e2e/golden-path.spec.ts:14
   owner_slice: app/shell/sidebar
@@ -851,7 +851,7 @@
     resolved card id to `localStorage['calm.todayCardId']`.
   why: >
     golden-path.spec.ts:32-42 (#175) — that key is the ONLY externally observable signal that
-    the hidden system area + Today wave + terminal card all exist, since none of them appear
+    the hidden system area + Today track + terminal card all exist, since none of them appear
     in the sidebar.
   source: web/e2e/golden-path.spec.ts:36-42
   authoritative_test: web/e2e/golden-path.spec.ts:36
@@ -923,10 +923,10 @@
     The router must be created with `basepath` set to `/calm`, so the Today index route surfaces
     in the browser URL as `/calm/` with no `/today` suffix.
   why: >
-    a11y-wave-area-ops.spec.ts:901-904 — the area-delete handler navigates `go({name:'today'})`
+    a11y-track-area-ops.spec.ts:901-904 — the area-delete handler navigates `go({name:'today'})`
     and the assertion has to match `/calm/(\?|$)`.
-  source: web/src/app/router.tsx:153-161 web/e2e/a11y-wave-area-ops.spec.ts:896-908
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:908
+  source: web/src/app/router.tsx:153-161 web/e2e/a11y-track-area-ops.spec.ts:896-908
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:908
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -939,12 +939,12 @@
   family: sidebar-expand
   statement: >
     Each sidebar area row must expose an `Expand area <name>` button that reveals an inline
-    `<div role="group" aria-label="Waves in <name>">` listing that area's waves.
+    `<div role="group" aria-label="Tracks in <name>">` listing that area's tracks.
   why: >
-    a11y-sidebar-wave-delete.spec.ts:28-30 — the inline wave list is the surface the sidebar
-    wave-delete affordance lives on.
-  source: web/e2e/a11y-sidebar-wave-delete.spec.ts:27-33
-  authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:28
+    a11y-sidebar-track-delete.spec.ts:28-30 — the inline track list is the surface the sidebar
+    track-delete affordance lives on.
+  source: web/e2e/a11y-sidebar-track-delete.spec.ts:27-33
+  authoritative_test: web/e2e/a11y-sidebar-track-delete.spec.ts:28
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -954,17 +954,17 @@
 
 - id: E2E-CAP-SHELL-008
   kind: capability
-  family: sidebar-wave-delete
+  family: sidebar-track-delete
   statement: >
-    Hovering a `.side-wave-row` must bring its `Delete wave "<title>"` button to
-    `opacity: 1`; clicking it opens the `Delete wave?` confirm dialog whose body reads
-    `Delete wave "<title>"?`, and confirming removes the row from the sidebar.
+    Hovering a `.side-track-row` must bring its `Delete track "<title>"` button to
+    `opacity: 1`; clicking it opens the `Delete track?` confirm dialog whose body reads
+    `Delete track "<title>"?`, and confirming removes the row from the sidebar.
   why: >
-    a11y-sidebar-wave-delete.spec.ts:15-47 — the hover-reveal affordance is otherwise
+    a11y-sidebar-track-delete.spec.ts:15-47 — the hover-reveal affordance is otherwise
     invisible and would silently disappear in a rewrite. ONLY e2e covers the CSS opacity
     reveal.
-  source: web/e2e/a11y-sidebar-wave-delete.spec.ts:15-48
-  authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:15
+  source: web/e2e/a11y-sidebar-track-delete.spec.ts:15-48
+  authoritative_test: web/e2e/a11y-sidebar-track-delete.spec.ts:15
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -974,15 +974,15 @@
 
 - id: E2E-CAP-SHELL-009
   kind: capability
-  family: sidebar-wave-nav
+  family: sidebar-track-nav
   statement: >
-    The sidebar must render per-wave `button.side-wave` entries that navigate directly to
-    `/calm/wave/<id>`.
+    The sidebar must render per-track `button.side-track` entries that navigate directly to
+    `/calm/track/<id>`.
   why: >
-    wheel-wave-switch.spec.ts:109-118 — the wave-switch flow (and its terminal-remount
+    wheel-track-switch.spec.ts:109-118 — the track-switch flow (and its terminal-remount
     contract) is driven entirely through these buttons.
-  source: web/e2e/wheel-wave-switch.spec.ts:109-118
-  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:112
+  source: web/e2e/wheel-track-switch.spec.ts:109-118
+  authoritative_test: web/e2e/wheel-track-switch.spec.ts:112
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -1015,11 +1015,11 @@
     The sidebar has no `overflow: auto` (body is `overflow: hidden`), so once enough areas
     accumulate the `+ New area` row is pushed outside the document and cannot be scrolled to.
   why: >
-    wave-create-auto-match.spec.ts:82-90 — a real, currently-shipped limitation that forces
+    track-create-auto-match.spec.ts:82-90 — a real, currently-shipped limitation that forces
     multi-area specs to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
     silently changes which flows are reachable.
-  source: web/e2e/wave-create-auto-match.spec.ts:82-90
-  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:91
+  source: web/e2e/track-create-auto-match.spec.ts:82-90
+  authoritative_test: web/e2e/track-create-auto-match.spec.ts:91
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -1028,122 +1028,122 @@
   migration: pending
 
 # =============================================================================
-# SECTION 3 — Wave creation (NewTaskForm + cwd→area resolve)
+# SECTION 3 — Track creation (NewTaskForm + cwd→area resolve)
 # =============================================================================
 
-- id: E2E-CAP-WAVECREATE-001
+- id: E2E-CAP-TRACKCREATE-001
   kind: capability
   family: new-task-form
   statement: >
-    The area page must expose a `+ New wave` CTA that opens a modal `<dialog aria-label="New
-    wave">` hosting a `<form aria-label="New task">`; all wave creation entrypoints go through
+    The area page must expose a `+ New track` CTA that opens a modal `<dialog aria-label="New
+    track">` hosting a `<form aria-label="New task">`; all track creation entrypoints go through
     this one configuration card.
   why: >
-    wave-create.spec.ts:63-79 (#250 PR3) — the legacy one-line title input was removed on
+    track-create.spec.ts:63-79 (#250 PR3) — the legacy one-line title input was removed on
     purpose; the Dialog wrapper exists so the cwd Browse… picker can take over the modal body.
-  source: web/e2e/wave-create.spec.ts:65-79
-  authoritative_test: web/e2e/wave-create.spec.ts:45
-  owner_slice: features/wave/create
+  source: web/e2e/track-create.spec.ts:65-79
+  authoritative_test: web/e2e/track-create.spec.ts:45
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-002
+- id: E2E-CAP-TRACKCREATE-002
   kind: capability
   family: new-task-form
   statement: >
     NewTaskForm must expose a `Task description` textarea, a `Working directory` input, and a
     `Create task` submit button.
   why: >
-    wave-create.spec.ts:81-96 — these three are the minimal field set every creation spec in
+    track-create.spec.ts:81-96 — these three are the minimal field set every creation spec in
     the suite drives.
-  source: web/e2e/wave-create.spec.ts:81-96
-  authoritative_test: web/e2e/wave-create.spec.ts:82
-  owner_slice: features/wave/create
+  source: web/e2e/track-create.spec.ts:81-96
+  authoritative_test: web/e2e/track-create.spec.ts:82
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-003
+- id: E2E-CAP-TRACKCREATE-003
   kind: capability
   family: new-task-form
   statement: >
-    Submitting from a fresh area whose cwd no area claims must POST the wave against the
-    surrounding area with `attach_folder: true` and push the router to `/calm/wave/<id>`
+    Submitting from a fresh area whose cwd no area claims must POST the track against the
+    surrounding area with `attach_folder: true` and push the router to `/calm/track/<id>`
     within ~10s, with the submitted title visible on the page.
   why: >
-    wave-create.spec.ts:83-105 — the AreaPage passes `defaultAreaId={area.id}`; the resolve
+    track-create.spec.ts:83-105 — the AreaPage passes `defaultAreaId={area.id}`; the resolve
     misses so the "existing area + attach_folder" branch runs. This is the everyday path.
-  source: web/e2e/wave-create.spec.ts:83-105
-  authoritative_test: web/e2e/wave-create.spec.ts:96
-  owner_slice: features/wave/create
+  source: web/e2e/track-create.spec.ts:83-105
+  authoritative_test: web/e2e/track-create.spec.ts:96
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-004
+- id: E2E-CAP-TRACKCREATE-004
   kind: capability
   family: cwd-auto-match
   statement: >
     Typing a cwd covered by another area's folder claim must, after a 300ms debounce, render a
     `data-testid="area-auto-match"` banner naming that area AND the matching folder path.
   why: >
-    wave-create-auto-match.spec.ts:112-120 — anchored on the testid so the locator survives
+    track-create-auto-match.spec.ts:112-120 — anchored on the testid so the locator survives
     copy tweaks; the visible copy starts with "Auto-matched to area".
-  source: web/e2e/wave-create-auto-match.spec.ts:128-136
-  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:133
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-auto-match.spec.ts:128-136
+  authoritative_test: web/e2e/track-create-auto-match.spec.ts:133
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-INV-WAVECREATE-005
+- id: E2E-INV-TRACKCREATE-005
   kind: invariant
   family: cwd-auto-match
   statement: >
-    A cwd auto-match MUST override the surrounding page's `defaultAreaId` — the wave lands in
+    A cwd auto-match MUST override the surrounding page's `defaultAreaId` — the track lands in
     the area that owns the path, not the area whose page the user is looking at.
   why: >
-    wave-create-auto-match.spec.ts:6-11 — "longest-prefix resolve wins over surrounding page
-    context". Without it the user silently lands waves in the wrong area every time they type
+    track-create-auto-match.spec.ts:6-11 — "longest-prefix resolve wins over surrounding page
+    context". Without it the user silently lands tracks in the wrong area every time they type
     a path another area already owns.
-  source: web/e2e/wave-create-auto-match.spec.ts:122-143
-  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:142
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-auto-match.spec.ts:122-143
+  authoritative_test: web/e2e/track-create-auto-match.spec.ts:142
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-INV-WAVECREATE-006
+- id: E2E-INV-TRACKCREATE-006
   kind: invariant
   family: cwd-auto-match
   statement: >
-    When the auto-match branch fires, `attach_folder` must be FALSE — the wave-create tx must
+    When the auto-match branch fires, `attach_folder` must be FALSE — the track-create tx must
     NOT mint a redundant `area_folders` row for a cwd already covered by an ancestor claim.
   why: >
-    wave-create-auto-match.spec.ts:145-154 — a redundant descendant claim would later trip the
+    track-create-auto-match.spec.ts:145-154 — a redundant descendant claim would later trip the
     create endpoint's ancestor/descendant overlap 409 and corrupt resolve's at-most-one-row
     invariant.
-  source: web/e2e/wave-create-auto-match.spec.ts:145-154
-  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:154
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-auto-match.spec.ts:145-154
+  authoritative_test: web/e2e/track-create-auto-match.spec.ts:154
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-007
+- id: E2E-CAP-TRACKCREATE-007
   kind: capability
   family: area-picker
   statement: >
@@ -1151,93 +1151,93 @@
     selection">` offering `Existing area` (default when defaultAreaId is set, paired with a
     combobox listing every user area) and `Create new area`.
   why: >
-    wave-create-new-area.spec.ts:90-98 and wave-create-browse-cwd.spec.ts:146-149 — the
+    track-create-new-area.spec.ts:90-98 and track-create-browse-cwd.spec.ts:146-149 — the
     radiogroup's appearance is also the signal that the resolve debounce has settled.
-  source: web/e2e/wave-create-new-area.spec.ts:90-104
-  authoritative_test: web/e2e/wave-create-new-area.spec.ts:96
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-new-area.spec.ts:90-104
+  authoritative_test: web/e2e/track-create-new-area.spec.ts:96
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-008
+- id: E2E-CAP-TRACKCREATE-008
   kind: capability
   family: area-picker
   statement: >
     Picking `Create new area` must reveal a `New area name` input, auto-seed a deterministic
     palette colour (no colour picker), and on submit run the two-step
-    `POST /api/areas` → `POST /api/waves (attach_folder: true)` so the typed cwd lands as a
+    `POST /api/areas` → `POST /api/tracks (attach_folder: true)` so the typed cwd lands as a
     `area_folders` row in the same tx.
   why: >
-    wave-create-new-area.spec.ts:1-16 — the two-step is opaque from the user's POV; only the
+    track-create-new-area.spec.ts:1-16 — the two-step is opaque from the user's POV; only the
     URL push and the resulting rows are observable.
-  source: web/e2e/wave-create-new-area.spec.ts:99-152
-  authoritative_test: web/e2e/wave-create-new-area.spec.ts:49
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-new-area.spec.ts:99-152
+  authoritative_test: web/e2e/track-create-new-area.spec.ts:49
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-009
+- id: E2E-CAP-TRACKCREATE-009
   kind: capability
   family: area-picker
   statement: >
     An area minted by the form's create-new-area branch must appear in the sidebar within ~5s
     without a reload.
   why: >
-    wave-create-new-area.spec.ts:120-129 — both the create-area mutation's onSuccess
-    invalidate and the wave-create cache poke refresh the areas list.
-  source: web/e2e/wave-create-new-area.spec.ts:120-129
-  authoritative_test: web/e2e/wave-create-new-area.spec.ts:127
-  owner_slice: features/wave/create
+    track-create-new-area.spec.ts:120-129 — both the create-area mutation's onSuccess
+    invalidate and the track-create cache poke refresh the areas list.
+  source: web/e2e/track-create-new-area.spec.ts:120-129
+  authoritative_test: web/e2e/track-create-new-area.spec.ts:127
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-010
+- id: E2E-CAP-TRACKCREATE-010
   kind: capability
   family: auto-match-override
   statement: >
     The auto-match banner must carry an enabled `Use a different area` button that restores
     the radio picker.
   why: >
-    wave-create-override-auto-match.spec.ts:12-15 (#250 PR3 fix-loop "B2") — without it the
+    track-create-override-auto-match.spec.ts:12-15 (#250 PR3 fix-loop "B2") — without it the
     auto-match locks the area in permanently and the user has no escape hatch for a path that
     happens to fall under an existing claim.
-  source: web/e2e/wave-create-override-auto-match.spec.ts:100-111
-  authoritative_test: web/e2e/wave-create-override-auto-match.spec.ts:103
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-override-auto-match.spec.ts:100-111
+  authoritative_test: web/e2e/track-create-override-auto-match.spec.ts:103
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-INV-WAVECREATE-011
+- id: E2E-INV-TRACKCREATE-011
   kind: invariant
   family: auto-match-override
   statement: >
     Once the override flag is latched, subsequent resolveState transitions (idle/miss/hit)
     must NOT rewrite the user's area choice.
   why: >
-    wave-create-override-auto-match.spec.ts:118-127 — the user edits the cwd after overriding;
+    track-create-override-auto-match.spec.ts:118-127 — the user edits the cwd after overriding;
     a re-resolve that resets the radio would silently discard their pick.
-  source: web/e2e/wave-create-override-auto-match.spec.ts:118-127
-  authoritative_test: web/e2e/wave-create-override-auto-match.spec.ts:127
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-override-auto-match.spec.ts:118-127
+  authoritative_test: web/e2e/track-create-override-auto-match.spec.ts:127
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-012
+- id: E2E-CAP-TRACKCREATE-012
   kind: capability
   family: conflict-error
   statement: >
@@ -1245,37 +1245,37 @@
     AREA BY NAME (resolved from the local areas cache) plus the conflicting path, and must NOT
     print the area UUID.
   why: >
-    wave-create-conflict.spec.ts:1-16 (#250 PR3 fix-loop "B1") — pre-fix the error read
+    track-create-conflict.spec.ts:1-16 (#250 PR3 fix-loop "B1") — pre-fix the error read
     "claimed by another area" regardless of cache state; the absent-UUID assertion is what
     proves the name lookup hit rather than the fallback.
-  source: web/e2e/wave-create-conflict.spec.ts:127-135
-  authoritative_test: web/e2e/wave-create-conflict.spec.ts:131
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-conflict.spec.ts:127-135
+  authoritative_test: web/e2e/track-create-conflict.spec.ts:131
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-INV-WAVECREATE-013
+- id: E2E-INV-TRACKCREATE-013
   kind: invariant
   family: conflict-error
   statement: >
     After a 409 the router must NOT push, the form must stay mounted, and every input must
     stay enabled and editable so the user can pivot.
   why: >
-    wave-create-conflict.spec.ts:137-146 — a submit-locked leftover state would strand the
+    track-create-conflict.spec.ts:137-146 — a submit-locked leftover state would strand the
     user on an unrecoverable form.
-  source: web/e2e/wave-create-conflict.spec.ts:137-146
-  authoritative_test: web/e2e/wave-create-conflict.spec.ts:140
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-conflict.spec.ts:137-146
+  authoritative_test: web/e2e/track-create-conflict.spec.ts:140
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-014
+- id: E2E-CAP-TRACKCREATE-014
   kind: capability
   family: directory-browser
   statement: >
@@ -1283,10 +1283,10 @@
     the SAME dialog via `useModalView()`, swapping the outer dialog's accessible name to
     `Choose a directory`.
   why: >
-    wave-create-browse-cwd.spec.ts:1-12,109-114 — the accessible-name swap on the outer dialog
+    track-create-browse-cwd.spec.ts:1-12,109-114 — the accessible-name swap on the outer dialog
     IS the `useModalView()` contract; a nested second dialog would break it.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:106-114
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:113
+  source: web/e2e/track-create-browse-cwd.spec.ts:106-114
+  authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:113
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1294,7 +1294,7 @@
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-015
+- id: E2E-CAP-TRACKCREATE-015
   kind: capability
   family: directory-browser
   statement: >
@@ -1302,10 +1302,10 @@
     `Directory path` input reflecting `<dir>/`, list entries as `role="option"` buttons named
     by directory name, and update the path input on click.
   why: >
-    wave-create-browse-cwd.spec.ts:116-126 — the walker is `GET /api/fs/listdir` running in
+    track-create-browse-cwd.spec.ts:116-126 — the walker is `GET /api/fs/listdir` running in
     the kernel container; the trailing slash in the input value is part of the contract.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:125-135
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:128
+  source: web/e2e/track-create-browse-cwd.spec.ts:125-135
+  authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:128
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1313,18 +1313,18 @@
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-016
+- id: E2E-CAP-TRACKCREATE-016
   kind: capability
   family: directory-browser
   statement: >
     `Select this directory` must pop the browser view, flip the dialog title back to
-    `New wave`, and write the picked absolute path into the cwd input; the path must survive
-    all the way into the persisted `wave.cwd`.
+    `New track`, and write the picked absolute path into the cwd input; the path must survive
+    all the way into the persisted `track.cwd`.
   why: >
-    wave-create-browse-cwd.spec.ts:128-163 — closes the loop Browse → input → POST body →
+    track-create-browse-cwd.spec.ts:128-163 — closes the loop Browse → input → POST body →
     kernel row.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:137-172
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:140
+  source: web/e2e/track-create-browse-cwd.spec.ts:137-172
+  authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:140
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1332,29 +1332,29 @@
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-017
+- id: E2E-CAP-TRACKCREATE-017
   kind: capability
   family: empty-title
   statement: >
     The task description must be OPTIONAL: submitting with a blank description persists
-    `title: ""` and the wave detail page renders the shared `Untitled wave` fallback label.
+    `title: ""` and the track detail page renders the shared `Untitled track` fallback label.
   why: >
-    wave-create-empty-title.spec.ts:1-7 (#409) — the fallback is display-only; the stored
+    track-create-empty-title.spec.ts:1-7 (#409) — the fallback is display-only; the stored
     title must stay the empty string, not be back-filled.
-  source: web/e2e/wave-create-empty-title.spec.ts:58-79
-  authoritative_test: web/e2e/wave-create-empty-title.spec.ts:29
-  owner_slice: features/wave/create
+  source: web/e2e/track-create-empty-title.spec.ts:58-79
+  authoritative_test: web/e2e/track-create-empty-title.spec.ts:29
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-018
+- id: E2E-CAP-TRACKCREATE-018
   kind: capability
   family: keyboard-create
   statement: >
-    Keyboard-only wave creation must work: Tab to `+ New wave`, Enter expands the form and
+    Keyboard-only track creation must work: Tab to `+ New track`, Enter expands the form and
     auto-focuses the task-description textarea, one Tab reaches the cwd input, and Enter ON
     THE CWD INPUT submits.
   why: >
@@ -1362,38 +1362,38 @@
     the title textarea deliberately preserves Enter for newlines.
   source: web/e2e/a11y-keyboard.spec.ts:255-306
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:255
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-INV-WAVECREATE-019
+- id: E2E-INV-TRACKCREATE-019
   kind: invariant
   family: keyboard-create
   statement: >
-    A successful create must emit `wave.updated` on the WS event bus.
+    A successful create must emit `track.updated` on the WS event bus.
   why: >
     a11y-keyboard.spec.ts:308-313 — the frontend's cache invalidation hangs off that event;
     a create that lands in the DB but emits nothing leaves every other surface stale.
   source: web/e2e/a11y-keyboard.spec.ts:331-336
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:334
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVECREATE-020
+- id: E2E-CAP-TRACKCREATE-020
   kind: capability
   family: area-page-nav
   statement: >
-    On successful create, the AreaPage's `onWaveCreated` handler must navigate straight to the
-    new wave's detail page.
+    On successful create, the AreaPage's `onTrackCreated` handler must navigate straight to the
+    new track's detail page.
   why: >
-    a11y-keyboard.spec.ts:302-305 — router.tsx wires `go({name:'wave', id:...})`; without it
+    a11y-keyboard.spec.ts:302-305 — router.tsx wires `go({name:'track', id:...})`; without it
     the user is stranded on the area page wondering whether the create worked.
   source: web/e2e/a11y-keyboard.spec.ts:302-306
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:305
@@ -1435,7 +1435,7 @@
     with no cross-talk.
   why: >
     a11y-cwd-resolve.spec.ts:106-110 — the everyday multi-area contract; without it users land
-    waves in whichever area the surrounding page hinted at.
+    tracks in whichever area the surrounding page hinted at.
   source: web/e2e/a11y-cwd-resolve.spec.ts:103-140
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:126
   owner_slice: features/area/folders
@@ -1597,7 +1597,7 @@
   family: area-folders
   statement: >
     There is deliberately NO area-folder management UI (the Settings page covers proxy config
-    only; Area/Wave pages expose no folder management).
+    only; Area/Track pages expose no folder management).
   why: >
     a11y-cwd-resolve.spec.ts:43-48 (#269 P3) — explicitly scoped out and skipped, not
     forgotten. A rewrite that "notices the gap" is adding scope, not restoring it.
@@ -1642,7 +1642,7 @@
     className or aria-describedby.
   why: >
     a11y-keyboard.spec.ts:63-69,84-92,116-118 — e.g. two buttons named "Today" (sidebar nav and
-    WaveRow) coexist and only the WaveRow carries `wave-row`; the rename spans convey their verb
+    TrackRow) coexist and only the TrackRow carries `track-row`; the rename spans convey their verb
     via aria-describedby so the name stays the bare entity title.
   source: web/e2e/a11y-keyboard.spec.ts:70-144
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:70
@@ -1661,7 +1661,7 @@
     `/calm/area/<id>` where the AreaPage renders an `<h1>` carrying the area name.
   why: >
     a11y-keyboard.spec.ts:215-236 — asserting the heading (not just the URL) proves the route
-    actually mounted. The area-nav name includes a wave-count badge, so predicates must match
+    actually mounted. The area-nav name includes a track-count badge, so predicates must match
     on prefix.
   source: web/e2e/a11y-keyboard.spec.ts:215-237
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
@@ -1676,8 +1676,8 @@
   kind: capability
   family: keyboard-nav
   statement: >
-    The area page must wrap its sorted wave list in a `<section aria-label="Waves">` landmark
-    whose rows are real `<button class="wave-row">` elements named by the wave title.
+    The area page must wrap its sorted track list in a `<section aria-label="Tracks">` landmark
+    whose rows are real `<button class="track-row">` elements named by the track title.
   why: >
     a11y-keyboard.spec.ts:717-722 — the landmark is what lets role-scoped queries disambiguate
     the row from the sidebar nav button of the same name; the row being a real button (not a
@@ -1695,7 +1695,7 @@
   kind: capability
   family: add-panel
   statement: >
-    The wave page must expose a glyph-only AddPanel trigger (a `+` that rotates to `×`) with
+    The track page must expose a glyph-only AddPanel trigger (a `+` that rotates to `×`) with
     `aria-haspopup="menu"` + `aria-expanded`, accessible name `Add card` while closed and
     `Close add menu` while open.
   why: >
@@ -1789,11 +1789,11 @@
   family: card-create
   statement: >
     Activating the terminal menuitem must create a card immediately with no modal (zero config)
-    and persist a terminal card row on the wave — the spec polls `/api/waves` for that wave until
+    and persist a terminal card row on the track — the spec polls `/api/tracks` for that track until
     `containsTerminalCard` holds, so a UI-only success does not satisfy this.
   why: >
     a11y-keyboard.spec.ts:360-414 — terminal has no createSchema; the poll against
-    `GET /api/waves/:id` proves keyboard activation reached the kernel, not just the UI.
+    `GET /api/tracks/:id` proves keyboard activation reached the kernel, not just the UI.
     #1148 A0 made `terminal` a stop word (it names a whole subsystem, so hitting it proves
     nothing), which left this statement with no anchor at all; the poll's two real carriers
     now do the anchoring.
@@ -1814,7 +1814,7 @@
     `.term` wrapper.
   why: >
     new-terminal-card.spec.ts:1-10 — user-reported regression: POST → server `card.added` →
-    eventBridge invalidates `['wave', id]` → useWaveDetailQuery refetches → WaveGrid mounts.
+    eventBridge invalidates `['track', id]` → useTrackDetailQuery refetches → TrackGrid mounts.
   source: web/e2e/new-terminal-card.spec.ts:69-93
   authoritative_test: web/e2e/new-terminal-card.spec.ts:17
   owner_slice: systems/terminal/card
@@ -1880,16 +1880,16 @@
 
 - id: E2E-CAP-RENAME-015
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
-    The wave title must render as a `<span role="button">` whose accessible NAME is the bare
-    wave title and whose aria-describedby resolves to exactly `Rename wave`.
+    The track title must render as a `<span role="button">` whose accessible NAME is the bare
+    track title and whose aria-describedby resolves to exactly `Rename track`.
   why: >
     a11y-keyboard.spec.ts:656-662 — keeping the verb out of the name is
-    what lets the sibling `Delete wave "<title>"` button coexist without strict-mode collision.
+    what lets the sibling `Delete track "<title>"` button coexist without strict-mode collision.
   source: web/e2e/a11y-keyboard.spec.ts:656-662
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:687
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1898,16 +1898,16 @@
 
 - id: E2E-CAP-RENAME-016
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
-    F2 (and Enter) on the wave-title span must enter rename mode, swapping to an
-    `<input aria-label="Wave title">` that auto-focuses and pre-selects the existing value.
+    F2 (and Enter) on the track-title span must enter rename mode, swapping to an
+    `<input aria-label="Track title">` that auto-focuses and pre-selects the existing value.
   why: >
     a11y-keyboard.spec.ts:663-673 — F2 is the documented Windows-convention shortcut;
     `startRename()` does queueMicrotask focus + `.select()` so typing replaces.
   source: web/e2e/a11y-keyboard.spec.ts:686-698
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:655
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1916,15 +1916,15 @@
 
 - id: E2E-CAP-RENAME-017
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
     Enter must commit the rename, collapse the input back to the display span, emit
-    `wave.updated`, and RETURN FOCUS to the display span.
+    `track.updated`, and RETURN FOCUS to the display span.
   why: >
     a11y-keyboard.spec.ts:677-689 — losing focus after commit strands a keyboard user mid-page.
   source: web/e2e/a11y-keyboard.spec.ts:699-712
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:712
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1935,14 +1935,14 @@
   kind: capability
   family: list-view
   statement: >
-    List view must replace the RGL grid with a semantic `<ul role="list" aria-label="Wave
+    List view must replace the RGL grid with a semantic `<ul role="list" aria-label="Track
     cards">` whose `<li>` items carry a `data-card-id` and use roving tabindex.
   why: >
-    a11y-keyboard.spec.ts:692-698 (slice 9) — the list is lazy-loaded like WaveGrid; the
+    a11y-keyboard.spec.ts:692-698 (slice 9) — the list is lazy-loaded like TrackGrid; the
     data-card-id stamp is the only stable handle for ordering assertions.
   source: web/e2e/a11y-keyboard.spec.ts:762-786
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:763
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1960,7 +1960,7 @@
     asynchronously by the server ack, so assertions must wait on both halves.
   source: web/e2e/a11y-keyboard.spec.ts:811-835
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:816
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1979,7 +1979,7 @@
     re-render, and `is-active`/`aria-checked` are what AT actually consumes.
   source: web/e2e/a11y-keyboard.spec.ts:837-850
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:848
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1990,14 +1990,14 @@
   kind: capability
   family: view-mode
   statement: >
-    The per-wave view mode must persist across a full page reload via the `view-mode` overlay
+    The per-track view mode must persist across a full page reload via the `view-mode` overlay
     row.
   why: >
     a11y-keyboard.spec.ts:829-833 — reloading into grid would silently discard the user's
-    per-wave layout choice.
+    per-track layout choice.
   source: web/e2e/a11y-keyboard.spec.ts:829-833
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:831
-  owner_slice: features/wave/view-mode
+  owner_slice: features/track/view-mode
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2008,7 +2008,7 @@
   kind: capability
   family: view-mode
   statement: >
-    The wave header must expose a single view-cycle button whose accessible name states BOTH
+    The track header must expose a single view-cycle button whose accessible name states BOTH
     the current and the next mode — `List view — switch to report view`, then
     `Report view — switch to grid view` — cycling Grid → List → Report → Grid on Enter.
   why: >
@@ -2016,7 +2016,7 @@
     only way a screen-reader user learns what pressing it will do.
   source: web/e2e/a11y-keyboard.spec.ts:834-848
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:844
-  owner_slice: features/wave/view-mode
+  owner_slice: features/track/view-mode
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2027,7 +2027,7 @@
   kind: invariant
   family: view-mode
   statement: >
-    A full-page Tab walk must NOT be performed on a wave containing web-page iframe cards;
+    A full-page Tab walk must NOT be performed on a track containing web-page iframe cards;
     such cards can retain focus and wedge the walk.
   why: >
     a11y-keyboard.spec.ts:838-841 — a real, load-bearing testing constraint that a rewrite's
@@ -2086,11 +2086,11 @@
   family: axe
   statement: >
     The deferred-rules list must be EMPTY; no rule may be blanket-disabled. Common pages
-    (Today, Area, Wave, Settings) MUST come out with zero violations — the fix goes in the
+    (Today, Area, Track, Settings) MUST come out with zero violations — the fix goes in the
     source, never in a rule silence.
   why: >
     a11y-axe.spec.ts:28-32,109-124 — resolved-rule archaeology is kept in the file instead:
-    `region` (PR #122, TitleBar → `<header>`), `nested-interactive` (PR #127, WaveRow → real
+    `region` (PR #122, TitleBar → `<header>`), `nested-interactive` (PR #127, TrackRow → real
     `<button>` with sibling delete button), `color-contrast` (--text-3 light+dark and --accent
     light bumped ≥4.5:1; .nav-label re-routed from --text-4 to --text-2).
   source: web/e2e/a11y-axe.spec.ts:109-124
@@ -2113,7 +2113,7 @@
     terminal-user expectations, not app design tokens); the real interactive surface is the
     `.xterm-helper-textarea`. `aria-hidden` + `role="presentation"` (commit 20669b3) did NOT
     stop axe's contrast walker; `.exclude()` is the documented escape hatch. Global (not
-    per-test) because every wave with a spec or worker card mounts an xterm.
+    per-test) because every track with a spec or worker card mounts an xterm.
   source: web/e2e/a11y-axe.spec.ts:126-154
   authoritative_test: web/e2e/a11y-axe.spec.ts:152
   owner_slice: none/e2e/a11y-axe
@@ -2197,15 +2197,15 @@
   kind: capability
   family: axe-matrix
   statement: >
-    The Wave page must scan clean in both themes with the AddPanel trigger AND a populated
+    The Track page must scan clean in both themes with the AddPanel trigger AND a populated
     `<section aria-label="Backlinks">` containing a resolved citation link rendered.
   why: >
-    a11y-axe.spec.ts:276-295 — WaveGrid is lazy-loaded so the scan must wait; the backlink
-    fixture (a second wave whose report cites `neige://wave/<id>`) ensures the Backlinks region
+    a11y-axe.spec.ts:276-295 — TrackGrid is lazy-loaded so the scan must wait; the backlink
+    fixture (a second track whose report cites `neige://wave/<id>`) ensures the Backlinks region
     is scanned populated, not empty.
   source: web/e2e/a11y-axe.spec.ts:276-295
   authoritative_test: web/e2e/a11y-axe.spec.ts:278
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2248,14 +2248,14 @@
   kind: capability
   family: axe-matrix
   statement: >
-    Wave list view must scan clean in both themes with at least one worker card present.
+    Track list view must scan clean in both themes with at least one worker card present.
   why: >
-    a11y-axe.spec.ts:365-371 — a freshly-minted wave has zero cards post-#175, and an empty
+    a11y-axe.spec.ts:365-371 — a freshly-minted track has zero cards post-#175, and an empty
     list `<ul>` collapses to 0 height so Playwright reports it hidden; an iframe card populates
     it without depending on PTY startup.
   source: web/e2e/a11y-axe.spec.ts:347-380
   authoritative_test: web/e2e/a11y-axe.spec.ts:349
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2335,22 +2335,22 @@
   migration: pending
 
 # =============================================================================
-# SECTION 7 — Wave + area mutation ops (#269 P2): rename / delete / cascade
+# SECTION 7 — Track + area mutation ops (#269 P2): rename / delete / cascade
 # =============================================================================
 
 - id: E2E-CAP-DELETE-001
   kind: capability
-  family: wave-delete
+  family: track-delete
   statement: >
-    The wave header must expose a `DeleteButton` icon button with aria-label
-    `Delete wave "<title>"` that opens a ConfirmDialog titled `Delete wave?` with a `Cancel`
-    button and a `Delete wave` confirm button.
+    The track header must expose a `DeleteButton` icon button with aria-label
+    `Delete track "<title>"` that opens a ConfirmDialog titled `Delete track?` with a `Cancel`
+    button and a `Delete track` confirm button.
   why: >
-    a11y-wave-area-ops.spec.ts:119-129 — the label carries the entity name so AT users know
+    a11y-track-area-ops.spec.ts:119-129 — the label carries the entity name so AT users know
     what they are about to destroy.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:119-134
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:101
-  owner_slice: features/wave/page
+  source: web/e2e/a11y-track-area-ops.spec.ts:119-134
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:101
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2363,11 +2363,11 @@
   statement: >
     A destructive ConfirmDialog must default-focus CANCEL, never the confirm button.
   why: >
-    a11y-wave-area-ops.spec.ts:130-137 — cancel-safe default. The e2e mirror exists so a future
+    a11y-track-area-ops.spec.ts:130-137 — cancel-safe default. The e2e mirror exists so a future
     refactor that bypasses ConfirmDialog (e.g. reverting to `window.confirm`) is caught even
     though `ConfirmDialog.contract.test.tsx` pins it at unit level.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:130-137
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:137
+  source: web/e2e/a11y-track-area-ops.spec.ts:130-137
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:137
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2377,16 +2377,16 @@
 
 - id: E2E-CAP-DELETE-003
   kind: capability
-  family: wave-delete
+  family: track-delete
   statement: >
-    Confirming a wave delete must: navigate back to the owning area page, emit `wave.deleted`
-    carrying the wave id, and make `GET /api/waves/<id>` return 404.
+    Confirming a track delete must: navigate back to the owning area page, emit `track.deleted`
+    carrying the track id, and make `GET /api/tracks/<id>` return 404.
   why: >
-    a11y-wave-area-ops.spec.ts:148-159 — router.tsx wires `go({name:'area', areaId})` on the
-    wave page's `onDeleteWave`; all three halves (UI, event, kernel) must agree.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:148-159
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:154
-  owner_slice: features/wave/page
+    a11y-track-area-ops.spec.ts:148-159 — router.tsx wires `go({name:'area', areaId})` on the
+    track page's `onDeleteTrack`; all three halves (UI, event, kernel) must agree.
+  source: web/e2e/a11y-track-area-ops.spec.ts:148-159
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:154
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2399,9 +2399,9 @@
   statement: >
     Keyboard activation of the confirm button (Tab from Cancel, then Enter) must be equivalent
     to a click, including the disabled-while-pending guard.
-  why: a11y-wave-area-ops.spec.ts:139-146 — the ConfirmDialog contract treats both identically.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:139-146
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:146
+  why: a11y-track-area-ops.spec.ts:139-146 — the ConfirmDialog contract treats both identically.
+  source: web/e2e/a11y-track-area-ops.spec.ts:139-146
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:146
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2417,10 +2417,10 @@
     dialog unmounts, NO destructive event fires within 1.5s, the row still exists (200), and
     the router must not navigate.
   why: >
-    a11y-wave-area-ops.spec.ts:748-799 — a regression here silently deletes user data on a
+    a11y-track-area-ops.spec.ts:748-799 — a regression here silently deletes user data on a
     keypress meant to back out.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:748-800
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:748
+  source: web/e2e/a11y-track-area-ops.spec.ts:748-800
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:748
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2435,10 +2435,10 @@
     Clicking the Cancel BUTTON must dismiss without deleting — asserted as a separate test from
     the Escape path.
   why: >
-    a11y-wave-area-ops.spec.ts:802-812 — split on purpose so a regression that breaks one path
+    a11y-track-area-ops.spec.ts:802-812 — split on purpose so a regression that breaks one path
     (e.g. a stray `e.stopPropagation()` on Cancel) surfaces without the other masking it.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:802-845
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:802
+  source: web/e2e/a11y-track-area-ops.spec.ts:802-845
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:802
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2448,15 +2448,15 @@
 
 - id: E2E-CAP-RENAME-007
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
-    Mouse click on the wave-title span must also enter rename mode (not just F2/Enter).
+    Mouse click on the track-title span must also enter rename mode (not just F2/Enter).
   why: >
-    a11y-wave-area-ops.spec.ts:184-190 — `onClick={startRename}` is wired whenever
-    `onRenameWave` is supplied; a11y-keyboard covers only the F2 path.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:184-190
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:162
-  owner_slice: features/wave/page
+    a11y-track-area-ops.spec.ts:184-190 — `onClick={startRename}` is wired whenever
+    `onRenameTrack` is supplied; a11y-keyboard covers only the F2 path.
+  source: web/e2e/a11y-track-area-ops.spec.ts:184-190
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:162
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2465,14 +2465,14 @@
 
 - id: E2E-INV-RENAME-008
   kind: invariant
-  family: wave-rename
+  family: track-rename
   statement: >
-    Escape during wave rename must cancel: no POST, displayed title unchanged, on-disk title
+    Escape during track rename must cancel: no POST, displayed title unchanged, on-disk title
     unchanged, and focus restored to the display span.
-  why: a11y-wave-area-ops.spec.ts:192-204 — the cancel path must be write-free, not a revert.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:192-204
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:197
-  owner_slice: features/wave/page
+  why: a11y-track-area-ops.spec.ts:192-204 — the cancel path must be write-free, not a revert.
+  source: web/e2e/a11y-track-area-ops.spec.ts:192-204
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:197
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2481,23 +2481,23 @@
 
 - id: E2E-INV-RENAME-009
   kind: invariant
-  family: wave-rename
+  family: track-rename
   statement: >
-    In the legacy web/ front-end, and there only: committing an empty or whitespace-only wave
-    title must be a NO-OP — exit edit mode, restore focus, never call `onRenameWave`, and emit no
-    `wave.updated` within 1.5s.
+    In the legacy web/ front-end, and there only: committing an empty or whitespace-only track
+    title must be a NO-OP — exit edit mode, restore focus, never call `onRenameTrack`, and emit no
+    `track.updated` within 1.5s.
   why: >
-    a11y-wave-area-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
-    empty or unchanged; without it a stray Enter blanks the wave title.
-    The scope narrowing is #1211 S2's, and the rewrite does the opposite on purpose: a wave there
+    a11y-track-area-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
+    empty or unchanged; without it a stray Enter blanks the track title.
+    The scope narrowing is #1211 S2's, and the rewrite does the opposite on purpose: a track there
     has a second namer (the spec agent, whose rename only fires while the title is empty), so
-    clearing the name is a real request. INV-WAVENAME-013 states that, and the two do not
+    clearing the name is a real request. INV-TRACKNAME-013 states that, and the two do not
     contradict each other — this row is about a front-end that has no such agent behind it. The
     owner_slice below is where the *rewrite* would put this behaviour, not a claim that the
     rewrite has it; `migration: pending` is what says it does not.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:206-223
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:221
-  owner_slice: features/wave/page
+  source: web/e2e/a11y-track-area-ops.spec.ts:206-223
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:221
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2506,15 +2506,15 @@
 
 - id: E2E-INV-RENAME-010
   kind: invariant
-  family: wave-rename
+  family: track-rename
   statement: >
     After the cancel and no-op paths, a normal click-edit-Enter must still POST and update.
   why: >
-    a11y-wave-area-ops.spec.ts:225-238 — proves the earlier short-circuits didn't wedge the
+    a11y-track-area-ops.spec.ts:225-238 — proves the earlier short-circuits didn't wedge the
     editing state machine.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:225-239
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:233
-  owner_slice: features/wave/page
+  source: web/e2e/a11y-track-area-ops.spec.ts:225-239
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:233
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2529,10 +2529,10 @@
     aria-label = the name and aria-describedby resolving to `Rename area name`; clicking it
     opens an `<input aria-label="Area name">` that auto-focuses with the value pre-selected.
   why: >
-    a11y-wave-area-ops.spec.ts:253-265 — EditableTitle in Area.tsx; the microtask `select()` in
+    a11y-track-area-ops.spec.ts:253-265 — EditableTitle in Area.tsx; the microtask `select()` in
     `enter()` is why specs must `selectText()` before `fill()` for determinism.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:253-282
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:241
+  source: web/e2e/a11y-track-area-ops.spec.ts:253-282
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:241
   owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
@@ -2547,10 +2547,10 @@
     Blurring the area-name input (Tab away) must commit via `onBlur={save}`, emit
     `area.updated`, and be reflected in `GET /api/areas`.
   why: >
-    a11y-wave-area-ops.spec.ts:277-303 — blur-commit is a distinct code path from Enter-commit;
+    a11y-track-area-ops.spec.ts:277-303 — blur-commit is a distinct code path from Enter-commit;
     tabbing away also proves the header's tab order isn't wedged.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:283-303
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:289
+  source: web/e2e/a11y-track-area-ops.spec.ts:283-303
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:289
   owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
@@ -2565,13 +2565,13 @@
     Pressing Enter then immediately Tab during an area rename must produce EXACTLY ONE PATCH,
     carrying the NEW name; the kernel must hold the new name and the sidebar must show it.
   why: >
-    a11y-wave-area-ops.spec.ts:656-678 (#288, fixed in PR #292) — pre-fix the Enter `keyup` was
+    a11y-track-area-ops.spec.ts:656-678 (#288, fixed in PR #292) — pre-fix the Enter `keyup` was
     delivered to the just-focused display button, synthesized a click, re-entered edit mode with
     `draft` reset to the stale `value`, and the follow-up Tab blurred that remounted input into
     a SECOND PATCH with the OLD name. The user saw the new name flash then revert. The fix sets
     a one-shot ref in `save()` on keyboard commit that `enter()` consumes and ignores.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:686-745
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:728
+  source: web/e2e/a11y-track-area-ops.spec.ts:686-745
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:728
   owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
@@ -2586,12 +2586,12 @@
     An area rename must propagate to the SIDEBAR entry: the old name must disappear AND the new
     name must appear, within 1.5s, without a reload.
   why: >
-    a11y-wave-area-ops.spec.ts:326-419 (#288) — both halves are asserted because new-name-only
+    a11y-track-area-ops.spec.ts:326-419 (#288) — both halves are asserted because new-name-only
     would false-pass if both rows rendered side by side, and old-name-absent-only would
     false-pass in the render gap. Seeded with three sibling areas because a single-area sidebar
     is a degenerate case some failure modes (memoized-by-length lists) would miss.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:396-419
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:326
+  source: web/e2e/a11y-track-area-ops.spec.ts:396-419
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:326
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -2606,11 +2606,11 @@
     `test.fail()` must NOT be applied to the #288 sidebar-rename test even though the bug was
     reported against production.
   why: >
-    a11y-wave-area-ops.spec.ts:343-350 — the assertion currently passes in the hermetic replay
+    a11y-track-area-ops.spec.ts:343-350 — the assertion currently passes in the hermetic replay
     harness; Playwright flips an expected-failure annotation into a CI failure on unexpected
     pass, which would break the gate the moment the harness diverges from production.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:343-350
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:326
+  source: web/e2e/a11y-track-area-ops.spec.ts:343-350
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:326
   owner_slice: none/e2e/infra
   intentional_omission: true
   runtime_layer: none
@@ -2622,12 +2622,12 @@
   kind: capability
   family: rename-propagation
   statement: >
-    The wave page must render a `<button class="wave-area">` breadcrumb back-link displaying the
+    The track page must render a `<button class="track-area">` breadcrumb back-link displaying the
     owning area's name, and an area rename must be reflected there.
-  why: a11y-wave-area-ops.spec.ts:422-488 — the linked-surface case across a route boundary.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:484-489
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:422
-  owner_slice: features/wave/page
+  why: a11y-track-area-ops.spec.ts:422-488 — the linked-surface case across a route boundary.
+  source: web/e2e/a11y-track-area-ops.spec.ts:484-489
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:422
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2641,11 +2641,11 @@
     After an area rename, a nav-away-and-back round trip (Area → Today → Area) must still show
     the new name in the sidebar.
   why: >
-    a11y-wave-area-ops.spec.ts:491-505 — adds the route-boundary dimension: a
+    a11y-track-area-ops.spec.ts:491-505 — adds the route-boundary dimension: a
     refetch-on-area.updated regression and a re-render-on-route-change regression show up
     differently across this test and E2E-INV-SURFACE-014.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:491-542
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:539
+  source: web/e2e/a11y-track-area-ops.spec.ts:491-542
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:539
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -2657,13 +2657,13 @@
   kind: invariant
   family: rename-propagation
   statement: >
-    A wave rename done on the wave detail page must be reflected in the area page's Waves list:
-    the new title's `button.wave-row` visible AND the old title's row gone (count 0).
+    A track rename done on the track detail page must be reflected in the area page's Tracks list:
+    the new title's `button.track-row` visible AND the old title's row gone (count 0).
   why: >
-    a11y-wave-area-ops.spec.ts:544-606 — the old-row-absent half pins that a stale duplicate
+    a11y-track-area-ops.spec.ts:544-606 — the old-row-absent half pins that a stale duplicate
     cache entry cannot false-green the test.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:590-606
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:544
+  source: web/e2e/a11y-track-area-ops.spec.ts:590-606
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:544
   owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
@@ -2675,13 +2675,13 @@
   kind: invariant
   family: rename-propagation
   statement: >
-    A wave rename must NOT clobber the area name in the breadcrumb.
+    A track rename must NOT clobber the area name in the breadcrumb.
   why: >
-    a11y-wave-area-ops.spec.ts:648-653 — guards against a `wave.updated` → `['areas']`
+    a11y-track-area-ops.spec.ts:648-653 — guards against a `track.updated` → `['areas']`
     invalidation that returns stale data.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:609-654
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:651
-  owner_slice: features/wave/page
+  source: web/e2e/a11y-track-area-ops.spec.ts:609-654
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:651
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2694,9 +2694,9 @@
   statement: >
     The area header must expose `Delete area "<name>"` opening a `Delete area?` ConfirmDialog;
     confirming emits `area.deleted`, removes the row from `GET /api/areas`, and routes to Today.
-  why: a11y-wave-area-ops.spec.ts:884-908 — full UI-driven destructive path.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:884-912
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:847
+  why: a11y-track-area-ops.spec.ts:884-908 — full UI-driven destructive path.
+  source: web/e2e/a11y-track-area-ops.spec.ts:884-912
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:847
   owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
@@ -2711,10 +2711,10 @@
     Deleting an area must CASCADE-drop its `area_folders` rows, so `/api/areas/resolve` returns
     null for every previously-claimed path.
   why: >
-    a11y-wave-area-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
+    a11y-track-area-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
     claims would permanently block those paths from being claimed by any future area.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:918-923
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:847
+  source: web/e2e/a11y-track-area-ops.spec.ts:918-923
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:847
   owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
@@ -2729,11 +2729,11 @@
     The cascade must drop EVERY folder row, not just one — verified with three non-overlapping
     claims probed independently.
   why: >
-    a11y-wave-area-ops.spec.ts:927-935 — with only two rows a `LIMIT 1`-style regression passes
+    a11y-track-area-ops.spec.ts:927-935 — with only two rows a `LIMIT 1`-style regression passes
     50% of the time depending on insert order; three pushes false-green probability low enough
     to catch it every run.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:922-1016
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:922
+  source: web/e2e/a11y-track-area-ops.spec.ts:922-1016
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:922
   owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
@@ -2745,12 +2745,12 @@
   kind: invariant
   family: area-delete
   statement: >
-    `DELETE /api/areas/:id` must cascade through waves → cards → terminals.
+    `DELETE /api/areas/:id` must cascade through tracks → cards → terminals.
   why: >
-    wave-create.spec.ts:24-26 — relied on by every chromium spec's cleanup hook; without the
-    cascade the suite leaks orphan waves and terminals.
-  source: web/e2e/wave-create.spec.ts:21-26
-  authoritative_test: web/e2e/wave-create.spec.ts:33
+    track-create.spec.ts:24-26 — relied on by every chromium spec's cleanup hook; without the
+    cascade the suite leaks orphan tracks and terminals.
+  source: web/e2e/track-create.spec.ts:21-26
+  authoritative_test: web/e2e/track-create.spec.ts:33
   owner_slice: features/area/delete
   intentional_omission: false
   runtime_layer: features
@@ -2760,36 +2760,36 @@
 
 - id: E2E-INV-DELETE-024
   kind: invariant
-  family: wave-archive
+  family: track-archive
   statement: >
-    Wave ARCHIVE is deliberately NOT surfaced in the frontend: the kernel accepts
-    `PATCH /api/waves/{id}` with `archived_at`, but no button or menu item exists.
+    Track ARCHIVE is deliberately NOT surfaced in the frontend: the kernel accepts
+    `PATCH /api/tracks/{id}` with `archived_at`, but no button or menu item exists.
   why: >
-    a11y-wave-area-ops.spec.ts:12-18 — verified by grepping `web/src/` (only schema/type
+    a11y-track-area-ops.spec.ts:12-18 — verified by grepping `web/src/` (only schema/type
     comments mention it). Explicitly scoped out, tracked as follow-up — a rewrite that "adds
     the missing archive button" is adding scope.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:12-18
+  source: web/e2e/a11y-track-area-ops.spec.ts:12-18
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: E2E-CAP-WAVEROW-025
+- id: E2E-CAP-TRACKROW-025
   kind: capability
-  family: wave-row
+  family: track-row
   statement: >
-    A WaveRow's nav-button accessible name is `<title> Wave lifecycle: <Status>` (the lifecycle
+    A TrackRow's nav-button accessible name is `<title> Track lifecycle: <Status>` (the lifecycle
     pill contributes aria text), and each row also carries sibling `Delete "<title>"` and
-    `Pin wave` buttons.
+    `Pin track` buttons.
   why: >
-    a11y-wave-area-ops.spec.ts:72-86 — an `exact: true` match on the bare title finds nothing;
+    a11y-track-area-ops.spec.ts:72-86 — an `exact: true` match on the bare title finds nothing;
     locators must anchor a regex at the title start with a trailing word boundary.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:72-92
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:80
-  owner_slice: features/wave/row
+  source: web/e2e/a11y-track-area-ops.spec.ts:72-92
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:80
+  owner_slice: features/track/row
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2797,22 +2797,22 @@
   migration: pending
 
 # =============================================================================
-# SECTION 8 — Wave lifecycle state machine (#269 P1)
+# SECTION 8 — Track lifecycle state machine (#269 P1)
 # =============================================================================
 
 - id: E2E-CAP-LIFECYCLE-001
   kind: capability
   family: lifecycle-happy
   statement: >
-    A freshly created wave must start in `draft` with `terminal_at: null`, and the full path
+    A freshly created track must start in `draft` with `terminal_at: null`, and the full path
     draft → planning → dispatching → working → reviewing → done must be drivable end-to-end.
   why: >
-    a11y-wave-lifecycle.spec.ts:74-116 — browser-level counterpart to the Rust unit matrix:
+    a11y-track-lifecycle.spec.ts:74-116 — browser-level counterpart to the Rust unit matrix:
     real REST writes, real event bus, real browser trace, so the assertions prove the WIRE
     contract, not just the in-process state machine.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:74-116
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:74
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle.spec.ts:74-116
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:74
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2826,12 +2826,12 @@
     `draft → planning` (kickoff) is the only edge allowed for BOTH User and SpecAgent; every
     edge from planning through done is spec-only.
   why: >
-    a11y-wave-lifecycle.spec.ts:82-101 and a11y-wave-lifecycle-rejections.spec.ts:171-175 — the
+    a11y-track-lifecycle.spec.ts:82-101 and a11y-track-lifecycle-rejections.spec.ts:171-175 — the
     validator's edge table is `(allow_user, allow_spec)` per edge; kickoff is the one
     both-allowed row.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:85-102
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:87
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle.spec.ts:85-102
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:87
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2842,15 +2842,15 @@
   kind: invariant
   family: lifecycle-events
   statement: >
-    Every accepted lifecycle edge must emit EXACTLY TWO events — a `wave.lifecycle_changed`
-    with payload `{id, area_id, from, to}` AND a paired `wave.updated` carrying the full row.
+    Every accepted lifecycle edge must emit EXACTLY TWO events — a `track.lifecycle_changed`
+    with payload `{id, area_id, from, to}` AND a paired `track.updated` carrying the full row.
   why: >
-    a11y-wave-lifecycle.spec.ts:310-318,333-342 — `emitted_events` is asserted to be 2 on every
-    forced edge; frontend cache invalidation hangs off `wave.updated` while the badge state
-    reads `wave.lifecycle_changed`. Missing either leaves the UI stale.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:290-345
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:316
-  owner_slice: features/wave/lifecycle
+    a11y-track-lifecycle.spec.ts:310-318,333-342 — `emitted_events` is asserted to be 2 on every
+    forced edge; frontend cache invalidation hangs off `track.updated` while the badge state
+    reads `track.lifecycle_changed`. Missing either leaves the UI stale.
+  source: web/e2e/a11y-track-lifecycle.spec.ts:290-345
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:316
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2864,11 +2864,11 @@
     `terminal_at` must be stamped on entry to a terminal state (done | canceled | failed) and
     stay null on every non-terminal state.
   why: >
-    a11y-wave-lifecycle.spec.ts:323-331 — the calendar window query and the UI's terminal-state
+    a11y-track-lifecycle.spec.ts:323-331 — the calendar window query and the UI's terminal-state
     badges read this field.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:323-331
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:326
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle.spec.ts:323-331
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:326
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2880,13 +2880,13 @@
   family: terminal-at
   statement: >
     Reopening `done → planning` must CLEAR `terminal_at` to null — in the PATCH response, in a
-    fresh GET, and in the paired `wave.updated` payload.
+    fresh GET, and in the paired `track.updated` payload.
   why: >
-    a11y-wave-lifecycle.spec.ts:144-173 — a stale Done timestamp would keep the calendar window
-    query and the terminal-state badges showing a closed wave as closed.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:118-174
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:146
-  owner_slice: features/wave/lifecycle
+    a11y-track-lifecycle.spec.ts:144-173 — a stale Done timestamp would keep the calendar window
+    query and the terminal-state badges showing a closed track as closed.
+  source: web/e2e/a11y-track-lifecycle.spec.ts:118-174
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:146
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2897,11 +2897,11 @@
   kind: invariant
   family: lifecycle-actors
   statement: >
-    Reopen (`done → planning`) is USER-ONLY: even the Spec Agent may not reopen a terminal wave.
-  why: a11y-wave-lifecycle.spec.ts:138-141 — a hard kernel rule in `validate_transition`.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:138-146
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:141
-  owner_slice: features/wave/lifecycle
+    Reopen (`done → planning`) is USER-ONLY: even the Spec Agent may not reopen a terminal track.
+  why: a11y-track-lifecycle.spec.ts:138-141 — a hard kernel rule in `validate_transition`.
+  source: web/e2e/a11y-track-lifecycle.spec.ts:138-146
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:141
+  owner_slice: features/track/lifecycle
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -2913,14 +2913,14 @@
   family: idempotency
   statement: >
     A same-state PATCH must be idempotent: return the existing row and emit NEITHER
-    `wave.lifecycle_changed` NOR `wave.updated` for that wave.
+    `track.lifecycle_changed` NOR `track.updated` for that track.
   why: >
-    a11y-wave-lifecycle.spec.ts:176-222 — `update_wave`'s idempotency shortcut. Assertions must
-    filter by wave id because the replay bootstrap can emit a late unrelated `wave.updated` that
+    a11y-track-lifecycle.spec.ts:176-222 — `update_track`'s idempotency shortcut. Assertions must
+    filter by track id because the replay bootstrap can emit a late unrelated `track.updated` that
     drifts into the negative window on a loaded runner.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:176-223
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:218
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle.spec.ts:176-223
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:218
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2934,13 +2934,13 @@
     A same-state kernel force must short-circuit with `emitted_events: 0` and leave the trace
     ring buffer empty.
   why: >
-    a11y-wave-lifecycle.spec.ts:225-271 — the counter makes idempotency DETERMINISTIC where the
+    a11y-track-lifecycle.spec.ts:225-271 — the counter makes idempotency DETERMINISTIC where the
     production PATCH handler (which returns only the row) can only be tested with a negative
     timing window that false-greens under WS backpressure. The trace cross-check catches a
     wire-format bug that emits yet still reports 0.
-  source: web/e2e/a11y-wave-lifecycle.spec.ts:225-272
-  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:252
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle.spec.ts:225-272
+  authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:252
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2952,13 +2952,13 @@
   family: lifecycle-rejections
   statement: >
     A User-actor PATCH for a spec-only edge (`planning → dispatching`) must return 403 with
-    body `code: "forbidden"`, and the wave's lifecycle must be UNCHANGED.
+    body `code: "forbidden"`, and the track's lifecycle must be UNCHANGED.
   why: >
-    a11y-wave-lifecycle-rejections.spec.ts:14-22,97-127 — the validator runs BEFORE the write.
+    a11y-track-lifecycle-rejections.spec.ts:14-22,97-127 — the validator runs BEFORE the write.
     The `code` discriminator is pinned so an error-shape refactor that drops it fails loudly.
-  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:97-127
-  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:97
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle-rejections.spec.ts:97-127
+  authoritative_test: web/e2e/a11y-track-lifecycle-rejections.spec.ts:97
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2973,12 +2973,12 @@
     with body `{ok: false, error: "validate_transition: …", from: "draft", to: "done"}` where
     the error text names BOTH endpoints.
   why: >
-    a11y-wave-lifecycle-rejections.spec.ts:23-32,129-166 — this is `IllegalEdge`, not
+    a11y-track-lifecycle-rejections.spec.ts:23-32,129-166 — this is `IllegalEdge`, not
     `NotAuthorized`; asserting both endpoint names means a regression that silently downgrades
     to NotAuthorized (a real semantic change) flips the test.
-  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:129-166
-  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:129
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle-rejections.spec.ts:129-166
+  authoritative_test: web/e2e/a11y-track-lifecycle-rejections.spec.ts:129
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2992,12 +2992,12 @@
     A Worker actor (`X-Calm-Actor: ai:codex`) must be rejected 403 on EVERY lifecycle edge —
     including the universally-allowed `draft → planning` kickoff — with an error naming "Worker".
   why: >
-    a11y-wave-lifecycle-rejections.spec.ts:33-43,168-207 — the Worker short-circuit sits at the
+    a11y-track-lifecycle-rejections.spec.ts:33-43,168-207 — the Worker short-circuit sits at the
     TOP of `validate_transition`, before any per-edge logic. The 403 must come from the
     lifecycle validator, not the later role gate.
-  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:168-207
-  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:168
-  owner_slice: features/wave/lifecycle
+  source: web/e2e/a11y-track-lifecycle-rejections.spec.ts:168-207
+  authoritative_test: web/e2e/a11y-track-lifecycle-rejections.spec.ts:168
+  owner_slice: features/track/lifecycle
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3011,10 +3011,10 @@
     `ai:codex` is the ONLY Worker-shaped `X-Calm-Actor` value the middleware accepts; other
     `ai:<id>` forms are rejected as BadRequest.
   why: >
-    a11y-wave-lifecycle-rejections.spec.ts:176-184 — `to_actor_id` maps `"ai:codex"` to
+    a11y-track-lifecycle-rejections.spec.ts:176-184 — `to_actor_id` maps `"ai:codex"` to
     `ActorId::AiCodex(CardId::empty())`, which `actor_kind` classifies as Worker.
-  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:176-184
-  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:190
+  source: web/e2e/a11y-track-lifecycle-rejections.spec.ts:176-184
+  authoritative_test: web/e2e/a11y-track-lifecycle-rejections.spec.ts:190
   owner_slice: features/auth/actor
   intentional_omission: false
   runtime_layer: features
@@ -3051,7 +3051,7 @@
   family: event-bus
   statement: >
     The default fixture's event sequence must be exactly
-    [area.updated, wave.updated, card.added ×3, overlay.set ×2] and the first N trace kinds must
+    [area.updated, track.updated, card.added ×3, overlay.set ×2] and the first N trace kinds must
     match it verbatim.
   why: >
     a11y-trace-smoke.spec.ts:34-45 — pinned so a fixture edit causes a noisy failure; this is the
@@ -3142,10 +3142,10 @@
   kind: capability
   family: deep-link
   statement: >
-    Deep-linking straight to `/calm/wave/<id>` must render the wave title within 15s and a
-    populated `button.wave-area` breadcrumb.
+    Deep-linking straight to `/calm/track/<id>` must render the track title within 15s and a
+    populated `button.track-area` breadcrumb.
   why: >
-    a11y-deep-link-after-reset.spec.ts:80-106 — `useWaveDetailQuery` shares the WS-resync race
+    a11y-deep-link-after-reset.spec.ts:80-106 — `useTrackDetailQuery` shares the WS-resync race
     surface; pre-#290 the breadcrumb rendered stale or empty.
   source: web/e2e/a11y-deep-link-after-reset.spec.ts:80-106
   authoritative_test: web/e2e/a11y-deep-link-after-reset.spec.ts:80
@@ -3181,8 +3181,8 @@
   kind: capability
   family: live-updates
   statement: >
-    An area or wave minted by a direct REST call from outside the browser must appear in the
-    sidebar live, via the resulting `EventScope::System` `area.updated` / `wave.updated` WS
+    An area or track minted by a direct REST call from outside the browser must appear in the
+    sidebar live, via the resulting `EventScope::System` `area.updated` / `track.updated` WS
     frames, with no reload.
   why: >
     helpers/reset.ts:42-52 — every a11y spec depends on this; it is also the everyday multi-tab /
@@ -3204,11 +3204,11 @@
   kind: capability
   family: spec-card
   statement: >
-    `POST /api/waves` must auto-create a spec card: a `kind: "codex"` card whose payload carries
+    `POST /api/tracks` must auto-create a spec card: a `kind: "codex"` card whose payload carries
     `spec_harness: true`.
   why: >
-    helpers/spec-chat.ts:93-101 — the same marker `routes/waves.rs::spec_harness_card_payload`
-    writes and `WaveReportPage.selectSpecCard` reads; it is how every surface finds "the" spec card.
+    helpers/spec-chat.ts:93-101 — the same marker `routes/tracks.rs::spec_harness_card_payload`
+    writes and `TrackReportPage.selectSpecCard` reads; it is how every surface finds "the" spec card.
   source: web/e2e/helpers/spec-chat.ts:102-128
   authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:38
   owner_slice: features/spec/chat
@@ -3222,11 +3222,11 @@
   kind: capability
   family: conversation-drawer
   statement: >
-    The wave report page must expose an `Open conversation` button that opens a
+    The track report page must expose an `Open conversation` button that opens a
     `<aside role="complementary" aria-label="Conversation drawer">` gaining the
     `report-conversation-drawer--open` class, and a `Close conversation` button to close it.
   why: >
-    a11y-spec-chat-seed.spec.ts:63-67 and wave-report-view.spec.ts:330-333 — the liveness UI
+    a11y-spec-chat-seed.spec.ts:63-67 and track-report-view.spec.ts:330-333 — the liveness UI
     (status chip + stop affordances + typing indicator) renders ONLY in conversation mode.
   source: web/e2e/a11y-spec-chat-seed.spec.ts:63-67
   authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:65
@@ -3260,13 +3260,13 @@
   kind: capability
   family: seed-path
   statement: >
-    Opening a wave MID-TURN must render, from the REST seed alone: a `Stop spec turn` button
+    Opening a track MID-TURN must render, from the REST seed alone: a `Stop spec turn` button
     (header chip), a `Stop turn` button (input line ■), a
     `<div role="status" aria-label="Spec Agent is working">` typing indicator, and a
     `.report-convo-state` chip reading `Turn Running` with `data-fsm="Working"`.
   why: >
     a11y-spec-chat-seed.spec.ts:41-83 — with WS phase frames dropped, the seed read is provably
-    the ONLY liveness source, which is exactly the "open the wave mid-turn" situation #676 broke.
+    the ONLY liveness source, which is exactly the "open the track mid-turn" situation #676 broke.
   source: web/e2e/a11y-spec-chat-seed.spec.ts:69-83
   authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:41
   owner_slice: features/spec/chat
@@ -3280,7 +3280,7 @@
   kind: invariant
   family: seed-path
   statement: >
-    Opening a wave while IDLE must render the chip as `Idle` / `data-fsm="Idle"` and NONE of the
+    Opening a track while IDLE must render the chip as `Idle` / `data-fsm="Idle"` and NONE of the
     working affordances must exist (count 0, not merely hidden).
   why: >
     a11y-spec-chat-seed.spec.ts:85-114 — the inverse pin; absence checks are anchored AFTER the
@@ -3566,21 +3566,21 @@
   migration: pending
 
 # =============================================================================
-# SECTION 11 — Wave report page (document, rails, outline, activity, drawer)
+# SECTION 11 — Track report page (document, rails, outline, activity, drawer)
 # =============================================================================
 
 - id: E2E-CAP-REPORT-001
   kind: capability
   family: report-page
   statement: >
-    A wave with a report must render WaveReportPage: an `<h1>` carrying the wave title (H1
-    renders ONLY inside WaveReportPage), the markdown body, a `<tree aria-label="Wave files">`,
+    A track with a report must render TrackReportPage: an `<h1>` carrying the track title (H1
+    renders ONLY inside TrackReportPage), the markdown body, a `<tree aria-label="Track files">`,
     a `<region aria-label="Outline">` and a `<region aria-label="Backlinks">`.
   why: >
-    wave-report-view.spec.ts:114-122 and wave-report-sidebar-files.spec.ts:91-99 — the H1 is the
+    track-report-view.spec.ts:114-122 and track-report-sidebar-files.spec.ts:91-99 — the H1 is the
     canonical "am I on the report surface?" probe used across the suite.
-  source: web/e2e/wave-report-view.spec.ts:114-122
-  authoritative_test: web/e2e/wave-report-view.spec.ts:103
+  source: web/e2e/track-report-view.spec.ts:114-122
+  authoritative_test: web/e2e/track-report-view.spec.ts:103
   owner_slice: features/report/page
   intentional_omission: false
   runtime_layer: features
@@ -3592,13 +3592,13 @@
   kind: capability
   family: report-write
   statement: >
-    `POST /api/waves/:id/report {summary, body, ifDocRev}` must persist a report; `ifDocRev: 0`
+    `POST /api/tracks/:id/report {summary, body, ifDocRev}` must persist a report; `ifDocRev: 0`
     is the initial-write revision.
   why: >
-    helpers/reset.ts:125-146 and wave-report-view.spec.ts:70-76 — the optimistic-concurrency
+    helpers/reset.ts:125-146 and track-report-view.spec.ts:70-76 — the optimistic-concurrency
     field is required on the write path, not optional.
-  source: web/e2e/wave-report-view.spec.ts:70-76
-  authoritative_test: web/e2e/wave-report-view.spec.ts:71
+  source: web/e2e/track-report-view.spec.ts:70-76
+  authoritative_test: web/e2e/track-report-view.spec.ts:71
   owner_slice: features/report/write
   intentional_omission: false
   runtime_layer: features
@@ -3611,13 +3611,13 @@
   family: report-files
   statement: >
     The Files rail must render a `<region aria-label="Files">` containing a
-    `<tree aria-label="Wave files">` whose `report.md` `treeitem` is clickable and becomes
+    `<tree aria-label="Track files">` whose `report.md` `treeitem` is clickable and becomes
     `aria-selected="true"`.
   why: >
-    wave-report-sidebar-files.spec.ts:96-105 — the wave-fs tree is the user's entry point into
+    track-report-sidebar-files.spec.ts:96-105 — the track-fs tree is the user's entry point into
     report and worktree artifacts.
-  source: web/e2e/wave-report-sidebar-files.spec.ts:96-106
-  authoritative_test: web/e2e/wave-report-sidebar-files.spec.ts:78
+  source: web/e2e/track-report-sidebar-files.spec.ts:96-106
+  authoritative_test: web/e2e/track-report-sidebar-files.spec.ts:78
   owner_slice: features/report/page
   intentional_omission: false
   runtime_layer: features
@@ -3629,13 +3629,13 @@
   kind: invariant
   family: report-files
   statement: >
-    Selecting `report.md` in the Files tree must NOT open a `.wave-report-files-viewer` panel
+    Selecting `report.md` in the Files tree must NOT open a `.track-report-files-viewer` panel
     (count must be 0) — the main document already IS the report.
   why: >
-    wave-report-sidebar-files.spec.ts:106 — an intentional carve-out; a rewrite that "adds the
+    track-report-sidebar-files.spec.ts:106 — an intentional carve-out; a rewrite that "adds the
     missing viewer" would double-render the report.
-  source: web/e2e/wave-report-sidebar-files.spec.ts:104-106
-  authoritative_test: web/e2e/wave-report-sidebar-files.spec.ts:106
+  source: web/e2e/track-report-sidebar-files.spec.ts:104-106
+  authoritative_test: web/e2e/track-report-sidebar-files.spec.ts:106
   owner_slice: features/report/page
   intentional_omission: true
   runtime_layer: features
@@ -3648,7 +3648,7 @@
   family: backlinks
   statement: >
     A report body containing `[Label](neige://wave/<id>)` must surface as a `role="link"` named
-    `Label` inside the target wave's `<region aria-label="Backlinks">`.
+    `Label` inside the target track's `<region aria-label="Backlinks">`.
   why: >
     a11y-axe.spec.ts:212-223,286-289 — the reverse-citation index; the link must be a real link
     role so keyboard/AT users can traverse it.
@@ -3669,11 +3669,11 @@
     StaticText inside the heading's accessibility subtree, and the outline list's
     `.report-outline-number` values must match the rendered body counters EXACTLY and in order.
   why: >
-    wave-report-view.spec.ts:336-397 — asserted through the CDP full AX tree, not the DOM, so the
+    track-report-view.spec.ts:336-397 — asserted through the CDP full AX tree, not the DOM, so the
     contract is what assistive tech actually perceives; drift between body and outline numbering
     makes the outline unusable as a navigation aid.
-  source: web/e2e/wave-report-view.spec.ts:366-397
-  authoritative_test: web/e2e/wave-report-view.spec.ts:336
+  source: web/e2e/track-report-view.spec.ts:366-397
+  authoritative_test: web/e2e/track-report-view.spec.ts:336
   owner_slice: features/report/outline
   intentional_omission: false
   runtime_layer: features
@@ -3687,10 +3687,10 @@
   statement: >
     Counter/outline agreement must hold for a pure-H1 report as well as an H2-sectioned one.
   why: >
-    wave-report-view.spec.ts:399-456 — reports authored with `#` top-level sections are a real
+    track-report-view.spec.ts:399-456 — reports authored with `#` top-level sections are a real
     shape; a numbering scheme keyed only to H2 silently produces an empty outline for them.
-  source: web/e2e/wave-report-view.spec.ts:399-456
-  authoritative_test: web/e2e/wave-report-view.spec.ts:399
+  source: web/e2e/track-report-view.spec.ts:399-456
+  authoritative_test: web/e2e/track-report-view.spec.ts:399
   owner_slice: features/report/outline
   intentional_omission: false
   runtime_layer: features
@@ -3706,11 +3706,11 @@
     never a `background-image`; a short heading must stay exactly one line-height tall, and an
     EMPTY heading (`##` with no text) must still have height > 0.
   why: >
-    wave-report-view.spec.ts:458-513 — making `::after` a block (or moving it to its own line)
+    track-report-view.spec.ts:458-513 — making `::after` a block (or moving it to its own line)
     makes short headings taller than one line; returning the counter to a float leaves an empty
     heading at 0px. `backgroundImage === 'none'` specifically forbids the former implementation.
-  source: web/e2e/wave-report-view.spec.ts:480-509
-  authoritative_test: web/e2e/wave-report-view.spec.ts:458
+  source: web/e2e/track-report-view.spec.ts:480-509
+  authoritative_test: web/e2e/track-report-view.spec.ts:458
   owner_slice: styles/report-typography
   intentional_omission: true
   runtime_layer: styles
@@ -3725,10 +3725,10 @@
     Report headings must be `overflow-x: clip` and `overflow-y: visible`, and the generated rule
     must never enlarge `.report-document-scroll`'s scrollWidth beyond clientWidth (+1px).
   why: >
-    wave-report-view.spec.ts:510-528 — horizontal clipping is load-bearing for the 100%-wide rule;
+    track-report-view.spec.ts:510-528 — horizontal clipping is load-bearing for the 100%-wide rule;
     keeping the block axis visible leaves focus decoration (e.g. a focused heading link) unclipped.
-  source: web/e2e/wave-report-view.spec.ts:510-528
-  authoritative_test: web/e2e/wave-report-view.spec.ts:527
+  source: web/e2e/track-report-view.spec.ts:510-528
+  authoritative_test: web/e2e/track-report-view.spec.ts:527
   owner_slice: styles/report-typography
   intentional_omission: true
   runtime_layer: styles
@@ -3741,9 +3741,9 @@
   family: heading-rule
   statement: >
     A link inside a report heading must remain focusable.
-  why: wave-report-view.spec.ts:514-516 — the clip must not swallow interactive children.
-  source: web/e2e/wave-report-view.spec.ts:514-516
-  authoritative_test: web/e2e/wave-report-view.spec.ts:516
+  why: track-report-view.spec.ts:514-516 — the clip must not swallow interactive children.
+  source: web/e2e/track-report-view.spec.ts:514-516
+  authoritative_test: web/e2e/track-report-view.spec.ts:516
   owner_slice: styles/report-typography
   intentional_omission: false
   runtime_layer: styles
@@ -3758,10 +3758,10 @@
     The report must render a `.report-activity-stack` of `.report-activity-card` buttons, one per
     harness user-message item fetched from `/api/cards/*/harness/items`.
   why: >
-    wave-report-view.spec.ts:149-166 — the instruction history rail; each row is a real button so
+    track-report-view.spec.ts:149-166 — the instruction history rail; each row is a real button so
     it is keyboard-reachable and dismissible.
-  source: web/e2e/wave-report-view.spec.ts:149-166
-  authoritative_test: web/e2e/wave-report-view.spec.ts:139
+  source: web/e2e/track-report-view.spec.ts:149-166
+  authoritative_test: web/e2e/track-report-view.spec.ts:139
   owner_slice: features/report/activity
   intentional_omission: false
   runtime_layer: features
@@ -3777,11 +3777,11 @@
     a pure overlay that never occupies document flow; at a narrow container (900px) it must be
     `position: static` with real height, finishing ABOVE where the document begins.
   why: >
-    wave-report-view.spec.ts:168-223 — the two-mode geometry is what keeps the reading column
+    track-report-view.spec.ts:168-223 — the two-mode geometry is what keeps the reading column
     centred at wide widths while still being readable at narrow ones. A single-mode rewrite either
     shifts the document sideways or overlaps it.
-  source: web/e2e/wave-report-view.spec.ts:168-223
-  authoritative_test: web/e2e/wave-report-view.spec.ts:184
+  source: web/e2e/track-report-view.spec.ts:168-223
+  authoritative_test: web/e2e/track-report-view.spec.ts:184
   owner_slice: features/report/activity
   intentional_omission: false
   runtime_layer: features
@@ -3796,10 +3796,10 @@
     `.report-activity-rows` must scroll INTERNALLY at a fixed 140px clientHeight rather than
     growing the page.
   why: >
-    wave-report-view.spec.ts:224-234 — an unbounded activity list would push the report body off
+    track-report-view.spec.ts:224-234 — an unbounded activity list would push the report body off
     screen as instruction history accumulates.
-  source: web/e2e/wave-report-view.spec.ts:224-234
-  authoritative_test: web/e2e/wave-report-view.spec.ts:228
+  source: web/e2e/track-report-view.spec.ts:224-234
+  authoritative_test: web/e2e/track-report-view.spec.ts:228
   owner_slice: features/report/activity
   intentional_omission: false
   runtime_layer: features
@@ -3815,10 +3815,10 @@
     `pointer-events: none` on the panel, `tabindex="-1"` on the cards, and the document must
     collapse back to exactly the position it occupies with no stack at all.
   why: >
-    wave-report-view.spec.ts:236-247 — all four properties together are what makes the hidden
+    track-report-view.spec.ts:236-247 — all four properties together are what makes the hidden
     panel fully inert to mouse AND keyboard while animating out.
-  source: web/e2e/wave-report-view.spec.ts:236-247
-  authoritative_test: web/e2e/wave-report-view.spec.ts:237
+  source: web/e2e/track-report-view.spec.ts:236-247
+  authoritative_test: web/e2e/track-report-view.spec.ts:237
   owner_slice: features/report/activity
   intentional_omission: false
   runtime_layer: features
@@ -3834,10 +3834,10 @@
     `Expand report rail`; collapsed, `.report-center` takes `grid-column-start: 2` and fills the
     shell width (within 2px).
   why: >
-    wave-report-view.spec.ts:531-551 — the grid-column contract is how the layout reflows without
+    track-report-view.spec.ts:531-551 — the grid-column contract is how the layout reflows without
     a JS measure pass.
-  source: web/e2e/wave-report-view.spec.ts:531-551
-  authoritative_test: web/e2e/wave-report-view.spec.ts:531
+  source: web/e2e/track-report-view.spec.ts:531-551
+  authoritative_test: web/e2e/track-report-view.spec.ts:531
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3852,10 +3852,10 @@
     With the rail collapsed at 1600px viewport, the report document must stay readable: width
     ≈748px (≥747), height ≥100, containing the body text, and with a non-null `offsetParent`.
   why: >
-    wave-report-view.spec.ts:553-581 — pins that "collapse the rail" widens the shell without
+    track-report-view.spec.ts:553-581 — pins that "collapse the rail" widens the shell without
     stretching the measure of the reading column past readability.
-  source: web/e2e/wave-report-view.spec.ts:553-581
-  authoritative_test: web/e2e/wave-report-view.spec.ts:580
+  source: web/e2e/track-report-view.spec.ts:553-581
+  authoritative_test: web/e2e/track-report-view.spec.ts:580
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3871,10 +3871,10 @@
     395–397px wide, and `.report-center` must shrink by exactly that amount — the drawer must
     never overlay the document.
   why: >
-    wave-report-view.spec.ts:583-610 — a docked (not overlaid) drawer is what lets the user read
+    track-report-view.spec.ts:583-610 — a docked (not overlaid) drawer is what lets the user read
     the report and the conversation at once.
-  source: web/e2e/wave-report-view.spec.ts:583-610
-  authoritative_test: web/e2e/wave-report-view.spec.ts:585
+  source: web/e2e/track-report-view.spec.ts:583-610
+  authoritative_test: web/e2e/track-report-view.spec.ts:585
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3889,10 +3889,10 @@
     The collapsed-rail `Expand report rail` opener must stay INSIDE the report shell: its
     `offsetParent` must be `.report-page` and all four edge offsets must be ≥ -1px.
   why: >
-    wave-report-view.spec.ts:612-634 — an opener positioned against the viewport escapes the shell
+    track-report-view.spec.ts:612-634 — an opener positioned against the viewport escapes the shell
     on scroll and becomes unclickable.
-  source: web/e2e/wave-report-view.spec.ts:612-634
-  authoritative_test: web/e2e/wave-report-view.spec.ts:629
+  source: web/e2e/track-report-view.spec.ts:612-634
+  authoritative_test: web/e2e/track-report-view.spec.ts:629
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3908,10 +3908,10 @@
     viewport height, and its BOTTOM edge must stay pinned to the viewport bottom (delta ≈0) even
     after the report is scrolled to its end.
   why: >
-    wave-report-view.spec.ts:250-333 — "docked to the viewport" is the mobile contract; a drawer
+    track-report-view.spec.ts:250-333 — "docked to the viewport" is the mobile contract; a drawer
     that scrolls away with the document is unreachable exactly when the user needs it.
-  source: web/e2e/wave-report-view.spec.ts:276-328
-  authoritative_test: web/e2e/wave-report-view.spec.ts:250
+  source: web/e2e/track-report-view.spec.ts:276-328
+  authoritative_test: web/e2e/track-report-view.spec.ts:250
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3926,10 +3926,10 @@
     With the narrow drawer open and the report scrolled to its maximum, the last paragraph's
     bottom must sit at or above the drawer panel's top — content must never be trapped underneath.
   why: >
-    wave-report-view.spec.ts:317-323 — the scroll container must reserve space for the drawer, not
+    track-report-view.spec.ts:317-323 — the scroll container must reserve space for the drawer, not
     just paint over it.
-  source: web/e2e/wave-report-view.spec.ts:292-323
-  authoritative_test: web/e2e/wave-report-view.spec.ts:317
+  source: web/e2e/track-report-view.spec.ts:292-323
+  authoritative_test: web/e2e/track-report-view.spec.ts:317
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3944,10 +3944,10 @@
     On a 390px viewport the expanded rail's `Collapse report rail` control must sit fully above
     the `Outline` section head (no vertical overlap) and keep ≥10px clearance from the right edge.
   why: >
-    wave-report-view.spec.ts:637-658 — at narrow widths a floated close button otherwise lands on
+    track-report-view.spec.ts:637-658 — at narrow widths a floated close button otherwise lands on
     top of the Outline header and steals its taps.
-  source: web/e2e/wave-report-view.spec.ts:637-658
-  authoritative_test: web/e2e/wave-report-view.spec.ts:637
+  source: web/e2e/track-report-view.spec.ts:637-658
+  authoritative_test: web/e2e/track-report-view.spec.ts:637
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -3962,10 +3962,10 @@
     The follow-up input must be reachable ONLY after the drawer is opened — the
     `Open conversation` entry button is enabled on load, but sending requires the drawer.
   why: >
-    wave-report-view.spec.ts:124-136 — deliberate two-step so a stray keystroke on the report can
+    track-report-view.spec.ts:124-136 — deliberate two-step so a stray keystroke on the report can
     never dispatch a turn.
-  source: web/e2e/wave-report-view.spec.ts:124-136
-  authoritative_test: web/e2e/wave-report-view.spec.ts:129
+  source: web/e2e/track-report-view.spec.ts:124-136
+  authoritative_test: web/e2e/track-report-view.spec.ts:129
   owner_slice: features/report/layout
   intentional_omission: true
   runtime_layer: features
@@ -3978,14 +3978,14 @@
   family: harness-items
   statement: >
     `GET /api/cards/*/harness/items` must return rows shaped
-    `{id, runtime_id, card_id, wave_id, thread_id, turn_id, item_uuid, item_type, method,
+    `{id, runtime_id, card_id, track_id, thread_id, turn_id, item_uuid, item_type, method,
     params (JSON string), created_at_ms}` with `method: "item/completed"` and a
     `params.item.content[].text` payload.
   why: >
-    wave-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the spec
+    track-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the spec
     route-fulfills it, so this IS the pinned contract.
-  source: web/e2e/wave-report-view.spec.ts:78-101
-  authoritative_test: web/e2e/wave-report-view.spec.ts:149
+  source: web/e2e/track-report-view.spec.ts:78-101
+  authoritative_test: web/e2e/track-report-view.spec.ts:149
   owner_slice: features/report/activity
   intentional_omission: false
   runtime_layer: features
@@ -4001,7 +4001,7 @@
   kind: capability
   family: terminal-card
   statement: >
-    `POST /api/waves/:id/terminal-cards {program, cwd, env, theme}` must mint a terminal card and
+    `POST /api/tracks/:id/terminal-cards {program, cwd, env, theme}` must mint a terminal card and
     return a payload carrying `terminal_id`; the kernel wraps `program` in `/bin/sh -c`
     server-side.
   why: >
@@ -4126,7 +4126,7 @@
     a11y-177-theme-toggle-no-remount.spec.ts:12-31 (#177) — the user's DevTools capture showed a
     new XtermView instance id on every toggle, destroying scrollback. jsdom unit tests could not
     reproduce it (RGL + ResizeObserver, real Suspense/lazy resolve timing, real query persister,
-    real wave-detail fetch); real Chromium is the last lever before instrumenting prod.
+    real track-detail fetch); real Chromium is the last lever before instrumenting prod.
   source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:140-188
   authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:91
   owner_slice: systems/terminal/card
@@ -4158,11 +4158,11 @@
   kind: capability
   family: spec-card-pty
   statement: >
-    The wave-create path must mint a spec card synchronously, and (when codex is available) that
+    The track-create path must mint a spec card synchronously, and (when codex is available) that
     card mounts an XtermView.
   why: >
     a11y-177-theme-toggle-no-remount.spec.ts:44-47 (#136 PR6 / #182) — no `+ Add → terminal` step
-    is needed to get a live PTY on a fresh wave.
+    is needed to get a live PTY on a fresh track.
   source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:124-138
   authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:127
   owner_slice: features/spec/chat
@@ -4176,7 +4176,7 @@
   kind: invariant
   family: spec-card-pty
   statement: >
-    Post-#510 PR-del the spec card is a CHAT PANEL with no XtermView; a fresh wave therefore has
+    Post-#510 PR-del the spec card is a CHAT PANEL with no XtermView; a fresh track therefore has
     ZERO registered xterm dump hooks until a terminal card is added.
   why: >
     new-terminal-osc-echo.spec.ts:174-178 and tui-theme-protocol.spec.ts:117-119 — an explicit
@@ -4237,7 +4237,7 @@
   kind: capability
   family: card-kinds
   statement: >
-    `POST /api/waves/:id/cards` must accept a `claude` card kind with payload
+    `POST /api/tracks/:id/cards` must accept a `claude` card kind with payload
     `{schemaVersion: 1, terminal_id, cwd}`, rendering a `.codex-card-pty` surface.
   why: >
     issue-423-tiny-mount.spec.ts:354-372 — an explicit card kind alongside terminal/codex/iframe
@@ -4255,7 +4255,7 @@
   kind: capability
   family: card-kinds
   statement: >
-    `POST /api/waves/:id/cards` must accept an `iframe` card kind with payload `{url}` and an
+    `POST /api/tracks/:id/cards` must accept an `iframe` card kind with payload `{url}` and an
     optional `sort`, rendering as an ordinary worker card via the iframe adapter.
   why: >
     helpers/reset.ts:148-153 — the renderer-free card used everywhere a populated card surface is
@@ -4313,7 +4313,7 @@
   kind: invariant
   family: osc-theme
   statement: >
-    After a wave-switch remount the terminal must RECLAIM Owner following the WS close, and the
+    After a track-switch remount the terminal must RECLAIM Owner following the WS close, and the
     daemon's persisted `set_default_colors` must survive the reconnect — so a theme changed while
     the user was away is reflected on return.
   why: >
@@ -4333,7 +4333,7 @@
   kind: invariant
   family: xterm-unmount
   statement: >
-    Navigating away from a wave must genuinely tear down that wave's XtermView React fiber — its
+    Navigating away from a track must genuinely tear down that track's XtermView React fiber — its
     `__xtermDumps__` entry must disappear, not merely be hidden; returning must re-register a
     fresh dump fn under the SAME terminalId.
   why: >
@@ -4448,7 +4448,7 @@
     `DARK_THEME_RGB` = `{fg: [216,219,226], bg: [15,20,24]}` and `LIGHT_THEME_RGB` must live in
     `web/src/api/themeRgb.ts` and be importable by e2e specs.
   why: >
-    new-terminal-card.spec.ts:54-57 and tui-theme-protocol.spec.ts:4 — every wave-creating fixture
+    new-terminal-card.spec.ts:54-57 and tui-theme-protocol.spec.ts:4 — every track-creating fixture
     in the suite carries the dark sentinel, and the tui-theme spec imports the real constants so a
     palette change cannot silently desync spec from app.
   source: web/e2e/tui-theme-protocol.spec.ts:4
@@ -4494,7 +4494,7 @@
     user's wheel and the page appears frozen.
   source: web/e2e/wheel-mode-edge.spec.ts:100-111
   authoritative_test: web/e2e/wheel-mode-edge.spec.ts:100
-  owner_slice: features/wave/scroll
+  owner_slice: features/track/scroll
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4512,7 +4512,7 @@
     reaches the end, and keeps scrolling to see the next card.
   source: web/e2e/wheel-mode-edge.spec.ts:113-142
   authoritative_test: web/e2e/wheel-mode-edge.spec.ts:113
-  owner_slice: features/wave/scroll
+  owner_slice: features/track/scroll
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4526,7 +4526,7 @@
     xterm.js v6 manages scrollback in its own IBuffer (viewportY/baseY), NOT via browser-native
     overflow on `.xterm-viewport` — `scrollHeight === clientHeight` always.
   why: >
-    wheel-mode-edge.spec.ts:129-134 and wheel-wave-switch.spec.ts:93-96 — any scrollback assertion
+    wheel-mode-edge.spec.ts:129-134 and wheel-track-switch.spec.ts:93-96 — any scrollback assertion
     written against `viewport.scrollHeight` is structurally meaningless; measurement must go
     through the dump hook or rendered `.xterm-screen` text.
   source: web/e2e/wheel-mode-edge.spec.ts:129-134
@@ -4540,15 +4540,15 @@
 
 - id: E2E-CAP-WHEEL-004
   kind: capability
-  family: wave-switch
+  family: track-switch
   statement: >
-    Terminal scrollback must PERSIST across a wave switch: navigating away and back must restore
+    Terminal scrollback must PERSIST across a track switch: navigating away and back must restore
     an `.xterm-view` with the SAME `data-terminal-id`, still rendering the previous output.
   why: >
-    wheel-wave-switch.spec.ts:72-135 — proving the terminal is reattached to the same live session
+    wheel-track-switch.spec.ts:72-135 — proving the terminal is reattached to the same live session
     rather than respawned; losing 200 lines of output on a nav is the failure mode.
-  source: web/e2e/wheel-wave-switch.spec.ts:109-135
-  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:72
+  source: web/e2e/wheel-track-switch.spec.ts:109-135
+  authoritative_test: web/e2e/wheel-track-switch.spec.ts:72
   owner_slice: systems/terminal/card
   intentional_omission: false
   runtime_layer: systems
@@ -4558,17 +4558,17 @@
 
 - id: E2E-INV-WHEEL-005
   kind: invariant
-  family: wave-switch
+  family: track-switch
   statement: >
-    After a wave-switch round trip, wheeling UP over the restored xterm must scroll the TERMINAL's
+    After a track-switch round trip, wheeling UP over the restored xterm must scroll the TERMINAL's
     scrollback (rendered text changes) and must NOT move the outer `.scroll` container.
   why: >
-    wheel-wave-switch-routing.spec.ts:91-180 — the routing regression: post-remount the wheel
+    wheel-track-switch-routing.spec.ts:91-180 — the routing regression: post-remount the wheel
     handler can end up bound to a stale element, so the terminal freezes and the page scrolls
     instead.
-  source: web/e2e/wheel-wave-switch-routing.spec.ts:172-180
-  authoritative_test: web/e2e/wheel-wave-switch-routing.spec.ts:91
-  owner_slice: features/wave/scroll
+  source: web/e2e/wheel-track-switch-routing.spec.ts:172-180
+  authoritative_test: web/e2e/wheel-track-switch-routing.spec.ts:91
+  owner_slice: features/track/scroll
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4577,15 +4577,15 @@
 
 - id: E2E-INV-WHEEL-006
   kind: invariant
-  family: wave-switch
+  family: track-switch
   statement: >
     Wheel assertions after a remount must wait for the restored `.xterm-screen` bounding box to
     STABILIZE across two consecutive reads before dispatching the wheel.
   why: >
-    wheel-wave-switch-routing.spec.ts:146-170 — the remounted terminal reflows for several frames;
+    wheel-track-switch-routing.spec.ts:146-170 — the remounted terminal reflows for several frames;
     wheeling at a stale coordinate lands on a different element and the test lies.
-  source: web/e2e/wheel-wave-switch-routing.spec.ts:146-170
-  authoritative_test: web/e2e/wheel-wave-switch-routing.spec.ts:149
+  source: web/e2e/wheel-track-switch-routing.spec.ts:146-170
+  authoritative_test: web/e2e/wheel-track-switch-routing.spec.ts:149
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4607,7 +4607,7 @@
     still cover.
   source: web/e2e/_scroll-probe.spec.ts:41-51
   authoritative_test: NONE
-  owner_slice: features/wave/scroll
+  owner_slice: features/track/scroll
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4618,7 +4618,7 @@
   kind: capability
   family: scroll-surfaces
   statement: >
-    Card focus must be observable as `:focus-within` on a `.wave-card` element, and the focusable
+    Card focus must be observable as `:focus-within` on a `.track-card` element, and the focusable
     card surfaces are `.report-doc`, `.term.live`, `.term:not(.live)`, `.codex-card`,
     `.file-viewer-card` (each with a clickable `.card-head`).
   why: >
@@ -4626,7 +4626,7 @@
     how focus is expressed; a cursor-routed vs focus-routed wheel model decision depends on it.
   source: web/e2e/_scroll-probe.spec.ts:291-331
   authoritative_test: NONE
-  owner_slice: features/wave/scroll
+  owner_slice: features/track/scroll
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4644,7 +4644,7 @@
     behaviour was undecided; a rewrite must pick cursor-routed or focus-routed deliberately.
   source: web/e2e/_scroll-probe.spec.ts:267-288
   authoritative_test: NONE
-  owner_slice: features/wave/scroll
+  owner_slice: features/track/scroll
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4698,7 +4698,7 @@
   statement: >
     In dark theme, every `text`-kind control's background must be neither fully transparent
     `rgba(0,0,0,0)` nor pure white `rgb(255,255,255)` — EXCEPT the allowlisted inline-rename
-    inputs `wave-title-input`, `area-title-input`, `area-nav-edit-input`.
+    inputs `track-title-input`, `area-title-input`, `area-nav-edit-input`.
   why: >
     color-system-anchor.spec.ts:19-23,49-54 — a transparent or white text input in dark mode is
     unreadable; the three inline-rename inputs are deliberately transparent because they sit
@@ -4760,11 +4760,11 @@
     The kernel's `GET /api/fs/listdir` walks the CONTAINER filesystem; `$HOME` is bind-mounted at
     the same path but `/tmp` is NOT shared.
   why: >
-    wave-create-browse-cwd.spec.ts:13-21 — a directory the test mkdirs under /tmp is invisible to
+    track-create-browse-cwd.spec.ts:13-21 — a directory the test mkdirs under /tmp is invisible to
     the kernel, so the picker spec times out hunting an entry that does not exist from the
     kernel's POV. Directory-picker fixtures must live under $HOME.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:13-25
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:57
+  source: web/e2e/track-create-browse-cwd.spec.ts:13-25
+  authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:57
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4779,10 +4779,10 @@
     The docker server image (debian:bookworm-slim, no netbase) has no `/etc/services`; scrollback
     fixtures must use a POSIX `echo` loop, not `cat /etc/services`.
   why: >
-    wheel-wave-switch.spec.ts:92-95 — a real environment constraint that silently produces an
+    wheel-track-switch.spec.ts:92-95 — a real environment constraint that silently produces an
     empty terminal instead of a failure.
-  source: web/e2e/wheel-wave-switch.spec.ts:95-103
-  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:101
+  source: web/e2e/wheel-track-switch.spec.ts:95-103
+  authoritative_test: web/e2e/wheel-track-switch.spec.ts:101
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4816,10 +4816,10 @@
     developer stack, so every chromium spec must namespace its cwds/titles with `Date.now()` (and
     where needed `Math.random()`) to avoid tripping `area_folders.UNIQUE(path)`.
   why: >
-    wave-create.spec.ts:12-17 and a11y-wave-area-ops.spec.ts:20-27 — concurrent or repeated runs
+    track-create.spec.ts:12-17 and a11y-track-area-ops.spec.ts:20-27 — concurrent or repeated runs
     otherwise collide on the unique path constraint.
-  source: web/e2e/wave-create.spec.ts:12-17
-  authoritative_test: web/e2e/wave-create.spec.ts:90
+  source: web/e2e/track-create.spec.ts:12-17
+  authoritative_test: web/e2e/track-create.spec.ts:90
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4851,7 +4851,7 @@
   family: hermeticity
   statement: >
     Every a11y spec must clear the trace ring buffer AFTER bootstrap completes, so per-test
-    assertions never see the bootstrap path's own `area.updated` / `wave.updated` frames.
+    assertions never see the bootstrap path's own `area.updated` / `track.updated` frames.
   why: >
     a11y-keyboard.spec.ts:203-212 — bootstrap pollution is the single most common source of
     trace-assertion flakes in this suite.
@@ -4871,11 +4871,11 @@
     "This event must NOT fire" is asserted as a bounded 1500ms `waitForEvent` whose rejection is
     the pass condition — never as an unbounded sleep-then-check.
   why: >
-    a11y-wave-area-ops.spec.ts:217-223,786-791 — 1500ms is comfortably wider than a kernel write +
+    a11y-track-area-ops.spec.ts:217-223,786-791 — 1500ms is comfortably wider than a kernel write +
     WS broadcast round trip and narrow enough not to slow the suite. Where a deterministic counter
     exists (dev force endpoint's `emitted_events`), prefer it over the timing window entirely.
-  source: web/e2e/a11y-wave-area-ops.spec.ts:217-223
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:221
+  source: web/e2e/a11y-track-area-ops.spec.ts:217-223
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:221
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4883,71 +4883,71 @@
   test_tier: browser
   migration: pending
 
-# ── #1147 S3 — choosing an existing directory when creating a wave (new `fe/`) ──
-# Mirrors the legacy E2E-CAP-WAVECREATE-014/015/016 directory-browser family,
+# ── #1147 S3 — choosing an existing directory when creating a track (new `fe/`) ──
+# Mirrors the legacy E2E-CAP-TRACKCREATE-014/015/016 directory-browser family,
 # re-anchored on the new app. The legacy rows stay `pending`: they describe
 # `web/`'s NewTaskForm, whose cwd field was *required* — the opposite default.
 
-- id: CAP-WAVEWORKSPACE-001
+- id: CAP-TRACKWORKSPACE-001
   kind: capability
-  family: wave-workspace
+  family: track-workspace
   statement: >
-    The new-wave page must offer an optional folder control, and with none chosen `NewWaveDraft`
-    must carry no cwd key at all, so `NewWaveRoute` posts neither cwd nor `attach_folder`.
+    The new-track page must offer an optional folder control, and with none chosen `NewTrackDraft`
+    must carry no cwd key at all, so `NewTrackRoute` posts neither cwd nor `attach_folder`.
   why: >
-    The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
-    `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
+    The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/tracks.rs`
+    `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/area/new-wave/public.tsx:205-227; fe/web/src/app/router/public.tsx:1870,1916-1941
-  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:322
-  owner_slice: features/wave/create
+  source: fe/web/src/features/area/new-track/public.tsx:205-227; fe/web/src/app/router/public.tsx:1870,1916-1941
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:322
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVEWORKSPACE-002
+- id: CAP-TRACKWORKSPACE-002
   kind: capability
-  family: wave-workspace
+  family: track-workspace
   statement: >
     Choosing a folder must post its absolute cwd together with `attach_folder` true; the flag may
     not be omitted, and no `areas/resolve` pre-flight may decide it.
   why: >
     With the flag omitted the kernel refuses any path no area has claimed ("is not claimed by any
-    area", `routes/waves.rs`), i.e. exactly the folders a user is likeliest to pick; true is a
-    no-op when this area already covers the path (same-area arm), so a second wave in one
+    area", `routes/tracks.rs`), i.e. exactly the folders a user is likeliest to pick; true is a
+    no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
   source: fe/web/src/app/router/public.tsx:1932-1941
-  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:367
-  owner_slice: features/wave/create
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:367
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVEWORKSPACE-003
+- id: CAP-TRACKWORKSPACE-003
   kind: capability
-  family: wave-workspace
+  family: track-workspace
   statement: >
-    The new-wave page must open `DirectoryBrowser` inside a modal `Dialog` and must render no
+    The new-track page must open `DirectoryBrowser` inside a modal `Dialog` and must render no
     browser inline; every other surface that can show a directory picker is registered, with how
     it hosts one, in `directory-picker-hosts`.
   why: >
     The guarantee is the modal, not the component that opens it, and #1211 is why the difference
     matters. `DirectoryField` chooses its behaviour by asking `useDialogView()` whether a dialog
     is above it: inside one it pushes a child view, and outside one it silently falls back to
-    rendering the browser *inline*. When the new-wave form moved from a dialog onto a route that
+    rendering the browser *inline*. When the new-track form moved from a dialog onto a route that
     fallback fired, and the picker became a file list unrolled under a chip — no focus trap, no
     Escape, no click-outside. An invariant naming `DirectoryField` could not catch that, because
     the control was still `DirectoryField`; one naming the modal does.
     The earlier statement's "rather than opening a second dialog" was the *nesting* hazard from
-    E2E-CAP-WAVECREATE-014, and it is scoped to a form that is itself inside a dialog: there the
+    E2E-CAP-TRACKCREATE-014, and it is scoped to a form that is itself inside a dialog: there the
     second dialog would fight the outer one's focus trap. On a route there is no outer dialog, so
     the hazard is absent and the prohibition was over-wide. Nesting is still forbidden where it
-    can occur, and that half is now stated on its own carrier: CAP-WAVEWORKSPACE-006.
+    can occur, and that half is now stated on its own carrier: CAP-TRACKWORKSPACE-006.
     The first draft of this row replaced it with "no surface may render the browser inline",
     which is a universal negative carried by a test that renders one component — it would have
     said nothing about the next call site to take the fallback, i.e. exactly the failure it was
@@ -4956,35 +4956,35 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/area/new-wave/public.tsx:737-752
-  authoritative_test: fe/web/src/features/area/new-wave/public.test.tsx:847
-  owner_slice: features/wave/create
+  source: fe/web/src/features/area/new-track/public.tsx:737-752
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:847
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVEWORKSPACE-006
+- id: CAP-TRACKWORKSPACE-006
   kind: capability
-  family: wave-workspace
+  family: track-workspace
   statement: >
     A folder control rendered inside a dialog must push `DirectoryBrowser` into that same dialog
     through `useDialogView`, swapping its accessible name, and must not open a second dialog.
   why: >
-    The nesting half of what CAP-WAVEWORKSPACE-003 used to say, split out when -003 was narrowed
+    The nesting half of what CAP-TRACKWORKSPACE-003 used to say, split out when -003 was narrowed
     to "the picker is modal" in #1211. It has to be split rather than dropped: a second dialog
     opened *inside* one fights the outer dialog's focus trap, which the outer dialog owns for its
     whole lifetime, and -003 alone no longer forbids it.
-    It is stated on the call site where the hazard can actually occur. `features/wave/new-card`
+    It is stated on the call site where the hazard can actually occur. `features/track/new-card`
     renders inside `app/router`'s add-card dialog, so it keeps `DirectoryField` and takes the
-    child-view branch; `features/area/new-wave` is a route with no dialog above it and is
+    child-view branch; `features/area/new-track` is a route with no dialog above it and is
     deliberately out of scope here — that is what -003 covers.
     Recorded as a new row because the old -003 wording was the *only* place either half was
-    written down, and E2E-CAP-WAVECREATE-014 — which its `why` pointed at — is a legacy pending
+    written down, and E2E-CAP-TRACKCREATE-014 — which its `why` pointed at — is a legacy pending
     row describing `web/`'s NewTaskForm, not this app.
   source: fe/web/src/ui/schema-form/fields/DirectoryField/public.tsx:79-90
-  authoritative_test: fe/web/src/features/wave/new-card/public.test.tsx:89
+  authoritative_test: fe/web/src/features/track/new-card/public.test.tsx:89
   owner_slice: ui/schema-form
   intentional_omission: false
   runtime_layer: ui
@@ -4992,9 +4992,9 @@
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVEWORKSPACE-004
+- id: CAP-TRACKWORKSPACE-004
   kind: capability
-  family: wave-workspace
+  family: track-workspace
   statement: >
     The listdir read must decode into the browser's listing shape: `is_dir` becomes `isDirectory`,
     and every entry gets an absolute path built with the browser's own `joinDirectoryPath`.
@@ -5011,11 +5011,11 @@
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVEWORKSPACE-005
+- id: CAP-TRACKWORKSPACE-005
   kind: capability
-  family: wave-workspace
+  family: track-workspace
   statement: >
-    A wave-create folder clash must be rendered from the structured `FolderConflict` body — the
+    A track-create folder clash must be rendered from the structured `FolderConflict` body — the
     path, the owning area's name, and a remedy that differs per conflict kind — never as the bare
     status word, and never as a raw area id.
   why: >
@@ -5024,30 +5024,30 @@
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
   source: fe/core/domain/area.ts:159-196; fe/web/src/app/router/public.tsx:1964-1971
-  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:430
-  owner_slice: features/wave/create
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:430
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
 
-# ── #1211 S2 — a wave starts unnamed, and the first sentence is the intent ────
+# ── #1211 S2 — a track starts unnamed, and the first sentence is the intent ────
 # The legacy rows in this file describe a front-end whose create form *required*
 # a sentence and posted it as the title; they stay `pending` and are not
 # restated here. What follows is the rewrite's opposite, stated positively.
-# INV-WAVENAME-013 is deliberately the inverse of E2E-INV-RENAME-009 above.
+# INV-TRACKNAME-013 is deliberately the inverse of E2E-INV-RENAME-009 above.
 
-- id: CAP-WAVENAME-011
+- id: CAP-TRACKNAME-011
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
-    The new-wave page must collect no title text — what it does collect is the wave's intent, and
+    The new-track page must collect no title text — what it does collect is the track's intent, and
     the template's own inputs, such as issue development's Issue URL, are untouched — and its
-    `NewWaveDraft` must carry no title key — absence, not the empty string — so the create POST
-    omits it and the kernel stores the empty title that `calm.wave.rename` is allowed to fill in.
+    `NewTrackDraft` must carry no title key — absence, not the empty string — so the create POST
+    omits it and the kernel stores the empty title that `calm.track.rename` is allowed to fill in.
   why: >
-    #1211 S1 made the title stop being the wave's intent, so a title collected here reaches
+    #1211 S1 made the title stop being the track's intent, so a title collected here reaches
     nothing; worse, any non-empty title makes every later spec-agent rename answer
     `already_named`, which would leave S3 dead code. Absence rather than the empty string because
     the two reach the same stored value but say different things about who decided the name, and
@@ -5056,21 +5056,21 @@
     the statement had to move from "collects nothing" to "collects the intent and not a name" —
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
-  source: fe/web/src/features/area/new-wave/public.tsx:205-217,462-472
-  authoritative_test: fe/web/src/features/area/new-wave/public.test.tsx:187;
-    fe/web/src/app/router/new-wave-route.test.tsx:295
-  owner_slice: features/wave/create
+  source: fe/web/src/features/area/new-track/public.tsx:205-217,462-472
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:187;
+    fe/web/src/app/router/new-track-route.test.tsx:295
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVENAME-012
+- id: CAP-TRACKNAME-012
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
-    The new-wave page must put the caret in its composer on mount, so the first thing typed on
+    The new-track page must put the caret in its composer on mount, so the first thing typed on
     arrival reaches the field.
   why: >
     #1161 fixed a dialog that opened on its header Close button, where the first space bar threw
@@ -5082,32 +5082,32 @@
     `ChatComposerInput` forwards its DOM ref to the *wrapper*, which is not focusable, so a ref
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
-  source: fe/web/src/features/area/new-wave/public.tsx:392-425
-  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:265
-  owner_slice: features/wave/create
+  source: fe/web/src/features/area/new-track/public.tsx:392-425
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:265
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
 
-- id: INV-WAVENAME-013
+- id: INV-TRACKNAME-013
   kind: invariant
-  family: wave-rename
+  family: track-rename
   statement: >
-    On the rewrite's wave page, committing an empty title is a request and not a cancel: the page
+    On the rewrite's track page, committing an empty title is a request and not a cancel: the page
     passes `emptyCommit` "clear" and a PATCH carrying the empty title leaves. The area header
     keeps the primitive's "cancel" default, and an already-blank title stays a no-op on both.
   why: >
-    A wave has a second namer — the spec agent's `calm.wave.rename`, which succeeds only while the
+    A track has a second namer — the spec agent's `calm.track.rename`, which succeeds only while the
     title is empty (#1211 S3) — so clearing the name is how a reader hands naming back to it, and
     swallowing the keystroke leaves "I cleared it, pressed Enter, and nothing happened". An area has
     no such agent, so the same gesture there must stay write-free: this is why the semantics is an
     explicit per-caller prop and not the shared primitive's default. The already-blank case is
     arithmetic, not policy — there is no state change to request.
     The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
-  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/wave/page/public.tsx:293-300
-  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:385
+  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/track/page/public.tsx:293-300
+  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:385
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -5115,21 +5115,21 @@
   test_tier: jsdom
   migration: migrated
 
-- id: INV-WAVENAME-014
+- id: INV-TRACKNAME-014
   kind: invariant
-  family: wave-rename
+  family: track-rename
   statement: >
     `EditableTitle` must keep the displayed stand-in and the edited value in separate carriers:
     `placeholder` is what read mode shows for a blank name, `value` is what the editor opens on.
-    The wave header therefore passes the raw title, never `waveDisplayTitle`'s fallback.
+    The track header therefore passes the raw title, never `trackDisplayTitle`'s fallback.
   why: >
-    While one prop did both, the wave page fed it the display fallback, so opening the rename box
-    on an unnamed wave put "Untitled wave" in the box and the reader had to delete it before
+    While one prop did both, the track page fed it the display fallback, so opening the rename box
+    on an unnamed track put "Untitled track" in the box and the reader had to delete it before
     typing. It could not be *stored* — resubmitting it hit the unchanged-value arm and wrote
     nothing — so the defect is the text in the box, not a write, and a fix aimed at persistence
     would have been aimed at nothing.
-  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/wave/page/public.tsx:293-300
-  authoritative_test: fe/web/src/features/wave/page/public.contract.test.tsx:154
+  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/track/page/public.tsx:293-300
+  authoritative_test: fe/web/src/features/track/page/public.contract.test.tsx:154
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -5137,27 +5137,27 @@
   test_tier: jsdom
   migration: migrated
 
-- id: CAP-WAVENAME-015
+- id: CAP-TRACKNAME-015
   kind: capability
-  family: wave-rename
+  family: track-rename
   statement: >
-    Creating a wave must land the reader in its spec conversation with the caret in the composer:
-    the create site marks the navigation it makes (`go({ openSpec: true })`), the wave route consumes
+    Creating a track must land the reader in its spec conversation with the caret in the composer:
+    the create site marks the navigation it makes (`go({ openSpec: true })`), the track route consumes
     that mark the first time its body mounts — striking it off unconditionally, and opening the
     spec card in the same pass when the detail in hand has one — and the composer takes focus
     through `focusOnMount`. The mark belongs to that one history entry and to nothing else: no
     other route may read or clear it, that first mount strikes it off whether or not anything was
     opened, and an entry whose body never mounted keeps it — so
     displaying that same entry again (a reload, the error box's Retry, or the Back button) arms it
-    again, while any fresh navigation to the wave is a new entry and carries no mark.
+    again, while any fresh navigation to the track is a new entry and carries no mark.
   why: >
-    The wave arrives with no name and nothing said in it, so a shut drawer is a blank page with no
+    The track arrives with no name and nothing said in it, so a shut drawer is a blank page with no
     visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
-    card id — `POST /api/waves` answers with a Wave and the spec card's id only exists once the
+    card id — `POST /api/tracks` answers with a Track and the spec card's id only exists once the
     detail has landed, and widening the create response to carry it would tie the create contract
     to what a spec card looks like, which #1189 is still moving. It is carried by the navigation
     rather than in a provider because a global slot has no owner: the create runs from the rail
-    with another wave still mounted, so that wave's route body can read and clear a request
+    with another track still mounted, so that track's route body can read and clear a request
     addressed to a different one, while a body that clears only its own leaves the request
     standing when the landing never happens (a failed detail read is enough) and springs the
     drawer open on an unrelated visit later. Being per-entry is also what decides the returning
@@ -5173,7 +5173,7 @@
   # caret, 263 that a fresh navigation carries no mark, 300 that returning by Back to the entry whose
   # landing failed arms it again, 329 that redeeming is one-shot, 357 that the mark is struck off even
   # when there was no card to open.
-  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:207,263,300,329,357
+  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:207,263,300,329,357
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app

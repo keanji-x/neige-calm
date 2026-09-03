@@ -1,15 +1,15 @@
-//! PR6 (#136) — atomic spec card binding on wave create.
+//! PR6 (#136) — atomic spec card binding on track create.
 //!
 //! Coverage:
-//!   * `POST /api/waves` atomically mints a single `CardRole::Spec`
-//!     codex card under the wave.
-//!   * Two events emit in order: `Event::WaveUpdated` (wave-scoped),
+//!   * `POST /api/tracks` atomically mints a single `CardRole::Spec`
+//!     codex card under the track.
+//!   * Two events emit in order: `Event::TrackUpdated` (track-scoped),
 //!     then `Event::CardAdded` (card-scoped). No spurious
 //!     `card.updated`.
 //!   * The card_role_cache carries `Spec` for the auto-minted card.
-//!   * `enforce_role` permits the spec card to emit `WaveUpdated`
+//!   * `enforce_role` permits the spec card to emit `TrackUpdated`
 //!     (via direct CardRoleCache lookup + `enforce_role` call).
-//!   * With a broken shared codex daemon, wave create still returns
+//!   * With a broken shared codex daemon, track create still returns
 //!     201 and commits an inert spec card with no terminal row.
 //!
 //! Strategy mirrors `tests/codex_card_endpoint.rs`: build a real Axum
@@ -28,7 +28,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, TrackId};
 use calm_server::model::{CardRole, NewArea};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::role_gate::enforce_role;
@@ -51,7 +51,7 @@ struct Boot {
 }
 
 /// Boot a router pointing at a non-existent codex bin. The shared daemon
-/// start fails, but `POST /api/waves` still commits the wave/spec/report
+/// start fails, but `POST /api/tracks` still commits the track/spec/report
 /// rows and returns 201 with an inert spec card.
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
@@ -75,8 +75,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -88,11 +88,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-spec-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         {
             // Deterministically-broken codex bin (absolute, absent) so the
-            // spec-push app-server boot fails fast regardless of PATH. Wave
+            // spec-push app-server boot fails fast regardless of PATH. Track
             // create tolerates this (#293 / PR #311) and returns 201; the
             // commit-time events still broadcast before the boot attempt,
             // which is what this test asserts.
@@ -101,7 +104,7 @@ async fn boot() -> Boot {
             Arc::new(codex)
         },
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -170,18 +173,18 @@ async fn collect_envelopes(events: &EventBus, n: usize) -> Vec<BroadcastEnvelope
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn post_api_waves_mints_spec_card_atomically() {
+async fn post_api_tracks_mints_spec_card_atomically() {
     let boot = boot().await;
 
     // Subscribe before firing so we catch both envelopes the route
     // produces (commit-then-emit invariant). The daemon spawn will
     // fail (binary doesn't exist) — that errors *after* the events
     // already broadcast, so the test still sees them.
-    // Issue #229 PR B — wave create now emits four envelopes in one
-    // tx: `WaveUpdated`, `CardAdded(spec)`, `CardAdded(report)`,
+    // Issue #229 PR B — track create now emits four envelopes in one
+    // tx: `TrackUpdated`, `CardAdded(spec)`, `CardAdded(report)`,
     // `OverlaySet(layout)`. Order in the bus matches the order the
     // closure pushes them. The two CardAdded envelopes are
-    // distinguishable by `card.kind` ("codex" vs "wave-report").
+    // distinguishable by `card.kind` ("codex" vs "track-report").
     let subscription = {
         let events = boot.events.clone();
         tokio::spawn(async move { collect_envelopes(&events, 4).await })
@@ -191,13 +194,13 @@ async fn post_api_waves_mints_spec_card_atomically() {
 
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
-        json!({"area_id": boot.area_id, "title": "first wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        "/api/tracks",
+        json!({"area_id": boot.area_id, "title": "first track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // Issue #293 / PR #311: the spec-push app-server boot is non-fatal.
     // With a broken codex bin the boot fails, but the route still returns
-    // 201 (inert wave). The persisted rows (wave + spec card + terminal)
+    // 201 (inert track). The persisted rows (track + spec card + terminal)
     // and the events that emitted at commit-time — which is what this test
     // asserts — survive regardless of the boot outcome.
     assert_eq!(
@@ -212,15 +215,15 @@ async fn post_api_waves_mints_spec_card_atomically() {
         .expect("collector finished")
         .expect("collector task ok");
 
-    // First envelope: WaveUpdated, wave-scoped, actor=User.
+    // First envelope: TrackUpdated, track-scoped, actor=User.
     assert!(
-        matches!(&envelopes[0].event, Event::WaveUpdated(_)),
-        "first envelope must be WaveUpdated; got: {:?}",
+        matches!(&envelopes[0].event, Event::TrackUpdated(_)),
+        "first envelope must be TrackUpdated; got: {:?}",
         envelopes[0].event,
     );
     assert!(
-        matches!(&envelopes[0].scope, EventScope::Wave { .. }),
-        "WaveUpdated must be wave-scoped; got: {:?}",
+        matches!(&envelopes[0].scope, EventScope::Track { .. }),
+        "TrackUpdated must be track-scoped; got: {:?}",
         envelopes[0].scope,
     );
     assert_eq!(envelopes[0].actor, ActorId::User);
@@ -238,10 +241,10 @@ async fn post_api_waves_mints_spec_card_atomically() {
     );
     assert_eq!(envelopes[1].actor, ActorId::User);
 
-    // Third envelope: CardAdded (wave-report — PR B), card-scoped.
+    // Third envelope: CardAdded (track-report — PR B), card-scoped.
     assert!(
         matches!(&envelopes[2].event, Event::CardAdded(_)),
-        "third envelope must be CardAdded(wave-report); got: {:?}",
+        "third envelope must be CardAdded(track-report); got: {:?}",
         envelopes[2].event,
     );
     let spec_card_id = match &envelopes[1].event {
@@ -254,16 +257,16 @@ async fn post_api_waves_mints_spec_card_atomically() {
     match &envelopes[2].event {
         Event::CardAdded(c) => {
             assert_eq!(
-                c.kind, "wave-report",
-                "third envelope is the wave-report card"
+                c.kind, "track-report",
+                "third envelope is the track-report card"
             );
-            assert!(!c.deletable, "wave-report card is kernel-owned");
+            assert!(!c.deletable, "track-report card is kernel-owned");
         }
         _ => unreachable!(),
     }
 
     // Fourth envelope: OverlaySet(layout) — kernel-seeded layout
-    // overlay positioning the wave-report card at the top of the grid.
+    // overlay positioning the track-report card at the top of the grid.
     assert!(
         matches!(&envelopes[3].event, Event::OverlaySet(_)),
         "fourth envelope must be OverlaySet(layout); got: {:?}",
@@ -277,22 +280,26 @@ async fn post_api_waves_mints_spec_card_atomically() {
         "spec card's role must be Spec in the cache",
     );
 
-    // DB invariants: spec + wave-report cards under the wave, kind=codex
+    // DB invariants: spec + track-report cards under the track, kind=codex
     // for the spec, and no terminal row for the inert spec card.
-    let wave_id = match &envelopes[0].event {
-        Event::WaveUpdated(w) => w.id.clone(),
+    let track_id = match &envelopes[0].event {
+        Event::TrackUpdated(w) => w.id.clone(),
         _ => unreachable!(),
     };
-    let cards = boot.repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    assert_eq!(cards.len(), 2, "spec + wave-report card per wave at create",);
+    let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
+    assert_eq!(
+        cards.len(),
+        2,
+        "spec + track-report card per track at create",
+    );
     let spec_in_db = cards
         .iter()
         .find(|c| c.kind == "codex")
         .expect("spec card in db");
     assert_eq!(spec_in_db.id, spec_card_id);
     assert!(
-        cards.iter().any(|c| c.kind == "wave-report"),
-        "wave-report card in db",
+        cards.iter().any(|c| c.kind == "track-report"),
+        "track-report card in db",
     );
     let term = boot
         .repo
@@ -306,25 +313,25 @@ async fn post_api_waves_mints_spec_card_atomically() {
 }
 
 #[tokio::test]
-async fn spec_card_can_emit_wave_updated_via_enforce_role() {
-    // The spec card minted by `POST /api/waves` must satisfy
-    // `enforce_role`'s `WaveUpdated`-from-AiSpec rule. We don't
+async fn spec_card_can_emit_track_updated_via_enforce_role() {
+    // The spec card minted by `POST /api/tracks` must satisfy
+    // `enforce_role`'s `TrackUpdated`-from-AiSpec rule. We don't
     // actually go through the route here — we mint the card directly
     // via the cache + call the gate to lock in the contract.
     let cache = CardRoleCache::new();
     let spec_id = CardId::from("spec-card-pr6");
-    cache.insert(spec_id.clone(), CardRole::Spec, WaveId::from("w"));
+    cache.insert(spec_id.clone(), CardRole::Spec, TrackId::from("w"));
 
-    // A WaveUpdated event from AiSpec(spec_id) under Wave scope.
-    let evt = Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
-        calm_server::model::Wave {
+    // A TrackUpdated event from AiSpec(spec_id) under Track scope.
+    let evt = Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+        calm_server::model::Track {
             id: "w".into(),
             area_id: "c".into(),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
             pinned_at: None,
-            lifecycle: calm_server::model::WaveLifecycle::Draft,
+            lifecycle: calm_server::model::TrackLifecycle::Draft,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
@@ -337,11 +344,11 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
         },
         None,
     ));
-    let scope = EventScope::Wave {
-        wave: "w".into(),
+    let scope = EventScope::Track {
+        track: "w".into(),
         area: "c".into(),
     };
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
     let res = enforce_role(
         &ActorId::AiSpec(spec_id.clone()),
         &evt,
@@ -351,7 +358,7 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
     );
     assert!(
         res.is_ok(),
-        "AiSpec(spec-card) must be permitted to emit WaveUpdated: {res:?}",
+        "AiSpec(spec-card) must be permitted to emit TrackUpdated: {res:?}",
     );
 }
 
@@ -361,9 +368,9 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
 
 #[tokio::test]
 async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
-    use calm_server::db::sqlite::{area_create_tx, wave_create_tx};
+    use calm_server::db::sqlite::{area_create_tx, track_create_tx};
     use calm_server::db::write_with_events_typed;
-    use calm_server::model::{NewArea, NewWave};
+    use calm_server::model::{NewArea, NewTrack};
 
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -372,12 +379,12 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
     );
     let events = EventBus::new();
     let cache = CardRoleCache::new();
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
 
     let mut rx = events.subscribe_filtered();
 
     // The closure emits two distinct events: AreaUpdated under
-    // EventScope::Area, and WaveUpdated under EventScope::Wave.
+    // EventScope::Area, and TrackUpdated under EventScope::Track.
     let event_ids: Vec<i64> = write_with_events_typed(
         repo.as_ref(),
         ActorId::User,
@@ -395,12 +402,12 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     },
                 )
                 .await?;
-                let wave = wave_create_tx(
+                let track = track_create_tx(
                     tx,
-                    NewWave {
+                    NewTrack {
                         template_input: None,
                         area_id: area.id.clone(),
-                        title: "plural-wave".into(),
+                        title: "plural-track".into(),
                         sort: None,
                         cwd: String::new(),
                         template_id: None,
@@ -409,15 +416,15 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
-                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &calm_server::wave_area_cache::WaveAreaCache::new(),
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    &calm_server::track_area_cache::TrackAreaCache::new(),
                 )
                 .await?;
                 let area_scope = EventScope::Area {
                     area: area.id.clone(),
                 };
-                let wave_scope = EventScope::Wave {
-                    wave: wave.id.clone(),
+                let track_scope = EventScope::Track {
+                    track: track.id.clone(),
                     area: area.id.clone(),
                 };
                 Ok((
@@ -425,9 +432,9 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     vec![
                         (area_scope, Event::AreaUpdated(area)),
                         (
-                            wave_scope,
-                            Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
-                                wave, None,
+                            track_scope,
+                            Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+                                track, None,
                             )),
                         ),
                     ],
@@ -456,8 +463,8 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
         .unwrap();
     assert!(matches!(env1.event, Event::AreaUpdated(_)));
     assert!(matches!(env1.scope, EventScope::Area { .. }));
-    assert!(matches!(env2.event, Event::WaveUpdated(_)));
-    assert!(matches!(env2.scope, EventScope::Wave { .. }));
+    assert!(matches!(env2.event, Event::TrackUpdated(_)));
+    assert!(matches!(env2.scope, EventScope::Track { .. }));
 }
 
 #[tokio::test]
@@ -474,7 +481,7 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
     );
     let events = EventBus::new();
     let cache = CardRoleCache::new();
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
 
     // Pre-check: no areas exist.
     assert!(repo.areas_list().await.unwrap().is_empty());
@@ -519,9 +526,9 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
 
 #[tokio::test]
 async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
-    use calm_server::db::sqlite::{area_create_tx, wave_create_tx};
+    use calm_server::db::sqlite::{area_create_tx, track_create_tx};
     use calm_server::db::write_with_events_typed;
-    use calm_server::model::{NewArea, NewWave};
+    use calm_server::model::{NewArea, NewTrack};
 
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -531,17 +538,17 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
     let events = EventBus::new();
     let cache = CardRoleCache::new();
 
-    // Actor is `AiCodex(known-worker)` — *cannot* emit WaveUpdated
+    // Actor is `AiCodex(known-worker)` — *cannot* emit TrackUpdated
     // per enforce_role. Closure returns two events; the second is
-    // the WaveUpdated that will trip the gate. Everything must
+    // the TrackUpdated that will trip the gate. Everything must
     // roll back.
     let worker_id = CardId::from("worker-card-id");
     cache.insert(
         worker_id.clone(),
         CardRole::Worker,
-        WaveId::from("worker-wave"),
+        TrackId::from("worker-track"),
     );
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
 
     assert!(repo.areas_list().await.unwrap().is_empty());
 
@@ -564,12 +571,12 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                     },
                 )
                 .await?;
-                let wave = wave_create_tx(
+                let track = track_create_tx(
                     tx,
-                    NewWave {
+                    NewTrack {
                         template_input: None,
                         area_id: area.id.clone(),
-                        title: "gated-wave".into(),
+                        title: "gated-track".into(),
                         sort: None,
                         cwd: String::new(),
                         template_id: None,
@@ -578,15 +585,15 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
-                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
                     &wcc_for_tx,
                 )
                 .await?;
                 let area_scope = EventScope::Area {
                     area: area.id.clone(),
                 };
-                let wave_scope = EventScope::Wave {
-                    wave: wave.id.clone(),
+                let track_scope = EventScope::Track {
+                    track: track.id.clone(),
                     area: area.id.clone(),
                 };
                 Ok((
@@ -594,12 +601,12 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                     vec![
                         // First event passes the gate (AreaUpdated +
                         // Area scope — section 2 of enforce_role only
-                        // gates WaveUpdated). Second one violates.
+                        // gates TrackUpdated). Second one violates.
                         (area_scope, Event::AreaUpdated(area)),
                         (
-                            wave_scope,
-                            Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
-                                wave, None,
+                            track_scope,
+                            Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+                                track, None,
                             )),
                         ),
                     ],
@@ -611,7 +618,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
 
     assert!(res.is_err(), "role violation must surface as Err");
     // No rows survive — the violation rolled back BOTH the area
-    // and the wave even though the area emit itself was legal.
+    // and the track even though the area emit itself was legal.
     assert!(
         repo.areas_list().await.unwrap().is_empty(),
         "area must be rolled back when any later event in the batch trips the gate",

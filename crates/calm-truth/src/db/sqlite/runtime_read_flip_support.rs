@@ -1,6 +1,6 @@
 use super::session_projection::runtime_get_projectable_for_card_from_pool;
 use super::*;
-use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme, new_id};
+use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
 use crate::session_projection_repo::{
     AgentProvider, RuntimeId, Tx as WorkerSessionProjectionTx, WorkerSessionInit,
     WorkerSessionKind, WorkerSessionProjection,
@@ -83,9 +83,9 @@ pub(super) async fn create_card_in_tx(
     )
     .await
     .expect("create area");
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: format!("read flip {label}"),
@@ -97,17 +97,17 @@ pub(super) async fn create_card_in_tx(
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
-    .expect("create wave");
+    .expect("create track");
     let card_id = format!("card-read-flip-{label}");
     let card = card_create_with_id_tx(
         tx,
         card_id,
         NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: card_kind.into(),
             sort: None,
@@ -196,9 +196,9 @@ pub(super) async fn seed_terminal_runtime(
     )
     .await
     .expect("create terminal area");
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: format!("read flip {label}"),
@@ -210,18 +210,18 @@ pub(super) async fn seed_terminal_runtime(
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
-    .expect("create terminal wave");
+    .expect("create terminal track");
     let runtime_id = format!("rt-read-flip-{label}");
     let (_card, terminal) = card_with_terminal_create_tx(
         &mut tx,
         format!("card-read-flip-{label}"),
         &runtime_id,
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -261,9 +261,9 @@ pub(super) async fn seed_codex_terminal_card(
     )
     .await
     .expect("create codex terminal area");
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: format!("read flip {label}"),
@@ -275,18 +275,18 @@ pub(super) async fn seed_codex_terminal_card(
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
-    .expect("create codex terminal wave");
+    .expect("create codex terminal track");
     let runtime_id = format!("rt-read-flip-{label}-initial");
     let (card, terminal, _mcp_token) = card_with_codex_create_tx(
         &mut tx,
         format!("card-read-flip-{label}"),
         &runtime_id,
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "/tmp".into(),

@@ -114,7 +114,7 @@ async fn ls_root_lists_top_level_entries() {
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
     assert_eq!(call["method"], "tools/call");
-    assert_eq!(call["params"]["name"], json!("calm.wave.ls"));
+    assert_eq!(call["params"]["name"], json!("calm.track.ls"));
     assert_eq!(call["params"]["arguments"], json!({ "path": "/" }));
     write_frame(
         &mut wr,
@@ -122,7 +122,7 @@ async fn ls_root_lists_top_level_entries() {
             2,
             json!([
                 { "name": "index.md", "kind": "file" },
-                { "name": "wave.json", "kind": "file" },
+                { "name": "track.json", "kind": "file" },
                 { "name": "report.md", "kind": "file" },
                 { "name": "cards/", "kind": "dir", "size": 3 }
             ]),
@@ -141,7 +141,7 @@ async fn ls_root_lists_top_level_entries() {
     );
     let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
     assert!(stdout.contains("- index.md"), "stdout = {stdout:?}");
-    assert!(stdout.contains("- wave.json"), "stdout = {stdout:?}");
+    assert!(stdout.contains("- track.json"), "stdout = {stdout:?}");
     assert!(stdout.contains("- report.md"), "stdout = {stdout:?}");
     assert!(stdout.contains("d cards/"), "stdout = {stdout:?}");
 }
@@ -183,7 +183,7 @@ async fn cat_report_writes_report_content() {
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.wave.cat"));
+    assert_eq!(call["params"]["name"], json!("calm.track.cat"));
     assert_eq!(call["params"]["arguments"], json!({ "path": "report.md" }));
     write_frame(
         &mut wr,
@@ -213,7 +213,7 @@ async fn cat_report_writes_report_content() {
 }
 
 #[tokio::test]
-async fn state_outputs_pretty_wave_state_json() {
+async fn state_outputs_pretty_track_state_json() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let socket_path: PathBuf = tmp.path().join("kernel.sock");
     let listener = listen(&socket_path);
@@ -222,10 +222,10 @@ async fn state_outputs_pretty_wave_state_json() {
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
     assert_eq!(call["method"], "tools/call");
-    assert_eq!(call["params"]["name"], json!("calm.wave.state"));
+    assert_eq!(call["params"]["name"], json!("calm.track.state"));
     assert_eq!(call["params"]["arguments"], json!({}));
     let state = json!({
-        "wave": { "id": "w1", "lifecycle": "working" },
+        "track": { "id": "w1", "lifecycle": "working" },
         "cards": []
     });
     write_frame(&mut wr, tool_result(2, state.clone())).await;
@@ -246,7 +246,7 @@ async fn state_outputs_pretty_wave_state_json() {
 }
 
 #[tokio::test]
-async fn state_json_outputs_compact_wave_state_json() {
+async fn state_json_outputs_compact_track_state_json() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let socket_path: PathBuf = tmp.path().join("kernel.sock");
     let listener = listen(&socket_path);
@@ -254,10 +254,10 @@ async fn state_json_outputs_compact_wave_state_json() {
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.wave.state"));
+    assert_eq!(call["params"]["name"], json!("calm.track.state"));
     assert_eq!(call["params"]["arguments"], json!({}));
     let state = json!({
-        "wave": { "id": "w1", "lifecycle": "working" },
+        "track": { "id": "w1", "lifecycle": "working" },
         "cards": []
     });
     write_frame(&mut wr, tool_result(2, state.clone())).await;
@@ -289,7 +289,7 @@ async fn diff_passthrough_renders_patch() {
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.wave.diff"));
+    assert_eq!(call["params"]["name"], json!("calm.track.diff"));
     assert_eq!(
         call["params"]["arguments"],
         json!({ "from": "abc123", "to": "def456", "path": "report.md" })
@@ -337,7 +337,7 @@ async fn cat_at_passthrough_writes_historical_content() {
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.wave.cat_at"));
+    assert_eq!(call["params"]["name"], json!("calm.track.cat_at"));
     assert_eq!(
         call["params"]["arguments"],
         json!({ "commit": "abc123", "path": "report.md" })
@@ -377,7 +377,7 @@ async fn log_passthrough_renders_commit_lines() {
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.wave.log"));
+    assert_eq!(call["params"]["name"], json!("calm.track.log"));
     assert_eq!(
         call["params"]["arguments"],
         json!({ "path": "report.md", "limit": 3 })
@@ -393,7 +393,7 @@ async fn log_passthrough_renders_commit_lines() {
                     "lifecycle": "working",
                     "event_id": 42,
                     "created_at": 123,
-                    "message": "wave.report_edited",
+                    "message": "track.report_edited",
                     "changed_paths": ["report.md"]
                 }]
             }),
@@ -413,7 +413,10 @@ async fn log_passthrough_renders_commit_lines() {
     let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
     assert!(stdout.contains("abcdef12"), "stdout = {stdout:?}");
     assert!(stdout.contains("event=42"), "stdout = {stdout:?}");
-    assert!(stdout.contains("wave.report_edited"), "stdout = {stdout:?}");
+    assert!(
+        stdout.contains("track.report_edited"),
+        "stdout = {stdout:?}"
+    );
 }
 
 #[tokio::test]
@@ -533,7 +536,7 @@ async fn server_unknown_path_error_is_clear_and_json_parseable() {
             "id": 2,
             "error": {
                 "code": -32602,
-                "message": "calm.wave: path not available in this view: missing"
+                "message": "calm.track: path not available in this view: missing"
             }
         }),
     )
@@ -561,7 +564,7 @@ async fn server_unknown_path_error_is_clear_and_json_parseable() {
             "id": 2,
             "error": {
                 "code": -32602,
-                "message": "calm.wave: path not available in this view: missing"
+                "message": "calm.track: path not available in this view: missing"
             }
         }),
     )

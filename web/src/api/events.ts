@@ -78,7 +78,7 @@ import { wireEventSchema } from './schemas';
  * The v2 backend keeps emitting `codex.job_requested` / `terminal.job_requested`
  * with `eventVersion=1`, which our v3 schemas no longer accept. Without
  * this remap, the gate at L425 accepts the frame, the cursor advances,
- * and zod silently drops it as unknown — losing the wave-files
+ * and zod silently drops it as unknown — losing the track-files
  * invalidation it should have triggered.
  *
  * Strip in the next compat-version bump (when v2 backends are no longer

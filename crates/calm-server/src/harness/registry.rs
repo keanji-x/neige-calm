@@ -198,7 +198,7 @@ impl HarnessRegistry {
     /// #953 §5 — removes **Live entries only**; no-ops on `Reserved` (a
     /// reservation is exclusively owned by its guard — Drop is the owner's
     /// cancel, id-checked). All four Live-targeting production call sites
-    /// (user shutdown, wave shutdown, old-runtime supersede, start
+    /// (user shutdown, track shutdown, old-runtime supersede, start
     /// compensation) keep these semantics.
     pub fn remove(&self, runtime_id: &RuntimeId) -> Option<SpecHarness> {
         match self.0.map.entry(runtime_id.clone()) {
@@ -251,7 +251,7 @@ mod tests {
 
     use crate::harness::snapshot::HarnessSnapshot;
     use crate::harness::{HarnessConfig, SpecHarnessParams};
-    use crate::ids::{CardId, WaveId};
+    use crate::ids::{CardId, TrackId};
     use crate::shared_codex_appserver::SharedCodexAppServer;
     use std::sync::Arc;
 
@@ -265,13 +265,13 @@ mod tests {
         let (handle, _obs_rx) = SpecHarness::run_unstarted_for_test(
             SpecHarnessParams {
                 runtime_id: runtime_id.to_string(),
-                wave_id: WaveId::from("wave-registry-test".to_string()),
+                track_id: TrackId::from("track-registry-test".to_string()),
                 card_id: CardId::from("card-registry-test".to_string()),
                 thread_id: None,
                 repo,
                 events: crate::event::EventBus::new(),
                 card_role_cache: crate::card_role_cache::CardRoleCache::new(),
-                wave_area_cache: crate::wave_area_cache::WaveAreaCache::new(),
+                track_area_cache: crate::track_area_cache::TrackAreaCache::new(),
                 daemon,
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),

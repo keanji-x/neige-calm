@@ -1,5 +1,5 @@
 use crate::error::CalmError;
-use crate::ids::WaveId;
+use crate::ids::TrackId;
 use async_trait::async_trait;
 use calm_types::worker::WorkerSessionId;
 use sqlx::{Sqlite, Transaction};
@@ -9,14 +9,14 @@ static RECORDER_SHADOW_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecorderShadowDecisionKind {
-    WaveLifecycle,
+    TrackLifecycle,
     ReportWrite,
 }
 
 impl RecorderShadowDecisionKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::WaveLifecycle => "wave_lifecycle",
+            Self::TrackLifecycle => "track_lifecycle",
             Self::ReportWrite => "report_write",
         }
     }
@@ -24,7 +24,7 @@ impl RecorderShadowDecisionKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecorderShadowDivergence {
-    pub(crate) wave_id: WaveId,
+    pub(crate) track_id: TrackId,
     pub(crate) session_id: WorkerSessionId,
     pub(crate) decision_kind: RecorderShadowDecisionKind,
 }
@@ -42,7 +42,7 @@ pub(crate) fn emit_divergence(divergence: &RecorderShadowDivergence) {
     RECORDER_SHADOW_DIVERGENCES.fetch_add(1, Ordering::Relaxed);
     tracing::warn!(
         target: "neige::recorder_shadow",
-        wave_id = %divergence.wave_id,
+        track_id = %divergence.track_id,
         session_id = %divergence.session_id,
         decision_kind = divergence.decision_kind.as_str(),
         "recorder shadow divergence: card-era write allowed but recorder gate would deny"

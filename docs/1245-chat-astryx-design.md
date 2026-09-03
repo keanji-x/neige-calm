@@ -98,7 +98,7 @@ astryx Chat 家族分两类：
 
 1. **我们已经有一个时钟，就是轮询。** 文本按 poll 的粒度跳着到，打字机是叠在前面的第二个更慢的时钟：2000 字的回答在**完全到齐之后**还要再放 ~2.6 秒。
 2. **它在一个被三处机制测量的滚动窗里持续长高。** follow-newest 读 `scrollHeight`，亮点规则在 scroll 与 resize 上重读每个 marker 的 rect。一个连续数秒每帧变高的块，正是对准了这个文件花了大量篇幅才调对的那套机制的一场 resize 风暴。
-3. **播放期间它把文本切成 `<span>`**（`wrapTextWithFade`），回复在动画结束前不是一个文本节点。实测：上游的 `wave-conversation.test.tsx` `[G5]` 在 `findByText('it runs waves')` 上失败，带 Testing Library 的「文本被拆散在多个元素里」提示 —— 这个用例本 PR 从未碰过。
+3. **播放期间它把文本切成 `<span>`**（`wrapTextWithFade`），回复在动画结束前不是一个文本节点。实测：上游的 `wave-conversation.test.tsx` `[G5]` 在 `findByText('it runs tracks')` 上失败，带 Testing Library 的「文本被拆散在多个元素里」提示 —— 这个用例本 PR 从未碰过。
 
 淡入对持有 token 流的消费方是真功能。我们不是，假装是要付上面三笔，换一个我们的数据本来也驱动不平滑的动画。
 
@@ -126,4 +126,4 @@ S1 的可见行为变化只有一处，需明确接受：**live 脉冲点从「�
 
 1. `ExchangeRail` 保留（本设计的假设）——如要删是另一个决定。
 2. 「你说的话」保留 filled 气泡，还是也 ghost 化以最大化窄抽屉行宽？
-3. 抽屉之外（wave 页／手机端，#1234）是否要 `ChatLayout` 全屏形态？若要，§1 的采纳线需要重新评估：那里滚动口没有既有主人。
+3. 抽屉之外（track 页／手机端，#1234）是否要 `ChatLayout` 全屏形态？若要，§1 的采纳线需要重新评估：那里滚动口没有既有主人。

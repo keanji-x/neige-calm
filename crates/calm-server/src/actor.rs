@@ -80,7 +80,7 @@ impl Actor {
     ///   * `"user"` → [`ActorId::User`].
     ///   * `"ai:codex"` → [`ActorId::AiCodex`] with a placeholder card id
     ///     (the REST surface has no card context at the actor-extraction
-    ///     point; PR3+ will reattribute via the wave/card the request
+    ///     point; PR3+ will reattribute via the track/card the request
     ///     touches). Other `"ai:<id>"` forms are unreachable via the
     ///     middleware today.
     ///   * Anything else (`"kernel"`, `"plugin:*"`, garbage) → [`ActorId::User`].

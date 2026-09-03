@@ -498,7 +498,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         let (provider, _mode, contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
         let sql = format!(
             r#"{WS_BACKED_CARD_RUNTIME_SELECT}
-               JOIN waves w ON w.id = c.wave_id
+               JOIN tracks w ON w.id = c.track_id
                WHERE ws.provider = ?1
                  AND (
                        ws.contract = ?2
@@ -508,7 +508,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                            AND c.role = 'worker'
                            AND c.kind = 'codex'
                            AND json_extract(c.payload, '$.harness_profile') = 'plain_chat')
-                       -- #1189 — a wave assistant. Structurally a sibling of the
+                       -- #1189 — a track assistant. Structurally a sibling of the
                        -- clause above (same executor contract, its own role +
                        -- marker pair) and NOT covered by it: an assistant
                        -- matches neither `contract = 'planner'` nor
@@ -536,7 +536,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                  AND ws.handle_state_json IS NOT NULL
                  AND json_extract(ws.handle_state_json, '$.mode') = 'harness'
                  -- Keep harness boot recovery aligned with the legacy
-                 -- takeover filters above: terminal waves must stay inert.
+                 -- takeover filters above: terminal tracks must stay inert.
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
                ORDER BY ws.created_at_ms ASC, c.id ASC"#
         );

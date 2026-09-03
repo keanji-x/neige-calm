@@ -6,7 +6,7 @@
    */
   /*
    * A flex column, not a two-row grid, for exactly the reason recorded at
-   * length on the wave page's `.page`: a `1fr` row never exceeds the leftover,
+   * length on the track page's `.page`: a `1fr` row never exceeds the leftover,
    * so `.content`'s box stayed one viewport tall while the report grew past it,
    * and `.panel` — which may only travel inside that box — slid off the top
    * after roughly one screen instead of staying. `flex: 1 0 auto` below is the
@@ -104,7 +104,7 @@
   /* Positional, because `ui/page-header` renders its own element and this file
      cannot name it — which makes it (0,1,1), higher than a bare `.content`. The
      row below is therefore written as `.page > .content` (0,2,0) rather than
-     left to win on source order. See the same note on the wave page. */
+     left to win on source order. See the same note on the track page. */
   .page > :first-child {
     flex: none;
   }
@@ -135,7 +135,7 @@
   }
 
 
-  /* Sticky for the same reason the wave page's is, and off the same published
+  /* Sticky for the same reason the track page's is, and off the same published
      header height — see the long note there. */
   .panel {
     position: sticky;

@@ -5,7 +5,7 @@
     "data": {
       "runtime_id": "rt-01",
       "card_id": "card-01",
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "item_db_id": 42,
       "item_uuid": "uuid-01",
       "item_type": "agentMessage",

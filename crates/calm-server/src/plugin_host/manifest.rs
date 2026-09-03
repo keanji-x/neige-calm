@@ -144,7 +144,7 @@ pub struct Manifest {
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
-    /// Wave `template_input` contract (#891 / #1110 S2). One plugin, one
+    /// Track `template_input` contract (#891 / #1110 S2). One plugin, one
     /// input shape — sibling of `exposes_tools`, not of a template
     /// descriptor. Same JSON-Schema subset as `plugin_host::template_input`.
     /// Absent: the plugin does not accept `template_input`.
@@ -176,7 +176,7 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Value>,
 
-    /// Trusted forge plugins may claim **kernel wave-template ids**. Wave
+    /// Trusted forge plugins may claim **kernel track-template ids**. Track
     /// create binds `template_id` to one of these so the kernel can copy the
     /// owning plugin into `plugin_scope` and validate `template_input` against
     /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
@@ -185,15 +185,15 @@ pub struct Manifest {
     ///
     /// **#1209 narrowed this capability, and this is the contract, not a
     /// note.** Declaring an id is *claiming an existing template*, never
-    /// *creating* one. The ids the kernel knows are the wave-template roster
+    /// *creating* one. The ids the kernel knows are the track-template roster
     /// (`crate::templates::TEMPLATES`: today
     /// `issue-development`, `small-change`, `investigation`), and
-    /// `POST /api/waves` admits an id **iff it is in that roster** — plugin
+    /// `POST /api/tracks` admits an id **iff it is in that roster** — plugin
     /// declarations do not widen the set. An id outside the roster is
     /// therefore inert: it is parsed, it is not rejected here, and it can
-    /// never be bound **through `POST /api/waves`** — the only production
-    /// writer of `waves.template_id` — because that create is a 400. The
-    /// repo-layer `wave_create` takes `template_id` / `plugin_scope`
+    /// never be bound **through `POST /api/tracks`** — the only production
+    /// writer of `tracks.template_id` — because that create is a 400. The
+    /// repo-layer `track_create` takes `template_id` / `plugin_scope`
     /// verbatim and enforces nothing; its non-route callers are all test
     /// fixtures passing `None` today, and a future in-process writer that
     /// wanted this guarantee would have to call the admission itself. Before
@@ -296,7 +296,7 @@ pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// exceed `2 × 15 s + slack`, whatever the manifest asks for.
 ///
 /// (Same shape as `trusted_forge_plugin`, one bit that gates both "may hold a
-/// wave scope" and "gets the forge credential passthrough". The general lesson:
+/// track scope" and "gets the forge credential passthrough". The general lesson:
 /// when a constant needs adjusting for the third time, stop adjusting it and
 /// look for the second constraint riding on it.)
 ///
@@ -425,6 +425,29 @@ pub struct CliQueryBlock {
     #[serde(default)]
     pub secret_env: Vec<String>,
 
+    /// #1284 §2.3(b) — env keys whose values come from the plugin's
+    /// **effective configuration** (`defaults ⊕ user_config`).
+    ///
+    /// One entry is BOTH the child env key and the `config_schema` property it
+    /// is valued from: the manifest declares the key, the operator only ever
+    /// fills the value. That direction is the whole point — an operator (or an
+    /// agent) can never introduce an environment variable the manifest author
+    /// did not write down, so this is a value channel and not a
+    /// key-injection one.
+    ///
+    /// **Not subject to the `env_allow` credential denylist**, and that
+    /// asymmetry is the same one [`Self::secret_env`] already carries: the
+    /// denylist exists because `env_allow` forwards values out of the SERVICE
+    /// process environment, which is an escalation from the server's own
+    /// identity. A `config_env` value is typed in by the operator for this one
+    /// connector, exactly like a `secrets.json` entry, so naming `GH_TOKEN`
+    /// here sets it to whatever the operator wrote and escalates nothing.
+    /// What replaces the denylist is two rules that are actually enforceable:
+    /// every key must be a legal env name, and the three env sources must not
+    /// name the same target key (see `CliQueryBlock::validate`).
+    #[serde(default)]
+    pub config_env: Vec<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 
@@ -494,12 +517,75 @@ pub struct CliQueryTool {
     pub args: Vec<String>,
 }
 
-/// If `s` is exactly `{{name}}`, return `name`. Partial occurrences (e.g.
-/// `--sym={{symbol}}`) deliberately do NOT match: the template only supports
-/// whole-argv substitution.
-pub fn argv_slot(s: &str) -> Option<&str> {
+/// The `config.` namespace prefix inside a `{{…}}` argv slot.
+pub const CONFIG_SLOT_PREFIX: &str = "config.";
+
+/// What one `{{…}}` argv slot draws its value from — decided **here, at parse
+/// time**, and never re-decided at render time.
+///
+/// #1284 §2.3(b) / F18. Before this, a slot was just a name, the validator
+/// required every name to be a top-level `input_schema` property, and the
+/// runtime looked every name up in the agent's `arguments`. A configuration
+/// slot could therefore only exist by being declared as a tool input — at
+/// which point one `tools/call` carrying an argument literally named
+/// `"config.x"` would supply the operator's configuration value. Two
+/// populations (agent-supplied and operator-supplied) sharing one namespace is
+/// the defect; classifying once, at parse time, is the fix.
+///
+/// The alternatives were considered and refused: two substitution passes, or
+/// one lookup with a fallback to the other map, both leave "which source wins"
+/// as an ordering question, and an ordering question is a thing an attacker
+/// gets to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgvSlot<'a> {
+    /// `{{name}}` — valued from the agent's `tools/call` `arguments`, and only
+    /// from there.
+    Argument(&'a str),
+    /// `{{config.key}}` — valued from the plugin's effective configuration,
+    /// and only from there.
+    Config(&'a str),
+}
+
+impl ArgvSlot<'_> {
+    /// The bare name inside the slot, with the namespace prefix stripped.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Argument(n) | Self::Config(n) => n,
+        }
+    }
+}
+
+/// If `s` is exactly `{{name}}` or `{{config.key}}`, classify it. Partial
+/// occurrences (e.g. `--sym={{symbol}}`) deliberately do NOT match: the
+/// template only supports whole-argv substitution.
+///
+/// `{{config.}}` classifies as `Config("")` rather than as "not a slot", so the
+/// validator can refuse it by name instead of reporting the generic
+/// stray-braces error for something that is obviously a slot.
+pub fn argv_slot(s: &str) -> Option<ArgvSlot<'_>> {
     let inner = s.strip_prefix("{{")?.strip_suffix("}}")?;
-    if inner.is_empty() { None } else { Some(inner) }
+    if inner.is_empty() {
+        return None;
+    }
+    Some(match inner.strip_prefix(CONFIG_SLOT_PREFIX) {
+        Some(key) => ArgvSlot::Config(key),
+        None => ArgvSlot::Argument(inner),
+    })
+}
+
+/// Is `key` a legal POSIX-shaped environment variable name?
+///
+/// `[A-Za-z_][A-Za-z0-9_]*`. Deliberately stricter than what `execve` will
+/// physically carry (anything without `=` or NUL): a manifest that declares
+/// `"2 FOO"` as an env key produces a variable no shell and no `getenv`-using
+/// program can name, which is a silent no-op rather than a configuration.
+pub fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -632,7 +718,7 @@ pub struct ExposedTool {
     pub annotations: Option<Value>,
 }
 
-/// Wave-create handle that names a plugin-owned template id.
+/// Track-create handle that names a plugin-owned template id.
 ///
 /// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, spec instructions,
 /// and card kinds left the parser; `input_schema` lives on [`Manifest`].
@@ -647,7 +733,7 @@ pub struct TemplateDescriptor {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Permissions {
     /// Which `entity_kind` strings the plugin may overlay-write to (subset of
-    /// `["wave", "card"]`). Empty = no overlay writes.
+    /// `["track", "card"]`). Empty = no overlay writes.
     #[serde(default)]
     pub overlays_write: Vec<String>,
 
@@ -755,7 +841,7 @@ impl Manifest {
     /// `Manifest` deliberately tolerates unknown top-level keys, so without
     /// this the rename would be a **silent** contract break: an old manifest
     /// would parse, declare zero bindings, and `issue-development` would
-    /// quietly lose its `input_schema` — every `POST /api/waves` carrying
+    /// quietly lose its `input_schema` — every `POST /api/tracks` carrying
     /// `template_input` would then 400 with nothing pointing at the cause.
     /// Naming the new key in the error costs one extra `Value` parse of a file
     /// that is at most a few KB and is read once per install/reload.
@@ -912,7 +998,7 @@ impl Manifest {
             view.validate(i)?;
         }
 
-        // #1110 S2 — wave `template_input` lives on the Manifest, not a
+        // #1110 S2 — track `template_input` lives on the Manifest, not a
         // template descriptor. Error paths are `input_schema…` (no
         // `templates[i].` prefix).
         if let Some(schema) = self.input_schema.as_ref() {
@@ -1003,7 +1089,12 @@ impl Manifest {
                 let block = self.cli_query.as_ref().ok_or_else(|| {
                     ManifestError::invalid("cli_query", "required when `kind` is \"cli-query\"")
                 })?;
-                block.validate()?;
+                // #1284 S3a — the block's configuration-facing rules (`{{config.*}}`
+                // slots, `config_env`) are cross-field: they are only checkable
+                // against the manifest's own `config_schema`, which the block
+                // cannot see. Passing it in keeps the check at parse time, where
+                // a typo is an authoring error rather than a bring-up mystery.
+                block.validate(self.config_schema.as_ref())?;
             }
         }
         Ok(())
@@ -1047,7 +1138,7 @@ impl Manifest {
         if !self.templates.is_empty() {
             return Err(ManifestError::invalid(
                 "templates",
-                only_app("cannot own a wave template"),
+                only_app("cannot own a track template"),
             ));
         }
         if self.input_schema.is_some() {
@@ -1170,7 +1261,7 @@ impl McpHttpBlock {
 }
 
 impl CliQueryBlock {
-    fn validate(&self) -> Result<(), ManifestError> {
+    fn validate(&self, config_schema: Option<&Value>) -> Result<(), ManifestError> {
         if self.command.trim().is_empty() {
             return Err(ManifestError::invalid(
                 "cli_query.command",
@@ -1221,15 +1312,104 @@ impl CliQueryBlock {
                 ));
             }
         }
+        // #1284 §2.3(b) rule (i): a `config_env` entry names BOTH a child env
+        // key and the `config_schema` property it draws its value from, so it
+        // has to be legal as both.
+        for (i, key) in self.config_env.iter().enumerate() {
+            let path = format!("cli_query.config_env[{i}]");
+            if !is_valid_env_key(key) {
+                return Err(ManifestError::invalid(
+                    path,
+                    format!(
+                        "`{key}` is not a legal environment variable name \
+                         ([A-Za-z_][A-Za-z0-9_]*); a name no program can look up \
+                         would be a silent no-op rather than a configuration"
+                    ),
+                ));
+            }
+            if !config_schema_declares(config_schema, key) {
+                return Err(ManifestError::invalid(
+                    path,
+                    format!(
+                        "`{key}` is not a top-level property of this manifest's \
+                         `config_schema`; a `config_env` key names the configuration \
+                         property its value comes from, so an undeclared one could \
+                         never receive a value"
+                    ),
+                ));
+            }
+        }
+
+        // #1284 §2.3(b) rule (ii): three sources write into ONE child
+        // environment. Leaving a collision to an undocumented insertion order
+        // would make "which value does `GH_TOKEN` end up with" a question
+        // answered by reading `build_child_env` bottom-up; refusing it at parse
+        // time means the question cannot be asked.
+        //
+        // **This rule is RETROACTIVE, and the `env_allow` ∩ `secret_env` pair
+        // is the retroactive part** (S3a review P3). `config_env` is a new
+        // field, so no manifest can already use it — but this loop also refuses
+        // a manifest that names one key in BOTH `env_allow` and `secret_env`,
+        // and until now there was no rule about that pair at all. By F14 a
+        // parse failure is not a loud one: `registry::load_from_dir` `warn!`s
+        // and SKIPS, so a manifest that hits this stops loading and the plugin
+        // disappears from the UI at the next boot.
+        //
+        // Scope, per R5 — by carrier, not by assertion. Scanned: every
+        // `cli_query` block in this repo (no shipped `plugins/*/manifest.json`
+        // is `kind: cli-query`; the rest are test-constructed). The scan found
+        // **one hit**, and the earlier revision of this comment claiming "zero"
+        // was wrong: `cli_query::tests::path_cannot_be_overridden_by_*` named
+        // `PATH` in both `env_allow` and `secret_env`. It did not go red under
+        // this rule because that fixture is a bare `serde_json::from_value` and
+        // never calls `validate` — which is the general caveat on this count:
+        // a test-constructed block is not admitted through the parse path, so
+        // scanning them says nothing about what this rule refuses at load time.
+        // That fixture has since been split into one block per source (S3a
+        // review P1), so both halves are now shapes this rule admits. Outside
+        // the repo (an operator's own installed plugins) is **unknown**:
+        // nothing here can see them.
+        let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for (source, keys) in [
+            ("cli_query.env_allow", &self.env_allow),
+            ("cli_query.secret_env", &self.secret_env),
+            ("cli_query.config_env", &self.config_env),
+        ] {
+            for (i, key) in keys.iter().enumerate() {
+                if let Some(first) = seen.insert(key.as_str(), source) {
+                    return Err(ManifestError::invalid(
+                        format!("{source}[{i}]"),
+                        format!(
+                            "env key `{key}` is already declared by `{first}`; \
+                             `env_allow`, `secret_env` and `config_env` all write the \
+                             same child environment, so a duplicate target would make \
+                             the winning value depend on injection order"
+                        ),
+                    ));
+                }
+            }
+        }
+
         for (i, tool) in self.tools.iter().enumerate() {
-            tool.validate(i)?;
+            tool.validate(i, config_schema)?;
         }
         Ok(())
     }
 }
 
+/// Is `key` a top-level property of this manifest's `config_schema`?
+///
+/// Absent schema ⇒ nothing is declared, so every configuration reference is a
+/// refusal rather than a silently empty value.
+fn config_schema_declares(config_schema: Option<&Value>, key: &str) -> bool {
+    config_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)
+        .is_some_and(|p| p.contains_key(key))
+}
+
 impl CliQueryTool {
-    fn validate(&self, idx: usize) -> Result<(), ManifestError> {
+    fn validate(&self, idx: usize, config_schema: Option<&Value>) -> Result<(), ManifestError> {
         let path = |s: &str| format!("cli_query.tools[{idx}].{s}");
         validate_connector_tool_name(&self.name, &path("name"))?;
 
@@ -1240,6 +1420,50 @@ impl CliQueryTool {
             .input_schema
             .get("properties")
             .and_then(|p| p.as_object());
+
+        // #1284 §2.3(b) — the namespace has to be reserved on BOTH sides, or it
+        // is not a namespace. `{{config.x}}` now resolves against the operator's
+        // configuration; if a tool were also allowed to declare an input
+        // property literally named `config.x`, one `tools/call` supplying that
+        // argument would be indistinguishable from an operator setting — which
+        // is exactly the collision the classification above exists to remove,
+        // reintroduced one layer down.
+        //
+        // **This rule is RETROACTIVE** (S3a review P3), and it is the one of
+        // the slice's two new fail-closes that is easiest to mis-file as "a new
+        // field, so nothing existing can hit it". It is not about a new field:
+        // it refuses an `input_schema` property that any already-installed
+        // cli-query tool could legally have declared yesterday. By F14 the cost
+        // is not a visible error — `registry::load_from_dir` `warn!`s and
+        // SKIPS — so the plugin simply disappears at the next boot.
+        //
+        // Scope, per R5 — by carrier, not by assertion. Scanned: every
+        // `cli_query` block in this repo — shipped manifests (`plugins/*/
+        // manifest.json`: none is `kind: cli-query`) and every block the test
+        // suites construct — **zero hits**, the sole `config.`-prefixed input
+        // property in the tree being the fixture that asserts this very
+        // refusal. Outside the repo is
+        // **unknown**. Accepted anyway, because the alternative is the F18
+        // collision itself: a `config.`-prefixed input property is precisely
+        // the shape that lets one `tools/call` occupy an operator's slot, so
+        // there is no "keep loading it, just handle it differently" option here
+        // the way `max_output_bytes` had one (clamp).
+        if let Some(props) = properties {
+            for key in props.keys() {
+                if key.starts_with(CONFIG_SLOT_PREFIX) {
+                    return Err(ManifestError::invalid(
+                        path(&format!("input_schema.properties.{key}")),
+                        format!(
+                            "`{CONFIG_SLOT_PREFIX}` is reserved for operator \
+                             configuration slots (`{{{{config.<key>}}}}`) and may not \
+                             prefix a tool input property: an agent-supplied argument \
+                             must never be able to occupy a configuration name"
+                        ),
+                    ));
+                }
+            }
+        }
+
         for (i, arg) in self.args.iter().enumerate() {
             let Some(slot) = argv_slot(arg) else {
                 // A literal argv element. Reject stray braces so a typo like
@@ -1254,14 +1478,37 @@ impl CliQueryTool {
                 }
                 continue;
             };
-            let known = properties.is_some_and(|p| p.contains_key(slot));
-            if !known {
-                return Err(ManifestError::invalid(
-                    path(&format!("args[{i}]")),
-                    format!(
-                        "slot `{slot}` is not a top-level property of this tool's input_schema"
-                    ),
-                ));
+            match slot {
+                ArgvSlot::Argument(name) => {
+                    if !properties.is_some_and(|p| p.contains_key(name)) {
+                        return Err(ManifestError::invalid(
+                            path(&format!("args[{i}]")),
+                            format!(
+                                "slot `{name}` is not a top-level property of this tool's \
+                                 input_schema"
+                            ),
+                        ));
+                    }
+                }
+                ArgvSlot::Config(key) => {
+                    if key.is_empty() {
+                        return Err(ManifestError::invalid(
+                            path(&format!("args[{i}]")),
+                            format!("`{{{{{CONFIG_SLOT_PREFIX}}}}}` names no configuration key"),
+                        ));
+                    }
+                    if !config_schema_declares(config_schema, key) {
+                        return Err(ManifestError::invalid(
+                            path(&format!("args[{i}]")),
+                            format!(
+                                "config slot `{key}` is not a top-level property of this \
+                                 manifest's `config_schema`; a configuration slot is filled \
+                                 from the operator's configuration, never from the agent's \
+                                 arguments, so an undeclared one could never receive a value"
+                            ),
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -1432,14 +1679,14 @@ impl View {
             return Err(ManifestError::invalid(path("title"), "must be non-empty"));
         }
         // §10 #1 + #5: M3 scope enum is exactly `["card"]`. Be explicit about
-        // rejecting "wave" and "area" so the error message points at the
+        // rejecting "track" and "area" so the error message points at the
         // design doc, not just "unknown enum value".
         match self.scope.as_str() {
             "card" => {}
-            "wave" => {
+            "track" => {
                 return Err(ManifestError::invalid(
                     path("scope"),
-                    "wave-scope views are deferred past M3 (design doc §10 #5); \
+                    "track-scope views are deferred past M3 (design doc §10 #5); \
                      only \"card\" is accepted",
                 ));
             }
@@ -1475,14 +1722,14 @@ impl TemplateDescriptor {
 
 impl Permissions {
     fn validate(&self) -> Result<(), ManifestError> {
-        // overlays_write: each entry must be either "wave" or "card".
+        // overlays_write: each entry must be either "track" or "card".
         // No other entity kinds exist in the kernel today.
         for (i, kind) in self.overlays_write.iter().enumerate() {
-            if kind != "wave" && kind != "card" {
+            if kind != "track" && kind != "card" {
                 return Err(ManifestError::invalid(
                     format!("permissions.overlays_write[{i}]"),
                     format!(
-                        "must be \"wave\" or \"card\"; got `{kind}` \
+                        "must be \"track\" or \"card\"; got `{kind}` \
                          (kernel knows no other entity kinds)"
                     ),
                 ));
@@ -1661,7 +1908,7 @@ mod tests {
                 }
             ],
             "permissions": {
-                "overlays_write": ["wave", "card"],
+                "overlays_write": ["track", "card"],
                 "cards_create": true,
                 "cards_read_all": true,
                 "events_subscribe": ["*"],
@@ -1923,7 +2170,7 @@ mod tests {
         };
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
-                "wave-give-up",
+                "track-give-up",
                 Some(&template),
                 None,
             );
@@ -1946,7 +2193,7 @@ mod tests {
             .expect("issue-development template");
 
         // The fixed fixture id is the explicit normalization rule for the
-        // per-wave substitution performed by the production renderer.
+        // per-track substitution performed by the production renderer.
         // This independent, fully populated fixture is a legal final state for
         // the shipped schema and keeps every required and optional field in the
         // full-prompt contract.
@@ -1967,7 +2214,7 @@ mod tests {
         .expect("full golden template_input satisfies the shipped schema");
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
-                "wave-golden-985",
+                "track-golden-985",
                 Some(template),
                 Some(&template_input),
             );
@@ -2408,13 +2655,13 @@ mod tests {
     }
 
     #[test]
-    fn scope_wave_rejected() {
-        let json = hello_world().replace("\"scope\": \"card\"", "\"scope\": \"wave\"");
+    fn scope_track_rejected() {
+        let json = hello_world().replace("\"scope\": \"card\"", "\"scope\": \"track\"");
         let err = Manifest::parse(&json).unwrap_err();
         match err {
             ManifestError::Invalid { field, reason } => {
                 assert_eq!(field, "views[0].scope");
-                assert!(reason.contains("wave"), "reason: {reason}");
+                assert!(reason.contains("track"), "reason: {reason}");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -2502,7 +2749,7 @@ mod tests {
 
     #[test]
     fn bad_overlay_kind_rejected() {
-        let json = hello_world().replace("[\"wave\", \"card\"]", "[\"wave\", \"area\"]");
+        let json = hello_world().replace("[\"track\", \"card\"]", "[\"track\", \"area\"]");
         let err = Manifest::parse(&json).unwrap_err();
         match err {
             ManifestError::Invalid { field, .. } => {
@@ -3390,6 +3637,179 @@ mod connector_kind_tests {
         assert!(err.to_string().contains("ticker"), "{err}");
     }
 
+    // ---- #1284 S3a: the configuration namespace, at parse time -----------
+
+    /// The `config_schema` these tests configure against, plus a helper that
+    /// assembles a whole `cli-query` manifest around a mutated block. Driving
+    /// `Manifest::parse` rather than `CliQueryBlock::validate` is deliberate:
+    /// the rules below are CROSS-FIELD (block ↔ `config_schema`), so a test
+    /// that could only see the block would be testing a function that does not
+    /// have the information the rule is about.
+    fn cli_config_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "endpoint": { "type": "string", "default": "https://api.example" },
+                "LB_ACCOUNT": { "type": "string" }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn cli_with_config(block: Value) -> Result<Manifest, ManifestError> {
+        Manifest::parse(&base(json!({
+            "kind": "cli-query",
+            "cli_query": block,
+            "config_schema": cli_config_schema(),
+        })))
+    }
+
+    /// The positive half: a manifest that uses both new surfaces LOADS, and the
+    /// parsed block carries them. Without this, every assertion below is
+    /// satisfiable by a validator that refuses everything.
+    #[test]
+    fn a_config_slot_and_config_env_are_accepted_when_declared() {
+        let mut block = cli_query_block();
+        block["config_env"] = json!(["LB_ACCOUNT"]);
+        block["tools"][0]["args"] = json!(["quote", "{{symbol}}", "--url", "{{config.endpoint}}"]);
+        let m = cli_with_config(block).expect("a declared config slot + config_env must load");
+        let block = m.cli_query.unwrap();
+        assert_eq!(block.config_env, vec!["LB_ACCOUNT".to_string()]);
+        assert_eq!(
+            argv_slot(&block.tools[0].args[3]),
+            Some(ArgvSlot::Config("endpoint"))
+        );
+    }
+
+    /// §4.4's parse-time half. The runtime half (an agent argument cannot
+    /// displace a configuration slot) lives in `connector_host.rs`; this is the
+    /// rule that makes the collision unrepresentable in the first place — a
+    /// tool may not declare an input property inside the reserved namespace.
+    #[test]
+    fn an_input_schema_property_may_not_claim_the_config_namespace() {
+        let mut block = cli_query_block();
+        block["tools"][0]["input_schema"]["properties"]["config.endpoint"] =
+            json!({ "type": "string" });
+        let err = cli_with_config(block)
+            .expect_err("a tool must not declare an input property in the config namespace");
+        let err = err.to_string();
+        assert!(err.contains("config.endpoint"), "{err}");
+        assert!(err.contains("reserved"), "{err}");
+    }
+
+    #[test]
+    fn a_config_slot_must_name_a_declared_config_schema_property() {
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "{{config.ghost}}"]);
+        let err = cli_with_config(block).expect_err("an undeclared config slot must be refused");
+        assert!(err.to_string().contains("ghost"), "{err}");
+
+        // …and with no `config_schema` at all, nothing is declared.
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "{{config.endpoint}}"]);
+        let err = Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block })))
+            .expect_err("no config_schema declares no config keys");
+        assert!(err.to_string().contains("endpoint"), "{err}");
+
+        // The degenerate form is refused by name, not as stray braces.
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "{{config.}}"]);
+        let err = cli_with_config(block).expect_err("`{{config.}}` names no key");
+        assert!(
+            err.to_string().contains("names no configuration key"),
+            "{err}"
+        );
+    }
+
+    /// §2.3(b) rule (i). Note what is NOT here: no credential denylist. A
+    /// `config_env` value is typed in by the operator for this connector, like
+    /// a `secrets.json` entry, so it escalates nothing from the service
+    /// identity — which is the only thing `env_allow`'s denylist protects.
+    #[test]
+    fn a_config_env_key_must_be_a_legal_env_name_and_a_declared_property() {
+        let mut block = cli_query_block();
+        block["config_env"] = json!(["2BAD"]);
+        let err = cli_with_config(block).expect_err("an illegal env name must be refused");
+        let err = err.to_string();
+        assert!(err.contains("2BAD"), "{err}");
+        assert!(err.contains("environment variable name"), "{err}");
+
+        let mut block = cli_query_block();
+        block["config_env"] = json!(["NOT_DECLARED"]);
+        let err = cli_with_config(block).expect_err("an undeclared config_env key must be refused");
+        assert!(err.to_string().contains("NOT_DECLARED"), "{err}");
+
+        // A forge CREDENTIAL name is accepted here, unlike in `env_allow`.
+        // That asymmetry is the §2.3(b) adjudication, so it gets an assertion
+        // rather than a comment.
+        let mut block = cli_query_block();
+        block["config_env"] = json!(["GH_TOKEN"]);
+        let mut schema = cli_config_schema();
+        schema["properties"]["GH_TOKEN"] = json!({ "type": "string" });
+        Manifest::parse(&base(json!({
+            "kind": "cli-query",
+            "cli_query": block,
+            "config_schema": schema,
+        })))
+        .expect("config_env is not subject to the env_allow credential denylist");
+    }
+
+    /// §2.3(b) rule (ii), at all three pairings. One child environment, three
+    /// writers: a duplicate target would make the winning value a property of
+    /// injection order, which is not something a manifest author can read off
+    /// their own file.
+    #[test]
+    fn the_three_env_sources_may_not_name_the_same_target_key() {
+        let mut schema = cli_config_schema();
+        schema["properties"]["LB_TOKEN"] = json!({ "type": "string" });
+        schema["properties"]["NO_PROXY"] = json!({ "type": "string" });
+        let parse = |block: Value| {
+            Manifest::parse(&base(json!({
+                "kind": "cli-query",
+                "cli_query": block,
+                "config_schema": schema,
+            })))
+        };
+
+        // config_env ∩ secret_env — §2.6's hard rule: the configuration line
+        // and the secret line must not meet on one key.
+        let mut block = cli_query_block();
+        block["secret_env"] = json!(["LB_TOKEN"]);
+        block["config_env"] = json!(["LB_TOKEN"]);
+        let err = parse(block).expect_err("config_env ∩ secret_env must be refused");
+        let err = err.to_string();
+        assert!(err.contains("LB_TOKEN"), "{err}");
+        assert!(err.contains("secret_env"), "{err}");
+
+        // config_env ∩ env_allow
+        let mut block = cli_query_block();
+        block["env_allow"] = json!(["NO_PROXY"]);
+        block["config_env"] = json!(["NO_PROXY"]);
+        let err = parse(block).expect_err("config_env ∩ env_allow must be refused");
+        assert!(err.to_string().contains("NO_PROXY"), "{err}");
+
+        // env_allow ∩ secret_env — the pre-existing pair, which had no rule at
+        // all before this slice.
+        let mut block = cli_query_block();
+        block["env_allow"] = json!(["LB_TOKEN"]);
+        block["secret_env"] = json!(["LB_TOKEN"]);
+        let err = parse(block).expect_err("env_allow ∩ secret_env must be refused");
+        assert!(err.to_string().contains("LB_TOKEN"), "{err}");
+
+        // A repeat WITHIN one list is the same collision.
+        let mut block = cli_query_block();
+        block["config_env"] = json!(["LB_TOKEN", "LB_TOKEN"]);
+        let err = parse(block).expect_err("a repeated key is still one target");
+        assert!(err.to_string().contains("LB_TOKEN"), "{err}");
+
+        // …and three DISTINCT keys across the three sources are fine.
+        let mut block = cli_query_block();
+        block["env_allow"] = json!(["NO_PROXY"]);
+        block["secret_env"] = json!(["LB_TOKEN"]);
+        block["config_env"] = json!(["LB_ACCOUNT"]);
+        parse(block).expect("distinct targets must load");
+    }
+
     #[test]
     fn cli_query_requires_a_command_and_at_least_one_tool() {
         let mut block = cli_query_block();
@@ -3420,10 +3840,47 @@ mod connector_kind_tests {
 
     #[test]
     fn argv_slot_matches_only_whole_elements() {
-        assert_eq!(argv_slot("{{symbol}}"), Some("symbol"));
+        assert_eq!(argv_slot("{{symbol}}"), Some(ArgvSlot::Argument("symbol")));
         assert_eq!(argv_slot("--sym={{symbol}}"), None);
         assert_eq!(argv_slot("{{}}"), None);
         assert_eq!(argv_slot("quote"), None);
+    }
+
+    /// #1284 §2.3(b) — the classification itself, at the level where it is one
+    /// function rather than a manifest round trip. `config.` is a namespace, so
+    /// an argument slot whose name merely CONTAINS the word must stay an
+    /// argument: `{{myconfig.x}}` and `{{config}}` are not configuration slots,
+    /// and a rule written with `contains` instead of `strip_prefix` would
+    /// quietly take both away from the agent.
+    #[test]
+    fn argv_slot_classifies_the_config_namespace() {
+        assert_eq!(
+            argv_slot("{{config.endpoint}}"),
+            Some(ArgvSlot::Config("endpoint"))
+        );
+        assert_eq!(argv_slot("{{config.a.b}}"), Some(ArgvSlot::Config("a.b")));
+        // Not the namespace: no separator, or the prefix is not at the start.
+        assert_eq!(argv_slot("{{config}}"), Some(ArgvSlot::Argument("config")));
+        assert_eq!(
+            argv_slot("{{myconfig.x}}"),
+            Some(ArgvSlot::Argument("myconfig.x"))
+        );
+        // The degenerate namespace form is a slot with an empty name, so the
+        // validator can refuse it by name rather than as stray braces.
+        assert_eq!(argv_slot("{{config.}}"), Some(ArgvSlot::Config("")));
+        assert_eq!(argv_slot("{{config.endpoint}}").unwrap().name(), "endpoint");
+    }
+
+    #[test]
+    fn env_key_names_follow_the_posix_shape() {
+        for ok in ["PATH", "_X", "LB_ACCOUNT_2", "a"] {
+            assert!(is_valid_env_key(ok), "{ok} must be accepted");
+        }
+        for bad in [
+            "", "2FOO", "FOO-BAR", "FOO BAR", "FOO=BAR", "FOO.BAR", "föö",
+        ] {
+            assert!(!is_valid_env_key(bad), "{bad:?} must be refused");
+        }
     }
 
     #[test]

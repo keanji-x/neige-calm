@@ -11,7 +11,7 @@
 //!   "filter": {
 //!     "events":      ["card.added", "overlay.*"],   // empty = all
 //!     "plugin_id":   "dev.example",                  // optional
-//!     "entity_kind": "wave",                         // optional
+//!     "entity_kind": "track",                         // optional
 //!     "entity_id":   "uuid"                          // optional
 //!   }
 //! }
@@ -47,7 +47,7 @@ pub struct SubscriptionFilter {
 
     /// If set, only events whose entity is of this kind match. Currently
     /// meaningful for `overlay.*` (carries `entity_kind` directly) and for
-    /// `wave.*`/`card.*` (mapped to `"wave"` / `"card"` respectively).
+    /// `track.*`/`card.*` (mapped to `"track"` / `"card"` respectively).
     #[serde(default)]
     pub entity_kind: Option<String>,
 
@@ -104,7 +104,7 @@ fn event_name(ev: &Event) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Area, AreaKind, Card, Overlay, Wave};
+    use crate::model::{Area, AreaKind, Card, Overlay, Track};
     use serde_json::json;
 
     fn area(id: &str) -> Area {
@@ -118,15 +118,15 @@ mod tests {
             updated_at: 0,
         }
     }
-    fn wave(id: &str, area_id: &str) -> Wave {
-        Wave {
+    fn track(id: &str, area_id: &str) -> Track {
+        Track {
             id: id.into(),
             area_id: area_id.into(),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
             pinned_at: None,
-            lifecycle: crate::model::WaveLifecycle::Draft,
+            lifecycle: crate::model::TrackLifecycle::Draft,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
@@ -138,10 +138,10 @@ mod tests {
             updated_at: 0,
         }
     }
-    fn card(id: &str, wave_id: &str, kind: &str) -> Card {
+    fn card(id: &str, track_id: &str, kind: &str) -> Card {
         Card {
             id: id.into(),
-            wave_id: wave_id.into(),
+            track_id: track_id.into(),
             title: None,
             kind: kind.into(),
             sort: 1.0,
@@ -204,14 +204,11 @@ mod tests {
         assert!(f.matches(&Event::CardUpdated(card("k", "w", "terminal"))));
         assert!(f.matches(&Event::CardDeleted {
             id: "k".into(),
-            wave_id: "w".into(),
+            track_id: "w".into(),
         }));
-        assert!(
-            !f.matches(&Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
-                wave("w", "c"),
-                None
-            ),))
-        );
+        assert!(!f.matches(&Event::TrackUpdated(
+            crate::event::TrackUpdatedPayload::new(track("w", "c"), None),
+        )));
     }
 
     #[test]
@@ -220,7 +217,7 @@ mod tests {
             events: vec!["*".into()],
             ..Default::default()
         };
-        assert!(f.matches(&Event::OverlaySet(overlay("p", "wave", "w", "status"))));
+        assert!(f.matches(&Event::OverlaySet(overlay("p", "track", "w", "status"))));
     }
 
     #[test]
@@ -229,8 +226,8 @@ mod tests {
             plugin_id: Some("p1".into()),
             ..Default::default()
         };
-        assert!(f.matches(&Event::OverlaySet(overlay("p1", "wave", "w", "status"))));
-        assert!(!f.matches(&Event::OverlaySet(overlay("p2", "wave", "w", "status"))));
+        assert!(f.matches(&Event::OverlaySet(overlay("p1", "track", "w", "status"))));
+        assert!(!f.matches(&Event::OverlaySet(overlay("p2", "track", "w", "status"))));
         // Events that don't carry a plugin_id fail when this clause is present.
         assert!(!f.matches(&Event::CardAdded(card("k", "w", "terminal"))));
     }
@@ -238,22 +235,22 @@ mod tests {
     #[test]
     fn entity_kind_and_id_combine() {
         let f = SubscriptionFilter {
-            entity_kind: Some("wave".into()),
+            entity_kind: Some("track".into()),
             entity_id: Some("w-target".into()),
             ..Default::default()
         };
         assert!(f.matches(&Event::OverlaySet(overlay(
-            "p", "wave", "w-target", "status"
+            "p", "track", "w-target", "status"
         ))));
-        // Same wave, different overlay kind on it — still matches (we don't gate kind).
+        // Same track, different overlay kind on it — still matches (we don't gate kind).
         assert!(f.matches(&Event::OverlaySet(overlay(
-            "p", "wave", "w-target", "progress"
+            "p", "track", "w-target", "progress"
         ))));
         // Wrong entity_id.
         assert!(!f.matches(&Event::OverlaySet(overlay(
-            "p", "wave", "w-other", "status"
+            "p", "track", "w-other", "status"
         ))));
-        // Wrong entity_kind (overlay says "card", filter wants "wave").
+        // Wrong entity_kind (overlay says "card", filter wants "track").
         assert!(!f.matches(&Event::OverlaySet(overlay(
             "p", "card", "w-target", "status"
         ))));

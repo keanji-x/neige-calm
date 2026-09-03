@@ -280,7 +280,7 @@ pub struct HistoryGap {
     pub requires_snapshot: bool,
 }
 
-/// Daemon-side back-pressure policy hint. The first wave only encodes the
+/// Daemon-side back-pressure policy hint. The first track only encodes the
 /// shape; nothing in this PR ever sends a `Backpressure` frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "web/src/api/generated-terminal.ts")]

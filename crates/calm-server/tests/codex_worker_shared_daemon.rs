@@ -13,11 +13,11 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
+use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, Phase, PhaseTag,
@@ -31,7 +31,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::track_report::TrackReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -102,9 +102,9 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     cache: CardRoleCache,
-    wcc: calm_server::wave_area_cache::WaveAreaCache,
+    wcc: calm_server::track_area_cache::TrackAreaCache,
     area_id: AreaId,
-    wave_id: WaveId,
+    track_id: TrackId,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
     renderer: Arc<TerminalRendererRegistry>,
@@ -119,7 +119,7 @@ struct Boot {
 
 async fn boot(start_shared: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
-    let repo_root = tmp.path().join("wave-repo");
+    let repo_root = tmp.path().join("track-repo");
     init_git_repo(&repo_root);
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
@@ -131,8 +131,8 @@ async fn boot(start_shared: bool) -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "worker-shared".into(),
@@ -147,7 +147,7 @@ async fn boot(start_shared: bool) -> Boot {
         .unwrap();
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -157,28 +157,28 @@ async fn boot(start_shared: bool) -> Boot {
         .unwrap();
     let report_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
-            kind: "wave-report".into(),
+            kind: "track-report".into(),
             sort: Some(-1.0),
-            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
         })
         .await
         .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
         .await;
     cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
-        wave.id.clone(),
+        track.id.clone(),
     );
-    seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wcc).await.unwrap();
+    seed_spec_session(&sqlx_repo, track.id.as_str(), spec_card.id.as_str()).await;
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&wcc).await.unwrap();
 
     let mut codex = CodexClient::new_stub();
     codex.codex_bin = fake_codex_bin();
@@ -230,9 +230,9 @@ async fn boot(start_shared: bool) -> Boot {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: repo
+        track_vcs: repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: WriteContext::new(cache.clone(), wcc.clone()),
         daemon_token_hash: None,
@@ -249,7 +249,7 @@ async fn boot(start_shared: bool) -> Boot {
         cache,
         wcc,
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         codex,
         daemon,
         renderer,
@@ -263,7 +263,7 @@ async fn boot(start_shared: bool) -> Boot {
     }
 }
 
-async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
+async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -284,11 +284,11 @@ async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
-        .bind(wave_id)
+    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(track_id)
         .execute(&mut *tx)
         .await
-        .expect("mark spec session as wave root");
+        .expect("mark spec session as track root");
     tx.commit().await.unwrap();
 }
 
@@ -324,14 +324,14 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }
 
 fn task_id(boot: &Boot, key: &str) -> String {
-    format!("{}:{key}", boot.wave_id.as_str())
+    format!("{}:{key}", boot.track_id.as_str())
 }
 
 async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
@@ -350,7 +350,7 @@ async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
         .await
         .unwrap()
         .expect("report card");
-    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+    let report: TrackReportPayload = serde_json::from_value(report.payload).unwrap();
     let handler = boot
         .registry
         .lookup(TOOL_REPORT_BLOCKS_UPSERT)
@@ -412,7 +412,7 @@ async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
 
 async fn worker_card_count_by_idem(boot: &Boot, idem: &str) -> usize {
     boot.repo
-        .cards_by_wave(boot.wave_id.as_str())
+        .cards_by_track(boot.track_id.as_str())
         .await
         .unwrap()
         .into_iter()
@@ -422,7 +422,7 @@ async fn worker_card_count_by_idem(boot: &Boot, idem: &str) -> usize {
 
 async fn worker_card_count_with_prefix(boot: &Boot, prefix: &str) -> usize {
     boot.repo
-        .cards_by_wave(boot.wave_id.as_str())
+        .cards_by_track(boot.track_id.as_str())
         .await
         .unwrap()
         .into_iter()
@@ -508,17 +508,17 @@ async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
     .unwrap();
 }
 
-async fn seed_dispatched_task(repo: &SqlxRepo, wave_id: &WaveId, task_id: &str, kind: &str) {
+async fn seed_dispatched_task(repo: &SqlxRepo, track_id: &TrackId, task_id: &str, kind: &str) {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO tasks (
-               id, wave_id, key, kind, goal, context_json, depends_on_json,
+               id, track_id, key, kind, goal, context_json, depends_on_json,
                status, claim_context_json, created_at_ms, updated_at_ms
            ) VALUES (?1, ?2, ?1, ?3, 'worker fixture', '{}', '[]',
                      'dispatched', '[]', ?4, ?4)"#,
     )
     .bind(task_id)
-    .bind(wave_id.as_str())
+    .bind(track_id.as_str())
     .bind(kind)
     .bind(now)
     .execute(repo.pool())
@@ -529,14 +529,14 @@ async fn seed_dispatched_task(repo: &SqlxRepo, wave_id: &WaveId, task_id: &str, 
 async fn prepared_worker_operation(
     state: &AppState,
     repo: &Arc<SqlxRepo>,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     idempotency_key: &str,
     goal: &str,
 ) -> (Operation, TxOutput) {
-    seed_dispatched_task(repo, wave_id, idempotency_key, "codex").await;
+    seed_dispatched_task(repo, track_id, idempotency_key, "codex").await;
     let payload = serde_json::to_value(CodexWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         idempotency_key: idempotency_key.to_string(),
         goal: goal.to_string(),
         cwd: None,
@@ -550,9 +550,9 @@ async fn prepared_worker_operation(
         kind: "codex-worker".into(),
         idempotency_key: Some(idempotency_key.to_string()),
         payload_hash: format!("payload-{idempotency_key}"),
-        target_type: "wave".into(),
-        target_id: Some(wave_id.to_string()),
-        target: json!({ "type": "wave", "id": wave_id }),
+        target_type: "track".into(),
+        target_id: Some(track_id.to_string()),
+        target: json!({ "type": "track", "id": track_id }),
         payload: payload.clone(),
         tx_output: None,
         phase: Phase::Pending,
@@ -574,7 +574,7 @@ async fn prepared_worker_operation(
         state.shared_codex_appserver.clone(),
         None,
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     let mut tx = repo.pool().begin().await.unwrap();
@@ -624,9 +624,9 @@ async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, run
     );
 }
 
-async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId, TempDir) {
+async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackId, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let repo_root = tmp.path().join("wave-repo");
+    let repo_root = tmp.path().join("track-repo");
     init_git_repo(&repo_root);
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
@@ -637,8 +637,8 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "worker recovery".into(),
@@ -654,8 +654,8 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wcc).await.unwrap();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&wcc).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -676,7 +676,10 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
     let mcp_server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        WriteContext::new(state.card_role_cache.clone(), state.wave_area_cache.clone()),
+        WriteContext::new(
+            state.card_role_cache.clone(),
+            state.track_area_cache.clone(),
+        ),
         tmp.path().join("worker-recovery-mcp.sock"),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -693,7 +696,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
             .with_mcp_server(mcp_server)
             .with_shared_codex_appserver(shared),
         repo,
-        wave.id,
+        track.id,
         tmp,
     )
 }
@@ -709,9 +712,9 @@ fn codex_worker_key(idempotency_key: &str) -> OperationKey {
 #[tokio::test]
 async fn worker_operation_provisions_real_worktree_before_runtime_started_and_recovers_once() {
     let _guard = ENV_LOCK.lock().await;
-    let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
+    let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-real-worktree";
-    seed_dispatched_task(&repo, &wave_id, idem, "codex").await;
+    seed_dispatched_task(&repo, &track_id, idem, "codex").await;
     let op_id = state
         .operation_runtime
         .submit(
@@ -719,7 +722,7 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
             codex_worker_key(idem),
             serde_json::to_value(CodexWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
-                wave_id: wave_id.to_string(),
+                track_id: track_id.to_string(),
                 idempotency_key: idem.to_string(),
                 goal: "prove real git worktree provisioning".into(),
                 cwd: None,
@@ -749,7 +752,7 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
     assert_eq!(
         git_stdout(&repo_root, ["status", "--short", "--untracked-files=all"]),
         "",
-        "provisioning must not dirty the base wave repo"
+        "provisioning must not dirty the base track repo"
     );
     assert!(
         git_ref_exists(&repo_root, &format!("refs/heads/{branch}")),
@@ -757,7 +760,7 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
     );
 
     let lease: (String, String, String, String) = sqlx::query_as(
-        "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE card_id = ?1",
+        "SELECT state, path, card_id, track_id FROM workspace_leases WHERE card_id = ?1",
     )
     .bind(&card_id)
     .fetch_one(repo.pool())
@@ -766,7 +769,7 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
     assert_eq!(lease.0, "held");
     assert_eq!(lease.1, cwd);
     assert_eq!(lease.2, card_id);
-    assert_eq!(lease.3, wave_id.to_string());
+    assert_eq!(lease.3, track_id.to_string());
 
     let rows = ordered_event_rows(&repo, &["worktree.provisioned", "runtime.started"]).await;
     let provisioned = rows
@@ -781,7 +784,7 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
         provisioned.id < runtime_started.id,
         "worktree.provisioned must precede runtime.started"
     );
-    assert_eq!(provisioned.payload["wave_id"], wave_id.to_string());
+    assert_eq!(provisioned.payload["track_id"], track_id.to_string());
     assert_eq!(provisioned.payload["card_id"], card_id);
     assert_eq!(provisioned.payload["path"], cwd);
     assert_eq!(runtime_started.payload["card_id"], card_id);
@@ -831,10 +834,10 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
 #[tokio::test]
 async fn worker_operation_recovers_legacy_tx_output_without_worktree_fields() {
     let _guard = ENV_LOCK.lock().await;
-    let (state, repo, wave_id, tmp) = app_state_with_fake_worker_daemon().await;
+    let (state, repo, track_id, tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-legacy-no-worktree-fields";
     let (op, mut output) =
-        prepared_worker_operation(&state, &repo, &wave_id, idem, "recover legacy worker").await;
+        prepared_worker_operation(&state, &repo, &track_id, idem, "recover legacy worker").await;
     let card_id = output.data["card_id"].as_str().unwrap().to_string();
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
     let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
@@ -909,11 +912,16 @@ async fn worker_operation_recovers_legacy_tx_output_without_worktree_fields() {
 #[tokio::test]
 async fn worker_operation_provisions_when_slice_branch_already_exists() {
     let _guard = ENV_LOCK.lock().await;
-    let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
+    let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-branch-already-exists";
-    let (op, output) =
-        prepared_worker_operation(&state, &repo, &wave_id, idem, "reuse existing slice branch")
-            .await;
+    let (op, output) = prepared_worker_operation(
+        &state,
+        &repo,
+        &track_id,
+        idem,
+        "reuse existing slice branch",
+    )
+    .await;
     let repo_root = PathBuf::from(output.data["repo_root"].as_str().unwrap());
     let branch = output.data["slice_branch"].as_str().unwrap().to_string();
     let cwd = output.data["cwd"].as_str().unwrap().to_string();
@@ -969,8 +977,8 @@ async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
     let idempotency_key = task_id(&boot, key);
     write_codex_task_block(&boot, key, "race shared worker").await;
     tokio::join!(
-        async { dispatcher.scheduler().poke(boot.wave_id.clone()) },
-        async { dispatcher.scheduler().poke(boot.wave_id.clone()) },
+        async { dispatcher.scheduler().poke(boot.track_id.clone()) },
+        async { dispatcher.scheduler().poke(boot.track_id.clone()) },
     );
 
     wait_for(Duration::from_secs(5), || async {
@@ -990,9 +998,9 @@ async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
 #[tokio::test]
 async fn worker_recovery_reuses_persisted_thread_and_turn() {
     let _guard = ENV_LOCK.lock().await;
-    let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
+    let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-recovery-thread";
-    seed_dispatched_task(&repo, &wave_id, idem, "codex").await;
+    seed_dispatched_task(&repo, &track_id, idem, "codex").await;
     let op_id = state
         .operation_runtime
         .submit(
@@ -1000,7 +1008,7 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
             codex_worker_key(idem),
             serde_json::to_value(CodexWorkerOperationPayload {
                 actor: ActorId::User,
-                wave_id: wave_id.to_string(),
+                track_id: track_id.to_string(),
                 idempotency_key: idem.to_string(),
                 goal: "recover without duplicate worker".into(),
                 cwd: None,
@@ -1117,12 +1125,12 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
 #[tokio::test]
 async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let _guard = ENV_LOCK.lock().await;
-    let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
+    let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-recovery-compensation-turn";
-    seed_dispatched_task(&repo, &wave_id, idem, "codex").await;
+    seed_dispatched_task(&repo, &track_id, idem, "codex").await;
     let payload = serde_json::to_value(CodexWorkerOperationPayload {
         actor: ActorId::User,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         idempotency_key: idem.to_string(),
         goal: "recover and compensate with persisted turn".into(),
         cwd: None,
@@ -1136,9 +1144,9 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         kind: "codex-worker".into(),
         idempotency_key: Some(idem.into()),
         payload_hash: "worker-recovery-compensation-turn-hash".into(),
-        target_type: "wave".into(),
-        target_id: Some(wave_id.to_string()),
-        target: json!({ "type": "wave", "id": wave_id }),
+        target_type: "track".into(),
+        target_id: Some(track_id.to_string()),
+        target: json!({ "type": "track", "id": track_id }),
         payload: payload.clone(),
         tx_output: None,
         phase: Phase::Pending,
@@ -1159,7 +1167,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.shared_codex_appserver.clone(),
         None,
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     insert_pending_operation_row(&repo, &op).await;
@@ -1214,7 +1222,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         recovered_shared.clone(),
         None,
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
@@ -1278,7 +1286,7 @@ async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
 
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
-        worker_card_count_with_prefix(&boot, boot.wave_id.as_str()).await,
+        worker_card_count_with_prefix(&boot, boot.track_id.as_str()).await,
         0,
         "shared workers must wait while the only permit is occupied"
     );
@@ -1287,7 +1295,7 @@ async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
     drop(held_permit);
 
     wait_for(Duration::from_secs(10), || async {
-        (worker_card_count_with_prefix(&boot, boot.wave_id.as_str()).await >= 1).then_some(())
+        (worker_card_count_with_prefix(&boot, boot.track_id.as_str()).await >= 1).then_some(())
     })
     .await
     .expect("a queued shared worker should mint after the permit is released");
@@ -1309,7 +1317,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     let card = wait_for(Duration::from_secs(5), || async {
         let mut cards = boot
             .repo
-            .cards_by_wave(boot.wave_id.as_str())
+            .cards_by_track(boot.track_id.as_str())
             .await
             .unwrap();
         project_runtime_into_cards_payload(boot.repo.as_ref(), &mut cards)
@@ -1322,7 +1330,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
                     == Some("fake-thread-0001")
                 // `codex_thread_id` is overlaid from the runtime row by
                 // `project_runtime_into_cards_payload`, while `appserver_sock`
-                // lives only in the base card payload read by `cards_by_wave`
+                // lives only in the base card payload read by `cards_by_track`
                 // one statement earlier. Those are two separate, non-snapshot
                 // reads: the spawn's persist tx (which writes BOTH atomically)
                 // can commit between them, so an iteration can see the runtime
@@ -1445,7 +1453,7 @@ async fn worker_shared_daemon_stopped_rolls_back_card() {
 
     let cards = boot
         .repo
-        .cards_by_wave(boot.wave_id.as_str())
+        .cards_by_track(boot.track_id.as_str())
         .await
         .unwrap();
     assert!(
@@ -1490,14 +1498,14 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     // Shared-worker turn_start failure runs worker compensation, which
     // deletes the card + terminal rows entirely.
     // The card with idempotency_key="turn-fail-1" should not exist anywhere
-    // (cards_by_wave returns no row with that key). This clears the
+    // (cards_by_track returns no row with that key). This clears the
     // card-payload idempotency key so no orphaned worker row remains.
     // We poll briefly because the dispatcher's rollback happens async after
     // task.failed is emitted.
     let leftover = wait_for(Duration::from_secs(2), || async {
         let cards = boot
             .repo
-            .cards_by_wave(boot.wave_id.as_str())
+            .cards_by_track(boot.track_id.as_str())
             .await
             .unwrap();
         let any_left = cards.into_iter().any(|c| {
@@ -1560,7 +1568,7 @@ async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
     let leftover = wait_for(Duration::from_secs(2), || async {
         let cards = boot
             .repo
-            .cards_by_wave(boot.wave_id.as_str())
+            .cards_by_track(boot.track_id.as_str())
             .await
             .unwrap();
         let any_left = cards.into_iter().any(|c| {
@@ -1600,7 +1608,7 @@ async fn worker_thread_start_carries_mcp_shell_environment_policy() {
     wait_for(Duration::from_secs(5), || async {
         let mut cards = boot
             .repo
-            .cards_by_wave(boot.wave_id.as_str())
+            .cards_by_track(boot.track_id.as_str())
             .await
             .unwrap();
         project_runtime_into_cards_payload(boot.repo.as_ref(), &mut cards)

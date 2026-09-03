@@ -1,0 +1,17 @@
+{
+  "description": "track.report_edited with agent_message present; author uses the lowercase EditAuthor wire shape.",
+  "wire": {
+    "ev": "track.report_edited",
+    "data": {
+      "track_id": "track-01",
+      "card_id": "card-01",
+      "author": "spec",
+      "edit_id": "edit-0001",
+      "summary_before": "old summary",
+      "summary_after": "new summary",
+      "body_before": "old body",
+      "body_after": "new body",
+      "agent_message": "rewrote intro"
+    }
+  }
+}

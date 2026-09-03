@@ -1,12 +1,12 @@
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
-use calm_types::wave_report::WaveReportPayload;
+use calm_types::track_report::TrackReportPayload;
 
 use super::infra::next_sort_scoped_in_tx;
 use super::overlay_delete_by_entity_tx;
 use super::session_row::{
-    WorkerSessionDeleteScope, clear_wave_root_session_refs_for_worker_session_delete_tx,
+    WorkerSessionDeleteScope, clear_track_root_session_refs_for_worker_session_delete_tx,
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
@@ -37,7 +37,7 @@ pub async fn terminal_get_by_card_tx(
 /// [`card_create_tx`] wrapper preserves the original "mint inside the
 /// helper" contract for every other caller.
 ///
-/// The wave-report guard below covers every Rust API creation path. Direct SQL
+/// The track-report guard below covers every Rust API creation path. Direct SQL
 /// through [`SqlxRepo::pool`](super::SqlxRepo::pool) and frozen historical
 /// migration seeds do not pass through this Rust boundary and are outside its
 /// guarantee.
@@ -58,43 +58,48 @@ pub async fn card_create_with_id_tx(
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // A wave-report can only be born through Rust as a kernel-owned ReportCard
+    // A track-report can only be born through Rust as a kernel-owned ReportCard
     // with the canonical initial payload. All report content must arrive later
     // through the report persist boundary, which writes payload and CRDT together.
-    if p.kind == "wave-report" {
+    if p.kind == "track-report" {
         if role != CardRole::ReportCard {
             return Err(CalmError::BadRequest(
-                "wave-report cards must be kernel-minted with the reportcard role",
+                "track-report cards must be kernel-minted with the reportcard role",
             ));
         }
-        let Ok(payload) = serde_json::from_value::<WaveReportPayload>(p.payload.clone()) else {
+        let Ok(payload) = serde_json::from_value::<TrackReportPayload>(p.payload.clone()) else {
             return Err(CalmError::BadRequest(
-                "wave-report cards must be created with the canonical initial payload; \
+                "track-report cards must be created with the canonical initial payload; \
                  use the report persist boundary to add content",
             ));
         };
-        if payload != WaveReportPayload::initial() {
+        if payload != TrackReportPayload::initial() {
             return Err(CalmError::BadRequest(
-                "wave-report cards must be created with the canonical initial payload; \
+                "track-report cards must be created with the canonical initial payload; \
                  use the report persist boundary to add content",
             ));
         }
     }
     // Keep the pre-0072 typed owner check: the removed deleting guard had
-    // temporarily subsumed it, but missing waves must still return NotFound
+    // temporarily subsumed it, but missing tracks must still return NotFound
     // before sort allocation or either half of an atomic card create runs.
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
-        .bind(p.wave_id.as_str())
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM tracks WHERE id = ?1")
+        .bind(p.track_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
     if exists.is_none() {
-        return Err(CalmError::NotFound(format!("wave {}", p.wave_id)));
+        return Err(CalmError::NotFound(format!("track {}", p.track_id)));
     }
     let sort = match p.sort {
         Some(s) => s,
         None => {
-            next_sort_scoped_in_tx(tx, "cards", "WHERE wave_id = ?1", Some(p.wave_id.as_ref()))
-                .await?
+            next_sort_scoped_in_tx(
+                tx,
+                "cards",
+                "WHERE track_id = ?1",
+                Some(p.track_id.as_ref()),
+            )
+            .await?
         }
     };
     let now = now_ms();
@@ -102,7 +107,7 @@ pub async fn card_create_with_id_tx(
     let title = p.title.filter(|t| !t.trim().is_empty());
     // `role` lands in the `cards.role` column added by migration 0008
     // (PR3, #136). User-facing card creation now uniformly passes
-    // `CardRole::Worker`; wave-create passes `CardRole::Spec`.
+    // `CardRole::Worker`; track-create passes `CardRole::Spec`.
     //
     // `deletable` lands in the column added by migration 0013 (#229 PR A).
     // SQLite has no native bool; we encode as `1` / `0`, matching the
@@ -110,11 +115,11 @@ pub async fn card_create_with_id_tx(
     // transparently via its `Encode<Sqlite>` impl, so the bind is direct.
     sqlx::query(
         r#"INSERT INTO cards
-               (id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at)
+               (id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
     )
     .bind(&id)
-    .bind(p.wave_id.as_str())
+    .bind(p.track_id.as_str())
     .bind(&p.kind)
     .bind(sort)
     .bind(&payload_text)
@@ -134,10 +139,10 @@ pub async fn card_create_with_id_tx(
     // matters (unknown card) and the next boot's `seed_from_db` will
     // overwrite stale entries from the persisted truth.
     let card_id: CardId = id.into();
-    card_role_cache.insert(card_id.clone(), role, p.wave_id.clone());
+    card_role_cache.insert(card_id.clone(), role, p.track_id.clone());
     Ok(Card {
         id: card_id,
-        wave_id: p.wave_id,
+        track_id: p.track_id,
         kind: p.kind,
         sort,
         payload: p.payload,
@@ -163,7 +168,7 @@ pub async fn card_create_tx(
 
 async fn card_for_update_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Card> {
     sqlx::query_as::<_, crate::db::rows::CardRow>(
-        r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
+        r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
            FROM cards WHERE id = ?1"#,
     )
     .bind(id)
@@ -220,19 +225,19 @@ pub async fn card_update_tx(
     p: CardPatch,
 ) -> Result<Card> {
     let existing = card_for_update_tx(tx, id).await?;
-    let targets_report = p.kind.as_deref() == Some("wave-report");
-    let transitions_from_report = existing.kind == "wave-report" && p.kind.is_some();
-    let updates_report_payload = existing.kind == "wave-report" && p.payload.is_some();
+    let targets_report = p.kind.as_deref() == Some("track-report");
+    let transitions_from_report = existing.kind == "track-report" && p.kind.is_some();
+    let updates_report_payload = existing.kind == "track-report" && p.payload.is_some();
     if transitions_from_report || targets_report || updates_report_payload {
         return Err(CalmError::BadRequest(
-            "wave-report kind transitions and payloads must go through the report persist boundary \
-             (POST /api/waves/:id/report or the calm.report.* tools)",
+            "track-report kind transitions and payloads must go through the report persist boundary \
+             (POST /api/tracks/:id/report or the calm.report.* tools)",
         ));
     }
     card_update_inner_tx(tx, existing, p).await
 }
 
-/// Issue #247 PR1 — wave-report-specific transactional update that
+/// Issue #247 PR1 — track-report-specific transactional update that
 /// rewrites both the legacy `payload` JSON column AND the new opaque
 /// CRDT blob in `body_crdt` in one statement. Uses the private ungated
 /// update path because this function is the report persist boundary's
@@ -242,10 +247,10 @@ pub async fn card_update_tx(
 /// and the CRDT authoritative bytes never drift.
 ///
 /// `body_crdt` is the `automerge::AutoCommit::save()` bytes from
-/// `wave_report_doc::ReportDoc::to_bytes`; the kernel never
+/// `track_report_doc::ReportDoc::to_bytes`; the kernel never
 /// interprets the column outside of the round-trip via that module.
 ///
-/// This is a **wave-report-only** seam. Terminal / codex /
+/// This is a **track-report-only** seam. Terminal / codex /
 /// plugin cards continue going through `card_update_tx`, which never
 /// touches `body_crdt` — the column stays NULL on those rows forever.
 pub async fn card_update_with_crdt_tx(
@@ -258,9 +263,9 @@ pub async fn card_update_with_crdt_tx(
     // codepaths can't drift on what `updated_at` / payload-text
     // semantics look like.
     let existing = card_for_update_tx(tx, id).await?;
-    if existing.kind != "wave-report" {
+    if existing.kind != "track-report" {
         return Err(CalmError::BadRequest(
-            "card_update_with_crdt_tx is restricted to wave-report cards",
+            "card_update_with_crdt_tx is restricted to track-report cards",
         ));
     }
     if p.kind.as_deref().is_some_and(|kind| kind != existing.kind) {
@@ -273,7 +278,7 @@ pub async fn card_update_with_crdt_tx(
     // Split into its own UPDATE (rather than extending the one above)
     // so plain `card_update_tx` callers never sqlx-bind a `Vec<u8>`
     // they don't care about. The combined cost is one extra UPDATE
-    // per wave-report write, which is dominated by the surrounding
+    // per track-report write, which is dominated by the surrounding
     // event-emit work.
     sqlx::query(r#"UPDATE cards SET body_crdt = ?1 WHERE id = ?2"#)
         .bind(&body_crdt)
@@ -290,14 +295,14 @@ pub async fn card_update_with_crdt_tx(
 ///     no `NotFound` is raised, the absent row collapses into the
 ///     same "no blob to load" signal as a NULL column), or
 ///   * the row exists but `body_crdt` IS NULL (every pre-PR1 row,
-///     plus non-wave-report cards which never get initialized).
+///     plus non-track-report cards which never get initialized).
 ///
 /// Returns `Some(bytes)` for any row whose first post-PR1 write has
 /// run through `card_update_with_crdt_tx`.
 ///
 /// Read inside the same tx as the update so a concurrent writer
 /// can't slip a blob in between this read and our `to_bytes` write
-/// (the wave-report write path is the only writer of the column
+/// (the track-report write path is the only writer of the column
 /// today, but pinning the read to the tx is cheap and matches the
 /// pattern the rest of `*_tx` uses).
 pub async fn card_body_crdt_get_tx(
@@ -319,7 +324,7 @@ mod tests {
     use crate::db::RepoSyncDomainRaw;
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 
-    async fn wave(repo: &SqlxRepo) -> Wave {
+    async fn track(repo: &SqlxRepo) -> Track {
         let area = repo
             .area_create(NewArea {
                 name: "cards".into(),
@@ -328,9 +333,9 @@ mod tests {
             })
             .await
             .unwrap();
-        repo.wave_create(NewWave {
+        repo.track_create(NewTrack {
             area_id: area.id,
-            title: "wave".into(),
+            title: "track".into(),
             sort: None,
             cwd: "/tmp".into(),
             template_id: None,
@@ -343,13 +348,13 @@ mod tests {
         .unwrap()
     }
 
-    fn new_card(wave_id: &str, kind: &str) -> NewCard {
+    fn new_card(track_id: &str, kind: &str) -> NewCard {
         NewCard {
-            wave_id: wave_id.into(),
+            track_id: track_id.into(),
             kind: kind.into(),
             sort: None,
-            payload: if kind == "wave-report" {
-                serde_json::to_value(WaveReportPayload::initial()).unwrap()
+            payload: if kind == "track-report" {
+                serde_json::to_value(TrackReportPayload::initial()).unwrap()
             } else {
                 serde_json::json!({})
             },
@@ -358,11 +363,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wave_report_create_refuses_non_canonical_payload() {
+    async fn track_report_create_refuses_non_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
+        let track = track(&repo).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-        let mut arbitrary_report = new_card(wave.id.as_str(), "wave-report");
+        let mut arbitrary_report = new_card(track.id.as_str(), "track-report");
         arbitrary_report.payload = serde_json::json!({"arbitrary": "fixture payload"});
         let error = card_create_with_id_tx(
             &mut tx,
@@ -376,17 +381,17 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "bad request: wave-report cards must be created with the canonical initial payload; \
+            "bad request: track-report cards must be created with the canonical initial payload; \
              use the report persist boundary to add content"
         );
     }
 
     #[tokio::test]
-    async fn wave_report_create_accepts_canonical_payload() {
+    async fn track_report_create_accepts_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
+        let track = track(&repo).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-        let canonical_report = new_card(wave.id.as_str(), "wave-report");
+        let canonical_report = new_card(track.id.as_str(), "track-report");
         let accepted = card_create_with_id_tx(
             &mut tx,
             "canonical_report".into(),
@@ -401,11 +406,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wave_report_create_accepts_canonical_payload_with_null_blocks() {
+    async fn track_report_create_accepts_canonical_payload_with_null_blocks() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
+        let track = track(&repo).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-        let mut canonical_report = new_card(wave.id.as_str(), "wave-report");
+        let mut canonical_report = new_card(track.id.as_str(), "track-report");
         canonical_report.payload["blocks"] = serde_json::Value::Null;
         card_create_with_id_tx(
             &mut tx,
@@ -420,14 +425,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wave_report_create_refuses_non_reportcard_role() {
+    async fn track_report_create_refuses_non_reportcard_role() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
+        let track = track(&repo).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
         let error = card_create_with_id_tx(
             &mut tx,
             "bad_role".into(),
-            new_card(wave.id.as_str(), "wave-report"),
+            new_card(track.id.as_str(), "track-report"),
             CardRole::Worker,
             false,
             repo.card_role_cache(),
@@ -436,16 +441,16 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "bad request: wave-report cards must be kernel-minted with the reportcard role"
+            "bad request: track-report cards must be kernel-minted with the reportcard role"
         );
     }
 
     #[tokio::test]
-    async fn raw_wave_report_create_mints_kernel_owned_reportcard() {
+    async fn raw_track_report_create_mints_kernel_owned_reportcard() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
+        let track = track(&repo).await;
         let card = repo
-            .card_create(new_card(wave.id.as_str(), "wave-report"))
+            .card_create(new_card(track.id.as_str(), "track-report"))
             .await
             .unwrap();
         let (role, deletable): (String, bool) =
@@ -464,14 +469,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_wave_report_create_refuses_second_report_for_wave() {
+    async fn raw_track_report_create_refuses_second_report_for_track() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
-        repo.card_create(new_card(wave.id.as_str(), "wave-report"))
+        let track = track(&repo).await;
+        repo.card_create(new_card(track.id.as_str(), "track-report"))
             .await
             .unwrap();
         let error = repo
-            .card_create(new_card(wave.id.as_str(), "wave-report"))
+            .card_create(new_card(track.id.as_str(), "track-report"))
             .await
             .unwrap_err();
         assert!(
@@ -483,13 +488,13 @@ mod tests {
     #[tokio::test]
     async fn crdt_update_seam_rejects_non_report_and_kind_change() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let wave = wave(&repo).await;
+        let track = track(&repo).await;
         let worker = repo
-            .card_create(new_card(wave.id.as_str(), "worker"))
+            .card_create(new_card(track.id.as_str(), "worker"))
             .await
             .unwrap();
         let report = repo
-            .card_create(new_card(wave.id.as_str(), "wave-report"))
+            .card_create(new_card(track.id.as_str(), "track-report"))
             .await
             .unwrap();
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
@@ -499,7 +504,7 @@ mod tests {
                 .unwrap_err();
         assert_eq!(
             non_report.to_string(),
-            "bad request: card_update_with_crdt_tx is restricted to wave-report cards"
+            "bad request: card_update_with_crdt_tx is restricted to track-report cards"
         );
         let kind_change = card_update_with_crdt_tx(
             &mut tx,
@@ -524,7 +529,7 @@ pub async fn card_delete_tx(
     id: &str,
     card_role_cache: &CardRoleCache,
 ) -> Result<()> {
-    clear_wave_root_session_refs_for_worker_session_delete_tx(
+    clear_track_root_session_refs_for_worker_session_delete_tx(
         tx,
         WorkerSessionDeleteScope::Card { card_id: id },
     )
@@ -541,9 +546,9 @@ pub async fn card_delete_tx(
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("card {id}")));
     }
-    // Not reached when a wave/area delete cascades cards via FK — those
+    // Not reached when a track/area delete cascades cards via FK — those
     // paths sweep card overlays in their own txn via
-    // overlay_delete_card_overlays_by_wave_tx / overlay_delete_subtree_by_area_tx.
+    // overlay_delete_card_overlays_by_track_tx / overlay_delete_subtree_by_area_tx.
     overlay_delete_by_entity_tx(tx, "card", id).await?;
     // PR3 (#136) — keep the role cache in lockstep with the table.
     // Like the insert-side write-through, this happens before commit;
@@ -585,7 +590,7 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
 /// # #1147 S6 — this is freeze point 2 ("terminal persistence")
 ///
 /// A `terminals` row stores a `cwd` string. Nothing re-anchors it: the spawn
-/// paths read the row, not the wave, so once this row exists the wave's
+/// paths read the row, not the track, so once this row exists the track's
 /// workspace can no longer move without leaving a terminal pointed at a
 /// directory that has been renamed into `.trash/`. Design §更换与冻结 therefore
 /// lists terminal persistence as a freeze point, and requires the freeze to sit
@@ -596,19 +601,19 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
 /// It is deliberately unconditional in the *card kind*: codex, claude and
 /// terminal cards all persist a `cwd` here, and all three are the durable
 /// consumer the design names. The one exception — the system area's launchpad
-/// wave, which the kernel re-points on every `ensure` — lives inside
-/// [`wave_workspace_freeze_tx`] as a SQL clause, so it cannot be forgotten here.
+/// track, which the kernel re-points on every `ensure` — lives inside
+/// [`track_workspace_freeze_tx`] as a SQL clause, so it cannot be forgotten here.
 pub async fn terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewTerminal,
 ) -> Result<Terminal> {
     // Parent card must exist; surface as NotFound to mirror MockRepo.
-    // `wave_id` comes back on the same read because the freeze below needs it.
-    let owner: Option<(String,)> = sqlx::query_as("SELECT wave_id FROM cards WHERE id = ?1")
+    // `track_id` comes back on the same read because the freeze below needs it.
+    let owner: Option<(String,)> = sqlx::query_as("SELECT track_id FROM cards WHERE id = ?1")
         .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-    let Some((wave_id,)) = owner else {
+    let Some((track_id,)) = owner else {
         return Err(CalmError::NotFound(format!("card {}", p.card_id)));
     };
     // Per-card uniqueness — surface as Conflict to mirror MockRepo
@@ -649,32 +654,32 @@ pub async fn terminal_create_tx(
     .execute(&mut **tx)
     .await?;
     // #1147 S6 — freeze point 2, closing gap N17. After this statement the row
-    // above is a durable, un-re-anchorable copy of a directory, so the wave's
+    // above is a durable, un-re-anchorable copy of a directory, so the track's
     // workspace must stop being movable in the SAME transaction: a freeze that
     // could commit separately from the row it protects is not a freeze.
     //
     // # The deadlock N17 recorded, re-measured
     //
-    // N17 said the `UPDATE waves` here never returns. It does return — measured
+    // N17 said the `UPDATE tracks` here never returns. It does return — measured
     // with printf probes on
     // `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`,
     // which logged `UPDATE ok` twice and then hung. The hang is one step later,
     // and it is the mirror image of what N17 described: this transaction now
-    // holds the shared-cache WRITE lock on `waves`, and
-    // `ClaudeRestartAdapter::prepare_tx` went on to read `waves` through
+    // holds the shared-cache WRITE lock on `tracks`, and
+    // `ClaudeRestartAdapter::prepare_tx` went on to read `tracks` through
     // `card_scope`, which uses the *pool* — a second connection — while this
     // transaction is still open. The task then waits on itself forever in
     // `sqlx_sqlite::statement::unlock_notify::wait`.
     //
     // So the rule for anyone adding a caller is not "do not freeze here", and
-    // it is not about `waves` either. The general rule, of which this is one
+    // it is not about `tracks` either. The general rule, of which this is one
     // instance:
     //
     //   **A transaction must not read, off the pool, any table it has itself
     //   written, before it commits.** The pool is a second connection; under
     //   shared cache it blocks on a lock only the caller can release.
     //
-    // `waves` is simply the table S6 added to this transaction's write set;
+    // `tracks` is simply the table S6 added to this transaction's write set;
     // `cards`, `terminals` and the event tables were already in it, and a pool
     // read of any of them from inside these flows would hang the same way. What
     // S6 changed is which reads are now unsafe, not what the rule is.
@@ -683,7 +688,7 @@ pub async fn terminal_create_tx(
     // whole of its coverage is one wall clock on one flow
     // (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
     // which turns a wedged CI job into a legible red test for THAT flow only. A
-    // new adapter that creates a terminal row and then reads `waves` (or
+    // new adapter that creates a terminal row and then reads `tracks` (or
     // `cards`) through `self.repo` will still hang CI with no diagnosis. The
     // tree was swept once, at S6: every other adapter (codex, claude,
     // claude-worker, terminal, terminal-worker) resolves its scope BEFORE
@@ -691,8 +696,8 @@ pub async fn terminal_create_tx(
     // of one moment, not a guarantee.
     //
     // The in-transaction readers exist for this: `card_scope_tx`
-    // (`calm-server/src/routes/cards.rs`), `wave_workspace_read_tx`.
-    super::wave_workspace::wave_workspace_freeze_tx(tx, &wave_id, now).await?;
+    // (`calm-server/src/routes/cards.rs`), `track_workspace_read_tx`.
+    super::track_workspace::track_workspace_freeze_tx(tx, &track_id, now).await?;
     Ok(Terminal {
         id,
         card_id: p.card_id,

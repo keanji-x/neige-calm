@@ -11,7 +11,7 @@ use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
 };
 use calm_server::mcp_server::{McpShimConfig, auth};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -765,11 +765,11 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
-            title: format!("wave-{idx}"),
+            title: format!("track-{idx}"),
             sort: None,
             cwd: "/tmp".into(),
             template_id: None,
@@ -780,7 +780,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
         .await
         .unwrap();
     repo.card_create(NewCard {
-        wave_id: wave.id,
+        track_id: track.id,
         title: None,
         kind: "terminal".into(),
         sort: None,

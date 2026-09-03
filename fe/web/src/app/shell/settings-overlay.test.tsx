@@ -48,7 +48,7 @@ function bodyFor(path: string): unknown {
   if (path === '/api/areas') return [];
   if (path === '/api/settings') return { settings: {} };
   if (path === '/api/plugins') return [];
-  if (path === '/api/wave-templates') return [];
+  if (path === '/api/track-templates') return [];
   return [];
 }
 
@@ -88,7 +88,7 @@ describe('settingsSectionForPath', () => {
     // The dialog stays shut everywhere else — including on a path that merely
     // starts with the same letters.
     expect(settingsSectionForPath('/')).toBeNull();
-    expect(settingsSectionForPath('/wave/w1')).toBeNull();
+    expect(settingsSectionForPath('/track/w1')).toBeNull();
     expect(settingsSectionForPath('/settingsish')).toBeNull();
   });
 });

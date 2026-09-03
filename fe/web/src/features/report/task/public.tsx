@@ -49,7 +49,7 @@ export function ReportTaskBlock({ payload, blockId }: {
         <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />
         <span className={styles.kind}>
-          {live.kind}{live.spawn === 'sub-wave' ? ' · sub-wave' : ''}
+          {live.kind}{live.spawn === 'sub-wave' ? ' · sub-track' : ''}
         </span>
         <span className={live.ready ? styles.ready : styles.notReady}>
           {live.ready ? 'Ready' : 'Not ready'}

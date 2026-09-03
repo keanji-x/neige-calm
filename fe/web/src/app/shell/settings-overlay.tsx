@@ -11,7 +11,7 @@
 // A dialog that stays open while the reader moves *inside* it has to outlive
 // those navigations, and the nearest thing that does is the shell: it is above
 // `<Outlet />` and never unmounts across a settings navigation. So the shell
-// owns the dialog, exactly as it already owns the New wave dialog and for the
+// owns the dialog, exactly as it already owns the New track dialog and for the
 // same reason — two surfaces, one dialog, one set of strings.
 //
 // The routes stay real routes (`/settings`, `/settings/appearance`,
@@ -23,7 +23,7 @@
 //
 // #1300 S1 removed `/settings/templates` and `/settings/templates/$templateId`
 // along with the template editor they existed for; templates are a read-only
-// recipe again, and `GET /api/wave-templates` is read only by the New wave
+// recipe again, and `GET /api/track-templates` is read only by the New track
 // picker.
 
 import { useQuery } from '@tanstack/react-query';

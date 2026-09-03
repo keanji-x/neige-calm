@@ -4,7 +4,7 @@
 // Slice F's iframe runtime, against the same `registerCard` API.
 //
 // Today only `TerminalEntry` and `PluginIframeEntry` are live. The
-// earlier `doc` / `git` / `diff` / `plan` builtins were removed in Wave 4
+// earlier `doc` / `git` / `diff` / `plan` builtins were removed in Track 4
 // — the kernel never produced those kinds, and the M3 plugin host
 // (sandboxed `ui://` iframes) is the supported path for non-terminal
 // cards going forward.
@@ -13,12 +13,12 @@ import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
 import { ClaudeEntry, CodexEntry } from './codex';
 import { SpecEntry } from './spec';
-import { WaveReportEntry } from './wave-report';
+import { TrackReportEntry } from './track-report';
 import { FileViewerEntry } from './file-viewer';
 import { IframeEntry } from './iframe';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, CodexEntry, SpecEntry, ClaudeEntry, WaveReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, SpecEntry, ClaudeEntry, TrackReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -32,10 +32,10 @@ export function registerBuiltins(): void {
   registerCard(CodexEntry);
   registerCard(SpecEntry);
   registerCard(ClaudeEntry);
-  // Issue #229 PR B — wave-report card. Kernel-minted (one per wave),
-  // kind = "wave-report". No `addPanel` entry — users cannot add
+  // Issue #229 PR B — track-report card. Kernel-minted (one per track),
+  // kind = "track-report". No `addPanel` entry — users cannot add
   // another one manually.
-  registerCard(WaveReportEntry);
+  registerCard(TrackReportEntry);
   registerCard(FileViewerEntry);
   registerCard(IframeEntry);
   // The plugin iframe entry is a built-in for now: it owns the `ui://`

@@ -9,7 +9,7 @@ use super::{
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
-use crate::ids::WaveId;
+use crate::ids::TrackId;
 use crate::model::*;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
 use crate::validation::{
@@ -25,7 +25,7 @@ use calm_types::worker::WorkerSessionState;
 /// This is the kernel side of #13's plan to collapse today's 3-step
 /// terminal-card recipe (card-add → terminal-create → card-update) into one
 /// atomic db helper. PR1 just lands this helper; PR2 will wire it to a new
-/// `POST /api/waves/:id/terminal-cards` endpoint and delete the old recipe.
+/// `POST /api/tracks/:id/terminal-cards` endpoint and delete the old recipe.
 ///
 /// On any failure the surrounding transaction rolls back, so partial state
 /// (card without terminal, or terminal without worker-session row) is
@@ -36,7 +36,7 @@ pub async fn card_with_terminal_create_tx(
     card_id: String,
     runtime_id: &str,
     spawn_op_id: Option<&str>,
-    wave_id: WaveId,
+    track_id: TrackId,
     title: Option<String>,
     sort: Option<f64>,
     program: String,
@@ -46,7 +46,7 @@ pub async fn card_with_terminal_create_tx(
     // Issue #229 PR A — required deletable bit, threaded through to
     // `card_create_with_id_tx`. Dispatcher's worker-terminal path passes
     // `true` (workers are user-facing — users can close them); the
-    // direct `POST /api/waves/:id/terminal-cards` path passes `true` for
+    // direct `POST /api/tracks/:id/terminal-cards` path passes `true` for
     // the same reason. Future kernel-owned terminal cards (none today)
     // would pass `false`.
     deletable: bool,
@@ -73,7 +73,7 @@ pub async fn card_with_terminal_create_tx(
         tx,
         card_id,
         NewCard {
-            wave_id,
+            track_id,
             kind: "terminal".into(),
             sort,
             payload: serde_json::Value::Null,
@@ -231,7 +231,7 @@ pub async fn card_with_codex_create_tx(
     card_id: String,
     runtime_id: &str,
     spawn_op_id: Option<&str>,
-    wave_id: WaveId,
+    track_id: TrackId,
     title: Option<String>,
     sort: Option<f64>,
     cwd: String,
@@ -240,10 +240,10 @@ pub async fn card_with_codex_create_tx(
     icon_bg: Option<String>,
     icon_fg: Option<String>,
     role: CardRole,
-    // Issue #229 PR A — required deletable bit. The wave-create route
+    // Issue #229 PR A — required deletable bit. The track-create route
     // passes `false` (the spec card is kernel-owned, must survive
     // direct REST / plugin-callback delete attempts). The user-facing
-    // `POST /api/waves/:id/codex-cards` route passes `true`.
+    // `POST /api/tracks/:id/codex-cards` route passes `true`.
     deletable: bool,
     card_role_cache: &CardRoleCache,
     // #177 — host browser's theme RGB; written onto the terminal row
@@ -255,16 +255,16 @@ pub async fn card_with_codex_create_tx(
     //    are stamped in step 5 once we have the terminal row.
     //
     // User-facing codex creation and dispatcher paths pass
-    // `CardRole::Worker`. The wave-create route passes `CardRole::Spec`
+    // `CardRole::Worker`. The track-create route passes `CardRole::Spec`
     // so the auto-minted spec card is recognized by `enforce_role` as a
-    // `WaveUpdated`-permitted emitter. The cache write-through
+    // `TrackUpdated`-permitted emitter. The cache write-through
     // inside `card_create_with_id_tx` keeps the role visible to
     // `enforce_role` calls later in the same tx.
     let card = card_create_with_id_tx(
         tx,
         card_id,
         NewCard {
-            wave_id,
+            track_id,
             kind: "codex".into(),
             sort,
             payload: serde_json::Value::Null,
@@ -392,7 +392,7 @@ pub async fn card_with_claude_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
     runtime_id: &str,
-    wave_id: WaveId,
+    track_id: TrackId,
     title: Option<String>,
     sort: Option<f64>,
     program: String,
@@ -412,7 +412,7 @@ pub async fn card_with_claude_create_tx(
         tx,
         card_id,
         NewCard {
-            wave_id,
+            track_id,
             kind: "claude".into(),
             sort,
             payload: serde_json::Value::Null,
@@ -510,7 +510,7 @@ pub async fn card_with_claude_worker_create_tx(
     card_id: String,
     runtime_id: &str,
     spawn_op_id: Option<&str>,
-    wave_id: WaveId,
+    track_id: TrackId,
     title: Option<String>,
     sort: Option<f64>,
     program: String,
@@ -528,7 +528,7 @@ pub async fn card_with_claude_worker_create_tx(
         tx,
         card_id,
         NewCard {
-            wave_id,
+            track_id,
             kind: "claude".into(),
             sort,
             payload: serde_json::Value::Null,
@@ -656,11 +656,11 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
-                title: "wave".into(),
+                title: "track".into(),
                 sort: None,
                 cwd: String::new(),
                 template_id: None,
@@ -673,7 +673,7 @@ mod tests {
 
         let card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: Some("Hello".into()),
                 kind: "plugin:test:view".into(),
                 sort: None,
@@ -691,7 +691,7 @@ mod tests {
             Some("Hello")
         );
         assert_eq!(
-            repo.cards_by_wave(wave.id.as_str()).await.unwrap()[0]
+            repo.cards_by_track(track.id.as_str()).await.unwrap()[0]
                 .title
                 .as_deref(),
             Some("Hello")
@@ -699,7 +699,7 @@ mod tests {
 
         let untitled = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: Some(String::new()),
                 kind: "plugin:test:view".into(),
                 sort: None,
@@ -783,7 +783,7 @@ mod tests {
             crate::model::new_id(),
             &crate::model::new_id(),
             None,
-            wave.id,
+            track.id,
             Some("T".into()),
             None,
             "bash".into(),

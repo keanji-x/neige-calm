@@ -30,7 +30,7 @@
 // passes with the fix in place.
 
 import { test, expect } from '@playwright/test';
-import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
+import { createUserArea, createTrackInArea, resetReplayServer } from './helpers/reset';
 import { waitForEvent } from './helpers/trace';
 
 test.describe('a11y · deep-link after reset (issue #290)', () => {
@@ -42,11 +42,11 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     page,
     request,
   }) => {
-    // Mint area + wave via REST so the page boots with real rows on
+    // Mint area + track via REST so the page boots with real rows on
     // the kernel side; the bug we're pinning is purely about the WS
     // sync engine dropping events the kernel already persisted.
     const area = await createUserArea(request, 'DeepLinkArea');
-    await createWaveInArea(request, area.id, 'AnchorWave');
+    await createTrackInArea(request, area.id, 'AnchorTrack');
 
     // Critically: NO `page.goto('/calm/?trace=1')` first. Deep-link
     // straight to the area URL — this is the path that races the
@@ -77,30 +77,30 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     ).toBeVisible({ timeout: 5_000 });
   });
 
-  test('Deep-link to wave directly after resetReplayServer() renders wave title', async ({
+  test('Deep-link to track directly after resetReplayServer() renders track title', async ({
     page,
     request,
   }) => {
-    // Parallel of the area-deep-link case for the wave URL. The wave
-    // page's initial-data query goes through `useWaveDetailQuery` —
+    // Parallel of the area-deep-link case for the track URL. The track
+    // page's initial-data query goes through `useTrackDetailQuery` —
     // same WS-resync race surface, same pre-#290 hang risk.
-    const area = await createUserArea(request, 'DeepLinkWaveArea');
-    const wave = await createWaveInArea(request, area.id, 'DeepLinkWave');
+    const area = await createUserArea(request, 'DeepLinkTrackArea');
+    const track = await createTrackInArea(request, area.id, 'DeepLinkTrack');
 
-    await page.goto(`/calm/wave/${wave.id}?trace=1`);
+    await page.goto(`/calm/track/${track.id}?trace=1`);
 
-    // Wave title locator mirrors the wave-rename test's selector
-    // (role=button + name=title + description="Rename wave"). Same
+    // Track title locator mirrors the track-rename test's selector
+    // (role=button + name=title + description="Rename track"). Same
     // 15s budget for the same reason.
     await expect(
-      page.getByRole('button', { name: wave.title, description: 'Rename wave' }),
+      page.getByRole('button', { name: track.title, description: 'Rename track' }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Cross-surface: the wave page's `<button class="wave-area">`
+    // Cross-surface: the track page's `<button class="track-area">`
     // breadcrumb back-link carries the area name. Pre-#290 the
     // breadcrumb would render stale (or empty) when the WS-resync
     // race lost a `area.updated` event.
-    await expect(page.locator('button.wave-area', { hasText: 'DeepLinkWaveArea' })).toBeVisible({
+    await expect(page.locator('button.track-area', { hasText: 'DeepLinkTrackArea' })).toBeVisible({
       timeout: 5_000,
     });
   });
@@ -135,7 +135,7 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     // covered by the two tests above; this test specifically pins
     // "the WS bus recovers from a stale cursor."
     const area = await createUserArea(request, 'StaleCursorArea');
-    await createWaveInArea(request, area.id, 'AnchorWave');
+    await createTrackInArea(request, area.id, 'AnchorTrack');
 
     await page.addInitScript(() => {
       // 999999 is well past any id the post-reset replay binary will

@@ -1,11 +1,11 @@
 /*
  * The area page's panel card, against a scrolling report — the same claim, the
- * same defect and the same fix as `features/wave/page/panel-sticky.browser.test`,
+ * same defect and the same fix as `features/track/page/panel-sticky.browser.test`,
  * where the mechanism is written out in full.
  *
  * It is a second file rather than a second case in that one because the two
  * pages are two stylesheets: the area page hangs `.content` directly off
- * `.page` while the wave page interposes `.workspace`, and it was the *chain*
+ * `.page` while the track page interposes `.workspace`, and it was the *chain*
  * that pinned the sticky card to one viewport. A shared fixture would have had
  * to pick one shape, and the shape is the thing under test.
  */

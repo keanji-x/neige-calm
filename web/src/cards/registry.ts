@@ -1,9 +1,9 @@
 // Card-type registry.
 //
 // The kernel dispatches every Card through `kind: string`; the UI maps that
-// string (via `api/adapt.ts`) to a discriminated `WaveCardData` variant and
+// string (via `api/adapt.ts`) to a discriminated `TrackCardData` variant and
 // renders the right component. Before M3 those three step lookups were three
-// 5-case switches scattered across `ui.tsx`, `WaveGrid.tsx`, and
+// 5-case switches scattered across `ui.tsx`, `TrackGrid.tsx`, and
 // `api/adapt.ts`. This module collapses them into one `Map<type, CardEntry>`
 // so plugin entries (Slice F) can `.set()` themselves into the same dispatch
 // table at runtime without the dispatcher caring.
@@ -29,7 +29,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react';
-import type { WaveCardData } from '../types';
+import type { TrackCardData } from '../types';
 import type { KernelCard } from '../api/wire';
 import { useState } from '../shared/state';
 import {
@@ -89,8 +89,8 @@ export interface CreateSchema<TInput = Record<string, string>> {
 /** Common props every built-in card component receives. Cards must forward
  *  `onClose` (when provided) to `<CardHead>` so the X button renders inside
  *  the head. Optional: contexts that own the close affordance elsewhere
- *  (e.g. WaveList's row-level button) simply pass `undefined`. */
-export interface CardComponentProps<T extends WaveCardData = WaveCardData> {
+ *  (e.g. TrackList's row-level button) simply pass `undefined`. */
+export interface CardComponentProps<T extends TrackCardData = TrackCardData> {
   card: T;
   onClose?: () => void;
   deletable?: boolean;
@@ -118,7 +118,7 @@ export type CardCreateStrategy<TInput> =
   | {
       mode: 'atomic';
       submit(
-        waveId: string,
+        trackId: string,
         input: TInput,
         ctx: CardCreateContext,
       ): Promise<CardCreateResult>;
@@ -180,7 +180,7 @@ export type CardAction =
     };
 
 export interface CardEntry<
-  T extends WaveCardData = WaveCardData,
+  T extends TrackCardData = TrackCardData,
   TInput = Record<string, string>,
 > {
   /** The discriminator value used in `T['type']`, e.g. `'terminal'`, `'doc'`,
@@ -207,9 +207,9 @@ export interface CardEntry<
   actions?(card: T, ctx: CardInstanceCtx): CardAction[];
 }
 
-const REGISTRY = new Map<string, CardEntry<WaveCardData>>();
-const EXACT_CLAIMS = new Map<string, CardEntry<WaveCardData>>();
-const PREFIX_CLAIMS = new Map<string, CardEntry<WaveCardData>>();
+const REGISTRY = new Map<string, CardEntry<TrackCardData>>();
+const EXACT_CLAIMS = new Map<string, CardEntry<TrackCardData>>();
+const PREFIX_CLAIMS = new Map<string, CardEntry<TrackCardData>>();
 
 /** Fallback size for unknown card types. Sane mid-range default that fits
  *  any of the built-in shapes; we'd rather render a slightly-wrong-sized
@@ -243,7 +243,7 @@ function describeCardSlotInitial(value: unknown): string {
   return String(value);
 }
 
-export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void {
+export function registerCard<T extends TrackCardData>(entry: CardEntry<T>): void {
   if (!entry.title) throw new Error(`EntryMissingMetadata(${entry.type}, title)`);
   if (!entry.accessibleName) {
     throw new Error(`EntryMissingMetadata(${entry.type}, accessibleName)`);
@@ -271,13 +271,13 @@ export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void 
   }
   // The cast is the price of letting one Map hold heterogeneous entries.
   // Callers see the typed `CardEntry<T>`; the map stores the erased shape.
-  const erased = entry as unknown as CardEntry<WaveCardData>;
+  const erased = entry as unknown as CardEntry<TrackCardData>;
   REGISTRY.set(entry.type, erased);
   if (entry.claim?.mode === 'exact') EXACT_CLAIMS.set(entry.claim.kind, erased);
   if (entry.claim?.mode === 'prefix') PREFIX_CLAIMS.set(entry.claim.prefix, erased);
 }
 
-export function getEntry(type: string): CardEntry<WaveCardData> | undefined {
+export function getEntry(type: string): CardEntry<TrackCardData> | undefined {
   return REGISTRY.get(type);
 }
 
@@ -288,7 +288,7 @@ export function __resetRegistryForTest(): void {
 }
 
 export function renderCard(
-  card: WaveCardData,
+  card: TrackCardData,
   opts: { onClose?: () => void; deletable?: boolean } = {},
 ): ReactNode {
   const entry = REGISTRY.get(card.type);
@@ -297,7 +297,7 @@ export function renderCard(
     return null;
   }
   // The map's value type is widened; each Component's prop type was specific
-  // when registered, but at the call site we only know `WaveCardData`.
+  // when registered, but at the call site we only know `TrackCardData`.
   // The discriminator (`card.type === entry.type`) guarantees runtime
   // alignment with the entry's Component prop type. createElement (not JSX)
   // so this file stays a plain .ts module — keeps the design-doc filename.
@@ -316,7 +316,7 @@ export function renderCard(
   );
 }
 
-export function sizeFor(card: WaveCardData): CardSize {
+export function sizeFor(card: TrackCardData): CardSize {
   const entry = REGISTRY.get(card.type);
   if (!entry) {
     warnOnce(`size:${card.type}`, `[cards] no registry entry for type "${card.type}" — using fallback size`);
@@ -361,13 +361,13 @@ export function addPanelEntries(): AddPanelMenuItem[] {
  *  The actual AppBridge mount + tool call wiring is the M5 full-integration
  *  concern.
  */
-export function adaptKernelCard(k: KernelCard): WaveCardData | null {
+export function adaptKernelCard(k: KernelCard): TrackCardData | null {
   const exact = EXACT_CLAIMS.get(k.kind);
   if (exact?.fromKernel) {
     const adapted = exact.fromKernel(k);
     if (adapted) return adapted;
   }
-  let prefixEntry: CardEntry<WaveCardData> | null = null;
+  let prefixEntry: CardEntry<TrackCardData> | null = null;
   let prefixLen = -1;
   for (const [prefix, entry] of PREFIX_CLAIMS) {
     if (k.kind.startsWith(prefix) && prefix.length > prefixLen) {
@@ -399,7 +399,7 @@ export function CardInstanceProvider({
 }: {
   cardId: string;
   deletable: boolean;
-  card?: WaveCardData;
+  card?: TrackCardData;
   children?: ReactNode;
 }) {
   const slots = useRef(new Map<string, unknown>());

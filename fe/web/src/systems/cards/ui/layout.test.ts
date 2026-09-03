@@ -4,7 +4,7 @@ import { GRID_COLS, layoutToPositions, packCards, reconcileLayout } from './layo
 
 const size = Object.freeze({ w: 4, h: 6, minW: 3, minH: 3 });
 
-describe('packCards (WaveGrid reconcile)', () => {
+describe('packCards (TrackGrid reconcile)', () => {
   it('packs three 4-wide terminals on one 12-col row', () => {
     const layout = packCards([
       { id: 'a', size }, { id: 'b', size }, { id: 'c', size },

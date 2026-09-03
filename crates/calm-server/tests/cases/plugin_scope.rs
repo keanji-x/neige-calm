@@ -1,4 +1,4 @@
-//! #1110 S4 — `waves.plugin_scope` create-time copy; PATCH cannot change it.
+//! #1110 S4 — `tracks.plugin_scope` create-time copy; PATCH cannot change it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,12 +9,12 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -46,8 +46,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -62,11 +62,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-1110-s4"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
@@ -111,9 +114,9 @@ async fn json_request(
     (status, json)
 }
 
-async fn stored_plugin_scope(repo: &Arc<dyn Repo>, wave_id: &str) -> Option<String> {
-    sqlx::query_scalar("SELECT plugin_scope FROM waves WHERE id = ?1")
-        .bind(wave_id)
+async fn stored_plugin_scope(repo: &Arc<dyn Repo>, track_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT plugin_scope FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_one(&repo.sqlite_pool().expect("sqlite pool"))
         .await
         .expect("select plugin_scope")
@@ -125,7 +128,7 @@ async fn unbound_create_leaves_plugin_scope_null() {
     let (status, body) = json_request(
         boot.app.clone(),
         "POST",
-        "/api/waves",
+        "/api/tracks",
         Some(json!({
             "area_id": boot.area_id,
             "title": "unbound plugin scope",
@@ -140,16 +143,16 @@ async fn unbound_create_leaves_plugin_scope_null() {
         body["plugin_scope"].is_null(),
         "unbound create must serialize plugin_scope as null, body={body}"
     );
-    let wave_id = body["id"].as_str().expect("wave id");
-    assert_eq!(stored_plugin_scope(&boot.repo, wave_id).await, None);
+    let track_id = body["id"].as_str().expect("track id");
+    assert_eq!(stored_plugin_scope(&boot.repo, track_id).await, None);
 }
 
 #[tokio::test]
 async fn patch_plugin_scope_is_ignored_not_present() {
     let boot = boot().await;
-    let wave = boot
+    let track = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: boot.area_id.clone().into(),
             title: "scoped".into(),
             sort: None,
@@ -161,17 +164,17 @@ async fn patch_plugin_scope_is_ignored_not_present() {
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create scoped wave");
-    let wave_id = wave.id.to_string();
+        .expect("create scoped track");
+    let track_id = track.id.to_string();
     assert_eq!(
-        stored_plugin_scope(&boot.repo, &wave_id).await.as_deref(),
+        stored_plugin_scope(&boot.repo, &track_id).await.as_deref(),
         Some("dev.neige.git-forge")
     );
 
     let (status, body) = json_request(
         boot.app.clone(),
         "PATCH",
-        &format!("/api/waves/{wave_id}"),
+        &format!("/api/tracks/{track_id}"),
         Some(json!({
             "plugin_scope": "dev.neige.other",
             "title": "still scoped",
@@ -182,7 +185,7 @@ async fn patch_plugin_scope_is_ignored_not_present() {
     assert_eq!(body["title"], "still scoped");
     assert_eq!(body["plugin_scope"], "dev.neige.git-forge");
     assert_eq!(
-        stored_plugin_scope(&boot.repo, &wave_id).await.as_deref(),
+        stored_plugin_scope(&boot.repo, &track_id).await.as_deref(),
         Some("dev.neige.git-forge"),
         "INV-1110-004: PATCH must not change plugin_scope"
     );
@@ -194,7 +197,7 @@ async fn create_rejects_client_supplied_plugin_scope() {
     let (status, body) = json_request(
         boot.app,
         "POST",
-        "/api/waves",
+        "/api/tracks",
         Some(json!({
             "area_id": boot.area_id,
             "title": "client plugin_scope",
@@ -208,6 +211,6 @@ async fn create_rejects_client_supplied_plugin_scope() {
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "CreateWaveRequest deny_unknown_fields must reject plugin_scope, body={body}"
+        "CreateTrackRequest deny_unknown_fields must reject plugin_scope, body={body}"
     );
 }

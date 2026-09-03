@@ -66,9 +66,9 @@ use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
 use crate::ids::AreaId;
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
 
-fn wave_scope(wave: &WaveId, area: &AreaId) -> EventScope {
-    EventScope::Wave {
-        wave: wave.clone(),
+fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
+    EventScope::Track {
+        track: track.clone(),
         area: area.clone(),
     }
 }
@@ -87,7 +87,7 @@ fn dispatcher_filter_matches_push_kinds() {
             "task.completed".into(),
             "task.failed".into(),
             "task.gate_result".into(),
-            "wave.report_edited".into(),
+            "track.report_edited".into(),
             "workspace.leased".into(),
             "workspace.released".into(),
             "forge.scan.completed".into(),
@@ -103,13 +103,13 @@ fn dispatcher_filter_matches_push_kinds() {
             "codex.hook".into(),
             "claude.hook".into(),
             "plan.updated".into(),
-            "wave.lifecycle_changed".into(),
-            "wave.updated".into(),
+            "track.lifecycle_changed".into(),
+            "track.updated".into(),
         ]),
     };
-    let wave = WaveId::from("w");
+    let track = TrackId::from("w");
     let area = AreaId::from("c");
-    let scope = wave_scope(&wave, &area);
+    let scope = track_scope(&track, &area);
 
     let env = |ev: Event| BroadcastEnvelope {
         id: 1,
@@ -158,8 +158,8 @@ fn dispatcher_filter_matches_push_kinds() {
         attempt: 1,
         agent_message: None,
     })));
-    assert!(filter.matches(&env(Event::WaveReportEdited {
-        wave_id: wave.clone(),
+    assert!(filter.matches(&env(Event::TrackReportEdited {
+        track_id: track.clone(),
         card_id: CardId::from("card"),
         author: EditAuthor::User,
         author_plugin_id: None,
@@ -171,47 +171,47 @@ fn dispatcher_filter_matches_push_kinds() {
         agent_message: None,
     })));
     assert!(filter.matches(&env(Event::WorkspaceLeased {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: CardId::from("worker"),
         lease_id: "lease-1".into(),
         path: "/tmp/workspace".into(),
     })));
     assert!(filter.matches(&env(Event::WorkspaceReleased {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: CardId::from("worker"),
         lease_id: "lease-1".into(),
     })));
     assert!(filter.matches(&env(Event::ForgeScanCompleted {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         overlapping_prs: vec![1, 2],
     })));
     assert!(filter.matches(&env(Event::ForgePrOpened {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         pr_number: 1,
         head_sha: "head-sha".into(),
     })));
     assert!(filter.matches(&env(Event::ForgePrChecks {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         pr_number: 1,
         conclusion: "success".into(),
     })));
     assert!(filter.matches(&env(Event::ForgeIssueClosed {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         issue_number: 1,
     })));
     assert!(filter.matches(&env(Event::WorktreeProvisioned {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: CardId::from("worker"),
         path: "/tmp/worktree".into(),
     })));
     assert!(filter.matches(&env(Event::WorktreeCommitted {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: CardId::from("worker"),
         commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
         branch: "neige/w/card".into(),
     })));
     assert!(filter.matches(&env(Event::ForgePrMerged {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         subject: crate::event::ForgeMergeSubject {
             phase: "impl".into(),
             slice_id: "6".into(),
@@ -221,7 +221,7 @@ fn dispatcher_filter_matches_push_kinds() {
         merge_sha: "merge-sha".into(),
     })));
     assert!(filter.matches(&env(Event::ReviewRound {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         subject: ReviewSubject {
             phase: "impl".into(),
             slice_id: "5b".into(),
@@ -239,27 +239,27 @@ fn dispatcher_filter_matches_push_kinds() {
         idempotency_key: "review.round:w:impl:5b:760:1".into(),
     })));
     assert!(filter.matches(&env(Event::RatifyRequested {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         reason: "cap_exhausted".into(),
     })));
     assert!(filter.matches(&env(Event::RatifyResolved {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         decision: RatifyDecision::Grant,
     })));
     assert!(!filter.matches(&env(Event::ForgePrDiffRead {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         pr_number: 1,
         base_sha: "base-sha".into(),
         head_sha: "head-sha".into(),
         artifact_path: "/tmp/diff.patch".into(),
     })));
     assert!(!filter.matches(&env(Event::ForgeIssueRead {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         issue_number: 1,
         artifact_path: "/tmp/issue.md".into(),
     })));
     assert!(!filter.matches(&env(Event::WorktreeRemoved {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: CardId::from("worker"),
         path: "/tmp/worktree".into(),
     })));
@@ -277,29 +277,29 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
     // Issue #644 PR-B — the scheduler trigger kinds match.
     assert!(filter.matches(&env(Event::PlanUpdated {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         changed_keys: vec!["impl-parser".into()],
         agent_message: None,
     })));
-    assert!(filter.matches(&env(Event::WaveLifecycleChanged {
-        id: wave.clone(),
+    assert!(filter.matches(&env(Event::TrackLifecycleChanged {
+        id: track.clone(),
         area_id: area.clone(),
-        from: crate::model::WaveLifecycle::Draft,
-        to: crate::model::WaveLifecycle::Planning,
+        from: crate::model::TrackLifecycle::Draft,
+        to: crate::model::TrackLifecycle::Planning,
         agent_message: None,
     })));
-    // Round-2 review F4 — budget PATCHes emit only `wave.updated`
+    // Round-2 review F4 — budget PATCHes emit only `track.updated`
     // when the lifecycle is unchanged; it must reach the poke arm.
-    assert!(filter.matches(&env(Event::WaveUpdated(
-        crate::event::WaveUpdatedPayload::new(
-            crate::model::Wave {
-                id: wave.clone(),
+    assert!(filter.matches(&env(Event::TrackUpdated(
+        crate::event::TrackUpdatedPayload::new(
+            crate::model::Track {
+                id: track.clone(),
                 area_id: area.clone(),
                 title: "w".into(),
                 sort: 0.0,
                 archived_at: None,
                 pinned_at: None,
-                lifecycle: crate::model::WaveLifecycle::Working,
+                lifecycle: crate::model::TrackLifecycle::Working,
                 cwd_wire_alias: String::new(),
                 template_id: None,
                 plugin_scope: None,
@@ -322,19 +322,19 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
     // A kind NOT in the list must not match — the filter is still a
     // closed allowlist.
-    assert!(!filter.matches(&env(Event::WaveDeleted {
-        id: wave.clone(),
+    assert!(!filter.matches(&env(Event::TrackDeleted {
+        id: track.clone(),
         area_id: area.clone(),
     })));
 }
 
 /// The push branch in `handle_envelope` acts on a User-authored
-/// `wave.report_edited` and ignores Spec/Kernel ones. The gating is a
+/// `track.report_edited` and ignores Spec/Kernel ones. The gating is a
 /// simple `author == EditAuthor::User` check; assert that predicate
 /// directly against each variant (the branch itself is exercised
 /// end-to-end by the gated e2e).
 #[test]
-fn wave_report_edited_author_gating() {
+fn track_report_edited_author_gating() {
     assert!(EditAuthor::User == EditAuthor::User);
     assert!(EditAuthor::Spec != EditAuthor::User);
     assert!(EditAuthor::Kernel != EditAuthor::User);
@@ -357,7 +357,7 @@ async fn gated_self_report_predicate() {
         .expect("in-memory sqlite");
     let mk_task = |key: &str, gate: Option<String>| crate::model::Task {
         id: format!("w:{key}"),
-        wave_id: "w".into(),
+        track_id: "w".into(),
         key: key.into(),
         kind: crate::model::TaskKind::Codex,
         goal: "g".into(),
@@ -399,7 +399,7 @@ async fn gated_self_report_predicate() {
     gated_spawn_failed_reason.status = crate::model::TaskStatus::Failed;
     gated_spawn_failed_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
         "spawn-failed",
-        "wave w cwd /home/kenji is not a git repository: fatal: not a git repository",
+        "track w cwd /home/kenji is not a git repository: fatal: not a git repository",
     ));
     // ...and a gate detail carrying a reason tail stays suppressed:
     // the vocabulary lives in the class, not anywhere in the string.
@@ -527,22 +527,22 @@ async fn gated_self_report_predicate() {
 
 /// Issue #644 PR-C — `task.gate_result` maps to the hard-fire
 /// `Observation::TaskGateResult`, with the plan key recovered from
-/// the `"{wave_id}:{key}"` task-id convention (§2.1).
+/// the `"{track_id}:{key}"` task-id convention (§2.1).
 #[test]
 fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
-    let wave = WaveId::from("wave-1");
+    let track = TrackId::from("track-1");
     let event = Event::TaskGateResult {
-        task_id: "wave-1:impl-parser".into(),
-        idempotency_key: "wave-1:impl-parser".into(),
+        task_id: "track-1:impl-parser".into(),
+        idempotency_key: "track-1:impl-parser".into(),
         passed: false,
         failing_step: Some("test".into()),
         exit_code: Some(101),
         log_tail: "boom".into(),
-        log_path: "/tmp/gate-logs/wave-1:impl-parser-g2.log".into(),
+        log_path: "/tmp/gate-logs/track-1:impl-parser-g2.log".into(),
         attempt: 2,
         agent_message: None,
     };
-    let obs = harness_observation_from_event(&wave, &event)
+    let obs = harness_observation_from_event(&track, &event)
         .expect("gate result must map to an observation");
     assert!(obs.is_hard_fire(), "gate results are hard-fired (§6.5)");
     match &obs {
@@ -555,8 +555,8 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
             attempt,
             ..
         } => {
-            assert_eq!(idempotency_key, "wave-1:impl-parser");
-            assert_eq!(key, "impl-parser", "plan key = task id minus wave prefix");
+            assert_eq!(idempotency_key, "track-1:impl-parser");
+            assert_eq!(key, "impl-parser", "plan key = task id minus track prefix");
             assert!(!passed);
             assert_eq!(failing_step.as_deref(), Some("test"));
             assert_eq!(*exit_code, Some(101));
@@ -567,20 +567,20 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
     let text = obs.to_turn_text();
     assert!(text.contains("Task impl-parser gate FAILED at step test (exit 101)"));
     assert!(text.contains("plan/impl-parser/gate.log"));
-    assert!(text.contains("runs/wave-1:impl-parser.md"));
+    assert!(text.contains("runs/track-1:impl-parser.md"));
 }
 
 #[test]
 fn event_warrants_spec_push_covers_push_allowlist() {
     let cache = CardRoleCache::new();
-    let wave = WaveId::from("w");
+    let track = TrackId::from("w");
     let area = AreaId::from("c");
     let worker = CardId::from("worker");
     let spec = CardId::from("spec");
     let unknown = CardId::from("unknown");
-    cache.insert(worker.clone(), CardRole::Worker, wave.clone());
-    cache.insert(spec.clone(), CardRole::Spec, wave.clone());
-    let write = WriteContext::new(cache, crate::wave_area_cache::WaveAreaCache::new());
+    cache.insert(worker.clone(), CardRole::Worker, track.clone());
+    cache.insert(spec.clone(), CardRole::Spec, track.clone());
+    let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let completed = Event::TaskCompleted {
         idempotency_key: "done".into(),
@@ -635,8 +635,8 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         &write
     ));
 
-    let report = |author| Event::WaveReportEdited {
-        wave_id: wave.clone(),
+    let report = |author| Event::TrackReportEdited {
+        track_id: track.clone(),
         card_id: spec.clone(),
         author,
         author_plugin_id: None,
@@ -683,7 +683,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
     // Issue #760 slice ⑦ — workspace lease lifecycle events always warrant a
     // push (kernel-emitted; no author/role gate).
     let leased = Event::WorkspaceLeased {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: worker.clone(),
         lease_id: "lease".into(),
         path: "/tmp/ws".into(),
@@ -694,7 +694,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         &write
     ));
     let released = Event::WorkspaceReleased {
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         card_id: worker.clone(),
         lease_id: "lease".into(),
     };
@@ -706,7 +706,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
 
     for forge_event in [
         Event::ForgePrMerged {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             subject: crate::event::ForgeMergeSubject {
                 phase: "impl".into(),
                 slice_id: "6".into(),
@@ -716,7 +716,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
             merge_sha: "merge-sha".into(),
         },
         Event::ReviewRound {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             subject: ReviewSubject {
                 phase: "impl".into(),
                 slice_id: "5b".into(),
@@ -734,38 +734,38 @@ fn event_warrants_spec_push_covers_push_allowlist() {
             idempotency_key: "review.round:w:impl:5b:760:1".into(),
         },
         Event::RatifyRequested {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             reason: "cap_exhausted".into(),
         },
         Event::RatifyResolved {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             decision: RatifyDecision::Grant,
         },
         Event::ForgeScanCompleted {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             overlapping_prs: vec![1, 2],
         },
         Event::ForgePrOpened {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             pr_number: 1,
             head_sha: "head-sha".into(),
         },
         Event::ForgePrChecks {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             pr_number: 1,
             conclusion: "success".into(),
         },
         Event::ForgeIssueClosed {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             issue_number: 1,
         },
         Event::WorktreeProvisioned {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             path: "/tmp/worktree".into(),
         },
         Event::WorktreeCommitted {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             branch: "neige/w/card".into(),
@@ -779,7 +779,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
     }
     assert!(!event_warrants_spec_push(
         &Event::ForgePrDiffRead {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             pr_number: 1,
             base_sha: "base-sha".into(),
             head_sha: "head-sha".into(),
@@ -790,7 +790,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
     ));
     assert!(!event_warrants_spec_push(
         &Event::WorktreeRemoved {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             path: "/tmp/worktree".into(),
         },
@@ -851,8 +851,8 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         &write
     ));
     assert!(!event_warrants_spec_push(
-        &Event::WaveDeleted {
-            id: wave,
+        &Event::TrackDeleted {
+            id: track,
             area_id: area,
         },
         &ActorId::User,
@@ -869,12 +869,12 @@ fn event_warrants_spec_push_covers_push_allowlist() {
 #[test]
 fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
     let cache = CardRoleCache::new();
-    let wave = WaveId::from("w");
+    let track = TrackId::from("w");
     let worker = CardId::from("worker");
     let spec = CardId::from("spec");
-    cache.insert(worker.clone(), CardRole::Worker, wave.clone());
-    cache.insert(spec.clone(), CardRole::Spec, wave.clone());
-    let write = WriteContext::new(cache, crate::wave_area_cache::WaveAreaCache::new());
+    cache.insert(worker.clone(), CardRole::Worker, track.clone());
+    cache.insert(spec.clone(), CardRole::Spec, track.clone());
+    let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let completed = Event::TaskCompleted {
         idempotency_key: "done".into(),
@@ -961,13 +961,13 @@ fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
 /// byte-for-byte or consciously edit this pin.
 #[test]
 fn harness_observation_from_event_mapping_pin() {
-    let wave = WaveId::from("wave-map");
+    let track = TrackId::from("track-map");
     let worker = CardId::from("card-map");
 
     // task.completed — idempotency key + verbatim result.
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::TaskCompleted {
                 idempotency_key: "map-a".into(),
                 result: serde_json::json!({"ok": true, "n": 7}),
@@ -984,7 +984,7 @@ fn harness_observation_from_event_mapping_pin() {
     // task.failed — the event's `reason` becomes the observation `error`.
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::TaskFailed {
                 idempotency_key: "map-b".into(),
                 reason: "boom".into(),
@@ -997,13 +997,13 @@ fn harness_observation_from_event_mapping_pin() {
         })
     );
 
-    // wave.report_edited — body_after verbatim + its sha256 (golden hex
+    // track.report_edited — body_after verbatim + its sha256 (golden hex
     // computed externally, NOT via the same sha256_hex helper).
     assert_eq!(
         harness_observation_from_event(
-            &wave,
-            &Event::WaveReportEdited {
-                wave_id: wave.clone(),
+            &track,
+            &Event::TrackReportEdited {
+                track_id: track.clone(),
                 card_id: worker.clone(),
                 author: EditAuthor::User,
                 author_plugin_id: None,
@@ -1016,7 +1016,7 @@ fn harness_observation_from_event_mapping_pin() {
             }
         ),
         Some(HarnessObservation::ReportEdited {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             body_sha256: "09b37878497ec46015d1913ba0dff1cd051ca244859c80f4a3fc14d88a4a9465".into(),
             body: "loop-pin-body".into(),
             author: Some(EditAuthor::User),
@@ -1024,19 +1024,19 @@ fn harness_observation_from_event_mapping_pin() {
     );
 
     // workspace.* — lifecycle carrier events map through the payload
-    // fields and use the caller-provided wave id like wave.report_edited.
+    // fields and use the caller-provided track id like track.report_edited.
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::WorkspaceLeased {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 lease_id: "lease-map".into(),
                 path: "/tmp/workspace-map".into(),
             }
         ),
         Some(HarnessObservation::WorkspaceLeased {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             lease_id: "lease-map".into(),
             path: "/tmp/workspace-map".into(),
@@ -1044,15 +1044,15 @@ fn harness_observation_from_event_mapping_pin() {
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::WorkspaceReleased {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 lease_id: "lease-map".into(),
             }
         ),
         Some(HarnessObservation::WorkspaceReleased {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             lease_id: "lease-map".into(),
         })
@@ -1060,9 +1060,9 @@ fn harness_observation_from_event_mapping_pin() {
 
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ForgePrMerged {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 subject: crate::event::ForgeMergeSubject {
                     phase: "impl".into(),
                     slice_id: "6".into(),
@@ -1073,15 +1073,15 @@ fn harness_observation_from_event_mapping_pin() {
             }
         ),
         Some(HarnessObservation::ForgePrMerged {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             pr_number: 760,
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ReviewRound {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: "5b".into(),
@@ -1096,11 +1096,11 @@ fn harness_observation_from_event_mapping_pin() {
                     verdict: ChannelVerdictKind::ChangesRequested,
                 }],
                 root_cause: Some("tests failing".into()),
-                idempotency_key: "review.round:wave-map:impl:5b:760:1".into(),
+                idempotency_key: "review.round:track-map:impl:5b:760:1".into(),
             }
         ),
         Some(HarnessObservation::ReviewRound {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             phase: "impl".into(),
             slice_id: "5b".into(),
             pr_number: Some(760),
@@ -1112,112 +1112,112 @@ fn harness_observation_from_event_mapping_pin() {
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::RatifyRequested {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 reason: "cap_exhausted".into(),
             }
         ),
         Some(HarnessObservation::RatifyRequested {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             reason: "cap_exhausted".into(),
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::RatifyResolved {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 decision: RatifyDecision::Deny,
             }
         ),
         Some(HarnessObservation::RatifyResolved {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             decision: RatifyDecision::Deny,
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ForgeScanCompleted {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 overlapping_prs: vec![1, 2],
             }
         ),
         Some(HarnessObservation::ForgeScanCompleted {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             overlapping_prs: vec![1, 2],
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ForgePrOpened {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
                 head_sha: "head-sha".into(),
             }
         ),
         Some(HarnessObservation::ForgePrOpened {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             pr_number: 1,
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ForgePrChecks {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
                 conclusion: "success".into(),
             }
         ),
         Some(HarnessObservation::ForgePrChecks {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             pr_number: 1,
             conclusion: "success".into(),
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ForgeIssueClosed {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 issue_number: 760,
             }
         ),
         Some(HarnessObservation::ForgeIssueClosed {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             issue_number: 760,
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::WorktreeProvisioned {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 path: "/tmp/worktree-map".into(),
             }
         ),
         Some(HarnessObservation::WorktreeProvisioned {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             path: "/tmp/worktree-map".into(),
         })
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::WorktreeCommitted {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                 branch: "neige/w/card".into(),
             }
         ),
         Some(HarnessObservation::WorktreeCommitted {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             branch: "neige/w/card".into(),
@@ -1225,9 +1225,9 @@ fn harness_observation_from_event_mapping_pin() {
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ForgePrDiffRead {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
@@ -1238,9 +1238,9 @@ fn harness_observation_from_event_mapping_pin() {
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::WorktreeRemoved {
-                wave_id: WaveId::from("payload-wave-ignored"),
+                track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 path: "/tmp/worktree-map".into(),
             }
@@ -1251,7 +1251,7 @@ fn harness_observation_from_event_mapping_pin() {
     // Stop hooks — exact kind discriminators map to WorkerHookStop.
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::CodexHook {
                 card_id: worker.clone(),
                 kind: "hook.codex.stop".into(),
@@ -1260,7 +1260,7 @@ fn harness_observation_from_event_mapping_pin() {
             }
         ),
         Some(HarnessObservation::WorkerHookStop {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             kind: HarnessHookKind::CodexStop,
             idempotency_key: "hook-c".into(),
@@ -1268,7 +1268,7 @@ fn harness_observation_from_event_mapping_pin() {
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::ClaudeHook {
                 card_id: worker.clone(),
                 kind: "hook.claude.stop".into(),
@@ -1277,7 +1277,7 @@ fn harness_observation_from_event_mapping_pin() {
             }
         ),
         Some(HarnessObservation::WorkerHookStop {
-            wave_id: wave.clone(),
+            track_id: track.clone(),
             card_id: worker.clone(),
             kind: HarnessHookKind::ClaudeStop,
             idempotency_key: "hook-l".into(),
@@ -1287,7 +1287,7 @@ fn harness_observation_from_event_mapping_pin() {
     // Non-stop hooks and non-push kinds map to nothing.
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::CodexHook {
                 card_id: worker.clone(),
                 kind: "hook.codex.permission_request".into(),
@@ -1299,7 +1299,7 @@ fn harness_observation_from_event_mapping_pin() {
     );
     assert_eq!(
         harness_observation_from_event(
-            &wave,
+            &track,
             &Event::CodexWorkerRequested {
                 idempotency_key: "k".into(),
                 goal: "g".into(),
@@ -1393,14 +1393,14 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
 #[test]
 fn spec_push_predicate_and_observation_mapping_agree() {
     let cache = CardRoleCache::new();
-    let wave = WaveId::from("w");
+    let track = TrackId::from("w");
     let area = AreaId::from("c");
     let worker = CardId::from("worker");
     let spec = CardId::from("spec");
     let unknown = CardId::from("unknown");
-    cache.insert(worker.clone(), CardRole::Worker, wave.clone());
-    cache.insert(spec.clone(), CardRole::Spec, wave.clone());
-    let write = WriteContext::new(cache, crate::wave_area_cache::WaveAreaCache::new());
+    cache.insert(worker.clone(), CardRole::Worker, track.clone());
+    cache.insert(spec.clone(), CardRole::Spec, track.clone());
+    let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let row = |event: Event, actor: ActorId, expect_push: bool, expect_observation: bool| {
         SpecPushWiringRow {
@@ -1422,8 +1422,8 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         hook_idempotency_key: format!("hook-claude-{kind}"),
         payload: serde_json::Value::Null,
     };
-    let report_edited = |author: EditAuthor| Event::WaveReportEdited {
-        wave_id: wave.clone(),
+    let report_edited = |author: EditAuthor| Event::TrackReportEdited {
+        track_id: track.clone(),
         card_id: spec.clone(),
         author,
         author_plugin_id: None,
@@ -1447,7 +1447,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
     };
     let card_sample = || crate::model::Card {
         id: worker.clone(),
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         title: None,
         kind: "terminal".into(),
         sort: 0.0,
@@ -1495,7 +1495,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::WorkspaceLeased {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 card_id: worker.clone(),
                 lease_id: "lease".into(),
                 path: "/tmp/ws".into(),
@@ -1506,7 +1506,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::WorkspaceReleased {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 card_id: worker.clone(),
                 lease_id: "lease".into(),
             },
@@ -1516,7 +1516,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgePrMerged {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 subject: crate::event::ForgeMergeSubject {
                     phase: "impl".into(),
                     slice_id: "6".into(),
@@ -1531,7 +1531,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ReviewRound {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: "5b".into(),
@@ -1554,7 +1554,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::RatifyRequested {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 reason: "cap_exhausted".into(),
             },
             ActorId::KernelDispatcher,
@@ -1563,7 +1563,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::RatifyResolved {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 decision: RatifyDecision::Grant,
             },
             ActorId::KernelDispatcher,
@@ -1572,7 +1572,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgeScanCompleted {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 overlapping_prs: vec![1, 2],
             },
             ActorId::KernelDispatcher,
@@ -1581,7 +1581,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgePrOpened {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 pr_number: 1,
                 head_sha: "head-sha".into(),
             },
@@ -1591,7 +1591,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgePrChecks {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 pr_number: 1,
                 conclusion: "success".into(),
             },
@@ -1601,7 +1601,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgeIssueClosed {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 issue_number: 1,
             },
             ActorId::KernelDispatcher,
@@ -1610,7 +1610,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::WorktreeProvisioned {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 card_id: worker.clone(),
                 path: "/tmp/worktree".into(),
             },
@@ -1620,7 +1620,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::WorktreeCommitted {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 card_id: worker.clone(),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                 branch: "neige/w/card".into(),
@@ -1718,15 +1718,15 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
-                crate::model::Wave {
-                    id: wave.clone(),
+            Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
+                crate::model::Track {
+                    id: track.clone(),
                     area_id: area.clone(),
                     title: "w".into(),
                     sort: 0.0,
                     archived_at: None,
                     pinned_at: None,
-                    lifecycle: crate::model::WaveLifecycle::Working,
+                    lifecycle: crate::model::TrackLifecycle::Working,
                     cwd_wire_alias: String::new(),
                     template_id: None,
                     plugin_scope: None,
@@ -1744,8 +1744,8 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::WaveDeleted {
-                id: wave.clone(),
+            Event::TrackDeleted {
+                id: track.clone(),
                 area_id: area.clone(),
             },
             ActorId::User,
@@ -1753,11 +1753,11 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         // #955 — proposal lifecycle records never push; the spec wakes
-        // on the plugin-authored `wave.report_edited` the accept tx
+        // on the plugin-authored `track.report_edited` the accept tx
         // emits alongside instead.
         row(
             Event::ProposalSubmitted {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 proposal_id: "pp-1".into(),
                 plugin_id: "dev.neige.invest".into(),
                 subject_kind: "report".into(),
@@ -1775,7 +1775,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ProposalResolved {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 proposal_id: "pp-1".into(),
                 plugin_id: "dev.neige.invest".into(),
                 decision: calm_types::proposal::ProposalDecision::Accepted,
@@ -1785,11 +1785,11 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::WaveLifecycleChanged {
-                id: wave.clone(),
+            Event::TrackLifecycleChanged {
+                id: track.clone(),
                 area_id: area.clone(),
-                from: crate::model::WaveLifecycle::Draft,
-                to: crate::model::WaveLifecycle::Planning,
+                from: crate::model::TrackLifecycle::Draft,
+                to: crate::model::TrackLifecycle::Planning,
                 agent_message: None,
             },
             ActorId::User,
@@ -1806,7 +1806,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::CardDeleted {
                 id: worker.clone(),
-                wave_id: wave.clone(),
+                track_id: track.clone(),
             },
             ActorId::User,
             false,
@@ -1849,7 +1849,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             Event::HarnessItemAdded {
                 runtime_id: "rt".into(),
                 card_id: spec.clone(),
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 item_db_id: 1,
                 item_uuid: None,
                 item_type: None,
@@ -1864,7 +1864,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             Event::HarnessPhaseChanged {
                 runtime_id: "rt".into(),
                 card_id: spec.clone(),
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 old_phase: calm_types::harness::HarnessPhaseTag::Idle,
                 new_phase: calm_types::harness::HarnessPhaseTag::TurnRunning,
             },
@@ -1876,7 +1876,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             Event::HarnessTranscriptCleared {
                 runtime_id: "rt".into(),
                 card_id: spec.clone(),
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 cleared_item_count: Some(7),
                 cleared_params_bytes: Some(2_048),
                 card_age_ms_at_clear: Some(3_600_000),
@@ -1889,7 +1889,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             Event::HarnessUserMessageEnqueued {
                 runtime_id: "rt".into(),
                 card_id: spec.clone(),
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 char_count: 5,
             },
             ActorId::User,
@@ -1974,7 +1974,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::PlanUpdated {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 changed_keys: vec!["k".into()],
                 agent_message: None,
             },
@@ -1994,7 +1994,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::TaskContextFrozen {
-                wave_id: WaveId::default(),
+                track_id: TrackId::default(),
                 task_key: String::new(),
                 idempotency_key: String::new(),
                 task_id: "w:k".into(),
@@ -2008,7 +2008,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::TaskContextAdvanced {
-                wave_id: Default::default(),
+                track_id: Default::default(),
                 task_key: String::new(),
                 task_id: "w:k".into(),
                 changed_refs: Vec::new(),
@@ -2021,7 +2021,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgePrDiffRead {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 pr_number: 1,
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
@@ -2033,7 +2033,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::ForgeIssueRead {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 issue_number: 1,
                 artifact_path: "/tmp/issue.md".into(),
             },
@@ -2043,7 +2043,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::WorktreeRemoved {
-                wave_id: wave.clone(),
+                track_id: track.clone(),
                 card_id: worker.clone(),
                 path: "/tmp/worktree".into(),
             },
@@ -2071,7 +2071,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             row.actor
         );
         assert_eq!(
-            harness_observation_from_event(&wave, &row.event).is_some(),
+            harness_observation_from_event(&track, &row.event).is_some(),
             row.expect_observation,
             "observation mapping mismatch for {kind} (actor {})",
             row.actor
@@ -2096,37 +2096,37 @@ fn spec_push_predicate_and_observation_mapping_agree() {
     );
 }
 
-/// #313 round-2 (B3) — the per-wave push lock map must serialize
-/// concurrent acquisitions for the SAME wave (so boot takeover's
+/// #313 round-2 (B3) — the per-track push lock map must serialize
+/// concurrent acquisitions for the SAME track (so boot takeover's
 /// `Dispatcher::push_lock` and the live `push_to_spec`'s lock cannot run
 /// the dedup-check-and-deliver body concurrently — which would lose
-/// events in the seed→insert window). DIFFERENT waves must remain
-/// independent so a slow takeover for wave A doesn't block live
-/// pushes for wave B.
+/// events in the seed→insert window). DIFFERENT tracks must remain
+/// independent so a slow takeover for track A doesn't block live
+/// pushes for track B.
 ///
 /// Models the `DashMap::entry(...).or_insert_with(Arc::new Mutex)` +
 /// `clone().lock_owned().await` pattern `Inner::acquire_push_lock` uses.
 #[tokio::test]
-async fn per_wave_push_lock_serializes_same_wave_runs_in_parallel_across_waves() {
+async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_tracks() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Same map shape as `Inner::push_locks`.
-    let push_locks: DashMap<WaveId, Arc<tokio::sync::Mutex<()>>> = DashMap::new();
-    let take_lock = |wave_id: &WaveId| -> Arc<tokio::sync::Mutex<()>> {
+    let push_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>> = DashMap::new();
+    let take_lock = |track_id: &TrackId| -> Arc<tokio::sync::Mutex<()>> {
         push_locks
-            .entry(wave_id.clone())
+            .entry(track_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     };
 
-    // Track concurrent occupancy. Same-wave: must never exceed 1.
+    // Track concurrent occupancy. Same-track: must never exceed 1.
     let in_flight_a = Arc::new(AtomicUsize::new(0));
     let max_in_flight_a = Arc::new(AtomicUsize::new(0));
-    let wave_a = WaveId::from("wave-a");
+    let track_a = TrackId::from("track-a");
 
     let mut handles = vec![];
     for i in 0..8 {
-        let lock = take_lock(&wave_a);
+        let lock = take_lock(&track_a);
         let in_flight = in_flight_a.clone();
         let max_in_flight = max_in_flight_a.clone();
         handles.push(tokio::spawn(async move {
@@ -2147,16 +2147,16 @@ async fn per_wave_push_lock_serializes_same_wave_runs_in_parallel_across_waves()
     assert_eq!(
         max_in_flight_a.load(Ordering::SeqCst),
         1,
-        "same-wave per-wave lock must serialize: observed concurrent holders"
+        "same-track per-track lock must serialize: observed concurrent holders"
     );
 
-    // Different waves: independent locks → can run in parallel.
+    // Different tracks: independent locks → can run in parallel.
     let in_flight_total = Arc::new(AtomicUsize::new(0));
     let max_in_flight_total = Arc::new(AtomicUsize::new(0));
     let mut handles = vec![];
     for i in 0..6 {
-        let wave: WaveId = format!("wave-parallel-{i}").into();
-        let lock = take_lock(&wave);
+        let track: TrackId = format!("track-parallel-{i}").into();
+        let lock = take_lock(&track);
         let in_flight = in_flight_total.clone();
         let max_in_flight = max_in_flight_total.clone();
         handles.push(tokio::spawn(async move {
@@ -2170,11 +2170,11 @@ async fn per_wave_push_lock_serializes_same_wave_runs_in_parallel_across_waves()
     for h in handles {
         h.await.unwrap();
     }
-    // We expect parallelism > 1 across distinct wave keys (otherwise
-    // the per-wave keying is broken). With 6 spawns and ~15ms each on a
+    // We expect parallelism > 1 across distinct track keys (otherwise
+    // the per-track keying is broken). With 6 spawns and ~15ms each on a
     // multi-threaded runtime they should overlap routinely.
     assert!(
         max_in_flight_total.load(Ordering::SeqCst) > 1,
-        "different-wave locks must allow parallel runs; observed serialization"
+        "different-track locks must allow parallel runs; observed serialization"
     );
 }

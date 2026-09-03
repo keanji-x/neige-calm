@@ -1,6 +1,6 @@
 // parseGitHubIssueUrl unit tests — issue #891 slice ③ (design §5③).
 //
-// The parser is the single derivation point for the issue-dev wave
+// The parser is the single derivation point for the issue-dev track
 // form's `template_input` structured fields, so both halves matter:
 // happy paths must normalize to the one canonical spelling, and hostile
 // / near-miss inputs must all come back `null` (the form disables

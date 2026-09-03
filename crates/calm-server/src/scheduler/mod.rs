@@ -19,7 +19,7 @@
 //!
 //! ## Triggers (§5.1)
 //!
-//! Envelopes (`plan.updated`, `wave.lifecycle_changed`,
+//! Envelopes (`plan.updated`, `track.lifecycle_changed`,
 //! `task.completed`, `task.failed`) poke [`Scheduler::poke`] from the
 //! dispatcher's subscription loop. The bus is lossy, so liveness is
 //! backstopped by [`Scheduler::sweep_all`] — run at boot (after
@@ -33,7 +33,7 @@
 //!
 //! ## Single-winner claim (§5.4/§5.5)
 //!
-//! Per-wave mutex + dirty flag serialize scheduling passes; the claim
+//! Per-track mutex + dirty flag serialize scheduling passes; the claim
 //! UPDATE (`WHERE status = 'pending'`) is the single-winner primitive;
 //! the operations `(kind, idempotency_key)` unique index is the final
 //! backstop. `Event::TaskDispatched` is appended IN the claim tx so
@@ -52,16 +52,16 @@ use tokio::sync::{Notify, Semaphore};
 use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, status_detail_with_reason,
     task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
-    task_mark_sub_wave_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, tasks_by_wave_tx, wave_has_template_overlay_tx,
-    wave_lifecycle_and_budget_tx,
+    task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
+    task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_has_template_overlay_tx,
+    track_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, WaveId};
-use crate::model::{Task, TaskKind, TaskStatus, Wave, WaveLifecycle, new_id, now_ms};
-use crate::operation::child_wave_adapter::{CHILD_WAVE_KIND, ChildWaveOperationPayload};
+use crate::ids::{ActorId, TrackId};
+use crate::model::{Task, TaskKind, TaskStatus, Track, TrackLifecycle, new_id, now_ms};
+use crate::operation::child_track_adapter::{CHILD_TRACK_KIND, ChildTrackOperationPayload};
 use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
@@ -75,14 +75,14 @@ use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
+use crate::track_lifecycle::auto_transition_if_current_in_tx;
 use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
-use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
-/// Kernel default per-wave task budget when `waves.task_budget` is NULL
-/// and `NEIGE_WAVE_TASK_BUDGET` is unset/invalid. **1 is deliberate**
+/// Kernel default per-track task budget when `tracks.task_budget` is NULL
+/// and `NEIGE_TRACK_TASK_BUDGET` is unset/invalid. **1 is deliberate**
 /// (§5.3): workers and gates share one directory tree today (no
-/// worktrees, risk R2); >1 is opt-in per wave.
-pub const DEFAULT_WAVE_TASK_BUDGET: i64 = 1;
+/// worktrees, risk R2); >1 is opt-in per track.
+pub const DEFAULT_TRACK_TASK_BUDGET: i64 = 1;
 
 /// Default reconcile-tick period (§5.1 liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
@@ -144,21 +144,21 @@ async fn mark_running_timeout_cleanup_tx(
     Ok(rows)
 }
 
-/// §5.2 lifecycle gating: schedule only while the wave is in an active
+/// §5.2 lifecycle gating: schedule only while the track is in an active
 /// lifecycle. `Draft` (user hasn't kicked off), `Blocked` (needs user),
 /// and the terminal states hold *new* claims; in-flight tasks are
 /// unaffected (no interruption — out of scope).
-pub fn lifecycle_allows_scheduling(lifecycle: WaveLifecycle) -> bool {
+pub fn lifecycle_allows_scheduling(lifecycle: TrackLifecycle) -> bool {
     matches!(
         lifecycle,
-        WaveLifecycle::Planning
-            | WaveLifecycle::Dispatching
-            | WaveLifecycle::Working
-            | WaveLifecycle::Reviewing
+        TrackLifecycle::Planning
+            | TrackLifecycle::Dispatching
+            | TrackLifecycle::Working
+            | TrackLifecycle::Reviewing
     )
 }
 
-/// §5.2 ready-set computation over one wave's plan rows (already in
+/// §5.2 ready-set computation over one track's plan rows (already in
 /// scheduler order: `priority DESC, created_at_ms ASC, key ASC`).
 ///
 /// `running_cost` counts `dispatched`/`running`/`verifying` —
@@ -171,9 +171,9 @@ pub fn lifecycle_allows_scheduling(lifecycle: WaveLifecycle) -> bool {
 /// Issue #760 slice 1: resource disjointness for `budget > 1` is not a
 /// second scheduler predicate. Codex tasks acquire a durable workspace
 /// lease at operation claim time, and the lease path is
-/// `.claude/worktrees/<wave>/<card>`, so concurrent claims are disjoint by
+/// `.claude/worktrees/<track>/<card>`, so concurrent claims are disjoint by
 /// construction. This function intentionally remains budget arithmetic.
-fn wave_capacity(tasks: &[Task], budget: i64) -> usize {
+fn track_capacity(tasks: &[Task], budget: i64) -> usize {
     let running_cost = tasks
         .iter()
         .filter(|task| {
@@ -192,7 +192,7 @@ pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
         .filter(|t| t.status == TaskStatus::Done)
         .map(|t| t.key.as_str())
         .collect();
-    if wave_capacity(tasks, budget) == 0 {
+    if track_capacity(tasks, budget) == 0 {
         return Vec::new();
     }
     tasks
@@ -216,7 +216,7 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
         TaskKind::Codex => {
             let payload = serde_json::to_value(CodexWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
-                wave_id: task.wave_id.clone(),
+                track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
                 // The workspace lease path created in
@@ -235,7 +235,7 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
         TaskKind::Claude => {
             let payload = serde_json::to_value(ClaudeWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
-                wave_id: task.wave_id.clone(),
+                track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
                 // The workspace lease path created in
@@ -251,7 +251,7 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
         TaskKind::Terminal => {
             let payload = serde_json::to_value(TerminalWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
-                wave_id: task.wave_id.clone(),
+                track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 cmd: task.goal.clone(),
                 // Row value AS-IS — `None` stays `None` (#644 followup):
@@ -262,8 +262,8 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 // `resume_dispatched` see its OWN operation as a foreign
                 // payload-hash conflict and permanently fail the task.
                 // The terminal adapter resolves the default at spawn
-                // time (`terminal_cwd_or_wave_workspace` in `prepare_tx`),
-                // which since #1147 S6 means the wave's workspace.
+                // time (`terminal_cwd_or_track_workspace` in `prepare_tx`),
+                // which since #1147 S6 means the track's workspace.
                 cwd: task.cwd.clone(),
             })?;
             Ok(("terminal-worker", payload))
@@ -273,11 +273,11 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
 
 /// Child creation identity is a pure function of the post-claim row. Parent
 /// area/cwd are copied by the adapter inside its IMMEDIATE transaction so a
-/// later wave patch cannot change this operation's payload hash.
-pub fn build_child_wave_payload(task: &Task) -> Result<Value> {
-    Ok(serde_json::to_value(ChildWaveOperationPayload {
+/// later track patch cannot change this operation's payload hash.
+pub fn build_child_track_payload(task: &Task) -> Result<Value> {
+    Ok(serde_json::to_value(ChildTrackOperationPayload {
         task_id: task.id.clone(),
-        parent_wave_id: task.wave_id.clone(),
+        parent_track_id: task.track_id.clone(),
         goal: task.goal.clone(),
         acceptance: task.acceptance_criteria.clone(),
         context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
@@ -341,9 +341,9 @@ struct TimeoutCleanupSession {
 #[derive(sqlx::FromRow)]
 struct ChildTaskSnapshot {
     task_id: String,
-    parent_wave_id: String,
+    parent_track_id: String,
     parent_area_id: String,
-    child_wave_id: String,
+    child_track_id: String,
     child_lifecycle: Option<String>,
     gate_json: Option<String>,
     inflight_count: i64,
@@ -358,39 +358,39 @@ enum ChildTerminalOutcome {
 }
 
 impl ChildTerminalOutcome {
-    fn from_lifecycle(lifecycle: Option<WaveLifecycle>) -> Option<Self> {
+    fn from_lifecycle(lifecycle: Option<TrackLifecycle>) -> Option<Self> {
         match lifecycle {
             None => Some(Self::Deleted),
-            Some(WaveLifecycle::Failed) => Some(Self::Failed),
-            Some(WaveLifecycle::Canceled) => Some(Self::Canceled),
+            Some(TrackLifecycle::Failed) => Some(Self::Failed),
+            Some(TrackLifecycle::Canceled) => Some(Self::Canceled),
             _ => None,
         }
     }
 
     const fn code(self) -> &'static str {
         match self {
-            Self::Deleted => "child-wave-deleted",
-            Self::Failed => "child-wave-failed",
-            Self::Canceled => "child-wave-canceled",
+            Self::Deleted => "child-track-deleted",
+            Self::Failed => "child-track-failed",
+            Self::Canceled => "child-track-canceled",
         }
     }
 
     const fn detail(self) -> &'static str {
         match self {
-            Self::Deleted => "child wave was deleted",
-            Self::Failed => "child wave entered failed",
-            Self::Canceled => "child wave was canceled",
+            Self::Deleted => "child track was deleted",
+            Self::Failed => "child track entered failed",
+            Self::Canceled => "child track was canceled",
         }
     }
 
     const fn sql_guard(self) -> &'static str {
         match self {
-            Self::Deleted => "NOT EXISTS(SELECT 1 FROM waves child WHERE child.id=?5)",
+            Self::Deleted => "NOT EXISTS(SELECT 1 FROM tracks child WHERE child.id=?5)",
             Self::Failed => {
-                "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='failed')"
+                "EXISTS(SELECT 1 FROM tracks child WHERE child.id=?5 AND child.lifecycle='failed')"
             }
             Self::Canceled => {
-                "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='canceled')"
+                "EXISTS(SELECT 1 FROM tracks child WHERE child.id=?5 AND child.lifecycle='canceled')"
             }
         }
     }
@@ -402,7 +402,7 @@ impl ChildTerminalOutcome {
 async fn guarded_child_success_flip_tx(
     tx: &mut Tx<'_>,
     task_id: &str,
-    child_wave_id: &str,
+    child_track_id: &str,
     target_status: &str,
     now: i64,
     finished_at_ms: Option<i64>,
@@ -410,18 +410,18 @@ async fn guarded_child_success_flip_tx(
     Ok(sqlx::query(
         "UPDATE tasks SET status=?1,status_detail=NULL,worker_card_id=NULL,\
                 running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?3 \
-           WHERE id=?4 AND child_wave_id=?5 \
+           WHERE id=?4 AND child_track_id=?5 \
              AND status IN ('dispatched','running') \
-             AND EXISTS(SELECT 1 FROM waves child \
+             AND EXISTS(SELECT 1 FROM tracks child \
                 WHERE child.id=?5 AND child.lifecycle='done') \
-             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5 \
+             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.track_id=?5 \
                 AND ct.status IN ('pending','dispatched','running','verifying'))",
     )
     .bind(target_status)
     .bind(now)
     .bind(finished_at_ms)
     .bind(task_id)
-    .bind(child_wave_id)
+    .bind(child_track_id)
     .execute(&mut **tx)
     .await?
     .rows_affected())
@@ -432,25 +432,25 @@ async fn guarded_child_success_flip_tx(
 async fn guarded_child_incomplete_flip_tx(
     tx: &mut Tx<'_>,
     task_id: &str,
-    parent_wave_id: &str,
-    child_wave_id: &str,
+    parent_track_id: &str,
+    child_track_id: &str,
     now: i64,
 ) -> Result<u64> {
     Ok(sqlx::query(
-        "UPDATE tasks SET status='failed',status_detail='child-wave-incomplete',\
+        "UPDATE tasks SET status='failed',status_detail='child-track-incomplete',\
                 worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1,finished_at_ms=?1 \
-           WHERE id=?2 AND wave_id=?3 AND child_wave_id=?4 \
+           WHERE id=?2 AND track_id=?3 AND child_track_id=?4 \
              AND status IN ('dispatched','running') \
-             AND EXISTS(SELECT 1 FROM waves child \
+             AND EXISTS(SELECT 1 FROM tracks child \
                 WHERE child.id=?4 AND child.lifecycle='done') \
-             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?4 \
+             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.track_id=?4 \
                 AND ct.status IN ('dispatched','running','verifying')) \
-             AND EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?4 AND ct.status='pending')",
+             AND EXISTS(SELECT 1 FROM tasks ct WHERE ct.track_id=?4 AND ct.status='pending')",
     )
     .bind(now)
     .bind(task_id)
-    .bind(parent_wave_id)
-    .bind(child_wave_id)
+    .bind(parent_track_id)
+    .bind(child_track_id)
     .execute(&mut **tx)
     .await?
     .rows_affected())
@@ -462,15 +462,15 @@ async fn guarded_child_incomplete_flip_tx(
 async fn guarded_child_terminal_flip_tx(
     tx: &mut Tx<'_>,
     task_id: &str,
-    parent_wave_id: &str,
-    child_wave_id: &str,
+    parent_track_id: &str,
+    child_track_id: &str,
     outcome: ChildTerminalOutcome,
     now: i64,
 ) -> Result<u64> {
     let sql = format!(
         "UPDATE tasks SET status='failed',status_detail=?1,worker_card_id=NULL,\
                 running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?2 \
-           WHERE id=?3 AND wave_id=?4 AND child_wave_id=?5 \
+           WHERE id=?3 AND track_id=?4 AND child_track_id=?5 \
              AND status IN ('dispatched','running') AND ({})",
         outcome.sql_guard()
     );
@@ -478,8 +478,8 @@ async fn guarded_child_terminal_flip_tx(
         .bind(outcome.code())
         .bind(now)
         .bind(task_id)
-        .bind(parent_wave_id)
-        .bind(child_wave_id)
+        .bind(parent_track_id)
+        .bind(child_track_id)
         .execute(&mut **tx)
         .await?
         .rows_affected())
@@ -490,10 +490,10 @@ async fn guarded_child_terminal_flip_tx(
 pub async fn guarded_child_success_flip_for_test(
     tx: &mut Tx<'_>,
     task_id: &str,
-    child_wave_id: &str,
+    child_track_id: &str,
 ) -> Result<u64> {
     let now = now_ms();
-    guarded_child_success_flip_tx(tx, task_id, child_wave_id, "done", now, Some(now)).await
+    guarded_child_success_flip_tx(tx, task_id, child_track_id, "done", now, Some(now)).await
 }
 
 #[cfg(feature = "fixtures")]
@@ -501,10 +501,10 @@ pub async fn guarded_child_success_flip_for_test(
 pub async fn guarded_child_incomplete_flip_for_test(
     tx: &mut Tx<'_>,
     task_id: &str,
-    parent_wave_id: &str,
-    child_wave_id: &str,
+    parent_track_id: &str,
+    child_track_id: &str,
 ) -> Result<u64> {
-    guarded_child_incomplete_flip_tx(tx, task_id, parent_wave_id, child_wave_id, now_ms()).await
+    guarded_child_incomplete_flip_tx(tx, task_id, parent_track_id, child_track_id, now_ms()).await
 }
 
 #[cfg(feature = "fixtures")]
@@ -512,9 +512,9 @@ pub async fn guarded_child_incomplete_flip_for_test(
 pub async fn guarded_child_terminal_flip_for_test(
     tx: &mut Tx<'_>,
     task_id: &str,
-    parent_wave_id: &str,
-    child_wave_id: &str,
-    lifecycle: Option<WaveLifecycle>,
+    parent_track_id: &str,
+    child_track_id: &str,
+    lifecycle: Option<TrackLifecycle>,
 ) -> Result<u64> {
     let outcome = ChildTerminalOutcome::from_lifecycle(lifecycle).ok_or_else(|| {
         CalmError::Internal("terminal child flip fixture requires deleted/failed/canceled".into())
@@ -522,8 +522,8 @@ pub async fn guarded_child_terminal_flip_for_test(
     guarded_child_terminal_flip_tx(
         tx,
         task_id,
-        parent_wave_id,
-        child_wave_id,
+        parent_track_id,
+        child_track_id,
         outcome,
         now_ms(),
     )
@@ -537,21 +537,21 @@ pub struct Scheduler {
     /// Same `Weak` discipline as the dispatcher's `Inner` — the
     /// scheduler must not keep AppState resources alive after shutdown.
     operation_runtime: Weak<OperationRuntime>,
-    /// The dispatcher's global spawn semaphore (§5.3): per-wave budgets
-    /// cap per-wave parallelism, this caps total cross-wave spawn work.
+    /// The dispatcher's global spawn semaphore (§5.3): per-track budgets
+    /// cap per-track parallelism, this caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
-    /// Kernel default budget (`NEIGE_WAVE_TASK_BUDGET`, default 1);
-    /// `waves.task_budget` overrides per wave.
+    /// Kernel default budget (`NEIGE_TRACK_TASK_BUDGET`, default 1);
+    /// `tracks.task_budget` overrides per track.
     budget_default: i64,
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
     task_run_timeout: Duration,
-    /// §5.1 per-wave single-flight: exactly the push-locks pattern.
-    wave_locks: DashMap<WaveId, Arc<tokio::sync::Mutex<()>>>,
+    /// §5.1 per-track single-flight: exactly the push-locks pattern.
+    track_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>>,
     /// Dirty flags — a trigger arriving mid-pass marks dirty and the
     /// lock holder loops once more, so no envelope is ever lost to "a
     /// pass was already running".
-    wave_dirty: DashMap<WaveId, Arc<AtomicBool>>,
+    track_dirty: DashMap<TrackId, Arc<AtomicBool>>,
     /// Per-task single-flight for submit/wait drives (live + sweep).
     inflight: Arc<DashMap<String, ()>>,
     /// Round-3 review F2 — boot-order gate for the backstop sweeps.
@@ -642,10 +642,10 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
-            budget_default: Self::budget_from_env(DEFAULT_WAVE_TASK_BUDGET),
+            budget_default: Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
             task_run_timeout,
-            wave_locks: DashMap::new(),
-            wave_dirty: DashMap::new(),
+            track_locks: DashMap::new(),
+            track_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
             boot_sweep_done: AtomicBool::new(false),
             context_sweep_boot_done: AtomicBool::new(false),
@@ -697,11 +697,11 @@ impl Scheduler {
         Arc::clone(&self.context_metrics)
     }
 
-    /// Resolve the kernel default budget from `NEIGE_WAVE_TASK_BUDGET`
+    /// Resolve the kernel default budget from `NEIGE_TRACK_TASK_BUDGET`
     /// (parsed like `NEIGE_DISPATCHER_PERMITS`): unset / empty /
     /// unparseable / non-positive → `default`.
     pub fn budget_from_env(default: i64) -> i64 {
-        match std::env::var("NEIGE_WAVE_TASK_BUDGET") {
+        match std::env::var("NEIGE_TRACK_TASK_BUDGET") {
             Ok(raw) => match raw.trim().parse::<i64>() {
                 Ok(n) if n > 0 => n,
                 _ => default,
@@ -745,32 +745,35 @@ impl Scheduler {
         duration_ms_i64(self.task_run_timeout)
     }
 
-    /// Fire-and-forget trigger: schedule the wave on a fresh task. Used
+    /// Fire-and-forget trigger: schedule the track on a fresh task. Used
     /// by the dispatcher's envelope arms.
-    pub fn poke(self: &Arc<Self>, wave_id: WaveId) {
+    pub fn poke(self: &Arc<Self>, track_id: TrackId) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            this.schedule_wave(wave_id).await;
+            this.schedule_track(track_id).await;
         });
     }
 
     /// Low-latency child lifecycle/deletion trigger. The event carries only a
     /// hint; the guarded IMMEDIATE transaction below rereads current DB state.
-    pub fn reconcile_child_wave(self: &Arc<Self>, child_wave_id: WaveId) {
+    pub fn reconcile_child_track(self: &Arc<Self>, child_track_id: TrackId) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = this.reconcile_child_wave_task(child_wave_id.as_str()).await {
-                tracing::warn!(%error, %child_wave_id, "scheduler: live child-wave reconcile failed; sweep will retry");
+            if let Err(error) = this
+                .reconcile_child_track_task(child_track_id.as_str())
+                .await
+            {
+                tracing::warn!(%error, %child_track_id, "scheduler: live child-track reconcile failed; sweep will retry");
             }
         });
     }
 
-    async fn reconcile_all_child_wave_tasks(&self) {
+    async fn reconcile_all_child_track_tasks(&self) {
         let Some(pool) = self.repo.sqlite_pool() else {
             return;
         };
         let child_ids: Vec<String> = match sqlx::query_scalar(
-            "SELECT child_wave_id FROM tasks WHERE child_wave_id IS NOT NULL \
+            "SELECT child_track_id FROM tasks WHERE child_track_id IS NOT NULL \
              AND status IN ('dispatched','running') ORDER BY created_at_ms",
         )
         .fetch_all(&pool)
@@ -778,19 +781,19 @@ impl Scheduler {
         {
             Ok(ids) => ids,
             Err(error) => {
-                tracing::warn!(%error, "scheduler sweep: child-wave scan failed");
+                tracing::warn!(%error, "scheduler sweep: child-track scan failed");
                 return;
             }
         };
         for child_id in child_ids {
-            if let Err(error) = self.reconcile_child_wave_task(&child_id).await {
-                tracing::warn!(%error, child_wave_id = %child_id, "scheduler sweep: child-wave reconcile failed");
+            if let Err(error) = self.reconcile_child_track_task(&child_id).await {
+                tracing::warn!(%error, child_track_id = %child_id, "scheduler sweep: child-track reconcile failed");
             }
         }
     }
 
-    async fn reconcile_child_wave_task(&self, child_wave_id: &str) -> Result<()> {
-        let child_wave_id = child_wave_id.to_string();
+    async fn reconcile_child_track_task(&self, child_track_id: &str) -> Result<()> {
+        let child_track_id = child_track_id.to_string();
         #[cfg(feature = "fixtures")]
         let reopen_child_after_snapshot = self
             .reconcile_child_reopen_after_snapshot_test_hook
@@ -803,24 +806,24 @@ impl Scheduler {
             move |tx| {
                 Box::pin(async move {
                     let snapshot: Option<ChildTaskSnapshot> = sqlx::query_as(
-                        r#"SELECT t.id AS task_id, t.wave_id AS parent_wave_id,
+                        r#"SELECT t.id AS task_id, t.track_id AS parent_track_id,
                                   parent.area_id AS parent_area_id,
-                                  t.child_wave_id AS child_wave_id,
+                                  t.child_track_id AS child_track_id,
                                   child.lifecycle AS child_lifecycle,
                                   t.gate_json AS gate_json,
                                   (SELECT count(*) FROM tasks ct
-                                    WHERE ct.wave_id=t.child_wave_id
+                                    WHERE ct.track_id=t.child_track_id
                                       AND ct.status IN ('dispatched','running','verifying')) AS inflight_count,
                                   (SELECT count(*) FROM tasks ct
-                                    WHERE ct.wave_id=t.child_wave_id
+                                    WHERE ct.track_id=t.child_track_id
                                       AND ct.status='pending') AS pending_count
                              FROM tasks t
-                             JOIN waves parent ON parent.id=t.wave_id
-                        LEFT JOIN waves child ON child.id=t.child_wave_id
-                            WHERE t.child_wave_id=?1
+                             JOIN tracks parent ON parent.id=t.track_id
+                        LEFT JOIN tracks child ON child.id=t.child_track_id
+                            WHERE t.child_track_id=?1
                               AND t.status IN ('dispatched','running')"#,
                     )
-                    .bind(&child_wave_id)
+                    .bind(&child_track_id)
                     .fetch_optional(&mut **tx)
                     .await?;
                     let Some(snapshot) = snapshot else {
@@ -828,24 +831,24 @@ impl Scheduler {
                     };
                     #[cfg(feature = "fixtures")]
                     if reopen_child_after_snapshot {
-                        sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
-                            .bind(&snapshot.child_wave_id)
+                        sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
+                            .bind(&snapshot.child_track_id)
                             .execute(&mut **tx)
                             .await?;
                     }
-                    let scope = EventScope::Wave {
-                        wave: WaveId::from(snapshot.parent_wave_id.clone()),
+                    let scope = EventScope::Track {
+                        track: TrackId::from(snapshot.parent_track_id.clone()),
                         area: snapshot.parent_area_id.clone().into(),
                     };
                     let now = now_ms();
                     let lifecycle = snapshot
                         .child_lifecycle
                         .as_deref()
-                        .map(|value| WaveLifecycle::try_from(value.to_string()))
+                        .map(|value| TrackLifecycle::try_from(value.to_string()))
                         .transpose()
                         .map_err(|error| CalmError::Internal(format!("child lifecycle decode: {error}")))?;
 
-                    if lifecycle == Some(WaveLifecycle::Done)
+                    if lifecycle == Some(TrackLifecycle::Done)
                         && snapshot.inflight_count == 0
                         && snapshot.pending_count == 0
                     {
@@ -857,7 +860,7 @@ impl Scheduler {
                         let changed = guarded_child_success_flip_tx(
                             tx,
                             &snapshot.task_id,
-                            &snapshot.child_wave_id,
+                            &snapshot.child_track_id,
                             target_status,
                             now,
                             finished_at,
@@ -869,8 +872,8 @@ impl Scheduler {
                         let event = Event::TaskCompleted {
                             idempotency_key: snapshot.task_id,
                             result: json!({
-                                "source": "child-wave",
-                                "child_wave_id": snapshot.child_wave_id,
+                                "source": "child-track",
+                                "child_track_id": snapshot.child_track_id,
                             }),
                             artifacts: vec![],
                             agent_message: None,
@@ -878,15 +881,15 @@ impl Scheduler {
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
                     }
 
-                    if lifecycle == Some(WaveLifecycle::Done)
+                    if lifecycle == Some(TrackLifecycle::Done)
                         && snapshot.inflight_count == 0
                         && snapshot.pending_count > 0
                     {
                         let changed = guarded_child_incomplete_flip_tx(
                             tx,
                             &snapshot.task_id,
-                            &snapshot.parent_wave_id,
-                            &snapshot.child_wave_id,
+                            &snapshot.parent_track_id,
+                            &snapshot.child_track_id,
                             now,
                         )
                         .await?;
@@ -896,7 +899,7 @@ impl Scheduler {
                         let event = Event::TaskFailed {
                             idempotency_key: snapshot.task_id,
                             reason: format!(
-                                "child-wave-incomplete: {} pending task(s) remain",
+                                "child-track-incomplete: {} pending task(s) remain",
                                 snapshot.pending_count
                             ),
                             agent_message: None,
@@ -909,8 +912,8 @@ impl Scheduler {
                     let changed = guarded_child_terminal_flip_tx(
                         tx,
                         &snapshot.task_id,
-                        &snapshot.parent_wave_id,
-                        &snapshot.child_wave_id,
+                        &snapshot.parent_track_id,
+                        &snapshot.child_track_id,
                         outcome,
                         now,
                     )
@@ -937,17 +940,17 @@ impl Scheduler {
 
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
-    pub async fn reconcile_child_wave_for_test(&self, child_wave_id: &str) -> Result<()> {
-        self.reconcile_child_wave_task(child_wave_id).await
+    pub async fn reconcile_child_track_for_test(&self, child_track_id: &str) -> Result<()> {
+        self.reconcile_child_track_task(child_track_id).await
     }
 
-    /// Run scheduling passes for one wave until quiescent. Per-wave
+    /// Run scheduling passes for one track until quiescent. Per-track
     /// mutex + dirty flag: concurrent callers collapse into the lock
     /// holder's loop.
-    pub async fn schedule_wave(self: &Arc<Self>, wave_id: WaveId) {
+    pub async fn schedule_track(self: &Arc<Self>, track_id: TrackId) {
         let dirty = self
-            .wave_dirty
-            .entry(wave_id.clone())
+            .track_dirty
+            .entry(track_id.clone())
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone();
         dirty.store(true, Ordering::SeqCst);
@@ -955,15 +958,15 @@ impl Scheduler {
         // shard guard must drop at this statement's `;` before the
         // `.await` below (same hazard as the dispatcher's push locks).
         let lock = self
-            .wave_locks
-            .entry(wave_id.clone())
+            .track_locks
+            .entry(track_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
         let _guard = lock.lock().await;
         while dirty.swap(false, Ordering::SeqCst) {
-            if let Err(e) = self.schedule_pass(&wave_id).await {
+            if let Err(e) = self.schedule_pass(&track_id).await {
                 tracing::warn!(
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
                     "scheduler: scheduling pass failed; will retry on next trigger/sweep"
                 );
@@ -971,21 +974,21 @@ impl Scheduler {
         }
     }
 
-    /// One §5.2 pass under the wave lock: lifecycle gate → budget →
+    /// One §5.2 pass under the track lock: lifecycle gate → budget →
     /// ready set → dispatch each ready task sequentially.
-    async fn schedule_pass(self: &Arc<Self>, wave_id: &WaveId) -> Result<()> {
-        let Some(wave) = self.repo.wave_get(wave_id.as_str()).await? else {
+    async fn schedule_pass(self: &Arc<Self>, track_id: &TrackId) -> Result<()> {
+        let Some(track) = self.repo.track_get(track_id.as_str()).await? else {
             return Ok(());
         };
-        let tasks = self.repo.tasks_by_wave(wave_id.as_str()).await?;
+        let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
         // §6.2 trigger 2 — the emit-tx flip already moved gated rows to
         // `verifying`; this pass (poked by the `task.completed`
         // envelope) drives each one's gate. Fire-and-forget: a gate can
-        // run for minutes-to-hours and must never block the wave lock;
+        // run for minutes-to-hours and must never block the track lock;
         // `drive_gate`'s single-flight guard collapses duplicates.
         // Deliberately BEFORE the lifecycle gate (PR #685 F6): §5.2
         // scopes lifecycle gating to NEW claims; a gate for a task that
-        // reported while the wave is Blocked is in-flight machinery and
+        // reported while the track is Blocked is in-flight machinery and
         // must not wait for the reconcile tick.
         for task in tasks
             .iter()
@@ -997,33 +1000,33 @@ impl Scheduler {
                 this.drive_gate(task).await;
             });
         }
-        if !lifecycle_allows_scheduling(wave.lifecycle) {
+        if !lifecycle_allows_scheduling(track.lifecycle) {
             tracing::debug!(
-                wave_id = %wave_id,
-                lifecycle = ?wave.lifecycle,
+                track_id = %track_id,
+                lifecycle = ?track.lifecycle,
                 "scheduler: lifecycle holds scheduling; skipping pass"
             );
             return Ok(());
         }
         let is_template = self
             .repo
-            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, wave_id.as_str())
+            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, track_id.as_str())
             .await?
             .iter()
             .any(is_template_overlay);
         if is_template {
             tracing::debug!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 "scheduler: template overlay holds dispatch; skipping ready set"
             );
             return Ok(());
         }
-        let budget = self.wave_budget(wave_id).await?;
-        let capacity = wave_capacity(&tasks, budget);
+        let budget = self.track_budget(track_id).await?;
+        let capacity = track_capacity(&tasks, budget);
         let ready = compute_ready(&tasks, budget);
         let mut claimed = 0;
         for task in ready {
-            if self.dispatch_task(task, &wave).await {
+            if self.dispatch_task(task, &track).await {
                 claimed += 1;
                 if claimed == capacity {
                     break;
@@ -1033,15 +1036,15 @@ impl Scheduler {
         Ok(())
     }
 
-    /// `COALESCE(waves.task_budget, kernel default)` (§5.3).
-    async fn wave_budget(&self, wave_id: &WaveId) -> Result<i64> {
+    /// `COALESCE(tracks.task_budget, kernel default)` (§5.3).
+    async fn track_budget(&self, track_id: &TrackId) -> Result<i64> {
         let pool = self
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let row: Option<(Option<i64>,)> =
-            sqlx::query_as("SELECT task_budget FROM waves WHERE id = ?1")
-                .bind(wave_id.as_str())
+            sqlx::query_as("SELECT task_budget FROM tracks WHERE id = ?1")
+                .bind(track_id.as_str())
                 .fetch_optional(&pool)
                 .await?;
         Ok(row
@@ -1053,7 +1056,7 @@ impl Scheduler {
     /// §5.4 — claim one ready task and drive its worker spawn. Every
     /// failure mode is contained here (logged, row reconciled); the
     /// pass continues with its remaining ready tasks.
-    async fn dispatch_task(self: &Arc<Self>, task: Task, wave: &Wave) -> bool {
+    async fn dispatch_task(self: &Arc<Self>, task: Task, track: &Track) -> bool {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             tracing::debug!(task_id = %task.id, "scheduler: task already in flight; skipping");
             return false;
@@ -1074,7 +1077,7 @@ impl Scheduler {
         // payload. Post-claim the row is frozen — every plan mutation
         // path is `WHERE status = 'pending'`.
         let pre_claim_task_id = task.id.clone();
-        let frozen = match self.claim_task(task, wave).await {
+        let frozen = match self.claim_task(task, track).await {
             Ok(Some(frozen)) => frozen,
             Ok(None) => return false, // someone else won the claim
             Err(e) => {
@@ -1095,7 +1098,7 @@ impl Scheduler {
             hook.claimed.notify_one();
             hook.resume.notified().await;
         }
-        if let Err(e) = self.drive_spawn(&frozen, wave).await {
+        if let Err(e) = self.drive_spawn(&frozen, track).await {
             tracing::warn!(
                 task_id = %pre_claim_task_id,
                 error = %e,
@@ -1118,19 +1121,22 @@ impl Scheduler {
     /// `WHERE status = 'pending'`), so a post-crash sweep resubmit
     /// rebuilds the byte-identical payload.
     ///
-    /// `Ok(None)` = race lost: another claimer won, the wave's
+    /// `Ok(None)` = race lost: another claimer won, the track's
     /// lifecycle left the schedulable set since the ready-set pass
     /// (review F4), the frozen row's ready predicate no longer holds
-    /// (round-2 review F1), or the wave row was deleted. No event is
+    /// (round-2 review F1), or the track row was deleted. No event is
     /// persisted.
-    async fn claim_task(&self, task: Task, wave: &Wave) -> Result<Option<Task>> {
+    async fn claim_task(&self, task: Task, track: &Track) -> Result<Option<Task>> {
         let monitor = TaskContextMonitor::new_with_metrics(
             Arc::clone(&self.repo),
             self.events.clone(),
             self.write.clone(),
             Arc::clone(&self.context_metrics),
         );
-        let closure = match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
+        let closure = match monitor
+            .resolve_task_closure(&task.track_id, &task.key)
+            .await
+        {
             Ok(closure) => closure,
             Err(error) => {
                 let variant = error.variant();
@@ -1144,12 +1150,12 @@ impl Scheduler {
                 return Ok(None);
             }
         };
-        let scope = EventScope::Wave {
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+        let scope = EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
         let task_id = task.id.clone();
-        let wave_id = wave.id.clone();
+        let track_id = track.id.clone();
         let budget_default = self.budget_default;
         let claim_refs = closure.refs;
         let claim_doc_revs = closure.doc_revs;
@@ -1175,11 +1181,11 @@ impl Scheduler {
                     Box::pin(async move {
                         // §5.2 lifecycle gate, re-checked IN the claim tx
                         // (review F4): the pass's pre-claim read can go
-                        // stale across the semaphore wait, and a wave moved
+                        // stale across the semaphore wait, and a track moved
                         // to Blocked/Canceled/Done must not have new work
                         // claimed. Loss is silent (race-lost, no event).
                         let (lifecycle, task_budget) =
-                            wave_lifecycle_and_budget_tx(tx, wave_id.as_str())
+                            track_lifecycle_and_budget_tx(tx, track_id.as_str())
                                 .await?
                                 .ok_or_else(race_lost_err)?;
                         if !lifecycle_allows_scheduling(lifecycle) {
@@ -1189,26 +1195,26 @@ impl Scheduler {
                         // Ready-set skip can race a POST /api/overlays after the
                         // pass snapshot; refuse the flip here so no TaskDispatched
                         // is persisted.
-                        if wave_has_template_overlay_tx(tx, wave_id.as_str()).await? {
+                        if track_has_template_overlay_tx(tx, track_id.as_str()).await? {
                             return Err(race_lost_err());
                         }
-                        // §5.2 claim fence: missing wave/report, a changed root, or any
+                        // §5.2 claim fence: missing track/report, a changed root, or any
                         // changed report doc_rev is a silent race loss. This runs before
                         // the pending -> dispatched state flip.
-                        for (frozen_wave, frozen_rev) in &claim_doc_revs {
+                        for (frozen_track, frozen_rev) in &claim_doc_revs {
                             let current: Option<Option<i64>> = match sqlx::query_as::<_, (Option<i64>,)>(
                                 "SELECT json_extract(c.payload, '$.docRev') FROM cards c \
-                                 JOIN waves w ON w.id = c.wave_id \
-                                 WHERE c.wave_id = ?1 AND c.kind = 'wave-report' LIMIT 1",
+                                 JOIN tracks w ON w.id = c.track_id \
+                                 WHERE c.track_id = ?1 AND c.kind = 'track-report' LIMIT 1",
                             )
-                            .bind(frozen_wave)
+                            .bind(frozen_track)
                             .fetch_optional(&mut **tx)
                             .await
                             {
                                 Ok(row) => row.map(|(value,)| value),
                                 Err(error) => {
                                     tracing::warn!(
-                                        wave_id = frozen_wave,
+                                        track_id = frozen_track,
                                         error = %error,
                                         "scheduler: claim fence doc_rev query failed; failing closed"
                                     );
@@ -1223,10 +1229,10 @@ impl Scheduler {
                         }
                         if let Some(root) = claim_refs.iter().find(|reference| reference.is_root) {
                             let payload: Option<String> = sqlx::query_scalar(
-                                "SELECT payload FROM cards WHERE wave_id = ?1 \
-                                 AND kind = 'wave-report' LIMIT 1",
+                                "SELECT payload FROM cards WHERE track_id = ?1 \
+                                 AND kind = 'track-report' LIMIT 1",
                             )
-                            .bind(root.wave_id.as_str())
+                            .bind(root.track_id.as_str())
                             .fetch_optional(&mut **tx)
                             .await?;
                             let current_root = payload
@@ -1236,12 +1242,12 @@ impl Scheduler {
                                 })
                                 .and_then(|blocks| {
                                     blocks.into_iter().find_map(|value| {
-                                        let block: calm_types::wave_report::ReportBlock =
+                                        let block: calm_types::track_report::ReportBlock =
                                             serde_json::from_value(value).ok()?;
                                         if block.id != root.block_id {
                                             return None;
                                         }
-                                        Some(context_ref(root.wave_id.as_str(), &block, true))
+                                        Some(context_ref(root.track_id.as_str(), &block, true))
                                     })
                                 });
                             if current_root
@@ -1261,10 +1267,10 @@ impl Scheduler {
                             return Err(race_lost_err());
                         }
                         // Post-claim re-read = the frozen row (review F2).
-                        // Gone row = concurrent wave delete; treat as lost.
+                        // Gone row = concurrent track delete; treat as lost.
                         let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
                         // Round-2 review F1: revalidate the §5.2 ready
-                        // predicate against the wave's CURRENT plan in the
+                        // predicate against the track's CURRENT plan in the
                         // same tx. The pass's ready set was computed before
                         // the semaphore wait, so a `plan.updated` that added
                         // a dependency or a PATCH that shrank the budget
@@ -1273,7 +1279,7 @@ impl Scheduler {
                         // re-evaluates). Strict priority ORDER is
                         // deliberately NOT revalidated — the design only
                         // fixes the ready-set order per pass (§5.4).
-                        let siblings = tasks_by_wave_tx(tx, wave_id.as_str()).await?;
+                        let siblings = tasks_by_track_tx(tx, track_id.as_str()).await?;
                         let done_keys: BTreeSet<&str> = siblings
                             .iter()
                             .filter(|t| t.status == TaskStatus::Done)
@@ -1321,7 +1327,7 @@ impl Scheduler {
                                 ActorId::KernelDispatcher,
                                 scope.clone(),
                                 Event::TaskContextFrozen {
-                                    wave_id: wave_id.clone(),
+                                    track_id: track_id.clone(),
                                     task_key: task_key.clone(),
                                     idempotency_key: task_id.clone(),
                                     task_id: task_id.clone(),
@@ -1335,26 +1341,26 @@ impl Scheduler {
                         // dispatch path: promote before the worker exists so
                         // a fast report's Working → Reviewing promotion can
                         // never race ahead of this one. §5.2 deliberately
-                        // schedules Planning waves (review F5) — a wave the
+                        // schedules Planning tracks (review F5) — a track the
                         // spec never moved past Planning is promoted along
                         // the legal kernel chain Planning → Dispatching →
                         // Working here. §5.2 also keeps Reviewing in the
                         // schedulable set (round-5 review F1): a dependent
                         // task that becomes ready after the first worker's
-                        // completion promoted the wave to Reviewing is
+                        // completion promoted the track to Reviewing is
                         // claimed from Reviewing, so the legal Reviewing →
                         // Working edge rides the same claim tx. A
-                        // successful claim therefore always leaves the wave
+                        // successful claim therefore always leaves the track
                         // `Working` and the later Working → Reviewing
                         // auto-transition can fire again.
                         for (from, to) in [
-                            (WaveLifecycle::Reviewing, WaveLifecycle::Working),
-                            (WaveLifecycle::Planning, WaveLifecycle::Dispatching),
-                            (WaveLifecycle::Dispatching, WaveLifecycle::Working),
+                            (TrackLifecycle::Reviewing, TrackLifecycle::Working),
+                            (TrackLifecycle::Planning, TrackLifecycle::Dispatching),
+                            (TrackLifecycle::Dispatching, TrackLifecycle::Working),
                         ] {
                             if let Some(auto_events) = auto_transition_if_current_in_tx(
                                 tx,
-                                &wave_id,
+                                &track_id,
                                 from,
                                 to,
                                 &ActorId::KernelDispatcher,
@@ -1391,9 +1397,9 @@ impl Scheduler {
     /// `drive()` until the op is terminal (no background driver exists,
     /// §8). The drive lease (60s, `claim_drive_batch`) makes concurrent
     /// drivers execute no phase twice.
-    async fn drive_spawn(&self, task: &Task, wave: &Wave) -> Result<()> {
+    async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
         if task.spawn == "sub-wave" {
-            return self.drive_child_wave(task, wave).await;
+            return self.drive_child_track(task, track).await;
         }
         let Some(runtime) = self.operation_runtime.upgrade() else {
             tracing::debug!(
@@ -1425,7 +1431,7 @@ impl Scheduler {
             // operation (e.g. a legacy `calm.task.dispatch` spawn that
             // already used the task id) — it will never self-heal, and
             // leaving the row `dispatched` would retry the same error
-            // every sweep while pinning the wave budget forever. Run the
+            // every sweep while pinning the track budget forever. Run the
             // same spawn-failure path as an op Failed/Stuck outcome:
             // guarded `failed('spawn-failed')` + kernel `task.failed`.
             Err(e) if crate::operation::is_idempotency_payload_conflict(&e) => {
@@ -1434,26 +1440,26 @@ impl Scheduler {
                     error = %e,
                     "scheduler: task idempotency key owned by a foreign operation (permanent); failing task"
                 );
-                return self.fail_spawn(task, wave, &e.to_string()).await;
+                return self.fail_spawn(task, track, &e.to_string()).await;
             }
             // Everything else stays TRANSIENT/unknown (policy-free: no
             // retry counting) — log-and-leave for the next trigger/sweep.
             Err(e) => return Err(e),
         };
         let result = runtime.wait(&op_id).await?;
-        self.reconcile_spawn_result(task, wave, result.outcome)
+        self.reconcile_spawn_result(task, track, result.outcome)
             .await
     }
 
-    async fn drive_child_wave(&self, task: &Task, wave: &Wave) -> Result<()> {
+    async fn drive_child_track(&self, task: &Task, track: &Track) -> Result<()> {
         let Some(runtime) = self.operation_runtime.upgrade() else {
-            tracing::debug!(task_id = %task.id, "scheduler: operation runtime dropped; skipping child-wave drive");
+            tracing::debug!(task_id = %task.id, "scheduler: operation runtime dropped; skipping child-track drive");
             return Ok(());
         };
-        let payload = build_child_wave_payload(task)?;
+        let payload = build_child_track_payload(task)?;
         let op_id = runtime
             .submit(
-                CHILD_WAVE_KIND,
+                CHILD_TRACK_KIND,
                 OperationKey {
                     operation_key: new_id(),
                     idempotency_key: Some(task.id.clone()),
@@ -1467,49 +1473,51 @@ impl Scheduler {
             OperationOutcome::Succeeded { result }
             | OperationOutcome::SucceededViaCollision { result, .. } => result,
             OperationOutcome::Failed { last_error, .. } => {
-                let code = if last_error.contains("sub-wave-depth-exceeded") {
-                    "sub-wave-depth-exceeded"
-                } else if last_error.contains("sub-wave-tree-cycle") {
-                    "sub-wave-tree-cycle"
+                let code = if last_error.contains("sub-track-depth-exceeded") {
+                    "sub-track-depth-exceeded"
+                } else if last_error.contains("sub-track-tree-cycle") {
+                    "sub-track-tree-cycle"
                 } else {
-                    "child-wave-create-failed"
+                    "child-track-create-failed"
                 };
                 return self
-                    .fail_child_wave_task(task, wave, code, &last_error)
+                    .fail_child_track_task(task, track, code, &last_error)
                     .await;
             }
             OperationOutcome::Stuck { reason, .. } => {
                 return self
-                    .fail_child_wave_task(task, wave, "child-wave-create-stuck", &reason)
+                    .fail_child_track_task(task, track, "child-track-create-stuck", &reason)
                     .await;
             }
         };
         let child_id = result
-            .get("child_wave_id")
+            .get("child_track_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("child-wave result missing child_wave_id".into()))?;
+            .ok_or_else(|| {
+                CalmError::Internal("child-track result missing child_track_id".into())
+            })?;
         let spec_card_id = result
             .get("spec_card_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("child-wave result missing spec_card_id".into()))?;
+            .ok_or_else(|| CalmError::Internal("child-track result missing spec_card_id".into()))?;
         let report_card_id = result
             .get("report_card_id")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                CalmError::Internal("child-wave result missing report_card_id".into())
+                CalmError::Internal("child-track result missing report_card_id".into())
             })?;
         let cwd = result
             .get("cwd")
             .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("child-wave result missing cwd".into()))?;
+            .ok_or_else(|| CalmError::Internal("child-track result missing cwd".into()))?;
         let seed = result
             .get("seed")
             .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("child-wave result missing seed".into()))?;
+            .ok_or_else(|| CalmError::Internal("child-track result missing seed".into()))?;
 
         let bootstrap = SpecHarnessStartOperationPayload {
             actor: ActorId::KernelDispatcher,
-            wave_id: child_id.to_string(),
+            track_id: child_id.to_string(),
             spec_card_id: crate::ids::CardId::from(spec_card_id.to_string()),
             report_card_id: Some(report_card_id.to_string()),
             sort: None,
@@ -1539,7 +1547,7 @@ impl Scheduler {
                     // deleted. Distinct paths mint distinct keys; within one
                     // path idempotency is unchanged.
                     idempotency_key: Some(format!(
-                        "child-wave:{child_id}:bootstrap:{}",
+                        "child-track:{child_id}:bootstrap:{}",
                         crate::workspace_materialize::workspace_key_digest(cwd)
                     )),
                     payload_hash: stable_payload_hash(&bootstrap_payload)?,
@@ -1551,42 +1559,42 @@ impl Scheduler {
         // can therefore only leave a dispatched row, which resume re-drives.
         match runtime.wait(&bootstrap_id).await?.outcome {
             OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
-                self.mark_sub_wave_running(&task.id).await
+                self.mark_sub_track_running(&task.id).await
             }
             OperationOutcome::Failed { last_error, .. } => {
-                self.fail_child_wave_task(task, wave, "child-wave-bootstrap-failed", &last_error)
+                self.fail_child_track_task(task, track, "child-track-bootstrap-failed", &last_error)
                     .await
             }
             OperationOutcome::Stuck { reason, .. } => {
-                self.fail_child_wave_task(task, wave, "child-wave-bootstrap-stuck", &reason)
+                self.fail_child_track_task(task, track, "child-track-bootstrap-stuck", &reason)
                     .await
             }
         }
     }
 
-    async fn mark_sub_wave_running(&self, task_id: &str) -> Result<()> {
+    async fn mark_sub_track_running(&self, task_id: &str) -> Result<()> {
         let pool = self
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
-        task_mark_sub_wave_running_tx(&mut tx, task_id, now_ms()).await?;
+        task_mark_sub_track_running_tx(&mut tx, task_id, now_ms()).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    async fn fail_child_wave_task(
+    async fn fail_child_track_task(
         &self,
         task: &Task,
-        wave: &Wave,
+        track: &Track,
         code: &str,
         detail: &str,
     ) -> Result<()> {
         let task_id = task.id.clone();
-        let wave_id = wave.id.clone();
-        let scope = EventScope::Wave {
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+        let track_id = track.id.clone();
+        let scope = EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
         let code = code.to_string();
         let reason = format!("{code}: {detail}");
@@ -1597,23 +1605,23 @@ impl Scheduler {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    // The child-wave operation may fail after prepare_tx has
+                    // The child-track operation may fail after prepare_tx has
                     // committed the child and stamped this row. Always derive
                     // cleanup ownership from durable task state in the same
                     // transaction as the parent failure flip; callers cannot
                     // reliably infer child existence from an operation phase.
                     let child_id: Option<String> = sqlx::query_scalar(
-                        "SELECT child_wave_id FROM tasks WHERE id=?1 AND wave_id=?2",
+                        "SELECT child_track_id FROM tasks WHERE id=?1 AND track_id=?2",
                     )
                     .bind(&task_id)
-                    .bind(wave_id.as_str())
+                    .bind(track_id.as_str())
                     .fetch_optional(&mut **tx)
                     .await?
                     .flatten();
                     let rows = task_fail_from_worker_tx(
                         tx,
                         &task_id,
-                        wave_id.as_str(),
+                        track_id.as_str(),
                         TaskReporter::Kernel,
                         &code,
                         now_ms(),
@@ -1624,36 +1632,36 @@ impl Scheduler {
                     }
                     let mut events = Vec::new();
                     if let Some(child_id) = child_id {
-                        let child_wave_id = WaveId::from(child_id);
+                        let child_track_id = TrackId::from(child_id);
                         let current =
-                            crate::wave_lifecycle::wave_get_tx(tx, &child_wave_id).await?;
+                            crate::track_lifecycle::track_get_tx(tx, &child_track_id).await?;
                         if !current.lifecycle.is_terminal() {
-                            let updated = crate::db::sqlite::wave_update_tx(
+                            let updated = crate::db::sqlite::track_update_tx(
                                 tx,
-                                child_wave_id.as_str(),
-                                crate::model::WavePatch {
-                                    lifecycle: Some(WaveLifecycle::Failed),
+                                child_track_id.as_str(),
+                                crate::model::TrackPatch {
+                                    lifecycle: Some(TrackLifecycle::Failed),
                                     ..Default::default()
                                 },
                             )
                             .await?;
-                            let child_scope = EventScope::Wave {
-                                wave: updated.id.clone(),
+                            let child_scope = EventScope::Track {
+                                track: updated.id.clone(),
                                 area: updated.area_id.clone(),
                             };
                             events.push((
                                 child_scope.clone(),
-                                Event::WaveLifecycleChanged {
+                                Event::TrackLifecycleChanged {
                                     id: updated.id.clone(),
                                     area_id: updated.area_id.clone(),
                                     from: current.lifecycle,
-                                    to: WaveLifecycle::Failed,
+                                    to: TrackLifecycle::Failed,
                                     agent_message: Some(reason.clone()),
                                 },
                             ));
                             events.push((
                                 child_scope,
-                                Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+                                Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
                                     updated,
                                     Some(reason.clone()),
                                 )),
@@ -1689,7 +1697,7 @@ impl Scheduler {
     async fn reconcile_spawn_result(
         &self,
         task: &Task,
-        wave: &Wave,
+        track: &Track,
         outcome: OperationOutcome,
     ) -> Result<()> {
         match outcome {
@@ -1727,10 +1735,10 @@ impl Scheduler {
                 }
             }
             OperationOutcome::Failed { last_error, .. } => {
-                self.fail_spawn(task, wave, &last_error).await?;
+                self.fail_spawn(task, track, &last_error).await?;
             }
             OperationOutcome::Stuck { reason, .. } => {
-                self.fail_spawn(task, wave, &reason).await?;
+                self.fail_spawn(task, track, &reason).await?;
             }
         }
         Ok(())
@@ -1774,18 +1782,18 @@ impl Scheduler {
     ///
     /// Issue #1147 slice ① — the operation's `last_error`/`Stuck` reason
     /// rides along into `status_detail` as `"spawn-failed: <reason>"`.
-    /// The bare classifier left the only readable diagnosis (e.g. "wave
+    /// The bare classifier left the only readable diagnosis (e.g. "track
     /// … cwd … is not a git repository") stranded in the operation's
     /// `phase_detail_json`, which neither the spec nor the FE reads.
     /// The `spawn-failed` CLASSIFIER stays the prefix — everything that
     /// dispatches on the vocabulary goes through `status_detail_class`.
-    async fn fail_spawn(&self, task: &Task, wave: &Wave, reason: &str) -> Result<()> {
-        let scope = EventScope::Wave {
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+    async fn fail_spawn(&self, task: &Task, track: &Track, reason: &str) -> Result<()> {
+        let scope = EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
         let task_id = task.id.clone();
-        let wave_id = wave.id.clone();
+        let track_id = track.id.clone();
         let status_detail = status_detail_with_reason("spawn-failed", reason);
         let reason = format!("worker spawn failed: {reason}");
         let result = write_with_actor_events_typed::<(), _>(
@@ -1798,7 +1806,7 @@ impl Scheduler {
                     let rows = task_fail_from_worker_tx(
                         tx,
                         &task_id,
-                        wave_id.as_str(),
+                        track_id.as_str(),
                         TaskReporter::Kernel,
                         &status_detail,
                         now_ms(),
@@ -1818,9 +1826,9 @@ impl Scheduler {
                     )];
                     if let Some(auto_events) = auto_transition_if_current_in_tx(
                         tx,
-                        &wave_id,
-                        WaveLifecycle::Working,
-                        WaveLifecycle::Reviewing,
+                        &track_id,
+                        TrackLifecycle::Working,
+                        TrackLifecycle::Reviewing,
                         &ActorId::KernelDispatcher,
                         Some("[auto] worker spawn failed".to_string()),
                     )
@@ -1849,7 +1857,7 @@ impl Scheduler {
     /// §8 sweep body — shared between boot (after operation recovery),
     /// the periodic reconcile tick, and `Lagged`. Arms for this slice:
     ///
-    /// - `pending`: recompute ready sets and dispatch (per wave).
+    /// - `pending`: recompute ready sets and dispatch (per track).
     /// - `dispatched`: resubmit/re-drive the worker op and reconcile
     ///   the row ([`Scheduler::drive_spawn`] — `submit` dedupes on the
     ///   idempotency key, `wait()` re-drives non-terminal ops, the
@@ -1881,9 +1889,9 @@ impl Scheduler {
             );
             return;
         }
-        let pending_waves = self.sweep_reconcile().await;
-        for wave_id in pending_waves {
-            self.schedule_wave(WaveId::from(wave_id)).await;
+        let pending_tracks = self.sweep_reconcile().await;
+        for track_id in pending_tracks {
+            self.schedule_track(TrackId::from(track_id)).await;
         }
     }
 
@@ -1893,15 +1901,15 @@ impl Scheduler {
     /// operation recovery — but pending-arm dispatching goes through
     /// the normal async [`Scheduler::poke`] path so boot never blocks
     /// the HTTP server behind full schedule passes (claim + spawn
-    /// `wait()` per wave).
+    /// `wait()` per track).
     ///
     /// Completing this sweep opens the boot gate (round-3 review F2):
     /// from here on the periodic reconcile tick and Lagged-arm
     /// [`Scheduler::sweep_all`] calls run for real.
     pub async fn sweep_boot(self: &Arc<Self>) {
-        let pending_waves = self.sweep_reconcile().await;
-        for wave_id in pending_waves {
-            self.poke(WaveId::from(wave_id));
+        let pending_tracks = self.sweep_reconcile().await;
+        for track_id in pending_tracks {
+            self.poke(TrackId::from(track_id));
         }
         self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
@@ -1941,7 +1949,7 @@ impl Scheduler {
     }
 
     /// Shared sweep body: runs the reconcile arms inline and returns
-    /// the set of waves holding `pending` rows for the caller to
+    /// the set of tracks holding `pending` rows for the caller to
     /// dispatch (blocking in [`Scheduler::sweep_all`], fire-and-forget
     /// in [`Scheduler::sweep_boot`]).
     async fn sweep_reconcile(self: &Arc<Self>) -> BTreeSet<String> {
@@ -1956,24 +1964,24 @@ impl Scheduler {
             tracing::warn!(error = %e, "scheduler sweep: sweep_parked failed; next tick retries");
         }
         self.sweep_timeout_worker_cleanups().await;
-        let mut pending_waves: BTreeSet<String> = BTreeSet::new();
+        let mut pending_tracks: BTreeSet<String> = BTreeSet::new();
         let tasks = match self.repo.tasks_nonterminal().await {
             Ok(tasks) => tasks,
             Err(e) => {
                 tracing::warn!(error = %e, "scheduler sweep: task scan failed; skipping");
-                return pending_waves;
+                return pending_tracks;
             }
         };
         for mut task in tasks {
             match task.status {
                 TaskStatus::Pending => {
-                    pending_waves.insert(task.wave_id.clone());
+                    pending_tracks.insert(task.track_id.clone());
                 }
                 TaskStatus::Dispatched => {
                     self.resume_dispatched(task).await;
                 }
                 // Must precede both terminal reconciliation and kind-based
-                // timeout arms. Sub-wave parents have their own child-state
+                // timeout arms. Sub-track parents have their own child-state
                 // reconciler and never receive a worker deadline.
                 TaskStatus::Running if task.spawn == "sub-wave" => {}
                 TaskStatus::Running if task.kind == TaskKind::Terminal => {
@@ -2023,8 +2031,8 @@ impl Scheduler {
                 TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled => {}
             }
         }
-        self.reconcile_all_child_wave_tasks().await;
-        pending_waves
+        self.reconcile_all_child_track_tasks().await;
+        pending_tracks
     }
 
     async fn stamp_missing_running_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
@@ -2060,12 +2068,12 @@ impl Scheduler {
     }
 
     async fn fail_running_liveness_timeout(self: &Arc<Self>, task: Task) {
-        let wave = match self.repo.wave_get(&task.wave_id).await {
-            Ok(Some(wave)) => wave,
+        let track = match self.repo.track_get(&task.track_id).await {
+            Ok(Some(track)) => track,
             Ok(None) => {
                 tracing::warn!(
                     task_id = %task.id,
-                    "scheduler sweep: running timeout task's wave row is gone; leaving row"
+                    "scheduler sweep: running timeout task's track row is gone; leaving row"
                 );
                 return;
             }
@@ -2073,7 +2081,7 @@ impl Scheduler {
                 tracing::warn!(
                     task_id = %task.id,
                     error = %e,
-                    "scheduler sweep: running timeout wave_get failed"
+                    "scheduler sweep: running timeout track_get failed"
                 );
                 return;
             }
@@ -2084,7 +2092,7 @@ impl Scheduler {
         match self
             .fail_task_liveness_timeout(
                 &task,
-                &wave,
+                &track,
                 "worker exceeded the running liveness deadline",
                 "[auto] worker liveness timeout",
                 cleanup_card_id.as_deref(),
@@ -2108,17 +2116,17 @@ impl Scheduler {
     async fn fail_task_liveness_timeout(
         &self,
         task: &Task,
-        wave: &Wave,
+        track: &Track,
         reason: &str,
         auto_message: &str,
         timeout_cleanup_card_id: Option<&str>,
     ) -> Result<bool> {
-        let scope = EventScope::Wave {
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+        let scope = EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
         let task_id = task.id.clone();
-        let wave_id = wave.id.clone();
+        let track_id = track.id.clone();
         let reason = reason.to_string();
         let auto_message = auto_message.to_string();
         let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
@@ -2133,7 +2141,7 @@ impl Scheduler {
                     let rows = task_fail_from_worker_tx(
                         tx,
                         &task_id,
-                        wave_id.as_str(),
+                        track_id.as_str(),
                         TaskReporter::Kernel,
                         "worker-timeout",
                         now,
@@ -2156,9 +2164,9 @@ impl Scheduler {
                     )];
                     if let Some(auto_events) = auto_transition_if_current_in_tx(
                         tx,
-                        &wave_id,
-                        WaveLifecycle::Working,
-                        WaveLifecycle::Reviewing,
+                        &track_id,
+                        TrackLifecycle::Working,
+                        TrackLifecycle::Reviewing,
                         &ActorId::KernelDispatcher,
                         Some(auto_message),
                     )
@@ -2316,17 +2324,17 @@ impl Scheduler {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             return;
         };
-        let wave = match self.repo.wave_get(&task.wave_id).await {
-            Ok(Some(wave)) => wave,
+        let track = match self.repo.track_get(&task.track_id).await {
+            Ok(Some(track)) => track,
             Ok(None) => {
                 tracing::warn!(
                     task_id = %task.id,
-                    "scheduler sweep: dispatched task's wave row is gone; leaving row"
+                    "scheduler sweep: dispatched task's track row is gone; leaving row"
                 );
                 return;
             }
             Err(e) => {
-                tracing::warn!(task_id = %task.id, error = %e, "scheduler sweep: wave_get failed");
+                tracing::warn!(task_id = %task.id, error = %e, "scheduler sweep: track_get failed");
                 return;
             }
         };
@@ -2334,7 +2342,7 @@ impl Scheduler {
             Ok(p) => p,
             Err(_) => return,
         };
-        if let Err(e) = self.drive_spawn(&task, &wave).await {
+        if let Err(e) = self.drive_spawn(&task, &track).await {
             tracing::warn!(
                 task_id = %task.id,
                 error = %e,
@@ -2395,7 +2403,7 @@ impl Scheduler {
             &self.events,
             &self.write,
             &task.id,
-            &task.wave_id,
+            &task.track_id,
             &card_id,
             terminal.exit_code,
             terminal.signal_killed,
@@ -2477,7 +2485,7 @@ impl Scheduler {
         let attempt = task.gate_attempt + 1;
         let payload = serde_json::to_value(TaskVerifyOperationPayload {
             actor: ActorId::KernelDispatcher,
-            wave_id: task.wave_id.clone(),
+            track_id: task.track_id.clone(),
             task_id: task.id.clone(),
             attempt,
         })?;
@@ -2583,20 +2591,20 @@ impl Scheduler {
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let Some(wave) = self.repo.wave_get(&task.wave_id).await? else {
-            tracing::debug!(task_id = %task.id, "scheduler: gate task's wave row is gone");
+        let Some(track) = self.repo.track_get(&task.track_id).await? else {
+            tracing::debug!(task_id = %task.id, "scheduler: gate task's track row is gone");
             return Ok(());
         };
         let rctx = GateResultCtx {
             task_id: task.id.clone(),
-            wave_id: wave.id.clone(),
-            area_id: wave.area_id.clone(),
+            track_id: track.id.clone(),
+            area_id: track.area_id.clone(),
         };
         let mut tx = begin_immediate_tx(&pool).await?;
         let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
         if envelopes.is_empty() && op_terminal_failed && verdict.attempt >= 1 {
             // PR #685 review F4 — the pre-bump failure arm. A client
-            // error in `prepare_tx` BEFORE the guarded bump (wave row
+            // error in `prepare_tx` BEFORE the guarded bump (track row
             // gone → Conflict) terminal-fails op `#gN` while the row
             // stays `verifying@N-1`; every later drive recomputes the
             // same key, dedupes onto the dead op, and the eq-attempt
@@ -2717,7 +2725,7 @@ impl TerminalTaskHook {
             &self.events,
             &self.write,
             &task.id,
-            &task.wave_id,
+            &task.track_id,
             card_id.as_str(),
             exit_code,
             signal_killed,
@@ -2742,7 +2750,7 @@ impl TerminalTaskHook {
 /// Exit 0 → `task.completed`; non-zero / signal / synthetic `-1` →
 /// `task.failed`. Every event uses actor `ActorId::KernelDispatcher`
 /// (so `is_spec_verdict_event` never classifies it as a spec verdict)
-/// at wave scope, stamps `worker_card_id` via COALESCE, and carries the
+/// at track scope, stamps `worker_card_id` via COALESCE, and carries the
 /// same `Working → Reviewing` promotion as a worker self-report (§3).
 #[allow(clippy::too_many_arguments)]
 pub async fn complete_terminal_task(
@@ -2750,22 +2758,22 @@ pub async fn complete_terminal_task(
     events: &EventBus,
     write: &WriteContext,
     task_id: &str,
-    wave_id: &str,
+    track_id: &str,
     worker_card_id: &str,
     exit_code: Option<i32>,
     signal_killed: bool,
 ) -> Result<()> {
-    let Some(wave) = repo.wave_get(wave_id).await? else {
+    let Some(track) = repo.track_get(track_id).await? else {
         return Ok(());
     };
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        area: wave.area_id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
+        area: track.area_id.clone(),
     };
     let success = !signal_killed && exit_code == Some(0);
     let task_id = task_id.to_string();
-    let wave_id_str = wave_id.to_string();
-    let wave_id_typed = wave.id.clone();
+    let track_id_str = track_id.to_string();
+    let track_id_typed = track.id.clone();
     let worker_card_id = worker_card_id.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
@@ -2792,7 +2800,7 @@ pub async fn complete_terminal_task(
             let mut suppress_promotion = false;
             let (rows, event) = if success {
                 let flip =
-                    task_report_success_from_worker_tx(tx, &task_id, &wave_id_str, reporter, now)
+                    task_report_success_from_worker_tx(tx, &task_id, &track_id_str, reporter, now)
                         .await?;
                 if flip == SuccessReportFlip::Verifying {
                     suppress_promotion = true;
@@ -2830,7 +2838,7 @@ pub async fn complete_terminal_task(
                     task_fail_from_worker_tx(
                         tx,
                         &task_id,
-                        &wave_id_str,
+                        &track_id_str,
                         reporter,
                         &status_detail_with_reason("worker-reported", &reason),
                         now,
@@ -2853,9 +2861,9 @@ pub async fn complete_terminal_task(
             if !suppress_promotion
                 && let Some(auto_events) = auto_transition_if_current_in_tx(
                     tx,
-                    &wave_id_typed,
-                    WaveLifecycle::Working,
-                    WaveLifecycle::Reviewing,
+                    &track_id_typed,
+                    TrackLifecycle::Working,
+                    TrackLifecycle::Reviewing,
                     &ActorId::KernelDispatcher,
                     Some("[auto] terminal task finished".to_string()),
                 )

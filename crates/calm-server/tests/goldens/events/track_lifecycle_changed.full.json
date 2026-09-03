@@ -1,0 +1,13 @@
+{
+  "description": "track.lifecycle_changed with agent_message present; from/to use the lowercase TrackLifecycle wire shape.",
+  "wire": {
+    "ev": "track.lifecycle_changed",
+    "data": {
+      "id": "track-01",
+      "area_id": "area-01",
+      "from": "reviewing",
+      "to": "done",
+      "agent_message": "review passed"
+    }
+  }
+}

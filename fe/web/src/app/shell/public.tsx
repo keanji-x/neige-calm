@@ -1,15 +1,15 @@
 // The layout shell every route renders inside: the workspace rail plus the
 // matched route's outlet.
 //
-// The shell owns the workspace read *and* the area/wave mutations, and hands
+// The shell owns the workspace read *and* the area/track mutations, and hands
 // the rail plain callbacks: `Sidebar` stays presentational, so a test can drive
 // it without a QueryClient. Sign-out is not implemented here — whoever owns the
 // session passes it in.
 //
-// It no longer owns a New wave dialog (#1211). Starting a wave is a route now
+// It no longer owns a New track dialog (#1211). Starting a track is a route now
 // (`/area/{id}/new`, owned by `app/router`), so the two `+` surfaces — every
-// area row's in the rail, and the area page's WAVES module head — both just
-// navigate. What the shell kept is the *seam*: `RequestNewWaveContext`, because
+// area row's in the rail, and the area page's TRACKS module head — both just
+// navigate. What the shell kept is the *seam*: `RequestNewTrackContext`, because
 // the area page renders inside `<Outlet />` and has no prop path to `go`.
 
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
@@ -19,8 +19,8 @@ import { createContext, useContext, useEffect, useRef, type CSSProperties } from
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { useState } from '../../ui/state/public.ts';
-import { useAreaMutations, useWaveMutations, useWorkspace } from '../providers/queries.ts';
-import { routeParamFromPath, useCurrentPath, useGo, useWavePanelNavigation } from '../router/navigation.ts';
+import { useAreaMutations, useTrackMutations, useWorkspace } from '../providers/queries.ts';
+import { routeParamFromPath, useCurrentPath, useGo, useTrackPanelNavigation } from '../router/navigation.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
 import { MobileAreas } from './mobile-areas.tsx';
@@ -42,7 +42,7 @@ export type AppShellProps = Readonly<{
 }>;
 
 /**
- * The one escape a route has into "start a wave here".
+ * The one escape a route has into "start a track here".
  *
  * A context and not a prop because the area route renders inside `<Outlet />`:
  * there is no prop path from here to it. It carries a single callback, so a
@@ -50,14 +50,14 @@ export type AppShellProps = Readonly<{
  * that callback is a plain navigation, which is why the shell no longer holds
  * any create state of its own.
  */
-const RequestNewWaveContext = createContext<((areaId: string) => void) | null>(null);
+const RequestNewTrackContext = createContext<((areaId: string) => void) | null>(null);
 
 /**
  * The workspace sheet a route asks the shell to open, and — for Areas — the
  * area it should already be drilled into.
  *
- * A context and not a prop for the reason {@link RequestNewWaveContext} gives:
- * the wave route renders inside `<Outlet />`. It replaces `MobileReportNavigationContext`
+ * A context and not a prop for the reason {@link RequestNewTrackContext} gives:
+ * the track route renders inside `<Outlet />`. It replaces `MobileReportNavigationContext`
  * (#1191 §2.3), which carried a *label* and a *closure over shell state* —
  * `mobileReportSource` — so the shell and the report each held half of one
  * decision. The return surface now rides in the URL as `?from=`, the label is
@@ -68,16 +68,16 @@ type OpenMobileSection = (section: MobileSection, areaId?: string | null) => voi
 
 const MobileSectionContext = createContext<OpenMobileSection | null>(null);
 
-/** Goes to the new-wave page for `areaId` (#1211). */
-export function useRequestNewWave(): (areaId: string) => void {
-  const request = useContext(RequestNewWaveContext);
+/** Goes to the new-track page for `areaId` (#1211). */
+export function useRequestNewTrack(): (areaId: string) => void {
+  const request = useContext(RequestNewTrackContext);
   // Outside the shell there is nowhere to go. Routes always render inside it;
   // a no-op keeps a stray consumer (a test rendering a page bare) from throwing
   // on a control it is not exercising.
-  return request ?? noRequestNewWave;
+  return request ?? noRequestNewTrack;
 }
 
-function noRequestNewWave(): void { /* no shell above this consumer */ }
+function noRequestNewTrack(): void { /* no shell above this consumer */ }
 
 function noOpenMobileSection(): void { /* no shell above this consumer */ }
 
@@ -104,14 +104,14 @@ export function AppShell({
 }: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
-  const waveMutations = useWaveMutations(transport, unauthorized);
+  const trackMutations = useTrackMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
   const go = useGo();
   // The report's panel is a history *destination* (§1.1), so the shell leaves
   // it the same way the report does — see `clearReportPanel`.
-  const { closePanel } = useWavePanelNavigation();
+  const { closePanel } = useTrackPanelNavigation();
   const readError = workspace.areasError
-    ?? workspace.waveErrorsByArea.values().next().value ?? null;
+    ?? workspace.trackErrorsByArea.values().next().value ?? null;
 
   /*
    * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
@@ -131,20 +131,20 @@ export function AppShell({
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
   const [areaSelection, setAreaSelection] = useState<AreaSelection>(NO_AREA_SELECTED);
-  const routeWaveId = routeParamFromPath(currentPath, '/wave/');
+  const routeTrackId = routeParamFromPath(currentPath, '/track/');
   /*
    * "A full-bleed secondary page is showing", derived here and nowhere else
    * (#1191 §2.1). It used to be a `window` CustomEvent that three modules
    * published and this one subscribed to, plus a second source of truth about
-   * being on a wave (`currentPath.includes('/wave/')`, which also matched
-   * `/area/x/wave-notes`).
+   * being on a track (`currentPath.includes('/track/')`, which also matched
+   * `/area/x/track-notes`).
    *
    * **Two conditions OR'd, never a ternary.** #1191 §0.4: a
-   * `onWaveRoute ? … : …` shape returns on the first branch while the reader is
-   * on `/wave/x` with the Areas sheet drilled into an area — the pathname is
-   * still the wave's — and the dock reappears over a secondary page.
+   * `onTrackRoute ? … : …` shape returns on the first branch while the reader is
+   * on `/track/x` with the Areas sheet drilled into an area — the pathname is
+   * still the track's — and the dock reappears over a secondary page.
    */
-  const shellSecondaryOpen = (routeWaveId !== undefined && mobileSection === null)
+  const shellSecondaryOpen = (routeTrackId !== undefined && mobileSection === null)
     || (mobileSection === 'areas' && areaSelection.areaId !== null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
@@ -179,17 +179,17 @@ export function AppShell({
     if (!narrowRail && mobileNavOpen) setMobileSection(null);
   }, [mobileNavOpen, narrowRail]);
 
-  // Both wave mutations need the area id to invalidate the right list, and the
-  // rail only knows wave ids; the workspace read already has the mapping.
-  const areaIdOf = (waveId: string): string | undefined =>
-    workspace.waves.find((wave) => wave.id === waveId)?.areaId;
+  // Both track mutations need the area id to invalidate the right list, and the
+  // rail only knows track ids; the workspace read already has the mapping.
+  const areaIdOf = (trackId: string): string | undefined =>
+    workspace.tracks.find((track) => track.id === trackId)?.areaId;
 
   /* #1211 — a navigation, and nothing else. It also closes any open mobile
      sheet, for the same reason every other rail navigation does: the sheet is
      an overlay on the surface being left. */
-  const requestNewWave = (areaId: string) => {
+  const requestNewTrack = (areaId: string) => {
     closeMobileSection();
-    go({ name: 'new-wave', areaId });
+    go({ name: 'new-track', areaId });
   };
 
   /*
@@ -200,17 +200,17 @@ export function AppShell({
    * An unconditional `replace` was the §0.3 defect on this second exit: opening
    * a panel is a `push`, `replace` does not merge with the entry before it, so
    * every "open a panel, then press Back to Pages" cycle left one more
-   * identical `/wave/w1` on the stack and cost the reader one more hardware
+   * identical `/track/w1` on the stack and cost the reader one more hardware
    * Back to escape the report. The exit is genuinely reachable with a panel
    * open — the report's Back button lives in `<main>`, which is only `inert`
    * while a sheet is showing — and
    * `mobile-report-navigation.test.tsx` drives the three-cycle gesture.
    *
-   * Still guarded on actually being on a wave, so a Today/Settings dock press
+   * Still guarded on actually being on a track, so a Today/Settings dock press
    * does not navigate.
    */
   const clearReportPanel = () => {
-    if (routeWaveId !== undefined) closePanel(routeWaveId);
+    if (routeTrackId !== undefined) closePanel(routeTrackId);
   };
 
   /*
@@ -262,25 +262,25 @@ export function AppShell({
             mobileSection === 'pages' ? (
               <MobilePages
                 areas={workspace.areas}
-                waves={workspace.waves}
-                onOpenWave={(waveId) => {
+                tracks={workspace.tracks}
+                onOpenTrack={(trackId) => {
                   closeMobileSection();
                   // The sheets are the only writers of `?from=` (#1191 §1.3):
                   // this is the surface the reader will be returned to.
-                  go({ name: 'wave', waveId, from: 'pages' });
+                  go({ name: 'track', trackId, from: 'pages' });
                 }}
               />
             ) : mobileSection === 'areas' ? (
               <MobileAreas
                 areas={workspace.areas}
-                wavesByArea={workspace.wavesByArea}
+                tracksByArea={workspace.tracksByArea}
                 selectedAreaId={areaSelection.areaId}
                 motion={areaSelection.motion}
                 onSelectArea={(areaId) => setAreaSelection({ areaId, motion: 'forward' })}
                 onBack={() => setAreaSelection({ areaId: null, motion: 'back' })}
-                onOpenWave={(waveId) => {
+                onOpenTrack={(trackId) => {
                   closeMobileSection();
-                  go({ name: 'wave', waveId, from: areaIdOf(waveId) === undefined ? 'pages' : 'area' });
+                  go({ name: 'track', trackId, from: areaIdOf(trackId) === undefined ? 'pages' : 'area' });
                 }}
               />
             ) : null
@@ -291,30 +291,30 @@ export function AppShell({
             collapsed={railCollapsed}
             onToggleCollapsed={() => setManualRailCollapsed(!railCollapsed)}
             areas={workspace.areas}
-            wavesByArea={workspace.wavesByArea}
-            waves={workspace.waves}
+            tracksByArea={workspace.tracksByArea}
+            tracks={workspace.tracks}
             currentPath={currentPath}
             readError={readError?.message ?? null}
             readLoading={workspace.areasLoading || workspace.overlaysLoading
-              || [...workspace.wavesLoadingByArea.values()].some(Boolean)}
+              || [...workspace.tracksLoadingByArea.values()].some(Boolean)}
             activityError={workspace.overlaysError?.message ?? null}
             onRetryRead={() => {
               workspace.retryAreas(); workspace.retryOverlays();
-              for (const area of workspace.areas) workspace.retryWaves(area.id);
+              for (const area of workspace.areas) workspace.retryTracks(area.id);
             }}
             onGo={navigateFromRail}
             onCreateArea={async (name, color) => { await areaMutations.create({ name, color }); }}
             onDeleteArea={(areaId, signal) => areaMutations.remove(areaId, signal)}
-            onNewWave={requestNewWave}
-            onSetPinned={async (waveId, pinned) => {
-              const areaId = areaIdOf(waveId);
+            onNewTrack={requestNewTrack}
+            onSetPinned={async (trackId, pinned) => {
+              const areaId = areaIdOf(trackId);
               if (areaId === undefined) return;
-              await waveMutations.setPinned(waveId, areaId, pinned, nowMs ?? Date.now());
+              await trackMutations.setPinned(trackId, areaId, pinned, nowMs ?? Date.now());
             }}
-            onDeleteWave={async (waveId, signal) => {
-              const areaId = areaIdOf(waveId);
+            onDeleteTrack={async (trackId, signal) => {
+              const areaId = areaIdOf(trackId);
               if (areaId === undefined) return;
-              await waveMutations.remove(waveId, areaId, signal);
+              await trackMutations.remove(trackId, areaId, signal);
             }}
             onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
             onOpenPlugins={() => { closeMobileSection(); onOpenPlugins(); }}
@@ -331,15 +331,15 @@ export function AppShell({
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage}>
           <MobileSectionContext.Provider value={openMobileSection}>
-            <RequestNewWaveContext.Provider value={requestNewWave}>
+            <RequestNewTrackContext.Provider value={requestNewTrack}>
               <Outlet />
-            </RequestNewWaveContext.Provider>
+            </RequestNewTrackContext.Provider>
           </MobileSectionContext.Provider>
         </div>
       </main>
       {/* Pages and Areas are deliberately different indexes. Pages will group
           reports by recency/pin; this prototype keeps the current report as
-          that tab's root. Areas uses list → Wave-list mobile navigation. */}
+          that tab's root. Areas uses list → Track-list mobile navigation. */}
       <nav
         className={`${styles.mobileDock} ${shellSecondaryOpen ? styles.mobileDockHidden : ''}`}
         aria-label="Primary"

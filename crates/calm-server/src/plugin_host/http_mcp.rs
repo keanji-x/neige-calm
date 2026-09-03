@@ -60,7 +60,7 @@
 //! rides in the URL's query string, and `ureq::Error`'s `Display` prints that
 //! URL first — so a `{e}` anywhere in this module puts the credential into the
 //! `tracing` line, the persisted+broadcast `Event::PluginState.last_error`, the
-//! `POST /enable` 503 body, and the wave transcript. Three rules, all enforced
+//! `POST /enable` 503 body, and the track transcript. Three rules, all enforced
 //! by tests: format a `ureq::Error` only via `kind()`; run every outgoing
 //! string — error OR success — through [`HttpMcpClient::scrub`]; and
 //! **scrub before you truncate**, never after.
@@ -69,7 +69,7 @@
 //! [`HttpMcpClient::request`]. Scrubbing only the two identity strings
 //! `initialize` logs would leave the success path open: `tools/list`
 //! descriptions become `ExposedTool` entries that agents and operators read,
-//! and a `tools/call` result reaches the wave transcript — both are
+//! and a `tools/call` result reaches the track transcript — both are
 //! upstream-authored and both could echo our query string back.
 //!
 //! **That choke point sits AFTER the parse, not before it** ([`parse_scrubbed`]
@@ -102,7 +102,7 @@
 //! A credential that JSON would parse as a *number* is refused there too —
 //! `scrub_value` deliberately does not touch JSON numbers (coercing them would
 //! corrupt the payload), so an upstream echoing such a key back as a number in
-//! `structuredContent` would put it in the tool result and the wave transcript.
+//! `structuredContent` would put it in the tool result and the track transcript.
 //! That rule is the number **grammar** (`-1234567`, `1.234567`, `1E5`,
 //! `1234e567` are all of them), delegated to serde_json rather than re-derived
 //! from characters — see [`is_number_shaped`].
@@ -113,7 +113,7 @@
 //! out of its own redaction, because one `str::replace` pass never rescans what
 //! it wrote. `redacted>yy` scrubbed for the credential `redacted>y` yields
 //! `<redacted>y` — a "redacted" string that contains the credential verbatim, on
-//! its way to `ExposedTool` and the wave transcript. There are exactly four ways
+//! its way to `ExposedTool` and the track transcript. There are exactly four ways
 //! a window can overlap the marker, they are derived rather than listed, and all
 //! four are refused at this layer; see [`overlaps_redaction_marker`]. That is
 //! what lets [`scrub_with`] be a single pass and still state idempotence as a
@@ -279,7 +279,7 @@ impl HttpCredential {
     /// * **not something JSON would parse as a number** — [`scrub_value`] does
     ///   not descend into JSON numbers, so a number-shaped credential echoed
     ///   back as `{"key": 12345678}` in `structuredContent` reaches the tool
-    ///   result and the wave transcript unredacted. Making numbers scrubbable is
+    ///   result and the track transcript unredacted. Making numbers scrubbable is
     ///   not an option (it would rewrite unrelated values and change the
     ///   payload's type); making the credential un-number-like is;
     /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant;
@@ -288,7 +288,7 @@ impl HttpCredential {
     ///   four) ways a credential can be re-formed out of its own redaction.
     ///   Such a credential leaks: one scrub pass hands back a string that
     ///   contains it verbatim, and that string is what reaches `ExposedTool`
-    ///   and the wave transcript.
+    ///   and the track transcript.
     ///
     /// The error text never quotes the credential — only the single offending
     /// character class — because this string is operator-facing and lands in
@@ -319,7 +319,7 @@ impl HttpCredential {
             return Err(
                 "parses as a JSON number: an upstream is free to echo such a value back \
                  as a JSON *number*, which carries no string to redact, so it would reach \
-                 tool results and wave transcripts in the clear. Add a non-numeric \
+                 tool results and track transcripts in the clear. Add a non-numeric \
                  character to the credential."
                     .to_string(),
             );
@@ -343,7 +343,7 @@ impl HttpCredential {
                  so an upstream can steer it into re-forming exactly this \
                  credential out of the marker's own text: the scrubbed string \
                  would then carry the credential verbatim into tool catalogs \
-                 and wave transcripts. Choose a credential that shares no text \
+                 and track transcripts. Choose a credential that shares no text \
                  with that marker."
                 .to_string());
         }
@@ -420,7 +420,7 @@ fn is_number_shaped(raw: &str) -> bool {
 /// Each case is upstream-triggerable with one response, and each is a LEAK, not
 /// a hang: with the credential `redacted>y` (case 1) the body `redacted>yy`
 /// scrubs to `<redacted>y`, whose text contains the credential verbatim — and
-/// that string is what reaches `ExposedTool` and the wave transcript. Round 3
+/// that string is what reaches `ExposedTool` and the track transcript. Round 3
 /// of #1194 refused only case 4 and stated cases 1–3 as an open residual; this
 /// is that residual closed.
 fn overlaps_redaction_marker(raw: &str) -> bool {
@@ -523,7 +523,7 @@ pub struct HttpMcpClient {
     /// its own query string. **Not an exhaustive list of the shapes an upstream
     /// can echo** — see the module header for the ones that walk through.
     /// [`Self::scrub`] strips these from any string that could reach a log
-    /// line, an `Event::PluginState.last_error`, an HTTP body, or a wave
+    /// line, an `Event::PluginState.last_error`, an HTTP body, or a track
     /// transcript. This is the belt to the "never format a `ureq::Error`"
     /// braces: an *upstream* 4xx body may quote the query string back at us,
     /// and that path is not ours to control.
@@ -691,7 +691,7 @@ impl HttpMcpClient {
     /// strings all converge on operator- and agent-visible sinks:
     /// `tracing::warn!(reason)`, the persisted+broadcast
     /// `Event::PluginState.last_error`, the `POST /enable` 503 body, and (via
-    /// `tools_call`) the wave transcript.
+    /// `tools_call`) the track transcript.
     fn scrub(&self, s: String) -> String {
         scrub_with(&self.secret_forms, s)
     }
@@ -885,7 +885,7 @@ impl HttpMcpClient {
         // THE choke point for the module's "every outgoing string is scrubbed"
         // rule (see the module header). Everything below — `result`, the
         // `tools/list` catalog that becomes `ExposedTool` descriptions, a
-        // `tools/call` payload bound for the wave transcript, and the
+        // `tools/call` payload bound for the track transcript, and the
         // upstream-authored `error.message` — is derived from this value, and
         // it is scrubbed as a JSON TREE (decoded strings and object keys),
         // never as raw text.
@@ -1011,7 +1011,7 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 //   every rule in `HttpCredential::parse` as it stood, so an
                 //   operator holding that key would have the redactor emit the
                 //   secret verbatim — after redaction — into `ExposedTool` and
-                //   the wave transcript. Turning "data loss" into a leak is a
+                //   the track transcript. Turning "data loss" into a leak is a
                 //   strictly worse trade than the loss;
                 // * guarding that by re-scrubbing each candidate name and
                 //   accepting only a fixpoint does not terminate. The scrubber
@@ -1312,7 +1312,7 @@ mod tests {
     /// Every value below is a valid JSON number that the all-digit check
     /// accepted; `scrub_value` never descends into `Value::Number`, so any of
     /// them echoed back numerically by an upstream reaches the tool result and
-    /// the wave transcript in the clear — the exact leak the rule exists to
+    /// the track transcript in the clear — the exact leak the rule exists to
     /// close. Restore `raw.chars().all(char::is_ascii_digit)` as the whole rule
     /// and every case here except the two all-digit ones fails.
     ///
@@ -1540,7 +1540,7 @@ mod tests {
     /// and only scrubbed afterwards. When the boundary falls inside the key the
     /// surviving prefix is no longer a literal member of `secret_forms`, so the
     /// later `replace` matches nothing and a partial credential reaches the 503
-    /// body, `PluginState.last_error`, and the wave transcript.
+    /// body, `PluginState.last_error`, and the track transcript.
     ///
     /// **Scope, honestly stated.** This is a unit test of the two free
     /// functions and of the claim that their ORDER matters: the second half
@@ -1818,7 +1818,7 @@ mod tests {
     /// of the rekey branch survives the whole 139-case suite, and it is a LEAK:
     /// `{"<credential>": "see key <credential> in the docs"}` comes back with
     /// the key redacted and the string value verbatim — into the `ExposedTool`
-    /// description an agent reads and into the wave transcript.
+    /// description an agent reads and into the track transcript.
     ///
     /// Three shapes, because "the children" is not one thing: a scalar string
     /// beside the rekeyed entry, a nested object one level down, and an object
@@ -1990,7 +1990,7 @@ mod tests {
     ///
     /// Every refused value is a LEAK, not a style rule: one scrub pass hands
     /// back a string that contains the credential verbatim, and that string is
-    /// what reaches `ExposedTool` and the wave transcript. Round 3 refused only
+    /// what reaches `ExposedTool` and the track transcript. Round 3 refused only
     /// the substring case (on a different argument — it hung the withdrawn rekey
     /// pass) and recorded the rest as an open residual, with `redacted>y` +
     /// upstream `redacted>yy` as the witness. Two entries below are round 3's

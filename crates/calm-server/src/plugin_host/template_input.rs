@@ -1,6 +1,6 @@
 //! Issue #891 / #1110 S2 — hand-rolled JSON-Schema **subset** for
 //! `Manifest.input_schema` and the matching instance validator for
-//! `NewWave.template_input`.
+//! `NewTrack.template_input`.
 //!
 //! **#1284 S1 — second user.** `Manifest.config_schema` (plugin user config)
 //! reuses this exact subset and this exact instance validator. The module doc
@@ -348,7 +348,7 @@ pub fn declares_key(schema: &Value, key: &str) -> bool {
         .is_some_and(|properties| properties.contains_key(key))
 }
 
-/// `NewWave.template_input`'s entry point — [`validate_instance`] rooted at
+/// `NewTrack.template_input`'s entry point — [`validate_instance`] rooted at
 /// the field name it has always reported.
 pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), String> {
     validate_instance("template_input", schema, input)

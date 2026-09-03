@@ -1,7 +1,7 @@
 # `ui/editable-title`
 
 INV-DUP-008 — the single click-or-F2-to-rename title, used by the area header
-and the wave header.
+and the track header.
 
 ## Accessibility contract
 
@@ -17,8 +17,8 @@ draft is seeded from it and the no-op check compares against it. `placeholder`
 is what read mode shows *instead* while `value` is blank, and it stops there —
 it never seeds the draft and there is no path that commits it.
 
-They used to be one prop, and the wave page fed it `waveDisplayTitle(...)`. So
-opening the editor on an unnamed wave put `Untitled wave` in the box, and the
+They used to be one prop, and the track page fed it `trackDisplayTitle(...)`. So
+opening the editor on an unnamed track put `Untitled track` in the box, and the
 reader deleted it before typing. It was never *stored* — resubmitting it hit the
 `next === value` arm and wrote nothing — the defect was the text in the box.
 
@@ -28,8 +28,8 @@ reader deleted it before typing. It was never *stored* — resubmitting it hit t
 leaves edit mode and writes nothing. That is right for the area header, where
 the owner is the only namer there will ever be.
 
-The wave header passes `'clear'`, because a wave has a second namer: the spec
-agent's `calm.wave.rename` succeeds only while the title is empty (#1211), so
+The track header passes `'clear'`, because a track has a second namer: the spec
+agent's `calm.track.rename` succeeds only while the title is empty (#1211), so
 clearing the name is how a reader hands naming back to it. Under `'clear'` the
 only empty commit that still writes nothing is the one on an already-blank
 title, which is the arithmetic no-op, not the policy one.

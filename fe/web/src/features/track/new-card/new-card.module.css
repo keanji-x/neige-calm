@@ -1,0 +1,38 @@
+/* The add menu's own surface, and the form's two app-level facts.
+   Every control inside the form is astryx's and is deliberately not restated
+   here; the menu's keyboard and focus behaviour is `ui/menu`'s and needs no
+   CSS at all. What is left is where the popup hangs and what it looks like. */
+/* What is left after the menu moved onto `@astryxdesign/core`'s `DropdownMenu`:
+   the trigger's box, and the form root's type/colour. The popover surface, the
+   item shape, the hover and the keyboard model are astryx's and are deliberately
+   not restated — restating them is how this file previously grew a border the
+   panel forbids and a hover the width of one word. */
+@layer features {
+  /*
+   * The trigger stands in `ui/panel-card`'s action slot, beside the
+   * CONVERSATIONS `+`, so it has to be that same 20px mark rather than astryx's
+   * default icon-button box. Only the box: the glyph, the hover fill and the
+   * focus ring stay astryx's.
+   *
+   * The negative trailing margin is `PanelAction`'s own: the module head pulls
+   * its action 4px out so the `+`, the menu below it and every row's × land on
+   * one column.
+   */
+  .trigger {
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    min-inline-size: var(--control-h-sm);
+    min-block-size: var(--control-h-sm);
+    padding: 0;
+    margin-inline-end: calc(var(--space-2) * -1);
+    border-radius: var(--radius-sm);
+    color: var(--text-3);
+  }
+
+  /* As in `new-track.module.css`: the column and the gap are `VStack`'s, and the
+     only things astryx cannot know are the dialog's text colour and font. */
+  .form {
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+}

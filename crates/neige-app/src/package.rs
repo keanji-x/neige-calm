@@ -309,7 +309,7 @@ fn compatibility_from_kernel(calm_server: &Path) -> anyhow::Result<Compatibility
 /// decision would have no effect at all.
 ///
 /// 0 -> 1: issue #1209 declares the template/workflow unification plus the
-/// `POST /api/waves` request-body rename a whole-product break. The pin for
+/// `POST /api/tracks` request-body rename a whole-product break. The pin for
 /// this default is the package smoke test below
 /// (`package_directory_contains_v2_manifest_and_hashes`), which runs with
 /// `NEIGE_PRODUCT_MAJOR` removed from the environment and therefore really does

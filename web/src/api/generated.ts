@@ -47,7 +47,7 @@ export interface paths {
         put?: never;
         /**
          * Issue #175 — idempotent upsert for the singleton system area that
-         *     hosts the default Today terminal's wave + card. Returns 200 with the
+         *     hosts the default Today terminal's track + card. Returns 200 with the
          *     existing row when one is present; otherwise mints a new row and
          *     returns 201. The DB-level partial unique index on
          *     `areas(kind) WHERE kind = 'system'` enforces the at-most-one
@@ -71,7 +71,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/areas/{area_id}/chat-wave/ensure": {
+    "/api/areas/{area_id}/chat-track/ensure": {
         parameters: {
             query?: never;
             header?: never;
@@ -81,8 +81,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Ensure the area's single chat wave exists.
-         * @description The workspace is selected only while creating the wave. When the area has
+         * Ensure the area's single chat track exists.
+         * @description The workspace is selected only while creating the track. When the area has
          *     folder claims it is the claimed path with the fewest path components,
          *     breaking ties lexicographically (attached semantics: the user pointed at
          *     that directory). Area folder claims cannot be equal, ancestors, or
@@ -95,10 +95,10 @@ export interface paths {
          *     `POST /api/areas/{id}/conversations` fail by definition for every new area.
          *
          *     Once created, later folder claims or changes deliberately do not update the
-         *     wave's workspace, so an existing conversation cannot drift between working
+         *     track's workspace, so an existing conversation cannot drift between working
          *     directories from one message to the next.
          */
-        post: operations["ensure_area_chat_wave"];
+        post: operations["ensure_area_chat_track"];
         delete?: never;
         options?: never;
         head?: never;
@@ -199,14 +199,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/areas/{area_id}/waves": {
+    "/api/areas/{area_id}/tracks": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["list_waves_by_area"];
+        get: operations["list_tracks_by_area"];
         put?: never;
         post?: never;
         delete?: never;
@@ -910,7 +910,7 @@ export interface paths {
          *     **Routine absence is data; anomalous absence is an error.** That is the
          *     whole rule, and the two branches here are the two sides of it.
          *
-         *     *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+         *     *No launchpad track* is the ordinary state of a fresh workspace, so it is
          *     `200` with a `null` body — not a 404. It was a 404 for one revision, on the
          *     grounds that 404 is "cheap and fail-closed". That reasoning did not survive
          *     contact with the fact that this is the **landing route**: every session on
@@ -923,8 +923,8 @@ export interface paths {
          *     once #1253 PR2's trigger lands, first use mints a launchpad and the
          *     exemption outlives its reason.
          *
-         *     *A launchpad wave with no `wave-report` card* stays a `404`, and that is
-         *     the same rule rather than an exception to it. The wave and its report card
+         *     *A launchpad track with no `track-report` card* stays a `404`, and that is
+         *     the same rule rather than an exception to it. The track and its report card
          *     are created in **one transaction** (`today_launchpad_ensure_tx`), and the
          *     adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
          *     commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
@@ -983,14 +983,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/version": {
+    "/api/track-templates": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["get_version"];
+        get: operations["list_track_templates"];
         put?: never;
         post?: never;
         delete?: never;
@@ -999,23 +999,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/wave-templates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_wave_templates"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/waves": {
+    "/api/tracks": {
         parameters: {
             query?: never;
             header?: never;
@@ -1024,61 +1008,45 @@ export interface paths {
         };
         /**
          * Issue #250 PR 2 — calendar / dashboard window query.
-         * @description `GET /api/waves?since=<ms>&until=<ms>&area_id=<id>` — every
-         *     parameter is optional. Returns the full wave row (so the frontend
+         * @description `GET /api/tracks?since=<ms>&until=<ms>&area_id=<id>` — every
+         *     parameter is optional. Returns the full track row (so the frontend
          *     can render lifecycle / area / terminal-at without an N+1 detail
-         *     fetch). Pre-#250 callers that hit `GET /api/waves` would 405 on
+         *     fetch). Pre-#250 callers that hit `GET /api/tracks` would 405 on
          *     the old `POST`-only route; this is an additive contract.
          */
-        get: operations["list_waves_window"];
+        get: operations["list_tracks_window"];
         put?: never;
-        post: operations["create_wave"];
+        post: operations["create_track"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{id}": {
+    "/api/tracks/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["get_wave_detail"];
+        get: operations["get_track_detail"];
         put?: never;
         post?: never;
-        delete: operations["delete_wave"];
+        delete: operations["delete_track"];
         options?: never;
         head?: never;
-        patch: operations["update_wave"];
+        patch: operations["update_track"];
         trace?: never;
     };
-    "/api/waves/{id}/backlinks": {
+    "/api/tracks/{id}/backlinks": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["get_wave_backlinks"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/waves/{id}/files/cat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["cat_wave_file"];
+        get: operations["get_track_backlinks"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1087,14 +1055,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{id}/files/ls": {
+    "/api/tracks/{id}/files/cat": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["list_wave_files"];
+        get: operations["cat_track_file"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1103,21 +1071,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{id}/report": {
+    "/api/tracks/{id}/files/ls": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["get_wave_report"];
+        get: operations["list_track_files"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tracks/{id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_track_report"];
         put?: never;
         /**
-         * `POST /api/waves/:id/report` — user-driven wave-report edit. The
+         * `POST /api/tracks/:id/report` — user-driven track-report edit. The
          *     REST-side counterpart of the spec-MCP `calm.report.write` tool;
-         *     both paths funnel through the `wave_report::write` module — this
+         *     both paths funnel through the `track_report::write` module — this
          *     one via `rest_user_replace`, the tool via `agent_report_op` — so the
-         *     dual-event invariant (`CardUpdated` + `WaveReportEdited`) and the
+         *     dual-event invariant (`CardUpdated` + `TrackReportEdited`) and the
          *     CRDT write happen identically regardless of who's editing.
          * @description **Auth contract** (issue #247 PR3 acceptance):
          *
@@ -1129,25 +1113,25 @@ export interface paths {
          *         own session cookie forwards a User edit" hole — a future
          *         surface that lets the spec card hold a session must not be
          *         able to bypass the User-only contract by claiming `ai:codex`.
-         *       * Wave doesn't exist → 404.
-         *       * Wave exists but the wave-report card is missing → 500
+         *       * Track doesn't exist → 404.
+         *       * Track exists but the track-report card is missing → 500
          *         (invariant violation; PR1 backfill guarantees the row).
          *
-         *     The response is the *projected* [`WaveReportPayload`] read back
+         *     The response is the *projected* [`TrackReportPayload`] read back
          *     from the CRDT post-merge — not the request body verbatim — so the
          *     frontend sees what every other reader will see (the JSON cache
          *     mirrors the CRDT projection, which under single-writer is the
          *     same bytes as the input, but reading from the doc keeps the
          *     "CRDT is source of truth" contract true by construction).
          */
-        post: operations["update_wave_report"];
+        post: operations["update_track_report"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{id}/report/blocks": {
+    "/api/tracks/{id}/report/blocks": {
         parameters: {
             query?: never;
             header?: never;
@@ -1163,7 +1147,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{id}/report/blocks/{block_id}": {
+    "/api/tracks/{id}/report/blocks/{block_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1179,7 +1163,7 @@ export interface paths {
         patch: operations["update_block"];
         trace?: never;
     };
-    "/api/waves/{id}/report/blocks/{block_id}/move": {
+    "/api/tracks/{id}/report/blocks/{block_id}/move": {
         parameters: {
             query?: never;
             header?: never;
@@ -1195,14 +1179,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{wave_id}/cards": {
+    "/api/tracks/{track_id}/cards": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["list_cards_by_wave"];
+        get: operations["list_cards_by_track"];
         put?: never;
         post: operations["create_card"];
         delete?: never;
@@ -1211,7 +1195,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{wave_id}/claude-cards": {
+    "/api/tracks/{track_id}/claude-cards": {
         parameters: {
             query?: never;
             header?: never;
@@ -1227,7 +1211,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{wave_id}/codex-cards": {
+    "/api/tracks/{track_id}/codex-cards": {
         parameters: {
             query?: never;
             header?: never;
@@ -1243,17 +1227,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{wave_id}/conversations": {
+    "/api/tracks/{track_id}/conversations": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["list_wave_conversations"];
+        get: operations["list_track_conversations"];
         put?: never;
         /**
-         * Mint a wave assistant conversation and deliver its first message.
+         * Mint a track assistant conversation and deliver its first message.
          * @description The `Idempotency-Key` contract, the first-message claim and both of its
          *     known gaps are identical to `create_area_conversation`, whose doc comment is
          *     the long-form statement of all of them; this handler differs only in the
@@ -1272,14 +1256,14 @@ export interface paths {
          *     endpoints at once and belongs in one dedicated change rather than being
          *     half-done on the newer of the two.
          */
-        post: operations["create_wave_conversation"];
+        post: operations["create_track_conversation"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/waves/{wave_id}/terminal-cards": {
+    "/api/tracks/{track_id}/terminal-cards": {
         parameters: {
             query?: never;
             header?: never;
@@ -1289,6 +1273,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["create_terminal_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_version"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1317,7 +1317,7 @@ export interface components {
          * @description One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
          *
          *     Deliberately absent:
-         *     * `waveTitle` — every row belongs to the same hidden area chat wave, so
+         *     * `trackTitle` — every row belongs to the same hidden area chat track, so
          *       returning its title would leak an object the user is never shown.
          *     * `turns` — the server cannot produce a turn count that agrees with the
          *       drawer without re-parsing every `harness_items.params` blob; a number
@@ -1335,16 +1335,16 @@ export interface components {
             state?: null | components["schemas"]["WorkerSessionState"];
             /**
              * @description The conversation's own name, or null before it has one. Never the
-             *     wave's title.
+             *     track's title.
              */
             title?: string | null;
+            trackId: string;
             /**
              * Format: int64
              * @description The session's last update, falling back to the card's own — a card
              *     minted seconds ago with no session yet still sorts sensibly.
              */
             updatedAt: number;
-            waveId: string;
         };
         /**
          * @description One row per claimed directory; `path` is absolute and globally
@@ -1393,12 +1393,12 @@ export interface components {
         };
         BlockVerdict: {
             blockId: string;
-            childWaveDeleted?: boolean | null;
+            childTrackDeleted?: boolean | null;
             /**
              * @description Written after claim, so exposing it preserves the #1030 read-state
              *     exception. `spawn` must never be added beside it.
              */
-            childWaveId?: string | null;
+            childTrackId?: string | null;
             diagnostics: components["schemas"]["Diagnostic"][];
             gateResult?: unknown;
             key: string;
@@ -1406,7 +1406,7 @@ export interface components {
             status?: string | null;
             /**
              * @description Issue #1147 slice ① / #1149 — the failure classifier plus its
-             *     human reason tail (`"spawn-failed: wave … is not a git
+             *     human reason tail (`"spawn-failed: track … is not a git
              *     repository"`). Without it a failed task reads as a bare
              *     classifier on every surface and the real diagnosis stays buried
              *     in the operation's `phase_detail_json`.
@@ -1423,7 +1423,7 @@ export interface components {
              *     migration 0013). `false` for kernel-owned cards that the user
              *     cannot remove via REST / plugin callbacks — currently spec cards
              *     (retroactively undeletable via the same migration's UPDATE) and
-             *     PR B's wave-report cards.
+             *     PR B's track-report cards.
              *
              *     `#[serde(default = "default_deletable")]` so wire payloads emitted
              *     before #229 landed (event-log replay fixtures, old test seeds)
@@ -1451,9 +1451,9 @@ export interface components {
             /** Format: double */
             sort: number;
             title?: string | null;
+            track_id: string;
             /** Format: int64 */
             updated_at: number;
-            wave_id: string;
         };
         CardPatch: {
             /**
@@ -1498,7 +1498,7 @@ export interface components {
             thread_status?: string | null;
         };
         /**
-         * @description Body payload accepted by `POST /api/waves/:wave_id/cards`.
+         * @description Body payload accepted by `POST /api/tracks/:track_id/cards`.
          *
          *     Two mutually-exclusive paths:
          *       * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy
@@ -1514,7 +1514,7 @@ export interface components {
          */
         CreateCardBody: {
             /**
-             * @description Legacy direct-create fields. Mirrors `NewCard` shape; `wave_id` is
+             * @description Legacy direct-create fields. Mirrors `NewCard` shape; `track_id` is
              *     taken from the path so we omit it here.
              */
             kind?: string | null;
@@ -1532,7 +1532,7 @@ export interface components {
             payload?: unknown;
             position?: number | null;
         };
-        CreateWaveRequest: {
+        CreateTrackRequest: {
             area_id: string;
             /**
              * @description When true, upsert the kernel view/template overlay in the same create
@@ -1542,15 +1542,15 @@ export interface components {
             attach_folder?: boolean;
             /**
              * @description Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
-             *     process cwd) on the wave row and skip `area_folders`. Present values
+             *     process cwd) on the track row and skip `area_folders`. Present values
              *     (including the empty string) keep the pre-#1131 absolute-path + claim
              *     rules. The SQLite column stays NOT NULL; only the request field is
              *     optional.
              */
             cwd?: string | null;
             /**
-             * @description One-time creation instruction: copy this wave's report snapshot into
-             *     the new report inside the wave-create transaction.
+             * @description One-time creation instruction: copy this track's report snapshot into
+             *     the new report inside the track-create transaction.
              */
             fork_report_from?: string | null;
             /** Format: double */
@@ -1560,11 +1560,11 @@ export interface components {
             theme: components["schemas"]["RequestTheme"];
             /**
              * @description Issue #1211 — on this user-driven create path the title is no longer
-             *     the wave's intent, so the client may omit it entirely. Omitting it
+             *     the track's intent, so the client may omit it entirely. Omitting it
              *     stores the **empty string** — there is no server-side default; the
-             *     `Untitled wave` a user sees in a list is the frontend's display
-             *     fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec
-             *     agent then names the wave via `calm.wave.rename`, which only succeeds
+             *     `Untitled track` a user sees in a list is the frontend's display
+             *     fallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The spec
+             *     agent then names the track via `calm.track.rename`, which only succeeds
              *     while the stored title is still blank. The type
              *     stays `String`: the empty string has always been a legal title and the
              *     server applies no non-empty validation.
@@ -1588,7 +1588,7 @@ export interface components {
             };
             path: string;
             relatedBlockIds: string[];
-            relatedWaveId?: string | null;
+            relatedTrackId?: string | null;
         };
         DirEntry: {
             is_dir: boolean;
@@ -1686,8 +1686,8 @@ export interface components {
             params: string;
             runtime_id: string;
             thread_id: string;
+            track_id: string;
             turn_id?: string | null;
-            wave_id: string;
         };
         /** @enum {string} */
         HarnessItemsDirection: "asc" | "desc";
@@ -1781,13 +1781,13 @@ export interface components {
             sort?: number | null;
             title?: string | null;
             /**
-             * @description Defaulted so the REST handler can override from the `:wave_id` path
+             * @description Defaulted so the REST handler can override from the `:track_id` path
              *     param without forcing every client body to repeat it. Direct repo
              *     callers must still set this — passing "" produces a NotFound.
              */
-            wave_id?: string;
+            track_id?: string;
         };
-        /** @description Body for `POST /api/waves/:wave_id/claude-cards`. */
+        /** @description Body for `POST /api/tracks/:track_id/claude-cards`. */
         NewClaudeCardBody: {
             /**
              * @description Working directory Claude runs in. Empty string or missing -> `$HOME`
@@ -1802,7 +1802,7 @@ export interface components {
             prompt?: string | null;
             /**
              * Format: double
-             * @description Sort order within the wave. `None` defaults to "append to end".
+             * @description Sort order within the track. `None` defaults to "append to end".
              */
             sort?: number | null;
             /**
@@ -1813,7 +1813,7 @@ export interface components {
             title?: string | null;
         };
         /**
-         * @description Body for `POST /api/waves/:wave_id/codex-cards`.
+         * @description Body for `POST /api/tracks/:track_id/codex-cards`.
          *
          *     Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
          *     persists schema/UI fields and projects identity from `runtimes`). Empty
@@ -1862,7 +1862,7 @@ export interface components {
             prompt?: string | null;
             /**
              * Format: double
-             * @description Sort order within the wave. `None` defaults to "append to end".
+             * @description Sort order within the track. `None` defaults to "append to end".
              */
             sort?: number | null;
             /**
@@ -1881,16 +1881,16 @@ export interface components {
             plugin_id: string;
         };
         /**
-         * @description Body for `POST /api/waves/:wave_id/terminal-cards`.
+         * @description Body for `POST /api/tracks/:track_id/terminal-cards`.
          *
          *     Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
          *     persists schema payload and projects identity from `runtimes`). Empty
          *     `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
-         *     the wave's workspace (#1147 S6). `env` is merged into the daemon's environment
+         *     the track's workspace (#1147 S6). `env` is merged into the daemon's environment
          *     as additional vars on top of `TERM` / `COLORTERM` / inherited.
          */
         NewTerminalCardBody: {
-            /** @description Empty string or missing → the wave's workspace path (#1147 S6). */
+            /** @description Empty string or missing → the track's workspace path (#1147 S6). */
             cwd?: string;
             /** @description Extra env on top of the inherited set. JSON object: `{"FOO":"bar"}`. */
             env?: Record<string, never>;
@@ -1898,7 +1898,7 @@ export interface components {
             program?: string;
             /**
              * Format: double
-             * @description Sort order within the wave. `None` defaults to "append to end".
+             * @description Sort order within the track. `None` defaults to "append to end".
              */
             sort?: number | null;
             /**
@@ -1910,35 +1910,35 @@ export interface components {
             theme: components["schemas"]["RequestTheme"];
             title?: string | null;
         };
-        NewWave: {
+        NewTrack: {
             area_id: string;
             /**
              * @description Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
              *     `area_id` as a new folder, in the same transaction as the
-             *     wave-create write". Default `false`: the cwd must already be
+             *     track-create write". Default `false`: the cwd must already be
              *     covered by some existing folder under the same area. Both the
              *     covering scan and the claim insert run inside that one
              *     transaction (issue #275), through the same
              *     [`crate::area_folder_claim::find_owner`] rule
              *     `GET /api/areas/resolve` uses. `true` adds a `area_folder` row
-             *     first and then the wave; folder-conflict rules
+             *     first and then the track; folder-conflict rules
              *     (equal/ancestor/descendant of any existing claim) still apply and
              *     roll the whole tx back on conflict.
              */
             attach_folder?: boolean;
             /**
              * @description Issue #250 PR 2 — absolute filesystem path the spec daemon will
-             *     spawn under. Required (no `Option`): every wave-creating path
+             *     spawn under. Required (no `Option`): every track-creating path
              *     must declare a cwd or the spec daemon has no defensible
-             *     working directory. The `POST /api/waves` route enforces
+             *     working directory. The `POST /api/tracks` route enforces
              *     absolute-path shape and the area-folder claim check; the
-             *     inner `wave_create_tx` writes whatever the route lands here
+             *     inner `track_create_tx` writes whatever the route lands here
              *     verbatim.
              */
             cwd: string;
             /**
              * @description #1110 S4 — copied from the owning Manifest at create. Not accepted on
-             *     `POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route
+             *     `POST /api/tracks` (CreateTrackRequest deny_unknown_fields); the route
              *     stamps it from the resolved trusted plugin. `#[serde(default)]` keeps
              *     direct repo callers additive under `deny_unknown_fields`.
              */
@@ -1949,7 +1949,7 @@ export interface components {
             /**
              * @description Issue #891 / #1110 S2 — JSON input for the bound template. Only
              *     accepted when `template_id` names a template a running trusted plugin
-             *     binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
+             *     binds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`
              *     route validates the value against that schema before any DB write. The
              *     kernel never interprets the blob — it is persisted verbatim and injected
              *     into the spec harness developer instructions at thread-mint time.
@@ -1963,20 +1963,20 @@ export interface components {
              *     OSC 10/11 startup probe with matching colors. A body
              *     missing this field is rejected at the deserialize layer (422):
              *     the spec card is invisible to the user and a silent fallback
-             *     would mean every wave-from-the-UI spawned with a mis-tinted
+             *     would mean every track-from-the-UI spawned with a mis-tinted
              *     composer (the bug that motivated this refactor).
              *
-             *     Direct repo callers (`db::sqlite::wave_create_tx`, used by tests
+             *     Direct repo callers (`db::sqlite::track_create_tx`, used by tests
              *     and a couple of non-route helpers) still pass a value here even
              *     though the txn-level helper does not consume it — spec-card
-             *     spawning is owned by `routes::waves::create_wave`. Tests can
+             *     spawning is owned by `routes::tracks::create_track`. Tests can
              *     use `RequestTheme::default_dark()` as a no-op sentinel.
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
         };
-        /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
-        NewWaveConversationBody: {
+        /** @description Body of `POST /api/tracks/{track_id}/conversations`: the first message. */
+        NewTrackConversationBody: {
             /**
              * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
              *     (non-blank after trim, at most 32768 chars) and validated *before*
@@ -1986,7 +1986,7 @@ export interface components {
         };
         Overlay: {
             entity_id: string;
-            /** @description `"wave"` or `"card"`. */
+            /** @description `"track"` or `"card"`. */
             entity_kind: string;
             id: string;
             /** @description Plugin-defined string. Kernel does not interpret. */
@@ -2010,7 +2010,7 @@ export interface components {
             /**
              * @description Optional. When omitted, returns every overlay of `entity_kind`
              *     across the workspace — the sidebar uses this form to render
-             *     accurate per-wave status without fetching each wave's detail.
+             *     accurate per-track status without fetching each track's detail.
              */
             entity_id?: string | null;
             entity_kind: string;
@@ -2162,7 +2162,7 @@ export interface components {
         RatifyCardResponse: {
             card_id: string;
             decision: components["schemas"]["RatifyCardDecision"];
-            wave_id: string;
+            track_id: string;
         };
         ReadFileResponse: {
             path: string;
@@ -2171,7 +2171,7 @@ export interface components {
             text: string;
             truncated: boolean;
         };
-        /** @description A derived, addressable slice of a wave report. */
+        /** @description A derived, addressable slice of a track report. */
         ReportBlock: {
             id: string;
             kind: string;
@@ -2189,7 +2189,7 @@ export interface components {
             updatedAt: number;
         };
         /**
-         * @description Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
+         * @description Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the
          *     `calm_session::TerminalTheme` value type one-for-one — duplicated
          *     here so the route can keep its own `ToSchema` derive (the
          *     `calm_session` crate is utoipa-free).
@@ -2210,7 +2210,7 @@ export interface components {
             card_id: string;
             new_thread_id: string;
             terminal_id: string;
-            wave?: null | components["schemas"]["Wave"];
+            track?: null | components["schemas"]["Track"];
         };
         ResolveQuery: {
             /**
@@ -2364,13 +2364,13 @@ export interface components {
             card_id: string;
             role: components["schemas"]["CardRole"];
             thread_id: string;
-            wave_id?: string | null;
+            track_id?: string | null;
         };
         TodayLaunchpad: {
             spec_card_id: string;
             terminal_card_id: string;
             terminal_id: string;
-            wave_id: string;
+            track_id: string;
         };
         /**
          * @description #1253 §5.1 — what the Today **page load** reads.
@@ -2379,9 +2379,9 @@ export interface components {
          *     does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
          *     reader's, and the two answer different questions.
          *
-         *     There is no `report_card_id` here on purpose. The wave detail already
-         *     returns the wave's cards and the frontend locates the report by
-         *     `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+         *     There is no `report_card_id` here on purpose. The track detail already
+         *     returns the track's cards and the frontend locates the report by
+         *     `kind == "track-report"` (`fe/core/domain/report.ts::readTrackReport`), so
          *     such a field would have no consumer.
          */
         TodayLaunchpadResolved: {
@@ -2395,7 +2395,7 @@ export interface components {
              *     on it — see the first bullet below.
              *
              *     It is computed server-side by
-             *     [`WaveReportPayload::report_startup_read_required`], the kernel's one
+             *     [`TrackReportPayload::report_startup_read_required`], the kernel's one
              *     canonical "has this been written" predicate. It is deliberately NOT
              *     named `report_started`, and the difference is not cosmetic (design D7):
              *
@@ -2416,12 +2416,12 @@ export interface components {
              *       text was reverted to canonical while those two stayed non-zero.
              *
              *     The frontend must not re-derive this by looking at the report body:
-             *     `readWaveReport` returns non-null for the canonical initial report
+             *     `readTrackReport` returns non-null for the canonical initial report
              *     (its body carries the maintenance-contract comment and four H1s), so a
              *     null-check there renders four empty headings instead of an empty state.
              */
             report_has_noninitial_content: boolean;
-            wave_id: string;
+            track_id: string;
         };
         /** @description What the caller gets back on success. */
         TodaySummaryStarted: {
@@ -2430,8 +2430,8 @@ export interface components {
              *     (INV-TODAYDOC-011) and openable in Today's Conversations module.
              */
             card_id: string;
-            /** @description The launchpad wave, whose report the agent is being asked to rewrite. */
-            wave_id: string;
+            /** @description The launchpad track, whose report the agent is being asked to rewrite. */
+            track_id: string;
         };
         /**
          * @description M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
@@ -2455,6 +2455,518 @@ export interface components {
             call_id?: string | null;
             name: string;
         };
+        Track: {
+            /** Format: int64 */
+            archived_at?: number | null;
+            area_id: string;
+            /** Format: int64 */
+            created_at: number;
+            /**
+             * @description Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
+             *
+             *     Rust readers must use `workspace.path`; this field only preserves the
+             *     existing wire shape.
+             */
+            cwd?: string;
+            id: string;
+            lifecycle?: components["schemas"]["TrackLifecycle"];
+            /** Format: int64 */
+            pinned_at?: number | null;
+            /** @description Owning plugin copied from the bound template. Immutable after creation. */
+            plugin_scope?: string | null;
+            /** @description Server-owned structural marker. Public track creation cannot set this. */
+            purpose?: string | null;
+            /** Format: double */
+            sort: number;
+            /**
+             * @description Template this track was created from.
+             *
+             *     The `serde(alias)` below is a deserialization-only compatibility read
+             *     for pre-#1209 event-log rows; serialization emits only this name.
+             */
+            template_id?: string | null;
+            /**
+             * @description Template input is validated at creation and otherwise remains opaque.
+             *
+             *     Carries the same deserialization-only alias as `template_id`.
+             */
+            template_input?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description Issue #250 PR 2 — unix-ms timestamp the track most recently
+             *     entered a terminal lifecycle state (Done / Canceled / Failed),
+             *     or `None` while the track is non-terminal. Stamped inside the
+             *     same transaction as the `TrackLifecycleChanged` event by
+             *     `track_update_tx`; cleared back to `None` on reopen
+             *     (Done/Canceled/Failed → Planning). The calendar window query
+             *     `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
+             *     terminal_at >= since)` to keep open tracks visible across every
+             *     day they span.
+             *
+             *     Backfill semantics: rows that existed before this migration
+             *     stay `None` even when their lifecycle is already terminal —
+             *     the event log carries the original transition timestamp but
+             *     the migration deliberately doesn't read from `events` (mixing
+             *     migration with replay is fragile). A user-driven reopen →
+             *     re-Done cycle stamps the column with the current time, which
+             *     is the first defensible point.
+             */
+            terminal_at?: number | null;
+            title: string;
+            /** Format: int64 */
+            updated_at: number;
+            workspace?: components["schemas"]["TrackWorkspace"];
+        };
+        /** @description A report link from another track that targets this track. */
+        TrackBacklink: {
+            dst_block_id?: string | null;
+            label: string;
+            quote: components["schemas"]["BacklinkQuote"];
+            src_block_id: string;
+            src_track_id: string;
+            src_track_title: string;
+            /** Format: int64 */
+            updated_at: number;
+        };
+        /** @description A bounded page of report backlinks. */
+        TrackBacklinksResponse: {
+            backlinks: components["schemas"]["TrackBacklink"][];
+            skipped_sources: number;
+            truncated: boolean;
+        };
+        /**
+         * @description One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
+         *
+         *     Its own type rather than a reuse of [`AreaConversationSummary`], which is
+         *     what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
+         *     the area type's contract says "`trackTitle` is absent because every row lives
+         *     on one hidden track", and on a track that reasoning is simply not true. Two
+         *     lists with different contracts should not share one name just because their
+         *     current fields coincide.
+         */
+        TrackConversationSummary: {
+            /**
+             * @description The assistant card's id. This is the conversation's identity everywhere,
+             *     and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+             *     address.
+             */
+            id: string;
+            /**
+             * @description Always `"track-assistant"`, derived from the card's persisted marker.
+             *     A distinct value from the area list's `"shared-chat"` on purpose: the
+             *     frontend branches on it, and a shared value would route assistant rows
+             *     through the area chat's presentation.
+             */
+            kind: string;
+            state?: null | components["schemas"]["WorkerSessionState"];
+            /**
+             * @description The conversation's own name, or null before it has one. Never the
+             *     track's title.
+             */
+            title?: string | null;
+            /**
+             * @description The track this conversation lives on. Always the track in the request
+             *     path; carried so a client holding a bare row can navigate.
+             */
+            trackId: string;
+            /**
+             * Format: int64
+             * @description The session's last update, falling back to the card's own.
+             */
+            updatedAt: number;
+        };
+        /**
+         * @description What a Track detail page renders: the track itself plus its cards and
+         *     any overlays scoped to the track (status/progress badges) and its cards.
+         */
+        TrackDetail: {
+            cards: components["schemas"]["Card"][];
+            overlays: components["schemas"]["Overlay"][];
+            track: components["schemas"]["Track"];
+        };
+        TrackFsCardMeta: {
+            /** Format: int64 */
+            created_at: number;
+            deletable: boolean;
+            id: string;
+            kind: string;
+            role: components["schemas"]["CardRole"];
+            /** Format: double */
+            sort: number;
+            /** Format: int64 */
+            updated_at: number;
+        };
+        TrackFsCatQuery: {
+            /** @description Logical path to read. Required. */
+            path?: string | null;
+        };
+        TrackFsContent: {
+            content: string;
+            content_type: string;
+        };
+        TrackFsEntry: {
+            kind: string;
+            name: string;
+            size?: number | null;
+            /** Format: int64 */
+            updated_at?: number | null;
+        };
+        TrackFsHookEvent: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            event_id: number;
+            hook_kind: string;
+            kind: string;
+            payload: unknown;
+        };
+        TrackFsLsQuery: {
+            /** @description Logical path to list. Omitted or `/` lists the track root. */
+            path?: string | null;
+        };
+        TrackFsRunDetail: {
+            events: components["schemas"]["TrackFsRunEvents"];
+            /** Format: int64 */
+            finished_at: number | null;
+            idempotency_key: string;
+            kind: string;
+            /** Format: int64 */
+            requested_at: number | null;
+            status: components["schemas"]["TrackFsRunStatus"];
+            verdict: null | components["schemas"]["TrackFsRunVerdict"];
+            worker_card_id: string | null;
+            worker_card_payload: unknown;
+        };
+        TrackFsRunEventRef: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            event_id: number;
+            kind: string;
+            payload: unknown;
+        };
+        TrackFsRunEvents: {
+            completed: null | components["schemas"]["TrackFsRunEventRef"];
+            failed: null | components["schemas"]["TrackFsRunEventRef"];
+            requested: null | components["schemas"]["TrackFsRunEventRef"];
+            verdict: null | components["schemas"]["TrackFsRunEventRef"];
+        };
+        TrackFsRunIndexEntry: {
+            /** Format: int64 */
+            finished_at: number | null;
+            idempotency_key: string;
+            kind: string;
+            /** Format: int64 */
+            requested_at: number | null;
+            status: components["schemas"]["TrackFsRunStatus"];
+            verdict: null | components["schemas"]["TrackFsRunVerdictSummary"];
+            worker_card_id: string | null;
+        };
+        /** @enum {string} */
+        TrackFsRunStatus: "completed" | "failed" | "running" | "requested" | "unknown";
+        TrackFsRunVerdict: {
+            /** Format: int64 */
+            at: number;
+            reason: string | null;
+            status: string;
+        };
+        TrackFsRunVerdictSummary: {
+            /** Format: int64 */
+            at: number;
+            status: string;
+        };
+        /**
+         * @description Issue #145 — Track lifecycle state machine.
+         *
+         *     One explicit state per track, advanced through a typed state machine
+         *     (see `crate::track_lifecycle`). The Spec Agent drives the happy path
+         *     (`draft → planning → dispatching → working → reviewing → done`);
+         *     the user can cancel any non-terminal state and reopen terminals;
+         *     worker cards have no authority to touch this field at all.
+         *
+         *     **`archived` is intentionally NOT a lifecycle state.** Archive is
+         *     visibility / history management, orthogonal to execution semantics —
+         *     a `done`/`failed`/`canceled` track can also be archived without
+         *     destroying the lifecycle truth. Archival continues to live on the
+         *     existing `archived_at: Option<i64>` field.
+         *
+         *     Persisted as a lowercase string in `tracks.lifecycle` (migration
+         *     0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
+         *     and storage shape stable; ts-rs exports the matching TS union into
+         *     `fe/core/api/generated/wire.ts` so the frontend can render the
+         *     badge against the same vocabulary.
+         * @enum {string}
+         */
+        TrackLifecycle: "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
+        /**
+         * @description INV-1110-004: `plugin_scope` is create-time only and is not a field here.
+         *     PATCH `/api/tracks` cannot widen or change it. Extra JSON keys are ignored
+         *     (`deny_unknown_fields` is not set).
+         */
+        TrackPatch: {
+            /**
+             * Format: int64
+             * @description Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,
+             *     or omit (`None`) to leave alone.
+             */
+            archived_at?: number | null;
+            /**
+             * @description Issue #985 — per-track declaration policy. A present null resets to
+             *     the kernel default.
+             */
+            automation_policy?: string | null;
+            lifecycle?: null | components["schemas"]["TrackLifecycle"];
+            /**
+             * Format: int64
+             * @description Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
+             *     or omit (`None`) to leave alone.
+             */
+            pinned_at?: number | null;
+            /**
+             * @description Issue #644 — track-level gate policy (`tracks.require_task_gates`,
+             *     migration 0041). `Some(v)` sets the flag, omit to leave alone.
+             *     Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
+             */
+            require_task_gates?: boolean | null;
+            /** Format: double */
+            sort?: number | null;
+            /**
+             * Format: int64
+             * @description Issue #985 — maximum admitted spec-declared task inventory. A
+             *     present null resets to the kernel default.
+             */
+            spec_task_ceiling?: number | null;
+            /**
+             * Format: int64
+             * @description Issue #644 — per-track scheduler budget (`tracks.task_budget`,
+             *     migration 0041). Pass `Some(Some(n))` to set, `Some(None)` to
+             *     clear back to the kernel default, or omit (`None`) to leave
+             *     alone. Inert until the PR-B scheduler reads it.
+             */
+            task_budget?: number | null;
+            title?: string | null;
+            /**
+             * Format: int64
+             * @description Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
+             *     the WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a
+             *     track with a parent, since a per-child budget would make the tree bound
+             *     vacuous. A present null resets to the kernel default (32).
+             */
+            tree_task_budget?: number | null;
+            workspace?: null | components["schemas"]["TrackWorkspacePatch"];
+        };
+        /**
+         * @description The payload persisted in a track-report card's `payload` JSON column.
+         *
+         *     Wire shape (camelCase to match the rest of the kernel's payloads):
+         *
+         *     ```json
+         *     {
+         *       "schemaVersion": 3,
+         *       "docRev": 7,
+         *       "summary": "Refactored the dispatcher into a typed actor",
+         *       "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
+         *     }
+         *     ```
+         *
+         *     `summary` is the one-line previewable in sidebars / list views;
+         *     `body` is the Markdown source the TrackReportCard renders. The
+         *     frontend derives sections from `body` by splitting on H1 headings;
+         *     the storage layer does not impose a section vocabulary.
+         */
+        TrackReportPayload: {
+            /**
+             * @description Block mirror of the authoritative CRDT block map (#960 PR2).
+             *     Since schema v2 the CRDT `blocks`/`order` layout is the source
+             *     of truth; this JSON field and `body` are both projections the
+             *     persist boundary rewrites on every write. v1 rows may omit it.
+             */
+            blocks?: components["schemas"]["ReportBlock"][] | null;
+            /**
+             * @description Markdown source. Sections are derived at render time by
+             *     splitting at H1 (`^# `) headings; the kernel does not interpret
+             *     the structure.
+             */
+            body: string;
+            /**
+             * Format: int64
+             * @description Document-wide optimistic-concurrency revision. This is mirrored
+             *     from the authoritative CRDT root and increments after every
+             *     successful report persist (whole-document or block-level).
+             */
+            docRev: number;
+            /**
+             * Format: int32
+             * @description Tier A persistence contract — see
+             *     `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
+             *     `validation.rs`. `3` since #979 added document-wide optimistic
+             *     concurrency; blocks remain authoritative and `body` is their
+             *     flat projection. v1/v2 rows remain readable and are lazily
+             *     upgraded at the next persist via the CRDT-layer migrator
+             *     (`ReportDoc::ensure_blocks_layout`).
+             */
+            schemaVersion: number;
+            /**
+             * @description One-line summary used by sidebars / track-list previews. Empty
+             *     string is valid (means "spec agent has not produced a summary
+             *     yet"); the field stays a required `String` per the
+             *     [[required-over-option]] rule.
+             */
+            summary: string;
+        };
+        TrackReportReadResponse: {
+            blocks: components["schemas"]["ReportBlock"][];
+            body: string;
+            /** Format: int64 */
+            docRev: number;
+            /** Format: int32 */
+            schemaVersion: number;
+            summary: string;
+            taskDiagnostics: components["schemas"]["BlockVerdict"][];
+        };
+        /**
+         * @description One selectable starting point for a new track.
+         *
+         *     "Blank" is not in this list and never will be: it is the *absence* of a
+         *     template (`POST /api/tracks` with no `template_id`), so the client renders it
+         *     as its own default option rather than the server minting a pseudo-row for
+         *     something that has no key, no title source, and no report to fork.
+         */
+        TrackTemplate: {
+            /**
+             * @description Template key. Passed back verbatim as `template_id` on
+             *     `POST /api/tracks` — see the seam note on this module.
+             */
+            id: string;
+            /**
+             * @description JSON Schema for `template_input`, from the manifest of the running
+             *     trusted plugin bound to `id`. Absent means the template takes no input;
+             *     sending `template_input` for it is a 400 on create.
+             */
+            input_schema?: unknown;
+            /**
+             * @description The tasks this template pre-sets, in plan order.
+             *
+             *     Always present; **not** always non-empty. That was true while this came
+             *     from the constants, but the projection drops tombstones, so retiring
+             *     every task of a template (through the ordinary report block DELETE)
+             *     leaves this empty. A client must render that state rather than assume it
+             *     away.
+             */
+            tasks: components["schemas"]["TrackTemplateTask"][];
+            title: string;
+        };
+        /**
+         * @description One pre-set task, projected from the template's own `PlanTaskInput`.
+         *
+         *     `key` and `goal` only: those are the two facts a person choosing a starting
+         *     point needs, and both are verbatim from the seeded plan. Acceptance
+         *     criteria, dependencies and gate advice belong to the track's report once it
+         *     exists, not to the chooser.
+         */
+        TrackTemplateTask: {
+            /** @description What that task is for, verbatim from the template. */
+            goal: string;
+            /** @description The task block's `key` in the seeded report. */
+            key: string;
+        };
+        /** @description A track's typed workspace. `path` is its single stored path. */
+        TrackWorkspace: {
+            /**
+             * Format: int64
+             * @description One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
+             *     again.
+             *
+             *     The system-area launchpad remains unfrozen because it is repointed by
+             *     `today_launchpad_ensure_tx`.
+             */
+            frozen_at?: number | null;
+            kind: components["schemas"]["TrackWorkspaceKind"];
+            /** @description Absolute path. */
+            path: string;
+        };
+        /**
+         * @description Ownership must be explicit because only managed workspaces may be recycled.
+         * @enum {string}
+         */
+        TrackWorkspaceKind: "managed" | "attached";
+        /**
+         * @description #1147 S3 — point a track at a repository the user already has.
+         *
+         *     The only transition this expresses is `managed → attached`. There is no
+         *     `managed → managed`: a managed path is *derived*
+         *     (`<workspace-root>/<area_id>/<track_id>`, see
+         *     `workspace_materialize::managed_workspace_path`) from a track's area and id,
+         *     neither of which can change, so "re-allocate a managed workspace" would
+         *     always re-derive the same path — an in-place reset, not a change. And a
+         *     caller-supplied *managed* path is worse than useless: S5's recycle guard 2
+         *     requires exactly `<root>/<area>/<track>` depth, so any other path produces a
+         *     row whose directory can never be reclaimed.
+         *
+         *     `attached → *` stays refused (an attached repository belongs to the user;
+         *     the server never moves, initializes or deletes it), which makes this a
+         *     one-way door — and the write below stamps `frozen_at` to say so.
+         */
+        TrackWorkspacePatch: {
+            /**
+             * @description Claim `path` for this track's area in the same transaction, exactly as
+             *     `POST /api/tracks`'s field of the same name does (issue #275 rules:
+             *     equal / ancestor / descendant of any existing claim is a structured
+             *     409). Default `false`: an unclaimed path is refused rather than
+             *     silently making a homeless track.
+             */
+            attach_folder?: boolean;
+            /** @description Must be `attached`. `managed` is a documented 400, not a silent no-op. */
+            kind: components["schemas"]["TrackWorkspaceKind"];
+            /**
+             * @description Absolute path to an existing Git work tree. Validated — existence and
+             *     git-ness included — *before* anything is written, because "the path was
+             *     wrong" surfacing later as a worker's `spawn-failed` is the defect
+             *     #1147 was opened on.
+             */
+            path: string;
+        };
+        /**
+         * @description Issue #250 PR 2 — calendar window query parameters for
+         *     `GET /api/tracks`. Every field is optional so omitting all three
+         *     degenerates to "every track in the DB" (the route delegates to
+         *     `Repo::tracks_window` which builds the SQL `WHERE` clause from the
+         *     non-`None` subset).
+         *
+         *     The semantic for `since` + `until` is **inclusive at both
+         *     endpoints**:
+         *       * `created_at <= until`  — exclude tracks that hadn't been created
+         *         yet by the right edge of the window.
+         *       * `terminal_at IS NULL OR terminal_at >= since` — include any
+         *         track that's still open (never reached a terminal lifecycle
+         *         state) or whose terminal stamp lands inside / past the left
+         *         edge.
+         *
+         *     Together the two predicates implement the "the track is visible on
+         *     at least one day inside `[since, until]`" calendar contract from
+         *     the issue, even when the track hasn't terminated yet.
+         */
+        TracksWindowQuery: {
+            /**
+             * @description Optional per-area filter. Mirrors `list_tracks_by_area` for
+             *     callers that want one area's window in a single endpoint.
+             */
+            area_id?: string | null;
+            /**
+             * Format: int64
+             * @description Lower bound (inclusive) in unix milliseconds. Track is included
+             *     when `terminal_at IS NULL OR terminal_at >= since`. Omitting
+             *     disables the lower-bound filter.
+             */
+            since?: number | null;
+            /**
+             * Format: int64
+             * @description Upper bound (inclusive) in unix milliseconds. Track is included
+             *     when `created_at <= until`. Omitting disables the upper-bound
+             *     filter.
+             */
+            until?: number | null;
+        };
         UpdateReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
@@ -2463,10 +2975,10 @@ export interface components {
             payload?: unknown;
         };
         /**
-         * @description Request body for `POST /api/waves/:id/report`.
+         * @description Request body for `POST /api/tracks/:id/report`.
          *
          *     `summary` and `body` are required `String`s (per
-         *     `WaveReportPayload`'s [[required-over-option]] rule), and
+         *     `TrackReportPayload`'s [[required-over-option]] rule), and
          *     `ifDocRev` is the required document-wide revision anchor. An empty
          *     `summary` is valid; the caller must commit to *some* string.
          *
@@ -2479,13 +2991,13 @@ export interface components {
          *     stricter contract that closes the spoofing risk by construction).
          *
          *     `schemaVersion` is also intentionally absent — it's a server-managed
-         *     invariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the
+         *     invariant pinned to [`TrackReportPayload::SCHEMA_VERSION`] and the
          *     projected payload returned in the response reasserts the current
          *     version. Letting clients write the version field would invite
          *     silent shape drift the first time someone forgot to update both
          *     sides.
          */
-        UpdateWaveReportBody: {
+        UpdateTrackReportBody: {
             /**
              * @description Markdown source. Sections are derived at render time by
              *     splitting at H1 (`^# `) headings; the kernel does not interpret
@@ -2499,7 +3011,7 @@ export interface components {
              */
             ifDocRev: number;
             /**
-             * @description One-line summary the wave-list sidebars surface. Empty string
+             * @description One-line summary the track-list sidebars surface. Empty string
              *     is a valid value; the caller must commit.
              */
             summary: string;
@@ -2551,7 +3063,7 @@ export interface components {
              *     computed kernel-side so the frontend doesn't have to redo the join.
              */
             resource_uri: string;
-            /** @description `"card"` for M3 — wave/area are banned per design §10. */
+            /** @description `"card"` for M3 — track/area are banned per design §10. */
             scope: string;
             title: string;
         };
@@ -2564,518 +3076,6 @@ export interface components {
             min_w?: number | null;
             /** Format: int32 */
             w: number;
-        };
-        Wave: {
-            /** Format: int64 */
-            archived_at?: number | null;
-            area_id: string;
-            /** Format: int64 */
-            created_at: number;
-            /**
-             * @description Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
-             *
-             *     Rust readers must use `workspace.path`; this field only preserves the
-             *     existing wire shape.
-             */
-            cwd?: string;
-            id: string;
-            lifecycle?: components["schemas"]["WaveLifecycle"];
-            /** Format: int64 */
-            pinned_at?: number | null;
-            /** @description Owning plugin copied from the bound template. Immutable after creation. */
-            plugin_scope?: string | null;
-            /** @description Server-owned structural marker. Public wave creation cannot set this. */
-            purpose?: string | null;
-            /** Format: double */
-            sort: number;
-            /**
-             * @description Template this wave was created from.
-             *
-             *     The `serde(alias)` below is a deserialization-only compatibility read
-             *     for pre-#1209 event-log rows; serialization emits only this name.
-             */
-            template_id?: string | null;
-            /**
-             * @description Template input is validated at creation and otherwise remains opaque.
-             *
-             *     Carries the same deserialization-only alias as `template_id`.
-             */
-            template_input?: Record<string, never> | null;
-            /**
-             * Format: int64
-             * @description Issue #250 PR 2 — unix-ms timestamp the wave most recently
-             *     entered a terminal lifecycle state (Done / Canceled / Failed),
-             *     or `None` while the wave is non-terminal. Stamped inside the
-             *     same transaction as the `WaveLifecycleChanged` event by
-             *     `wave_update_tx`; cleared back to `None` on reopen
-             *     (Done/Canceled/Failed → Planning). The calendar window query
-             *     `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
-             *     terminal_at >= since)` to keep open waves visible across every
-             *     day they span.
-             *
-             *     Backfill semantics: rows that existed before this migration
-             *     stay `None` even when their lifecycle is already terminal —
-             *     the event log carries the original transition timestamp but
-             *     the migration deliberately doesn't read from `events` (mixing
-             *     migration with replay is fragile). A user-driven reopen →
-             *     re-Done cycle stamps the column with the current time, which
-             *     is the first defensible point.
-             */
-            terminal_at?: number | null;
-            title: string;
-            /** Format: int64 */
-            updated_at: number;
-            workspace?: components["schemas"]["WaveWorkspace"];
-        };
-        /** @description A report link from another wave that targets this wave. */
-        WaveBacklink: {
-            dst_block_id?: string | null;
-            label: string;
-            quote: components["schemas"]["BacklinkQuote"];
-            src_block_id: string;
-            src_wave_id: string;
-            src_wave_title: string;
-            /** Format: int64 */
-            updated_at: number;
-        };
-        /** @description A bounded page of report backlinks. */
-        WaveBacklinksResponse: {
-            backlinks: components["schemas"]["WaveBacklink"][];
-            skipped_sources: number;
-            truncated: boolean;
-        };
-        /**
-         * @description One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
-         *
-         *     Its own type rather than a reuse of [`AreaConversationSummary`], which is
-         *     what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
-         *     the area type's contract says "`waveTitle` is absent because every row lives
-         *     on one hidden wave", and on a wave that reasoning is simply not true. Two
-         *     lists with different contracts should not share one name just because their
-         *     current fields coincide.
-         */
-        WaveConversationSummary: {
-            /**
-             * @description The assistant card's id. This is the conversation's identity everywhere,
-             *     and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
-             *     address.
-             */
-            id: string;
-            /**
-             * @description Always `"wave-assistant"`, derived from the card's persisted marker.
-             *     A distinct value from the area list's `"shared-chat"` on purpose: the
-             *     frontend branches on it, and a shared value would route assistant rows
-             *     through the area chat's presentation.
-             */
-            kind: string;
-            state?: null | components["schemas"]["WorkerSessionState"];
-            /**
-             * @description The conversation's own name, or null before it has one. Never the
-             *     wave's title.
-             */
-            title?: string | null;
-            /**
-             * Format: int64
-             * @description The session's last update, falling back to the card's own.
-             */
-            updatedAt: number;
-            /**
-             * @description The wave this conversation lives on. Always the wave in the request
-             *     path; carried so a client holding a bare row can navigate.
-             */
-            waveId: string;
-        };
-        /**
-         * @description What a Wave detail page renders: the wave itself plus its cards and
-         *     any overlays scoped to the wave (status/progress badges) and its cards.
-         */
-        WaveDetail: {
-            cards: components["schemas"]["Card"][];
-            overlays: components["schemas"]["Overlay"][];
-            wave: components["schemas"]["Wave"];
-        };
-        WaveFsCardMeta: {
-            /** Format: int64 */
-            created_at: number;
-            deletable: boolean;
-            id: string;
-            kind: string;
-            role: components["schemas"]["CardRole"];
-            /** Format: double */
-            sort: number;
-            /** Format: int64 */
-            updated_at: number;
-        };
-        WaveFsCatQuery: {
-            /** @description Logical path to read. Required. */
-            path?: string | null;
-        };
-        WaveFsContent: {
-            content: string;
-            content_type: string;
-        };
-        WaveFsEntry: {
-            kind: string;
-            name: string;
-            size?: number | null;
-            /** Format: int64 */
-            updated_at?: number | null;
-        };
-        WaveFsHookEvent: {
-            /** Format: int64 */
-            created_at: number;
-            /** Format: int64 */
-            event_id: number;
-            hook_kind: string;
-            kind: string;
-            payload: unknown;
-        };
-        WaveFsLsQuery: {
-            /** @description Logical path to list. Omitted or `/` lists the wave root. */
-            path?: string | null;
-        };
-        WaveFsRunDetail: {
-            events: components["schemas"]["WaveFsRunEvents"];
-            /** Format: int64 */
-            finished_at: number | null;
-            idempotency_key: string;
-            kind: string;
-            /** Format: int64 */
-            requested_at: number | null;
-            status: components["schemas"]["WaveFsRunStatus"];
-            verdict: null | components["schemas"]["WaveFsRunVerdict"];
-            worker_card_id: string | null;
-            worker_card_payload: unknown;
-        };
-        WaveFsRunEventRef: {
-            /** Format: int64 */
-            created_at: number;
-            /** Format: int64 */
-            event_id: number;
-            kind: string;
-            payload: unknown;
-        };
-        WaveFsRunEvents: {
-            completed: null | components["schemas"]["WaveFsRunEventRef"];
-            failed: null | components["schemas"]["WaveFsRunEventRef"];
-            requested: null | components["schemas"]["WaveFsRunEventRef"];
-            verdict: null | components["schemas"]["WaveFsRunEventRef"];
-        };
-        WaveFsRunIndexEntry: {
-            /** Format: int64 */
-            finished_at: number | null;
-            idempotency_key: string;
-            kind: string;
-            /** Format: int64 */
-            requested_at: number | null;
-            status: components["schemas"]["WaveFsRunStatus"];
-            verdict: null | components["schemas"]["WaveFsRunVerdictSummary"];
-            worker_card_id: string | null;
-        };
-        /** @enum {string} */
-        WaveFsRunStatus: "completed" | "failed" | "running" | "requested" | "unknown";
-        WaveFsRunVerdict: {
-            /** Format: int64 */
-            at: number;
-            reason: string | null;
-            status: string;
-        };
-        WaveFsRunVerdictSummary: {
-            /** Format: int64 */
-            at: number;
-            status: string;
-        };
-        /**
-         * @description Issue #145 — Wave lifecycle state machine.
-         *
-         *     One explicit state per wave, advanced through a typed state machine
-         *     (see `crate::wave_lifecycle`). The Spec Agent drives the happy path
-         *     (`draft → planning → dispatching → working → reviewing → done`);
-         *     the user can cancel any non-terminal state and reopen terminals;
-         *     worker cards have no authority to touch this field at all.
-         *
-         *     **`archived` is intentionally NOT a lifecycle state.** Archive is
-         *     visibility / history management, orthogonal to execution semantics —
-         *     a `done`/`failed`/`canceled` wave can also be archived without
-         *     destroying the lifecycle truth. Archival continues to live on the
-         *     existing `archived_at: Option<i64>` field.
-         *
-         *     Persisted as a lowercase string in `waves.lifecycle` (migration
-         *     0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
-         *     and storage shape stable; ts-rs exports the matching TS union into
-         *     `fe/core/api/generated/wire.ts` so the frontend can render the
-         *     badge against the same vocabulary.
-         * @enum {string}
-         */
-        WaveLifecycle: "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
-        /**
-         * @description INV-1110-004: `plugin_scope` is create-time only and is not a field here.
-         *     PATCH `/api/waves` cannot widen or change it. Extra JSON keys are ignored
-         *     (`deny_unknown_fields` is not set).
-         */
-        WavePatch: {
-            /**
-             * Format: int64
-             * @description Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,
-             *     or omit (`None`) to leave alone.
-             */
-            archived_at?: number | null;
-            /**
-             * @description Issue #985 — per-wave declaration policy. A present null resets to
-             *     the kernel default.
-             */
-            automation_policy?: string | null;
-            lifecycle?: null | components["schemas"]["WaveLifecycle"];
-            /**
-             * Format: int64
-             * @description Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
-             *     or omit (`None`) to leave alone.
-             */
-            pinned_at?: number | null;
-            /**
-             * @description Issue #644 — wave-level gate policy (`waves.require_task_gates`,
-             *     migration 0041). `Some(v)` sets the flag, omit to leave alone.
-             *     Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
-             */
-            require_task_gates?: boolean | null;
-            /** Format: double */
-            sort?: number | null;
-            /**
-             * Format: int64
-             * @description Issue #985 — maximum admitted spec-declared task inventory. A
-             *     present null resets to the kernel default.
-             */
-            spec_task_ceiling?: number | null;
-            /**
-             * Format: int64
-             * @description Issue #644 — per-wave scheduler budget (`waves.task_budget`,
-             *     migration 0041). Pass `Some(Some(n))` to set, `Some(None)` to
-             *     clear back to the kernel default, or omit (`None`) to leave
-             *     alone. Inert until the PR-B scheduler reads it.
-             */
-            task_budget?: number | null;
-            title?: string | null;
-            /**
-             * Format: int64
-             * @description Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
-             *     the WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a
-             *     wave with a parent, since a per-child budget would make the tree bound
-             *     vacuous. A present null resets to the kernel default (32).
-             */
-            tree_task_budget?: number | null;
-            workspace?: null | components["schemas"]["WaveWorkspacePatch"];
-        };
-        /**
-         * @description The payload persisted in a wave-report card's `payload` JSON column.
-         *
-         *     Wire shape (camelCase to match the rest of the kernel's payloads):
-         *
-         *     ```json
-         *     {
-         *       "schemaVersion": 3,
-         *       "docRev": 7,
-         *       "summary": "Refactored the dispatcher into a typed actor",
-         *       "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
-         *     }
-         *     ```
-         *
-         *     `summary` is the one-line previewable in sidebars / list views;
-         *     `body` is the Markdown source the WaveReportCard renders. The
-         *     frontend derives sections from `body` by splitting on H1 headings;
-         *     the storage layer does not impose a section vocabulary.
-         */
-        WaveReportPayload: {
-            /**
-             * @description Block mirror of the authoritative CRDT block map (#960 PR2).
-             *     Since schema v2 the CRDT `blocks`/`order` layout is the source
-             *     of truth; this JSON field and `body` are both projections the
-             *     persist boundary rewrites on every write. v1 rows may omit it.
-             */
-            blocks?: components["schemas"]["ReportBlock"][] | null;
-            /**
-             * @description Markdown source. Sections are derived at render time by
-             *     splitting at H1 (`^# `) headings; the kernel does not interpret
-             *     the structure.
-             */
-            body: string;
-            /**
-             * Format: int64
-             * @description Document-wide optimistic-concurrency revision. This is mirrored
-             *     from the authoritative CRDT root and increments after every
-             *     successful report persist (whole-document or block-level).
-             */
-            docRev: number;
-            /**
-             * Format: int32
-             * @description Tier A persistence contract — see
-             *     `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-             *     `validation.rs`. `3` since #979 added document-wide optimistic
-             *     concurrency; blocks remain authoritative and `body` is their
-             *     flat projection. v1/v2 rows remain readable and are lazily
-             *     upgraded at the next persist via the CRDT-layer migrator
-             *     (`ReportDoc::ensure_blocks_layout`).
-             */
-            schemaVersion: number;
-            /**
-             * @description One-line summary used by sidebars / wave-list previews. Empty
-             *     string is valid (means "spec agent has not produced a summary
-             *     yet"); the field stays a required `String` per the
-             *     [[required-over-option]] rule.
-             */
-            summary: string;
-        };
-        WaveReportReadResponse: {
-            blocks: components["schemas"]["ReportBlock"][];
-            body: string;
-            /** Format: int64 */
-            docRev: number;
-            /** Format: int32 */
-            schemaVersion: number;
-            summary: string;
-            taskDiagnostics: components["schemas"]["BlockVerdict"][];
-        };
-        /**
-         * @description One selectable starting point for a new wave.
-         *
-         *     "Blank" is not in this list and never will be: it is the *absence* of a
-         *     template (`POST /api/waves` with no `template_id`), so the client renders it
-         *     as its own default option rather than the server minting a pseudo-row for
-         *     something that has no key, no title source, and no report to fork.
-         */
-        WaveTemplate: {
-            /**
-             * @description Template key. Passed back verbatim as `template_id` on
-             *     `POST /api/waves` — see the seam note on this module.
-             */
-            id: string;
-            /**
-             * @description JSON Schema for `template_input`, from the manifest of the running
-             *     trusted plugin bound to `id`. Absent means the template takes no input;
-             *     sending `template_input` for it is a 400 on create.
-             */
-            input_schema?: unknown;
-            /**
-             * @description The tasks this template pre-sets, in plan order.
-             *
-             *     Always present; **not** always non-empty. That was true while this came
-             *     from the constants, but the projection drops tombstones, so retiring
-             *     every task of a template (through the ordinary report block DELETE)
-             *     leaves this empty. A client must render that state rather than assume it
-             *     away.
-             */
-            tasks: components["schemas"]["WaveTemplateTask"][];
-            title: string;
-        };
-        /**
-         * @description One pre-set task, projected from the template's own `PlanTaskInput`.
-         *
-         *     `key` and `goal` only: those are the two facts a person choosing a starting
-         *     point needs, and both are verbatim from the seeded plan. Acceptance
-         *     criteria, dependencies and gate advice belong to the wave's report once it
-         *     exists, not to the chooser.
-         */
-        WaveTemplateTask: {
-            /** @description What that task is for, verbatim from the template. */
-            goal: string;
-            /** @description The task block's `key` in the seeded report. */
-            key: string;
-        };
-        /** @description A wave's typed workspace. `path` is its single stored path. */
-        WaveWorkspace: {
-            /**
-             * Format: int64
-             * @description One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
-             *     again.
-             *
-             *     The system-area launchpad remains unfrozen because it is repointed by
-             *     `today_launchpad_ensure_tx`.
-             */
-            frozen_at?: number | null;
-            kind: components["schemas"]["WaveWorkspaceKind"];
-            /** @description Absolute path. */
-            path: string;
-        };
-        /**
-         * @description Ownership must be explicit because only managed workspaces may be recycled.
-         * @enum {string}
-         */
-        WaveWorkspaceKind: "managed" | "attached";
-        /**
-         * @description #1147 S3 — point a wave at a repository the user already has.
-         *
-         *     The only transition this expresses is `managed → attached`. There is no
-         *     `managed → managed`: a managed path is *derived*
-         *     (`<workspace-root>/<area_id>/<wave_id>`, see
-         *     `workspace_materialize::managed_workspace_path`) from a wave's area and id,
-         *     neither of which can change, so "re-allocate a managed workspace" would
-         *     always re-derive the same path — an in-place reset, not a change. And a
-         *     caller-supplied *managed* path is worse than useless: S5's recycle guard 2
-         *     requires exactly `<root>/<area>/<wave>` depth, so any other path produces a
-         *     row whose directory can never be reclaimed.
-         *
-         *     `attached → *` stays refused (an attached repository belongs to the user;
-         *     the server never moves, initializes or deletes it), which makes this a
-         *     one-way door — and the write below stamps `frozen_at` to say so.
-         */
-        WaveWorkspacePatch: {
-            /**
-             * @description Claim `path` for this wave's area in the same transaction, exactly as
-             *     `POST /api/waves`'s field of the same name does (issue #275 rules:
-             *     equal / ancestor / descendant of any existing claim is a structured
-             *     409). Default `false`: an unclaimed path is refused rather than
-             *     silently making a homeless wave.
-             */
-            attach_folder?: boolean;
-            /** @description Must be `attached`. `managed` is a documented 400, not a silent no-op. */
-            kind: components["schemas"]["WaveWorkspaceKind"];
-            /**
-             * @description Absolute path to an existing Git work tree. Validated — existence and
-             *     git-ness included — *before* anything is written, because "the path was
-             *     wrong" surfacing later as a worker's `spawn-failed` is the defect
-             *     #1147 was opened on.
-             */
-            path: string;
-        };
-        /**
-         * @description Issue #250 PR 2 — calendar window query parameters for
-         *     `GET /api/waves`. Every field is optional so omitting all three
-         *     degenerates to "every wave in the DB" (the route delegates to
-         *     `Repo::waves_window` which builds the SQL `WHERE` clause from the
-         *     non-`None` subset).
-         *
-         *     The semantic for `since` + `until` is **inclusive at both
-         *     endpoints**:
-         *       * `created_at <= until`  — exclude waves that hadn't been created
-         *         yet by the right edge of the window.
-         *       * `terminal_at IS NULL OR terminal_at >= since` — include any
-         *         wave that's still open (never reached a terminal lifecycle
-         *         state) or whose terminal stamp lands inside / past the left
-         *         edge.
-         *
-         *     Together the two predicates implement the "the wave is visible on
-         *     at least one day inside `[since, until]`" calendar contract from
-         *     the issue, even when the wave hasn't terminated yet.
-         */
-        WavesWindowQuery: {
-            /**
-             * @description Optional per-area filter. Mirrors `list_waves_by_area` for
-             *     callers that want one area's window in a single endpoint.
-             */
-            area_id?: string | null;
-            /**
-             * Format: int64
-             * @description Lower bound (inclusive) in unix milliseconds. Wave is included
-             *     when `terminal_at IS NULL OR terminal_at >= since`. Omitting
-             *     disables the lower-bound filter.
-             */
-            since?: number | null;
-            /**
-             * Format: int64
-             * @description Upper bound (inclusive) in unix milliseconds. Wave is included
-             *     when `created_at <= until`. Omitting disables the upper-bound
-             *     filter.
-             */
-            until?: number | null;
         };
         /** @enum {string} */
         WorkerSessionKind: "terminal" | "codex" | "claude" | "shared-spec";
@@ -3248,7 +3248,7 @@ export interface operations {
             };
         };
     };
-    ensure_area_chat_wave: {
+    ensure_area_chat_track: {
         parameters: {
             query?: never;
             header?: never;
@@ -3260,22 +3260,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Existing chat wave */
+            /** @description Existing chat track */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Wave"];
+                    "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Chat wave created */
+            /** @description Chat track created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Wave"];
+                    "application/json": components["schemas"]["Track"];
                 };
             };
             /** @description Area not found */
@@ -3301,7 +3301,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Conversations on this area's chat wave, newest activity first. Empty when the area has no chat wave yet — this endpoint never creates one. */
+            /** @description Conversations on this area's chat track, newest activity first. Empty when the area has no chat track yet — this endpoint never creates one. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3382,7 +3382,7 @@ export interface operations {
             };
             /**
              * @description Distinguished by the body's `code`:
-             *     * `conflict` — the area has no claimed folder (no cwd for the chat wave), or the derived card already exists.
+             *     * `conflict` — the area has no claimed folder (no cwd for the chat track), or the derived card already exists.
              *     * `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).
              *     * `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as "server broke" rather than "this key is used up").
              */
@@ -3541,7 +3541,7 @@ export interface operations {
             };
         };
     };
-    list_waves_by_area: {
+    list_tracks_by_area: {
         parameters: {
             query?: never;
             header?: never;
@@ -3553,13 +3553,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Waves under area */
+            /** @description Tracks under area */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Wave"][];
+                    "application/json": components["schemas"]["Track"][];
                 };
             };
             /** @description Internal error */
@@ -3959,7 +3959,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Card or wave not found */
+            /** @description Card or track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3968,7 +3968,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave is not awaiting ratification */
+            /** @description Track is not awaiting ratification */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4031,7 +4031,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Card or wave not found */
+            /** @description Card or track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -4487,7 +4487,7 @@ export interface operations {
                 /**
                  * @description Optional. When omitted, returns every overlay of `entity_kind`
                  *     across the workspace — the sidebar uses this form to render
-                 *     accurate per-wave status without fetching each wave's detail.
+                 *     accurate per-track status without fetching each track's detail.
                  */
                 entity_id?: string | null;
             };
@@ -5404,7 +5404,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state. */
+            /** @description The launchpad track and whether its report has been written, or `null` when no launchpad track exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5413,7 +5413,7 @@ export interface operations {
                     "application/json": null | components["schemas"]["TodayLaunchpadResolved"];
                 };
             };
-            /** @description The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs. */
+            /** @description The launchpad track exists but carries no `track-report` card. Not a reachable state; see the handler docs. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5513,7 +5513,7 @@ export interface operations {
             };
         };
     };
-    get_version: {
+    list_track_templates: {
         parameters: {
             query?: never;
             header?: never;
@@ -5522,33 +5522,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Kernel + protocol version metadata */
+            /** @description Selectable track templates */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VersionInfo"];
-                };
-            };
-        };
-    };
-    list_wave_templates: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Selectable wave templates */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WaveTemplate"][];
+                    "application/json": components["schemas"]["TrackTemplate"][];
                 };
             };
             /** @description Internal error */
@@ -5562,23 +5542,23 @@ export interface operations {
             };
         };
     };
-    list_waves_window: {
+    list_tracks_window: {
         parameters: {
             query?: {
                 /**
-                 * @description Lower bound (inclusive) in unix milliseconds. Wave is included
+                 * @description Lower bound (inclusive) in unix milliseconds. Track is included
                  *     when `terminal_at IS NULL OR terminal_at >= since`. Omitting
                  *     disables the lower-bound filter.
                  */
                 since?: number | null;
                 /**
-                 * @description Upper bound (inclusive) in unix milliseconds. Wave is included
+                 * @description Upper bound (inclusive) in unix milliseconds. Track is included
                  *     when `created_at <= until`. Omitting disables the upper-bound
                  *     filter.
                  */
                 until?: number | null;
                 /**
-                 * @description Optional per-area filter. Mirrors `list_waves_by_area` for
+                 * @description Optional per-area filter. Mirrors `list_tracks_by_area` for
                  *     callers that want one area's window in a single endpoint.
                  */
                 area_id?: string | null;
@@ -5589,13 +5569,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Waves overlapping the window, sorted by created_at */
+            /** @description Tracks overlapping the window, sorted by created_at */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Wave"][];
+                    "application/json": components["schemas"]["Track"][];
                 };
             };
             /** @description Inverted window (since > until) */
@@ -5618,7 +5598,7 @@ export interface operations {
             };
         };
     };
-    create_wave: {
+    create_track: {
         parameters: {
             query?: never;
             header?: never;
@@ -5627,17 +5607,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateWaveRequest"];
+                "application/json": components["schemas"]["CreateTrackRequest"];
             };
         };
         responses: {
-            /** @description Wave created */
+            /** @description Track created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Wave"];
+                    "application/json": components["schemas"]["Track"];
                 };
             };
             /** @description Internal error */
@@ -5651,28 +5631,28 @@ export interface operations {
             };
         };
     };
-    get_wave_detail: {
+    get_track_detail: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Wave detail (wave + its cards + overlays) */
+            /** @description Track detail (track + its cards + overlays) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveDetail"];
+                    "application/json": components["schemas"]["TrackDetail"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5692,26 +5672,26 @@ export interface operations {
             };
         };
     };
-    delete_wave: {
+    delete_track: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Wave deleted */
+            /** @description Track deleted */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Wave belongs to the system area and cannot be deleted via REST */
+            /** @description Track belongs to the system area and cannot be deleted via REST */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5720,7 +5700,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5729,7 +5709,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave has a descendant or active forge action */
+            /** @description Track has a descendant or active forge action */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5749,29 +5729,29 @@ export interface operations {
             };
         };
     };
-    update_wave: {
+    update_track: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WavePatch"];
+                "application/json": components["schemas"]["TrackPatch"];
             };
         };
         responses: {
-            /** @description Wave updated */
+            /** @description Track updated */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Wave"];
+                    "application/json": components["schemas"]["Track"];
                 };
             };
             /** @description Unsupported workspace change */
@@ -5792,7 +5772,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5821,28 +5801,28 @@ export interface operations {
             };
         };
     };
-    get_wave_backlinks: {
+    get_track_backlinks: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Report links from waves in the same area */
+            /** @description Report links from tracks in the same area */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveBacklinksResponse"];
+                    "application/json": components["schemas"]["TrackBacklinksResponse"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5853,7 +5833,7 @@ export interface operations {
             };
         };
     };
-    cat_wave_file: {
+    cat_track_file: {
         parameters: {
             query?: {
                 /** @description Logical path to read. Required. */
@@ -5861,20 +5841,20 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Wave file view content */
+            /** @description Track file view content */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveFsContent"];
+                    "application/json": components["schemas"]["TrackFsContent"];
                 };
             };
             /** @description Missing path or logical path not available */
@@ -5895,7 +5875,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Referenced card is outside the wave */
+            /** @description Referenced card is outside the track */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5904,7 +5884,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5924,28 +5904,28 @@ export interface operations {
             };
         };
     };
-    list_wave_files: {
+    list_track_files: {
         parameters: {
             query?: {
-                /** @description Logical path to list. Omitted or `/` lists the wave root. */
+                /** @description Logical path to list. Omitted or `/` lists the track root. */
                 path?: string | null;
             };
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Wave file view directory entries */
+            /** @description Track file view directory entries */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveFsEntry"][];
+                    "application/json": components["schemas"]["TrackFsEntry"][];
                 };
             };
             /** @description Logical path not available */
@@ -5966,7 +5946,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Referenced card is outside the wave */
+            /** @description Referenced card is outside the track */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5975,7 +5955,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5995,12 +5975,12 @@ export interface operations {
             };
         };
     };
-    get_wave_report: {
+    get_track_report: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
@@ -6013,7 +5993,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveReportReadResponse"];
+                    "application/json": components["schemas"]["TrackReportReadResponse"];
                 };
             };
             /** @description Missing or invalid session */
@@ -6025,7 +6005,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6036,29 +6016,29 @@ export interface operations {
             };
         };
     };
-    update_wave_report: {
+    update_track_report: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
+                /** @description Track id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateWaveReportBody"];
+                "application/json": components["schemas"]["UpdateTrackReportBody"];
             };
         };
         responses: {
-            /** @description Updated wave-report payload */
+            /** @description Updated track-report payload */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveReportPayload"];
+                    "application/json": components["schemas"]["TrackReportPayload"];
                 };
             };
             /** @description Missing or invalid session */
@@ -6079,7 +6059,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6403,19 +6383,19 @@ export interface operations {
             };
         };
     };
-    list_cards_by_wave: {
+    list_cards_by_track: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
-                wave_id: string;
+                /** @description Track id */
+                track_id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Cards in wave (sorted) */
+            /** @description Cards in track (sorted) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6440,8 +6420,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id this card belongs to */
-                wave_id: string;
+                /** @description Track id this card belongs to */
+                track_id: string;
             };
             cookie?: never;
         };
@@ -6521,8 +6501,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id to create the Claude card under */
-                wave_id: string;
+                /** @description Track id to create the Claude card under */
+                track_id: string;
             };
             cookie?: never;
         };
@@ -6542,7 +6522,7 @@ export interface operations {
                     "application/json": components["schemas"]["Card"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6576,8 +6556,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id to create the codex card under */
-                wave_id: string;
+                /** @description Track id to create the codex card under */
+                track_id: string;
             };
             cookie?: never;
         };
@@ -6597,7 +6577,7 @@ export interface operations {
                     "application/json": components["schemas"]["Card"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6626,28 +6606,28 @@ export interface operations {
             };
         };
     };
-    list_wave_conversations: {
+    list_track_conversations: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id */
-                wave_id: string;
+                /** @description Track id */
+                track_id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Assistant conversations on this wave, newest activity first. The wave's spec card, report card and dispatched worker cards are never listed here. */
+            /** @description Assistant conversations on this track, newest activity first. The track's spec card, report card and dispatched worker cards are never listed here. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveConversationSummary"][];
+                    "application/json": components["schemas"]["TrackConversationSummary"][];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6667,7 +6647,7 @@ export interface operations {
             };
         };
     };
-    create_wave_conversation: {
+    create_track_conversation: {
         parameters: {
             query?: never;
             header: {
@@ -6679,14 +6659,14 @@ export interface operations {
                 "Idempotency-Key": string;
             };
             path: {
-                /** @description Wave id */
-                wave_id: string;
+                /** @description Track id */
+                track_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NewWaveConversationBody"];
+                "application/json": components["schemas"]["NewTrackConversationBody"];
             };
         };
         responses: {
@@ -6696,10 +6676,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveConversationSummary"];
+                    "application/json": components["schemas"]["TrackConversationSummary"];
                 };
             };
-            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
+            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -6708,7 +6688,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The wave is an area chat wave; its conversations are created through the area endpoint. */
+            /** @description The track is an area chat track; its conversations are created through the area endpoint. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6717,7 +6697,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6764,8 +6744,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Wave id to create the terminal card under */
-                wave_id: string;
+                /** @description Track id to create the terminal card under */
+                track_id: string;
             };
             cookie?: never;
         };
@@ -6785,7 +6765,7 @@ export interface operations {
                     "application/json": components["schemas"]["Card"];
                 };
             };
-            /** @description Wave not found */
+            /** @description Track not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6810,6 +6790,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kernel + protocol version metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionInfo"];
                 };
             };
         };

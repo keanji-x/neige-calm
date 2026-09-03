@@ -11,7 +11,7 @@
     /* Eight rows, then it scrolls. A panel module has no business setting the
        height of the page it sits next to, and an unbounded list does exactly
        that: one busy area pushed the conversation module below the fold and
-       moved it every time a wave appeared. Eight is the count at which the last
+       moved it every time a track appeared. Eight is the count at which the last
        row is still findable by eye rather than by reading — past that you are
        scanning either way, so scrolling costs nothing. */
     max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
@@ -24,7 +24,7 @@
      and a fixed trailing column for the age (§6.0). */
   /* One text column. The state dot moved to the trailing edge (see
      `.statusSlot`) and the age is gone with it, so the label is the whole row —
-     the same shape a wave row takes in a panel. */
+     the same shape a track row takes in a panel. */
   .item {
     position: relative;
   }
@@ -81,23 +81,23 @@
 
   /* Two things on one line, in the order the aria-label says them: what the
      conversation is called, then — on the routes that show rows from more than
-     one wave — where it lives. Two ranks and two tones, not two columns: the
-     wave is the crumb (§3.3's `--text-xs` job), so the row still reads as one
-     name with a note after it, and a list of conversations from one wave does
-     not turn into a list of repeated wave titles.
+     one track — where it lives. Two ranks and two tones, not two columns: the
+     track is the crumb (§3.3's `--text-xs` job), so the row still reads as one
+     name with a note after it, and a list of conversations from one track does
+     not turn into a list of repeated track titles.
 
      Both truncate. `min-inline-size: 0` on each child is what lets them: a flex
      item's automatic minimum size is its content, so without it the name would
-     push the wave out of the row rather than ellipsing. Neither may be
-     `flex-shrink: 0` — a long name would then clip the wave entirely.
+     push the track out of the row rather than ellipsing. Neither may be
+     `flex-shrink: 0` — a long name would then clip the track entirely.
 
      But "share it in proportion to their length", which is what two equal
      `flex: 0 1 auto` items do, is the wrong rule here, and it brought the
      defect this pair was written to fix back in another shape. Flex distributes
      shrinkage **weighted by flex base size**, so the longer item keeps more of
-     what it asked for: a 60-character wave title next to `Assistant` in this
+     what it asked for: a 60-character track title next to `Assistant` in this
      270px column takes ~228px and leaves the name ~38px — about five
-     characters. Every row under such a wave then reads `Rena…` `Fix …` `Add …`
+     characters. Every row under such a track then reads `Rena…` `Fix …` `Add …`
      followed by the same long crumb, which is exactly the "N rows a reader
      cannot tell apart" that `list/public.tsx` describes.
 
@@ -129,15 +129,15 @@
     text-overflow: ellipsis;
   }
 
-  .wave {
+  .track {
     /* A floor as well as a ceiling, and the floor is about the separator.
        Shrinkage is weighted by base size, so the *shorter* crumb is the one
-       that gets squeezed to nothing: a one-word wave beside a 60-character
+       that gets squeezed to nothing: a one-word track beside a 60-character
        conversation name is handed about 8px — enough for the `·` below and
        nothing else. The crumb then reads as a lone dot after the name, which
        says "something was cut" about a string that would have fitted in two
        more characters. 6ch is the dot, its 4px gap and about four characters of
-       `--text-xs` — a short wave name whole, or a longer one visibly truncated
+       `--text-xs` — a short track name whole, or a longer one visibly truncated
        rather than erased. Below its own content width it never binds (a short
        crumb is simply shown at its size), and it is an order under the 40%
        ceiling at every width this panel takes, so the two cannot fight. */
@@ -154,18 +154,18 @@
   }
 
   /* A boundary the eye can find once both halves are ellipsed.
-     `Assis…` followed by 4px and `Very long wave title` is two strings only if
+     `Assis…` followed by 4px and `Very long track title` is two strings only if
      you already know it is two strings — the size step and the tone step are
      both small by design (the crumb is meant to be quiet), and an ellipsis at
      the join removes the one cue a reader had, the word ending. The dot is
      decorative and is generated content, so it is outside `textContent` and
      outside the `aria-label` the button already spells out in words; nothing
-     reads it aloud. It sits inside `.wave`, so it is clipped with the crumb
+     reads it aloud. It sits inside `.track`, so it is clipped with the crumb
      rather than surviving a crumb that has vanished — and because it is
      *first*, while clipping happens at the inline end, "clipped with" needed
      the floor above to be true: without it the dot is the one part of the crumb
      that always survives. */
-  .wave::before {
+  .track::before {
     content: '·';
     margin-inline-end: var(--space-1);
   }

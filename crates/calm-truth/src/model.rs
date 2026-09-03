@@ -5,7 +5,7 @@
 //! `crate::model::Area` / `calm_server::model::Card` path keeps working.
 //! What stays defined here:
 //!
-//!   * route-coupled request DTOs (`NewWave` / `NewTerminal` carry a
+//!   * route-coupled request DTOs (`NewTrack` / `NewTerminal` carry a
 //!     `RequestTheme`; the `New*`/`*Patch` family is REST surface, not
 //!     vocabulary);
 //!   * sqlx-coupled entities with no TS export (`Terminal`, `Plugin`,
@@ -20,17 +20,18 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-pub use crate::ids::{ActorId, AreaId, CardId, WaveId};
+pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 // #679 PR1 — moved vocabulary, re-exported at the old paths. The source
 // definitions live in calm-types; do NOT re-declare them here (shim-window
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
     Area, AreaConversationSummary, AreaFolder, AreaKind, AreaResolve, Card, CardRole,
-    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave,
-    WaveConversationSummary, WaveLifecycle, WaveWorkspace, WaveWorkspaceKind, default_deletable,
+    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Track,
+    TrackConversationSummary, TrackLifecycle, TrackWorkspace, TrackWorkspaceKind,
+    default_deletable,
 };
 
-/// Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
+/// Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the
 /// `calm_session::TerminalTheme` value type one-for-one — duplicated
 /// here so the route can keep its own `ToSchema` derive (the
 /// `calm_session` crate is utoipa-free).
@@ -87,34 +88,34 @@ pub struct NewAreaFolder {
     pub path: String,
 }
 
-// ---------------- Wave DTOs ----------------
+// ---------------- Track DTOs ----------------
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct NewWave {
+pub struct NewTrack {
     #[schema(value_type = String)]
     pub area_id: AreaId,
     pub title: String,
     pub sort: Option<f64>,
     /// Issue #250 PR 2 — absolute filesystem path the spec daemon will
-    /// spawn under. Required (no `Option`): every wave-creating path
+    /// spawn under. Required (no `Option`): every track-creating path
     /// must declare a cwd or the spec daemon has no defensible
-    /// working directory. The `POST /api/waves` route enforces
+    /// working directory. The `POST /api/tracks` route enforces
     /// absolute-path shape and the area-folder claim check; the
-    /// inner `wave_create_tx` writes whatever the route lands here
+    /// inner `track_create_tx` writes whatever the route lands here
     /// verbatim.
     pub cwd: String,
     #[serde(default)]
     pub template_id: Option<String>,
     /// #1110 S4 — copied from the owning Manifest at create. Not accepted on
-    /// `POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route
+    /// `POST /api/tracks` (CreateTrackRequest deny_unknown_fields); the route
     /// stamps it from the resolved trusted plugin. `#[serde(default)]` keeps
     /// direct repo callers additive under `deny_unknown_fields`.
     #[serde(default)]
     pub plugin_scope: Option<String>,
     /// Issue #891 / #1110 S2 — JSON input for the bound template. Only
     /// accepted when `template_id` names a template a running trusted plugin
-    /// binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
+    /// binds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`
     /// route validates the value against that schema before any DB write. The
     /// kernel never interprets the blob — it is persisted verbatim and injected
     /// into the spec harness developer instructions at thread-mint time.
@@ -125,13 +126,13 @@ pub struct NewWave {
     pub template_input: Option<serde_json::Value>,
     /// Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
     /// `area_id` as a new folder, in the same transaction as the
-    /// wave-create write". Default `false`: the cwd must already be
+    /// track-create write". Default `false`: the cwd must already be
     /// covered by some existing folder under the same area. Both the
     /// covering scan and the claim insert run inside that one
     /// transaction (issue #275), through the same
     /// [`crate::area_folder_claim::find_owner`] rule
     /// `GET /api/areas/resolve` uses. `true` adds a `area_folder` row
-    /// first and then the wave; folder-conflict rules
+    /// first and then the track; folder-conflict rules
     /// (equal/ancestor/descendant of any existing claim) still apply and
     /// roll the whole tx back on conflict.
     #[serde(default)]
@@ -141,22 +142,22 @@ pub struct NewWave {
     /// OSC 10/11 startup probe with matching colors. A body
     /// missing this field is rejected at the deserialize layer (422):
     /// the spec card is invisible to the user and a silent fallback
-    /// would mean every wave-from-the-UI spawned with a mis-tinted
+    /// would mean every track-from-the-UI spawned with a mis-tinted
     /// composer (the bug that motivated this refactor).
     ///
-    /// Direct repo callers (`db::sqlite::wave_create_tx`, used by tests
+    /// Direct repo callers (`db::sqlite::track_create_tx`, used by tests
     /// and a couple of non-route helpers) still pass a value here even
     /// though the txn-level helper does not consume it — spec-card
-    /// spawning is owned by `routes::waves::create_wave`. Tests can
+    /// spawning is owned by `routes::tracks::create_track`. Tests can
     /// use `RequestTheme::default_dark()` as a no-op sentinel.
     pub theme: RequestTheme,
 }
 
 /// INV-1110-004: `plugin_scope` is create-time only and is not a field here.
-/// PATCH `/api/waves` cannot widen or change it. Extra JSON keys are ignored
+/// PATCH `/api/tracks` cannot widen or change it. Extra JSON keys are ignored
 /// (`deny_unknown_fields` is not set).
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]
-pub struct WavePatch {
+pub struct TrackPatch {
     pub title: Option<String>,
     pub sort: Option<f64>,
     /// Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,
@@ -168,12 +169,12 @@ pub struct WavePatch {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub pinned_at: Option<Option<i64>>,
     /// Issue #145 — request a lifecycle transition. The actual
-    /// transition validation runs through `crate::wave_lifecycle`,
+    /// transition validation runs through `crate::track_lifecycle`,
     /// inside the write transaction. Omitting (`None`) means "leave
     /// alone"; `Some(<state>)` triggers the validator against the
     /// (actor, from → to) triple before any DB write or event emit.
-    pub lifecycle: Option<WaveLifecycle>,
-    /// Issue #644 — per-wave scheduler budget (`waves.task_budget`,
+    pub lifecycle: Option<TrackLifecycle>,
+    /// Issue #644 — per-track scheduler budget (`tracks.task_budget`,
     /// migration 0041). Pass `Some(Some(n))` to set, `Some(None)` to
     /// clear back to the kernel default, or omit (`None`) to leave
     /// alone. Inert until the PR-B scheduler reads it.
@@ -183,41 +184,41 @@ pub struct WavePatch {
     /// present null resets to the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub spec_task_ceiling: Option<Option<i64>>,
-    /// Issue #985 — per-wave declaration policy. A present null resets to
+    /// Issue #985 — per-track declaration policy. A present null resets to
     /// the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub automation_policy: Option<Option<String>>,
     /// Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
-    /// the WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a
-    /// wave with a parent, since a per-child budget would make the tree bound
+    /// the WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a
+    /// track with a parent, since a per-child budget would make the tree bound
     /// vacuous. A present null resets to the kernel default (32).
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub tree_task_budget: Option<Option<i64>>,
-    /// Issue #644 — wave-level gate policy (`waves.require_task_gates`,
+    /// Issue #644 — track-level gate policy (`tracks.require_task_gates`,
     /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
     /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
     pub require_task_gates: Option<bool>,
     /// #1147 S3 — request a workspace change (design §更换与冻结).
     ///
-    /// Handled entirely by `routes::waves::update_wave` and **never** by
-    /// `wave_update_tx`: a re-point is a filesystem move bracketed by two
+    /// Handled entirely by `routes::tracks::update_track` and **never** by
+    /// `track_update_tx`: a re-point is a filesystem move bracketed by two
     /// transactions, not a column write, so there is nothing here for the
     /// mechanical row writer to apply. It is also mutually exclusive with
     /// every other field in this struct — see the route.
     #[serde(default)]
-    pub workspace: Option<WaveWorkspacePatch>,
+    pub workspace: Option<TrackWorkspacePatch>,
 }
 
-/// #1147 S3 — point a wave at a repository the user already has.
+/// #1147 S3 — point a track at a repository the user already has.
 ///
 /// The only transition this expresses is `managed → attached`. There is no
 /// `managed → managed`: a managed path is *derived*
-/// (`<workspace-root>/<area_id>/<wave_id>`, see
-/// `workspace_materialize::managed_workspace_path`) from a wave's area and id,
+/// (`<workspace-root>/<area_id>/<track_id>`, see
+/// `workspace_materialize::managed_workspace_path`) from a track's area and id,
 /// neither of which can change, so "re-allocate a managed workspace" would
 /// always re-derive the same path — an in-place reset, not a change. And a
 /// caller-supplied *managed* path is worse than useless: S5's recycle guard 2
-/// requires exactly `<root>/<area>/<wave>` depth, so any other path produces a
+/// requires exactly `<root>/<area>/<track>` depth, so any other path produces a
 /// row whose directory can never be reclaimed.
 ///
 /// `attached → *` stays refused (an attached repository belongs to the user;
@@ -225,19 +226,19 @@ pub struct WavePatch {
 /// one-way door — and the write below stamps `frozen_at` to say so.
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct WaveWorkspacePatch {
+pub struct TrackWorkspacePatch {
     /// Must be `attached`. `managed` is a documented 400, not a silent no-op.
-    pub kind: WaveWorkspaceKind,
+    pub kind: TrackWorkspaceKind,
     /// Absolute path to an existing Git work tree. Validated — existence and
     /// git-ness included — *before* anything is written, because "the path was
     /// wrong" surfacing later as a worker's `spawn-failed` is the defect
     /// #1147 was opened on.
     pub path: String,
-    /// Claim `path` for this wave's area in the same transaction, exactly as
-    /// `POST /api/waves`'s field of the same name does (issue #275 rules:
+    /// Claim `path` for this track's area in the same transaction, exactly as
+    /// `POST /api/tracks`'s field of the same name does (issue #275 rules:
     /// equal / ancestor / descendant of any existing claim is a structured
     /// 409). Default `false`: an unclaimed path is refused rather than
-    /// silently making a homeless wave.
+    /// silently making a homeless track.
     #[serde(default)]
     pub attach_folder: bool,
 }
@@ -246,12 +247,12 @@ pub struct WaveWorkspacePatch {
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewCard {
-    /// Defaulted so the REST handler can override from the `:wave_id` path
+    /// Defaulted so the REST handler can override from the `:track_id` path
     /// param without forcing every client body to repeat it. Direct repo
     /// callers must still set this — passing "" produces a NotFound.
     #[serde(default)]
     #[schema(value_type = String)]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub kind: String,
     pub sort: Option<f64>,
     #[serde(default)]
@@ -434,9 +435,9 @@ impl TaskStatus {
     }
 }
 
-/// One row of the wave-scoped task plan (`tasks`, migration 0041).
+/// One row of the track-scoped task plan (`tasks`, migration 0041).
 ///
-/// `id = "{wave_id}:{key}"` — kernel-composed (wave ids are `new_id()`
+/// `id = "{track_id}:{key}"` — kernel-composed (track ids are `new_id()`
 /// hex, so `:` cannot collide). The JSON columns stay `String`s here:
 /// the repo layer is mechanical and the tool layer owns
 /// parse/normalize (`mcp_server::tools::plan`). Not exposed over REST
@@ -444,7 +445,7 @@ impl TaskStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, sqlx::FromRow, ToSchema)]
 pub struct Task {
     pub id: String,
-    pub wave_id: String,
+    pub track_id: String,
     pub key: String,
     pub kind: TaskKind,
     pub goal: String,
@@ -466,7 +467,7 @@ pub struct Task {
     pub context_stale_at_ms: Option<i64>,
     pub declared_by: String,
     /// Claim-frozen route selector. Deliberately not exposed through task
-    /// read-state DTOs: it is written before claim, unlike child_wave_id.
+    /// read-state DTOs: it is written before claim, unlike child_track_id.
     pub spawn: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -486,11 +487,11 @@ impl Task {
 
 // ---------------- Composites ----------------
 
-/// What a Wave detail page renders: the wave itself plus its cards and
-/// any overlays scoped to the wave (status/progress badges) and its cards.
+/// What a Track detail page renders: the track itself plus its cards and
+/// any overlays scoped to the track (status/progress badges) and its cards.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-pub struct WaveDetail {
-    pub wave: Wave,
+pub struct TrackDetail {
+    pub track: Track,
     pub cards: Vec<Card>,
     pub overlays: Vec<Overlay>,
 }
@@ -502,7 +503,7 @@ fn empty_object() -> serde_json::Value {
 }
 
 /// Deserializes `null` → `Some(None)`, missing → `None`, value → `Some(Some(v))`.
-/// Used so `WavePatch.archived_at` can distinguish "leave alone" from "set to null".
+/// Used so `TrackPatch.archived_at` can distinguish "leave alone" from "set to null".
 fn deserialize_double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,

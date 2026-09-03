@@ -1,10 +1,10 @@
-//! Wave-as-Actor PR3 (#136) — authorization gate at the single write entry.
+//! Track-as-Actor PR3 (#136) — authorization gate at the single write entry.
 //!
 //! The gate runs inside `Repo::write_with_event` / `Repo::log_pure_event`,
 //! after the closure produces an `Event`, before `event_append_in_tx`
 //! commits the row. A violation rolls the txn back: no entity write,
 //! no event row, no broadcast. The kernel is the only safety boundary
-//! between AI-controlled cards and the wave-level kernel state, so the
+//! between AI-controlled cards and the track-level kernel state, so the
 //! gate is deliberately strict — *deny* is the default for anything
 //! ambiguous, and we re-confirm role lookups against the in-process
 //! `CardRoleCache` rather than trusting the actor's claimed identity.
@@ -20,25 +20,25 @@
 //!    `routes::codex::ingest_hook`), so this branch ends up firing only
 //!    when something else regresses — fail loud, not silent.
 //!
-//! 2. **`Event::WaveUpdated` is gated to spec cards.** The actor must be
+//! 2. **`Event::TrackUpdated` is gated to spec cards.** The actor must be
 //!    `User`, `Kernel`, or `AiSpec(card_id)` where the cache confirms
 //!    `CardRole::Spec`. Any `AiCodex` / `AiClaude` actor — even one bound
-//!    to a card — is rejected: worker cards must not edit wave-level state.
+//!    to a card — is rejected: worker cards must not edit track-level state.
 //!
 //! 3. **Worker/ReportCard self-scope check.** When an
 //!    `AiCodex(card_id)` or `AiClaude(card_id)` actor's cached role is
 //!    `Worker` or `ReportCard`, the event's
 //!    `EventScope` must be the
-//!    same card, its `wave` field must match the card's home wave
+//!    same card, its `track` field must match the card's home track
 //!    (issue #232), *and* its `area` field must match the card's
 //!    home area (issue #234). A worker or report-card actor that tries
-//!    to emit a `Wave` or `Area` scope event — or a Card scope with a
-//!    spoofed `wave` or `area` — is refused.
+//!    to emit a `Track` or `Area` scope event — or a Card scope with a
+//!    spoofed `track` or `area` — is refused.
 //!
 //! 4. **Dispatch-request events are gated to spec cards.** Issue #583.
 //!    `Event::CodexWorkerRequested` and `Event::TerminalWorkerRequested` are
 //!    refused for any `AiCodex` / `AiClaude` actor, mirroring the
-//!    `WaveUpdated` rule. Spec card (`AiSpec`) with cached role `Spec`
+//!    `TrackUpdated` rule. Spec card (`AiSpec`) with cached role `Spec`
 //!    passes; User / Kernel / KernelDispatcher / Plugin keep their
 //!    unrestricted access for forward compatibility (no current emitter
 //!    in those families).
@@ -57,9 +57,9 @@
 
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::CardRole;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use crate::worker::WorkerSessionId;
 use calm_types::proposal::ProposalDecision;
 use thiserror::Error;
@@ -106,8 +106,8 @@ pub enum RoleViolation {
         card: CardId,
     },
 
-    #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
-    NotSpecForWave { actor: String },
+    #[error("only spec cards (or User/Kernel) may emit track.updated (actor={actor})")]
+    NotSpecForTrack { actor: String },
 
     #[error("only spec cards (or User/Kernel) may emit dispatch-request events (actor={actor})")]
     NotSpecForDispatch { actor: String },
@@ -161,7 +161,7 @@ pub enum RoleViolation {
     WorkerOutOfScope { card: CardId, scope: String },
 
     /// #1189 — an `Assistant`-roled card wrote outside the two card
-    /// scopes it owns (itself, and its home wave's report card).
+    /// scopes it owns (itself, and its home track's report card).
     #[error("assistant card {card} is out of scope {scope}")]
     AssistantOutOfScope { card: CardId, scope: String },
 
@@ -186,7 +186,7 @@ pub fn enforce_role(
     event: &Event,
     scope: &EventScope,
     cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
 ) -> Result<(), RoleViolation> {
     // --- (1) Empty-CardId guard. ---
     //
@@ -208,21 +208,21 @@ pub fn enforce_role(
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
     }
 
-    // --- (2) `WaveUpdated` is spec-only. ---
+    // --- (2) `TrackUpdated` is spec-only. ---
     //
-    // The wave-level authority decision: only the spec card (PR6) is
-    // allowed to update the wave row. User + Kernel keep their
+    // The track-level authority decision: only the spec card (PR6) is
+    // allowed to update the track row. User + Kernel keep their
     // unrestricted authority (the user is *the* authority; Kernel is
     // the FSM projector / sweeper / plugin dispatcher, which writes
     // server-internal lifecycle the user implicitly authorized at
     // boot).
-    if matches!(event, Event::WaveUpdated(_)) {
+    if matches!(event, Event::TrackUpdated(_)) {
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
             ActorId::Plugin(_) => {
                 // Plugins are unrestricted in PR3 — see the
                 // `RouteRepo` capability split docs. Plugin-driven
-                // wave edits are rare in practice (the surface for
+                // track edits are rare in practice (the surface for
                 // them lives in the plugin host callback dispatcher,
                 // which is server-internal). If PR4+ tightens this,
                 // it lands here.
@@ -230,7 +230,7 @@ pub fn enforce_role(
             ActorId::AiSpec(card_id) => {
                 let role = cache.get(card_id);
                 if role != Some(CardRole::Spec) {
-                    return Err(RoleViolation::NotSpecForWave {
+                    return Err(RoleViolation::NotSpecForTrack {
                         actor: format!("AiSpec({card_id})"),
                     });
                 }
@@ -241,7 +241,7 @@ pub fn enforce_role(
                 // bound to `AiSpec`) is rejected here. The actor
                 // variant is the wire-level claim; the gate sticks
                 // to it rather than re-binding via the cache.
-                return Err(RoleViolation::NotSpecForWave {
+                return Err(RoleViolation::NotSpecForTrack {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
@@ -266,7 +266,7 @@ pub fn enforce_role(
     // worker-tree mint. Mirrors section (2)'s shape.
     //
     // Issue #644 — `Event::PlanUpdated` joins the list: the task plan is
-    // wave-level authority (the PR-B scheduler dispatches whatever the
+    // track-level authority (the PR-B scheduler dispatches whatever the
     // plan says), so a worker actor writing plan revisions would be the
     // same recursive-mint hole one hop removed.
     if matches!(
@@ -452,7 +452,7 @@ pub fn enforce_role(
     //
     // Issue #760 slice 5b. These are policy records authored by the spec
     // agent after it has correlated reviewer channels or decided a human
-    // ratify gate is needed. Unlike the older wave-write/dispatch arms,
+    // ratify gate is needed. Unlike the older track-write/dispatch arms,
     // User/Kernel/Plugin do NOT pass here: letting any non-spec actor forge
     // `converged=true` or a ratify request would bypass the review protocol.
     if matches!(
@@ -565,15 +565,15 @@ pub fn enforce_role(
     // broader than that card's own scope. The check is three-pronged:
     //   * `scope.card == self_card` — the actor only writes into its
     //     own card scope;
-    //   * `scope.wave == cache.wave_of(self_card)` — the supplied
-    //     `wave` field must match the worker's home wave (closes
-    //     issue #232: a Worker could otherwise forge `wave: <ANY>`
-    //     and the kernel would route the event to that wave's
+    //   * `scope.track == cache.track_of(self_card)` — the supplied
+    //     `track` field must match the worker's home track (closes
+    //     issue #232: a Worker could otherwise forge `track: <ANY>`
+    //     and the kernel would route the event to that track's
     //     subscribers).
-    //   * `scope.area == wave_area_cache.area_of(home_wave)` — the
-    //     supplied `area` must match the home wave's persisted area
+    //   * `scope.area == track_area_cache.area_of(home_track)` — the
+    //     supplied `area` must match the home track's persisted area
     //     (closes issue #234: same fan-out spoof shape as #232 but
-    //     one level up). Area is immutable per wave so the lookup is
+    //     one level up). Area is immutable per track so the lookup is
     //     stable for the card's lifetime.
     //
     if let ActorId::AiSpecSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
@@ -590,31 +590,31 @@ pub fn enforce_role(
                 });
             }
             Some(CardRole::Worker) => {
-                enforce_card_self_scope(card_id, scope, cache, wave_area_cache)?;
+                enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
             // Lifecycle carveout — hook bridges run as subprocesses of
             // their worker regardless of the card's role, and the REST
             // spec-input route may receive the legacy `ai:codex` header
             // before route context rebinds it to the spec card. These
-            // events are pure card-scoped observations, *not* wave-level
+            // events are pure card-scoped observations, *not* track-level
             // authority claims, so we accept them from an AI-worker
             // spec-card actor as long as the scope matches the card's own
-            // home (card_id + wave + area cached values — same shape as
+            // home (card_id + track + area cached values — same shape as
             // the Worker arm). Anything else from that actor is still
             // refused; write authority for spec-roled cards lives with
-            // `AiSpec`. Note that `Event::WaveUpdated` is already gated
+            // `AiSpec`. Note that `Event::TrackUpdated` is already gated
             // in section (2) above and unconditionally refuses any AI
             // worker actor, so this carveout cannot regress the
-            // wave-authority invariant.
+            // track-authority invariant.
             Some(CardRole::Spec) if is_own_worker_lifecycle_event(actor, event) => {
-                enforce_card_self_scope(card_id, scope, cache, wave_area_cache)?;
+                enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
             // PR3 invariant: spec cards are bound to AiSpec, not an AI
             // worker actor. Anything other than the hook carveout above
             // (which is a stateless bridge ingest path) from a
             // worker-variant spec-card actor is rejected.
             Some(CardRole::Spec) => {
-                return Err(RoleViolation::NotSpecForWave {
+                return Err(RoleViolation::NotSpecForTrack {
                     actor: format!(
                         "{} — card is Spec-roled but actor variant is not AiSpec",
                         ai_worker_actor_label(actor, card_id),
@@ -622,19 +622,19 @@ pub fn enforce_role(
                 });
             }
             // Issue #679 PR7b-ii — ReportCard-bound actors have no
-            // cross-card/wave authority; mirror the Worker self-scope
-            // rule for non-wave-update/non-dispatch events.
+            // cross-card/track authority; mirror the Worker self-scope
+            // rule for non-track-update/non-dispatch events.
             Some(CardRole::ReportCard) => {
-                enforce_card_self_scope(card_id, scope, cache, wave_area_cache)?;
+                enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
             // #1189 — Assistant cards are the Worker self-scope rule
-            // loosened by exactly one card: their home wave's report
-            // card. Everything else (Wave/Area/System scope, another
-            // wave's report card, someone else's worker card) is
+            // loosened by exactly one card: their home track's report
+            // card. Everything else (Track/Area/System scope, another
+            // track's report card, someone else's worker card) is
             // refused, which is what pins "an assistant can neither
             // advance the lifecycle nor dispatch a task".
             Some(CardRole::Assistant) => {
-                enforce_assistant_scope(card_id, scope, cache, wave_area_cache)?;
+                enforce_assistant_scope(card_id, scope, cache, track_area_cache)?;
             }
         }
     }
@@ -648,8 +648,8 @@ pub fn enforce_role(
 }
 
 /// Cross-check that `scope` describes the card's own home — `card`
-/// matches, `wave` matches the cached home wave, `area` matches the
-/// home wave's persisted area. Shared between the Worker and ReportCard
+/// matches, `track` matches the cached home track, `area` matches the
+/// home track's persisted area. Shared between the Worker and ReportCard
 /// arms (which use it for *every* event) and the Spec arm's `CodexHook`
 /// carveout (bug A — the codex bridge ingest path for a spec card).
 ///
@@ -661,13 +661,13 @@ fn enforce_card_self_scope(
     card_id: &CardId,
     scope: &EventScope,
     cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
 ) -> Result<(), RoleViolation> {
     enforce_card_scope(
         card_id,
         scope,
         cache,
-        wave_area_cache,
+        track_area_cache,
         &|target, _home| target == card_id,
         &|card, scope| RoleViolation::WorkerOutOfScope { card, scope },
     )
@@ -676,31 +676,31 @@ fn enforce_card_self_scope(
 /// #1189 — [`enforce_card_self_scope`] loosened by exactly one card.
 ///
 /// An `Assistant`-roled card may write into its own card scope **or**
-/// into the scope of its home wave's report card (`role == ReportCard`
-/// **and** same home wave — the report card of *another* wave is
-/// refused). The `wave` / `area` cross-checks are the same #232 / #234
+/// into the scope of its home track's report card (`role == ReportCard`
+/// **and** same home track — the report card of *another* track is
+/// refused). The `track` / `area` cross-checks are the same #232 / #234
 /// anti-spoof checks the Worker arm runs, so an assistant can neither
-/// fan an event out to a foreign wave nor claim a foreign area.
+/// fan an event out to a foreign track nor claim a foreign area.
 ///
 /// Everything else is refused, including every non-`Card` scope. That
-/// last clause is what pins the two §2 non-capabilities: `Wave`-scoped
+/// last clause is what pins the two §2 non-capabilities: `Track`-scoped
 /// events (lifecycle transitions, dispatch requests) never reach an
 /// assistant-authored write.
 fn enforce_assistant_scope(
     card_id: &CardId,
     scope: &EventScope,
     cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
 ) -> Result<(), RoleViolation> {
     enforce_card_scope(
         card_id,
         scope,
         cache,
-        wave_area_cache,
-        &|target, home_wave| {
+        track_area_cache,
+        &|target, home_track| {
             target == card_id
                 || (cache.get(target) == Some(CardRole::ReportCard)
-                    && cache.wave_of(target).as_ref() == Some(home_wave))
+                    && cache.track_of(target).as_ref() == Some(home_track))
         },
         &|card, scope| RoleViolation::AssistantOutOfScope { card, scope },
     )
@@ -708,28 +708,28 @@ fn enforce_assistant_scope(
 
 /// Shared body of [`enforce_card_self_scope`] and
 /// [`enforce_assistant_scope`]: the scope must be `EventScope::Card`,
-/// its `card` must satisfy `target_allowed`, and its `wave` / `area`
-/// must match the acting card's home wave and that wave's persisted
+/// its `card` must satisfy `target_allowed`, and its `track` / `area`
+/// must match the acting card's home track and that track's persisted
 /// area.
 fn enforce_card_scope(
     card_id: &CardId,
     scope: &EventScope,
     cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
-    target_allowed: &dyn Fn(&CardId, &WaveId) -> bool,
+    track_area_cache: &TrackAreaCache,
+    target_allowed: &dyn Fn(&CardId, &TrackId) -> bool,
     violation: &dyn Fn(CardId, String) -> RoleViolation,
 ) -> Result<(), RoleViolation> {
-    // `get()` (in the caller) and `wave_of()` are two independent DashMap
-    // lookups, so a card deleted between them makes `wave_of` return
+    // `get()` (in the caller) and `track_of()` are two independent DashMap
+    // lookups, so a card deleted between them makes `track_of` return
     // `None`. Every denial below therefore has to be reachable without a
-    // successful `wave_of`: the non-Card scopes are refused before it is
+    // successful `track_of`: the non-Card scopes are refused before it is
     // consulted, and the lookup itself is fail-closed (see below) so that
     // "Card scope naming the wrong card" — the out-of-bounds write path —
     // is a clean violation under the same delete race, exactly as it was
     // before the check was split into variant + target halves.
     let EventScope::Card {
         card: target,
-        wave: scope_wave,
+        track: scope_track,
         area: scope_area,
     } = scope
     else {
@@ -742,35 +742,35 @@ fn enforce_card_scope(
     // caller's `get()` and this lookup means we can no longer prove the
     // scope is the card's own home, and "cannot prove" is a denial, never
     // a panic inside the kernel gate.
-    let Some(home_wave) = cache.wave_of(card_id) else {
+    let Some(home_track) = cache.track_of(card_id) else {
         return Err(violation(
             card_id.clone(),
             format!("scope.card mismatch: {scope:?}"),
         ));
     };
-    if !target_allowed(target, &home_wave) {
+    if !target_allowed(target, &home_track) {
         return Err(violation(
             card_id.clone(),
             format!("scope.card mismatch: {scope:?}"),
         ));
     }
-    // Target accepted. Now cross-check `scope.wave` against the acting
-    // card's immutable home wave.
-    if scope_wave != &home_wave {
+    // Target accepted. Now cross-check `scope.track` against the acting
+    // card's immutable home track.
+    if scope_track != &home_track {
         return Err(violation(
             card_id.clone(),
-            format!("scope.wave mismatch: home={home_wave}, scope={scope:?}"),
+            format!("scope.track mismatch: home={home_track}, scope={scope:?}"),
         ));
     }
-    // #234 — cross-check `scope.area` against the home wave's persisted
-    // area. The wave→area cache is write-through-populated in
-    // `wave_create_tx`, so a missing entry under a known wave id is a
+    // #234 — cross-check `scope.area` against the home track's persisted
+    // area. The track→area cache is write-through-populated in
+    // `track_create_tx`, so a missing entry under a known track id is a
     // hard invariant break worth failing loudly on (rather than the
     // silent "deny by default" of the role cache miss, which has its
     // own race-with-delete semantics covered elsewhere).
-    let home_area = wave_area_cache.area_of(&home_wave).expect(
-        "wave_area_cache must be populated for any wave with a known card — \
-         wave_create_tx writes through unconditionally",
+    let home_area = track_area_cache.area_of(&home_track).expect(
+        "track_area_cache must be populated for any track with a known card — \
+         track_create_tx writes through unconditionally",
     );
     if scope_area != &home_area {
         return Err(violation(
@@ -804,18 +804,18 @@ fn is_own_worker_lifecycle_event(actor: &ActorId, event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{AreaId, WaveId};
-    use crate::model::{Area, AreaKind, Wave, WaveLifecycle};
+    use crate::ids::{AreaId, TrackId};
+    use crate::model::{Area, AreaKind, Track, TrackLifecycle};
 
-    fn wave(id: &str, area: &str) -> Wave {
-        Wave {
-            id: WaveId::from(id),
+    fn track(id: &str, area: &str) -> Track {
+        Track {
+            id: TrackId::from(id),
             area_id: AreaId::from(area),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
             pinned_at: None,
-            lifecycle: WaveLifecycle::Draft,
+            lifecycle: TrackLifecycle::Draft,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
@@ -828,23 +828,26 @@ mod tests {
         }
     }
 
-    fn card_scope(card: &str, wave: &str, area: &str) -> EventScope {
+    fn card_scope(card: &str, track: &str, area: &str) -> EventScope {
         EventScope::Card {
             card: CardId::from(card),
-            wave: WaveId::from(wave),
+            track: TrackId::from(track),
             area: AreaId::from(area),
         }
     }
 
-    fn wave_scope(wave: &str, area: &str) -> EventScope {
-        EventScope::Wave {
-            wave: WaveId::from(wave),
+    fn track_scope(track: &str, area: &str) -> EventScope {
+        EventScope::Track {
+            track: TrackId::from(track),
             area: AreaId::from(area),
         }
     }
 
-    fn wave_updated() -> Event {
-        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave("w", "c"), None))
+    fn track_updated() -> Event {
+        Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
+            track("w", "c"),
+            None,
+        ))
     }
 
     fn area_updated() -> Event {
@@ -859,40 +862,40 @@ mod tests {
         })
     }
 
-    /// Pre-seeded wave→area cache the Worker tests use: wave `w` lives
+    /// Pre-seeded track→area cache the Worker tests use: track `w` lives
     /// in area `c`. Tests that exercise mismatch paths override this
     /// per-test (#234).
-    fn seeded_wcc() -> WaveAreaCache {
-        let c = WaveAreaCache::new();
-        c.insert(WaveId::from("w"), AreaId::from("c"));
+    fn seeded_wcc() -> TrackAreaCache {
+        let c = TrackAreaCache::new();
+        c.insert(TrackId::from("w"), AreaId::from("c"));
         c
     }
 
     #[test]
-    fn user_can_update_wave() {
+    fn user_can_update_track() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::User,
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
         assert!(
             res.is_ok(),
-            "user should be allowed to update wave: {res:?}"
+            "user should be allowed to update track: {res:?}"
         );
     }
 
     #[test]
-    fn kernel_can_update_wave() {
+    fn kernel_can_update_track() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::Kernel,
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -900,81 +903,84 @@ mod tests {
     }
 
     #[test]
-    fn ai_spec_with_spec_role_can_update_wave() {
+    fn ai_spec_with_spec_role_can_update_track() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let spec_id = CardId::from("spec-1");
-        cache.insert(spec_id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(spec_id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiSpec(spec_id),
-            &wave_updated(),
-            &wave_scope("w", "c"),
-            &cache,
-            &wcc,
-        );
-        assert!(res.is_ok(), "AiSpec(spec-card) should update wave: {res:?}");
-    }
-
-    #[test]
-    fn ai_spec_without_spec_role_cannot_update_wave() {
-        // An AiSpec actor whose cached role is `Worker` (mismatch
-        // between wire claim + persisted truth) is denied.
-        let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
-        let id = CardId::from("c1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
-        let res = enforce_role(
-            &ActorId::AiSpec(id),
-            &wave_updated(),
-            &wave_scope("w", "c"),
-            &cache,
-            &wcc,
-        );
-        assert!(matches!(res, Err(RoleViolation::NotSpecForWave { .. })));
-    }
-
-    #[test]
-    fn ai_codex_cannot_update_wave_even_with_known_card() {
-        let cache = CardRoleCache::new();
-        let wcc = seeded_wcc();
-        let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
-        let res = enforce_role(
-            &ActorId::AiCodex(id),
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
-            "AiCodex must never emit wave.updated regardless of role: {res:?}",
+            res.is_ok(),
+            "AiSpec(spec-card) should update track: {res:?}"
+        );
+    }
+
+    #[test]
+    fn ai_spec_without_spec_role_cannot_update_track() {
+        // An AiSpec actor whose cached role is `Worker` (mismatch
+        // between wire claim + persisted truth) is denied.
+        let cache = CardRoleCache::new();
+        let wcc = TrackAreaCache::new();
+        let id = CardId::from("c1");
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiSpec(id),
+            &track_updated(),
+            &track_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(matches!(res, Err(RoleViolation::NotSpecForTrack { .. })));
+    }
+
+    #[test]
+    fn ai_codex_cannot_update_track_even_with_known_card() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id),
+            &track_updated(),
+            &track_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
+            "AiCodex must never emit track.updated regardless of role: {res:?}",
         );
     }
 
     /// Belt-and-suspenders companion to the Worker test above: the
-    /// CodexHook carveout added for spec cards must not let `WaveUpdated`
-    /// through. Section 2 (`WaveUpdated` is spec-only via `AiSpec`) runs
+    /// CodexHook carveout added for spec cards must not let `TrackUpdated`
+    /// through. Section 2 (`TrackUpdated` is spec-only via `AiSpec`) runs
     /// before section 3's `Some(CardRole::Spec) if CodexHook` arm, so
     /// the invariant is structural — this test pins it explicitly so a
     /// future refactor that reorders the sections can't silently regress
     /// it.
     #[test]
-    fn spec_codex_cannot_update_wave() {
+    fn spec_codex_cannot_update_track() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id),
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
-            "AiCodex(spec_card) must still be refused on wave.updated even after the CodexHook carveout: {res:?}",
+            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
+            "AiCodex(spec_card) must still be refused on track.updated even after the CodexHook carveout: {res:?}",
         );
     }
 
@@ -983,14 +989,14 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        // Worker's home wave is "w" — scope below must use the same.
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        // Worker's home track is "w" — scope below must use the same.
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
-            // A non-wave-updated event (AreaUpdated chosen because it
+            // A non-track-updated event (AreaUpdated chosen because it
             // also has no card semantics — but the scope is what we
             // assert on, the event variant is irrelevant after the
-            // wave-updated branch). Use a card-scoped event:
+            // track-updated branch). Use a card-scoped event:
             // OverlaySet would also work; AreaUpdated lets us exercise
             // the scope check independent of payload shape.
             &area_updated(),
@@ -1006,12 +1012,12 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
-        // Wave scope when caller is a worker → reject.
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
+        // Track scope when caller is a worker → reject.
         let res = enforce_role(
             &ActorId::AiCodex(id),
             &area_updated(),
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -1023,7 +1029,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id),
             &area_updated(),
@@ -1035,22 +1041,22 @@ mod tests {
     }
 
     #[test]
-    fn worker_with_mismatched_scope_wave_rejected() {
+    fn worker_with_mismatched_scope_track_rejected() {
         // Issue #232: even with `scope.card == self`, the gate must
-        // reject a `scope.wave` that doesn't match the Worker card's
-        // home wave. Without this check, a Worker could forge any
-        // wave id and the kernel would route the event to that wave's
+        // reject a `scope.track` that doesn't match the Worker card's
+        // home track. Without this check, a Worker could forge any
+        // track id and the kernel would route the event to that track's
         // subscribers.
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
-        wcc.insert(WaveId::from("home-wave"), AreaId::from("c"));
+        let wcc = TrackAreaCache::new();
+        wcc.insert(TrackId::from("home-track"), AreaId::from("c"));
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("home-wave"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("home-track"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &area_updated(),
-            // Same card, but a different wave — must reject.
-            &card_scope(id.as_str(), "other-wave", "c"),
+            // Same card, but a different track — must reject.
+            &card_scope(id.as_str(), "other-track", "c"),
             &cache,
             &wcc,
         );
@@ -1058,32 +1064,32 @@ mod tests {
             matches!(
                 res,
                 Err(RoleViolation::WorkerOutOfScope { ref scope, .. })
-                    if scope.contains("scope.wave mismatch")
+                    if scope.contains("scope.track mismatch")
             ),
-            "Worker forging scope.wave must be refused: {res:?}",
+            "Worker forging scope.track must be refused: {res:?}",
         );
     }
 
     #[test]
     fn worker_with_mismatched_scope_area_rejected() {
         // Issue #234: even with `scope.card == self` and
-        // `scope.wave == home_wave`, the gate must reject a
-        // `scope.area` that doesn't match the home wave's persisted
+        // `scope.track == home_track`, the gate must reject a
+        // `scope.area` that doesn't match the home track's persisted
         // area. Without this check, a Worker could forge any area id
         // and the kernel would route the event to that area's
         // subscribers — cross-area isolation break, same shape as #232
         // one level up.
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
-        wcc.insert(WaveId::from("home-wave"), AreaId::from("home-area"));
+        let wcc = TrackAreaCache::new();
+        wcc.insert(TrackId::from("home-track"), AreaId::from("home-area"));
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("home-wave"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("home-track"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &area_updated(),
-            // Same card + same wave, but a different area — must
+            // Same card + same track, but a different area — must
             // reject before the event row lands.
-            &card_scope(id.as_str(), "home-wave", "forged-area"),
+            &card_scope(id.as_str(), "home-track", "forged-area"),
             &cache,
             &wcc,
         );
@@ -1100,7 +1106,7 @@ mod tests {
     #[test]
     fn empty_codex_card_id_rejected() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiCodex(CardId::from("")),
             &area_updated(),
@@ -1114,7 +1120,7 @@ mod tests {
     #[test]
     fn empty_aispec_card_id_rejected() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiSpec(CardId::from("")),
             &area_updated(),
@@ -1131,7 +1137,7 @@ mod tests {
         // cache is denied. Covers two real cases — card was deleted
         // between request and gate, or the id was fabricated.
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiCodex(CardId::from("never-seen")),
             &area_updated(),
@@ -1163,11 +1169,11 @@ mod tests {
         }
     }
 
-    fn harness_user_message_enqueued(card: &str, wave: &str) -> Event {
+    fn harness_user_message_enqueued(card: &str, track: &str) -> Event {
         Event::HarnessUserMessageEnqueued {
             runtime_id: "rt-1".into(),
             card_id: CardId::from(card),
-            wave_id: WaveId::from(wave),
+            track_id: TrackId::from(track),
             char_count: 3,
         }
     }
@@ -1179,12 +1185,12 @@ mod tests {
         // bridge still surfaces hook events through the
         // `AiCodex(spec_card)` actor. The gate accepts `Event::CodexHook`
         // from that actor as a pure lifecycle observation, scoped to the
-        // card's own home (card_id + wave + area). Mirror of
+        // card's own home (card_id + track + area). Mirror of
         // `worker_in_card_scope_ok` for the Spec arm.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_hook(id.as_str()),
@@ -1203,7 +1209,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &harness_user_message_enqueued(id.as_str(), "w"),
@@ -1224,11 +1230,11 @@ mod tests {
         // `AiCodex(spec_card)` is still refused — write authority for
         // spec-roled cards lives with `AiSpec`, not `AiCodex`.
         // AreaUpdated chosen because it's outside that lifecycle set and
-        // is not a wave-updated event variant.
+        // is not a track-updated event variant.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &area_updated(),
@@ -1237,7 +1243,7 @@ mod tests {
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
+            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
             "AiCodex(spec) non-hook event must still be refused: {res:?}",
         );
     }
@@ -1245,20 +1251,20 @@ mod tests {
     #[test]
     fn spec_codex_hook_out_of_scope_rejected() {
         // The carveout reuses the same scope cross-check as the Worker
-        // arm — an `AiCodex(spec_card)` CodexHook with a forged wave id
+        // arm — an `AiCodex(spec_card)` CodexHook with a forged track id
         // is still refused. This pins that the new helper is wired into
         // the Spec arm, not just nominally accepted.
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
-        wcc.insert(WaveId::from("home-wave"), AreaId::from("c"));
+        let wcc = TrackAreaCache::new();
+        wcc.insert(TrackId::from("home-track"), AreaId::from("c"));
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("home-wave"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("home-track"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_hook(id.as_str()),
-            // Same card, but a different wave — must reject even on
+            // Same card, but a different track — must reject even on
             // the carveout path.
-            &card_scope(id.as_str(), "other-wave", "c"),
+            &card_scope(id.as_str(), "other-track", "c"),
             &cache,
             &wcc,
         );
@@ -1266,28 +1272,28 @@ mod tests {
             matches!(
                 res,
                 Err(RoleViolation::WorkerOutOfScope { ref scope, .. })
-                    if scope.contains("scope.wave mismatch")
+                    if scope.contains("scope.track mismatch")
             ),
-            "AiCodex(spec) CodexHook with forged scope.wave must be refused: {res:?}",
+            "AiCodex(spec) CodexHook with forged scope.track must be refused: {res:?}",
         );
     }
 
     #[test]
-    fn ai_claude_cannot_update_wave_even_with_known_card() {
+    fn ai_claude_cannot_update_track_even_with_known_card() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("claude-worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiClaude(id),
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
-            "AiClaude must never emit wave.updated regardless of role: {res:?}",
+            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
+            "AiClaude must never emit track.updated regardless of role: {res:?}",
         );
     }
 
@@ -1296,7 +1302,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("claude-worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiClaude(id.clone()),
             &area_updated(),
@@ -1312,11 +1318,11 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("claude-worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiClaude(id),
             &area_updated(),
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -1328,7 +1334,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-claude-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiClaude(id.clone()),
             &claude_hook(id.as_str()),
@@ -1345,7 +1351,7 @@ mod tests {
     #[test]
     fn empty_claude_card_id_rejected() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiClaude(CardId::from("")),
             &area_updated(),
@@ -1359,11 +1365,11 @@ mod tests {
     #[test]
     fn plugin_actor_unrestricted() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::Plugin("hello-world".into()),
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -1373,11 +1379,11 @@ mod tests {
     #[test]
     fn kernel_dispatcher_unrestricted() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::KernelDispatcher,
-            &wave_updated(),
-            &wave_scope("w", "c"),
+            &track_updated(),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -1436,7 +1442,7 @@ mod tests {
 
     fn review_round() -> Event {
         Event::ReviewRound {
-            wave_id: WaveId::from("w"),
+            track_id: TrackId::from("w"),
             subject: crate::event::ReviewSubject {
                 phase: "impl".into(),
                 slice_id: "5b".into(),
@@ -1463,14 +1469,14 @@ mod tests {
 
     fn ratify_requested() -> Event {
         Event::RatifyRequested {
-            wave_id: WaveId::from("w"),
+            track_id: TrackId::from("w"),
             reason: "cap_exhausted".into(),
         }
     }
 
     fn ratify_resolved_grant() -> Event {
         Event::RatifyResolved {
-            wave_id: WaveId::from("w"),
+            track_id: TrackId::from("w"),
             decision: crate::event::RatifyDecision::Grant,
         }
     }
@@ -1518,12 +1524,18 @@ mod tests {
 
         for (actor, session) in session_actors() {
             assert_session_unresolved(
-                enforce_role(&actor, &wave_updated(), &wave_scope("w", "c"), &cache, &wcc),
+                enforce_role(
+                    &actor,
+                    &track_updated(),
+                    &track_scope("w", "c"),
+                    &cache,
+                    &wcc,
+                ),
                 session,
-                "wave.updated must deny unresolved session actor",
+                "track.updated must deny unresolved session actor",
             );
             assert_session_unresolved(
-                enforce_role(&actor, &dispatch, &wave_scope("w", "c"), &cache, &wcc),
+                enforce_role(&actor, &dispatch, &track_scope("w", "c"), &cache, &wcc),
                 session,
                 "dispatch request must deny unresolved session actor",
             );
@@ -1544,7 +1556,7 @@ mod tests {
     #[test]
     fn empty_session_actor_id_is_rejected_as_unresolved() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiCodexSession(WorkerSessionId::from("")),
             &area_updated(),
@@ -1568,7 +1580,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_worker_requested(),
@@ -1588,7 +1600,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &terminal_worker_requested(),
@@ -1608,7 +1620,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiSpec(id.clone()),
             &codex_worker_requested(),
@@ -1628,11 +1640,11 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &Event::PlanUpdated {
-                wave_id: WaveId::from("w"),
+                track_id: TrackId::from("w"),
                 changed_keys: vec!["impl-parser".into()],
                 agent_message: None,
             },
@@ -1648,19 +1660,19 @@ mod tests {
     }
 
     #[test]
-    fn spec_can_emit_plan_updated_in_own_wave() {
+    fn spec_can_emit_plan_updated_in_own_track() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiSpec(id.clone()),
             &Event::PlanUpdated {
-                wave_id: WaveId::from("w"),
+                track_id: TrackId::from("w"),
                 changed_keys: vec!["impl-parser".into()],
                 agent_message: None,
             },
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -1677,8 +1689,8 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = Event::TaskDispatched {
             idempotency_key: "w:impl-parser".into(),
             kind: "codex".into(),
@@ -1691,7 +1703,7 @@ mod tests {
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
         ] {
-            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                 .expect_err(&format!("{label} must be refused task.dispatched"));
             assert!(
                 matches!(err, RoleViolation::NotKernelForTaskDispatched { .. }),
@@ -1700,7 +1712,7 @@ mod tests {
         }
 
         for actor in [ActorId::User, ActorId::Kernel, ActorId::KernelDispatcher] {
-            let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
+            let res = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc);
             assert!(res.is_ok(), "{actor:?} emitting task.dispatched: {res:?}");
         }
     }
@@ -1714,8 +1726,8 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = Event::TaskGateResult {
             task_id: "w:impl-parser".into(),
             idempotency_key: "w:impl-parser".into(),
@@ -1734,7 +1746,7 @@ mod tests {
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
         ] {
-            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                 .expect_err(&format!("{label} must be refused task.gate_result"));
             assert!(
                 matches!(err, RoleViolation::NotKernelForTaskGateResult { .. }),
@@ -1743,7 +1755,7 @@ mod tests {
         }
 
         for actor in [ActorId::User, ActorId::Kernel, ActorId::KernelDispatcher] {
-            let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
+            let res = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc);
             assert!(res.is_ok(), "{actor:?} emitting task.gate_result: {res:?}");
         }
     }
@@ -1753,9 +1765,9 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let worker = CardId::from("worker-1");
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = Event::TaskContextFrozen {
-            wave_id: WaveId::default(),
+            track_id: TrackId::default(),
             task_key: String::new(),
             idempotency_key: String::new(),
             task_id: "w:legacy".into(),
@@ -1766,7 +1778,7 @@ mod tests {
         let err = enforce_role(
             &ActorId::AiCodex(worker),
             &event,
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         )
@@ -1775,7 +1787,7 @@ mod tests {
             err,
             RoleViolation::NotKernelForTaskContextFrozen { .. }
         ));
-        let err = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc)
+        let err = enforce_role(&ActorId::User, &event, &track_scope("w", "c"), &cache, &wcc)
             .expect_err("User must not forge task.context_frozen");
         assert!(matches!(
             err,
@@ -1788,7 +1800,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let event = Event::TaskContextAdvanced {
-            wave_id: Default::default(),
+            track_id: Default::default(),
             task_key: String::new(),
             task_id: "w:legacy".into(),
             changed_refs: Vec::new(),
@@ -1798,7 +1810,7 @@ mod tests {
         let err = enforce_role(
             &ActorId::Plugin("forger".into()),
             &event,
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         )
@@ -1807,7 +1819,7 @@ mod tests {
             err,
             RoleViolation::NotKernelForTaskContextAdvanced { .. }
         ));
-        let err = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc)
+        let err = enforce_role(&ActorId::User, &event, &track_scope("w", "c"), &cache, &wcc)
             .expect_err("User must not forge task.context_advanced");
         assert!(matches!(
             err,
@@ -1821,14 +1833,14 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
 
         for event in [review_round(), ratify_requested()] {
             let res = enforce_role(
                 &ActorId::AiSpec(spec.clone()),
                 &event,
-                &wave_scope("w", "c"),
+                &track_scope("w", "c"),
                 &cache,
                 &wcc,
             );
@@ -1850,7 +1862,7 @@ mod tests {
                     "AiSpecSession(unresolved)",
                 ),
             ] {
-                let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                     .expect_err(&format!("{label} must be refused {}", event.kind_tag()));
                 assert!(
                     matches!(err, RoleViolation::NotSpecForReviewRatify { .. }),
@@ -1866,11 +1878,11 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = ratify_resolved_grant();
 
-        let res = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc);
+        let res = enforce_role(&ActorId::User, &event, &track_scope("w", "c"), &cache, &wcc);
         assert!(res.is_ok(), "User should emit ratify.resolved: {res:?}");
 
         for (actor, label) in [
@@ -1885,7 +1897,7 @@ mod tests {
                 "AiSpecSession(unresolved)",
             ),
         ] {
-            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                 .expect_err(&format!("{label} must be refused ratify.resolved"));
             assert!(
                 matches!(err, RoleViolation::NotUserForRatifyResolved { .. }),
@@ -1901,7 +1913,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
-        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &task_completed(),
@@ -1920,7 +1932,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("report-1");
-        cache.insert(id.clone(), CardRole::ReportCard, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::ReportCard, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &task_completed(),
@@ -1939,7 +1951,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("report-1");
-        cache.insert(id.clone(), CardRole::ReportCard, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::ReportCard, TrackId::from("w"));
         let err = enforce_role(
             &ActorId::AiCodex(id),
             &task_completed(),
@@ -1959,27 +1971,31 @@ mod tests {
     }
 
     #[test]
-    fn reportcard_task_completed_cross_wave_rejected() {
+    fn reportcard_task_completed_cross_track_rejected() {
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
-        wcc.insert(WaveId::from("home-wave"), AreaId::from("c"));
+        let wcc = TrackAreaCache::new();
+        wcc.insert(TrackId::from("home-track"), AreaId::from("c"));
         let id = CardId::from("report-1");
-        cache.insert(id.clone(), CardRole::ReportCard, WaveId::from("home-wave"));
+        cache.insert(
+            id.clone(),
+            CardRole::ReportCard,
+            TrackId::from("home-track"),
+        );
         let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &task_completed(),
-            &card_scope(id.as_str(), "other-wave", "c"),
+            &card_scope(id.as_str(), "other-track", "c"),
             &cache,
             &wcc,
         )
-        .expect_err("AiCodex(ReportCard) cross-wave task.completed must be refused");
+        .expect_err("AiCodex(ReportCard) cross-track task.completed must be refused");
         assert!(
             matches!(
                 &err,
                 RoleViolation::WorkerOutOfScope { scope, .. }
-                    if scope.contains("scope.wave mismatch")
+                    if scope.contains("scope.track mismatch")
             ),
-            "expected scope.wave out-of-scope violation, got {err:?}",
+            "expected scope.track out-of-scope violation, got {err:?}",
         );
         assert!(
             err.to_string().contains("out of scope"),
@@ -1995,7 +2011,7 @@ mod tests {
         // a future refactor can't accidentally route the empty case
         // around the guard for a "harmless" new variant.
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiCodex(CardId::from("")),
             &task_completed(),
@@ -2012,7 +2028,7 @@ mod tests {
         // spec card as the requester of codex.worker_requested, the empty
         // CardId path must still be rejected.
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         let res = enforce_role(
             &ActorId::AiSpec(CardId::from("")),
             &codex_worker_requested(),
@@ -2029,7 +2045,7 @@ mod tests {
 
     fn proposal_submitted(plugin: &str) -> Event {
         Event::ProposalSubmitted {
-            wave_id: WaveId::from("w"),
+            track_id: TrackId::from("w"),
             proposal_id: "pp-1".into(),
             plugin_id: plugin.into(),
             subject_kind: "report".into(),
@@ -2045,7 +2061,7 @@ mod tests {
 
     fn proposal_resolved(plugin: &str, decision: ProposalDecision) -> Event {
         Event::ProposalResolved {
-            wave_id: WaveId::from("w"),
+            track_id: TrackId::from("w"),
             proposal_id: "pp-1".into(),
             plugin_id: plugin.into(),
             decision,
@@ -2062,7 +2078,7 @@ mod tests {
         let res = enforce_role(
             &ActorId::Plugin("dev.neige.invest".into()),
             &event,
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -2072,7 +2088,7 @@ mod tests {
         let err = enforce_role(
             &ActorId::Plugin("dev.neige.other".into()),
             &event,
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         )
@@ -2092,8 +2108,8 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = proposal_submitted("dev.neige.invest");
 
         for (actor, label) in [
@@ -2108,7 +2124,7 @@ mod tests {
                 "AiSpecSession",
             ),
         ] {
-            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                 .expect_err(&format!("{label} must be refused proposal.submitted"));
             assert!(
                 matches!(
@@ -2126,8 +2142,8 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
 
         for decision in [
             ProposalDecision::Accepted,
@@ -2136,7 +2152,7 @@ mod tests {
         ] {
             let event = proposal_resolved("dev.neige.invest", decision);
 
-            let res = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc);
+            let res = enforce_role(&ActorId::User, &event, &track_scope("w", "c"), &cache, &wcc);
             assert!(
                 res.is_ok(),
                 "User must resolve {}: {res:?}",
@@ -2161,7 +2177,7 @@ mod tests {
                     "AiSpecSession",
                 ),
             ] {
-                let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                     .expect_err(&format!(
                         "{label} must be refused proposal.resolved{{{}}}",
                         decision.as_str()
@@ -2181,15 +2197,15 @@ mod tests {
         let wcc = seeded_wcc();
         let spec = CardId::from("spec-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = proposal_resolved("dev.neige.invest", ProposalDecision::Withdrawn);
 
         // The submitter reclaims its own pending slot.
         let res = enforce_role(
             &ActorId::Plugin("dev.neige.invest".into()),
             &event,
-            &wave_scope("w", "c"),
+            &track_scope("w", "c"),
             &cache,
             &wcc,
         );
@@ -2211,9 +2227,10 @@ mod tests {
                 "AiSpecSession",
             ),
         ] {
-            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc).expect_err(
-                &format!("{label} must be refused proposal.resolved{{withdrawn}}"),
-            );
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!(
+                    "{label} must be refused proposal.resolved{{withdrawn}}"
+                ));
             assert!(
                 matches!(
                     err,
@@ -2228,26 +2245,26 @@ mod tests {
     /// branch, not a panic on one of them.
     ///
     /// `enforce_role` looks the acting card up with `cache.get()`; this
-    /// helper then looks the same card up again with `cache.wave_of()`.
+    /// helper then looks the same card up again with `cache.track_of()`.
     /// The two are independent DashMap lookups, so a card deleted in
     /// between makes the second one return `None`. Before the check was
     /// split into "scope variant" + "target card" halves, BOTH refusals
-    /// were reached before `wave_of` was ever consulted, so neither could
+    /// were reached before `track_of` was ever consulted, so neither could
     /// blow up under that race — the split must not cost that.
     ///
     /// The empty cache below is exactly that race's end state (the entry
     /// is simply gone), so every scope shape must come back `Err`. A
-    /// `.expect()` on `wave_of` fails this test by panicking on the
+    /// `.expect()` on `track_of` fails this test by panicking on the
     /// Card-scope rows.
     #[test]
     fn card_scope_is_fail_closed_when_the_acting_card_vanished() {
         let vanished = CardRoleCache::new();
         let wcc = seeded_wcc();
         let acting = CardId::from("worker-1");
-        let self_only = |target: &CardId, _home: &WaveId| target == &acting;
+        let self_only = |target: &CardId, _home: &TrackId| target == &acting;
         for scope in [
-            // Non-Card scope — refused before `wave_of` in every version.
-            wave_scope("w", "c"),
+            // Non-Card scope — refused before `track_of` in every version.
+            track_scope("w", "c"),
             // Card scope naming someone else's card: the actual
             // out-of-bounds write path, and the one the split regressed.
             card_scope("someone-elses-card", "w", "c"),

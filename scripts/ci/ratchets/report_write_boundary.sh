@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# #1318 §1 — the shapes that would quietly widen the wave-report write
+# #1318 §1 — the shapes that would quietly widen the track-report write
 # boundary, checked over the one file that defines it.
 #
 # ---------------------------------------------------------------------------
@@ -20,8 +20,8 @@ set -euo pipefail
 # compiles.
 #
 # #1318 §1 changed the thing being checked instead. The writer
-# (`wave_report::write::persist`) is now a **private** `fn` inside
-# `crates/calm-server/src/wave_report/write.rs`. Note precisely what `rustc`
+# (`track_report::write::persist`) is now a **private** `fn` inside
+# `crates/calm-server/src/track_report/write.rs`. Note precisely what `rustc`
 # gives and what it does not: a private item is visible to its module **and
 # that module's descendants**, not to "the file". So the two halves are
 #
@@ -70,8 +70,8 @@ set -euo pipefail
 #
 # What it does NOT check, and must not be described as checking:
 #
-#   * that no *other* code writes the `cards` row directly. The wave-create
-#     paths do, through `routes::waves::persist_initial_report_and_project_
+#   * that no *other* code writes the `cards` row directly. The track-create
+#     paths do, through `routes::tracks::persist_initial_report_and_project_
 #     tasks_tx`, and so would a bare `UPDATE cards SET payload = ...,
 #     body_crdt = ...` in any other `write_with_*_typed` closure. Both bypass
 #     the module and this gate; #1252 §3 P2 records why that has no local
@@ -95,7 +95,7 @@ script_dir="${BASH_SOURCE[0]%/*}"
 
 require_tool rg
 
-BOUNDARY_FILE="${REPORT_WRITE_BOUNDARY_FILE:-crates/calm-server/src/wave_report/write.rs}"
+BOUNDARY_FILE="${REPORT_WRITE_BOUNDARY_FILE:-crates/calm-server/src/track_report/write.rs}"
 require_path "$BOUNDARY_FILE"
 
 # The pinned entry set, one `visibility|name` per line. `pub(crate)` entries are
@@ -243,7 +243,7 @@ fi
 #
 # The visibility group is `pub(?:\([^)]*\))?`, not `pub(?:\(crate\))?`, and the
 # `async` is optional. Both were holes in the first revision of this gate: a
-# `pub(super) async fn` is visible to `wave_report`, which can then `pub use` it
+# `pub(super) async fn` is visible to `track_report`, which can then `pub use` it
 # onward, and a plain `pub(crate) fn` returning a future reaches `persist` just
 # as well as an `async fn` does. Neither matched the narrower pattern, so
 # neither changed `actual_entries` and R3 stayed green on a new entry. Matching
@@ -286,4 +286,4 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: the wave-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, four exported entries, test entry cfg-gated)"
+echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, four exported entries, test entry cfg-gated)"

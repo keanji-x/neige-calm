@@ -1,20 +1,20 @@
 /**
  * INV-DUP-010 — the destructive-confirm copy, declared once.
  *
- * Delete affordances live in three places (sidebar row, area page, wave page)
- * and a user must read the same sentence in all three; a wave delete is not
+ * Delete affordances live in three places (sidebar row, area page, track page)
+ * and a user must read the same sentence in all three; a track delete is not
  * recoverable from the UI. Keeping the strings here is what stops one surface
  * from drifting into a softer wording than the others.
  */
-export const DELETE_WAVE_COPY = Object.freeze({
-  title: 'Delete this wave?',
-  description: 'The wave, its cards, and their terminals are removed. This cannot be undone.',
-  confirmLabel: 'Delete wave',
+export const DELETE_TRACK_COPY = Object.freeze({
+  title: 'Delete this track?',
+  description: 'The track, its cards, and their terminals are removed. This cannot be undone.',
+  confirmLabel: 'Delete track',
 });
 
 /**
  * INV-DUP-010, again — a card's delete is offered from two places at once (the
- * wave panel's CARDS row and the card's own head on the board), and both are
+ * track panel's CARDS row and the card's own head on the board), and both are
  * the same irreversible act on the same row, so they read the same sentence.
  *
  * The consequence names the runtime, not the row: what a reader stands to lose
@@ -37,16 +37,16 @@ export const DELETE_CARD_COPY = Object.freeze({
  * `description` slot cannot carry both. The component owns the layout; this file
  * owns only the strings.
  */
-export function deleteAreaCopy(areaName: string, waveCount: number | undefined) {
+export function deleteAreaCopy(areaName: string, trackCount: number | undefined) {
   return Object.freeze({
     title: `Delete ${areaName}?`,
-    consequence: waveCount === undefined
-      ? 'The number of waves is not available. Every wave in this area will be deleted. This cannot be undone.'
-      : waveCount === 0
+    consequence: trackCount === undefined
+      ? 'The number of tracks is not available. Every track in this area will be deleted. This cannot be undone.'
+      : trackCount === 0
       ? 'This deletes the area. This cannot be undone.'
-      : waveCount === 1
-      ? 'This deletes 1 wave. This cannot be undone.'
-      : `This deletes ${waveCount} waves. This cannot be undone.`,
+      : trackCount === 1
+      ? 'This deletes 1 track. This cannot be undone.'
+      : `This deletes ${trackCount} tracks. This cannot be undone.`,
     prompt: `Type ${areaName} to confirm.`,
     confirmLabel: 'Delete area',
   });

@@ -2,7 +2,7 @@
 //
 // Prerequisite: Playwright's `a11y` project must be active (so the
 // `_setup/replay-server.ts` globalSetup spawned the replay binary with
-// the wave-grid-layout fixture preloaded — see `playwright.config.ts`).
+// the track-grid-layout fixture preloaded — see `playwright.config.ts`).
 // Running this spec from the default `chromium` project will fail with a
 // connection-refused error because that project still targets the
 // developer `make dev` stack on :4041.
@@ -31,12 +31,12 @@ test.beforeEach(async ({ request }) => {
   await resetReplayServer(request);
 });
 
-// Sequence the wave-grid-layout-trace fixture seeds, in order. Pinned
+// Sequence the track-grid-layout-trace fixture seeds, in order. Pinned
 // here so a fixture edit causes a noisy failure — the smoke test's whole
 // purpose is to anchor the contract between the fixture and the bridge.
 const EXPECTED_FIXTURE_KINDS = [
   'area.updated',
-  'wave.updated',
+  'track.updated',
   'card.added',
   'card.added',
   'card.added',

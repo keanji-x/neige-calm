@@ -8,7 +8,7 @@
 
 ## 0. 目标
 
-让 agent 在 wave 里调到两个**真实**的外部能力：
+让 agent 在 track 里调到两个**真实**的外部能力：
 
 1. `https://mcp.wisburg.com/mcp?api_key=…` —— 远程 streamable-HTTP MCP server
 2. `/usr/local/bin/longbridge` —— 本地只读查询型 CLI
@@ -54,7 +54,7 @@ POST /api/plugins/{id}/enable
 - **registry 的 in-memory 条目可被覆写**：`PluginRegistry::insert` 在写锁内整体替换 `Manifest`（`registry.rs:196-203`）。读者安全（不会看到撕裂状态），但**整体替换**正是 §2.7 必须避开的（见 D11）。
 - **`GET /api/plugins/{id}` 返回的是 DB 行里的 manifest**，不是 registry 的（`routes/plugins.rs:1204, 1226`，写入于 `:396` install 与 `:685` reload）。⇒ ①secrets 不进 manifest 的结论成立；②**物化的工具在所有 REST 面上都不可见**（详情、列表 `:253-267`、views `:720-726`），见 R10。
 - **plugin 子进程不做 `env_clear()`**：`process.rs:88-104`。⇒ `cli-query` 必须自建环境。
-- **`plugin_scope_for_wave` 的 `Only(id)` 要求 `running ∧ trusted_forge_plugin(id)`**（`tool_visibility.rs:119-120`，未受信落 `None` 有测试钉住 `:237-262`）。
+- **`plugin_scope_for_track` 的 `Only(id)` 要求 `running ∧ trusted_forge_plugin(id)`**（`tool_visibility.rs:119-120`，未受信落 `None` 有测试钉住 `:237-262`）。
 - **iframe 工具调用已 deny-by-default**：`can_call_tool` 对无 views 的 manifest 返回 `false`（`perms.rs:151-156`）。这条防线不用新写。
 - **forge 凭据透传**：`FORGE_PASSTHROUGH_ENV_KEYS`（`forge_action_adapter/mod.rs:61-72`）。`cli-query` 刻意不走该路径（§2.3），这是与 #1167 的分界线。
 - **树内只有一个 checked-in manifest**：`plugins/git-forge/manifest.json`，不含 `kind` 键。
@@ -263,7 +263,7 @@ pub fn set_exposes_tools(&self, id: &str, tools: Vec<ExposedTool>) -> bool
 ## 4. 验收（怎么算「场景跑通」）
 
 1. 两个 connector 目录（位于 `plugins_dir` 内）各自 `install` + `enable` 后达 Running；**完整重启服务后仍 Running**。
-2. **未绑定 workflow** 的 wave 里，spec/worker 的 `tools/list` 能看到 `plugin.mcp-wisburg_list-institutional-reports` 与 `plugin.cli-longbridge_quote`，且看不到 `tools_allow` 之外的 wisburg 工具。
+2. **未绑定 workflow** 的 track 里，spec/worker 的 `tools/list` 能看到 `plugin.mcp-wisburg_list-institutional-reports` 与 `plugin.cli-longbridge_quote`，且看不到 `tools_allow` 之外的 wisburg 工具。
 3. 两个工具各调用一次，返回真实数据。
 4. 断言 `cli-query` 子进程环境**不含** `GH_TOKEN` / `GITHUB_TOKEN` / `SSH_AUTH_SOCK`。
 5. 断言 `secrets.json` 的值不出现在 `GET /api/plugins/{id}` 的任何字段。
@@ -280,7 +280,7 @@ pub fn set_exposes_tools(&self, id: &str, tools: Vec<ExposedTool>) -> bool
 
 | # | 风险 | 处置 |
 |---|---|---|
-| R1 | 绑定 workflow 的 wave 里外部工具不可见 | **接受**。#955 §3.3(a) 既有上限，归 #761。不放宽唯一豁口 |
+| R1 | 绑定 workflow 的 track 里外部工具不可见 | **接受**。#955 §3.3(a) 既有上限，归 #761。不放宽唯一豁口 |
 | R2 | 远程 MCP 是新的数据外流面 | v0 只有一个手写声明的 URL，落盘可审计；每次 `tools/call` 记 target host。不引入静默出网 |
 | R3 | 上游改 schema，物化的目录陈旧 | v0 在每次 enable / 重启时重取。**不做** digest fail-closed。如实记录：v0 期间上游改 schema 到重启前不会被发现 |
 | R4 | CLI 输出灌爆 agent 上下文 | `max_output_bytes` 默认 32 KiB + 显式截断标记 |

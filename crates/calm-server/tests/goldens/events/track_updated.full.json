@@ -1,0 +1,29 @@
+{
+  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597).",
+  "wire": {
+    "ev": "track.updated",
+    "data": {
+      "id": "track-01",
+      "area_id": "area-01",
+      "title": "Golden Track",
+      "sort": 1.5,
+      "archived_at": 111,
+      "pinned_at": 222,
+      "lifecycle": "working",
+      "cwd": "/tmp/golden-track",
+      "template_id": null,
+      "plugin_scope": null,
+      "purpose": null,
+      "template_input": null,
+      "terminal_at": 333,
+      "workspace": {
+        "kind": "managed",
+        "path": "/tmp/golden-track",
+        "frozen_at": 444
+      },
+      "created_at": 1000,
+      "updated_at": 2000,
+      "agent_message": "spec says hi"
+    }
+  }
+}

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createFetchTransport } from './transport.ts';
 
-const request = { method: 'DELETE', path: '/api/waves/w1', credentials: 'include' } as const;
+const request = { method: 'DELETE', path: '/api/tracks/w1', credentials: 'include' } as const;
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 

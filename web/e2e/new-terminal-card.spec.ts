@@ -2,13 +2,13 @@
 // without a manual refresh.
 //
 // User-reported regression check: after clicking "Add card → terminal"
-// on a wave, the card should render within a few seconds (POST →
-// server card.added event → eventBridge invalidates ['wave', id] →
-// useWaveDetailQuery refetches → WaveGrid mounts the new card). This
+// on a track, the card should render within a few seconds (POST →
+// server card.added event → eventBridge invalidates ['track', id] →
+// useTrackDetailQuery refetches → TrackGrid mounts the new card). This
 // spec pins that contract so a regression has a deterministic repro.
 //
 // Issue #175 — the kernel hides the system area that hosts the default
-// Today terminal, so we mint our own user area + wave to test in.
+// Today terminal, so we mint our own user area + track to test in.
 //
 // Prereq: `make dev` serving http://localhost:4041 with the default seed.
 
@@ -33,42 +33,42 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   await areaBtn.click();
   await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
-  // Step 2 — create a new wave inside this area via the kernel REST
-  // API directly. PR 3's NewTaskForm wires the area-page "+ New wave"
+  // Step 2 — create a new track inside this area via the kernel REST
+  // API directly. PR 3's NewTaskForm wires the area-page "+ New track"
   // CTA to the same shared flow, but for this spec (which is purely
-  // about the AddPanel terminal-card path inside an existing wave)
+  // about the AddPanel terminal-card path inside an existing track)
   // the REST-direct route is faster and decouples this assertion from
   // the form's UI evolution. `page.request` resolves the relative URL
   // against this project's baseURL (set in playwright.config.ts →
   // 'chromium': http://localhost:4041/calm/). The helpers/reset.ts
   // variant is replay-port-pinned and only safe for the a11y project.
   const areaId = new URL(page.url()).pathname.split('/').pop()!;
-  const waveTitle = `E2E new-terminal ${Date.now()}`;
-  const waveRes = await page.request.post('/api/waves', {
+  const trackTitle = `E2E new-terminal ${Date.now()}`;
+  const trackRes = await page.request.post('/api/tracks', {
     data: {
       area_id: areaId,
-      title: waveTitle,
+      title: trackTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about the AddPanel terminal-card path, not working
-      // directories. See `helpers/reset.ts::createWaveInArea` for why
+      // directories. See `helpers/reset.ts::createTrackInArea` for why
       // the invented `/tmp/playwright-area-<id>` attached path was
       // never valid.
-      // #177 — `theme` is a required NewWave field. Mirrors
+      // #177 — `theme` is a required NewTrack field. Mirrors
       // `DARK_THEME_RGB` in web/src/api/themeRgb.ts.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
   });
-  if (!waveRes.ok()) {
-    const body = await waveRes.text().catch(() => '<unreadable>');
-    throw new Error(`POST /api/waves → ${waveRes.status()} ${waveRes.statusText()}: ${body}`);
+  if (!trackRes.ok()) {
+    const body = await trackRes.text().catch(() => '<unreadable>');
+    throw new Error(`POST /api/tracks → ${trackRes.status()} ${trackRes.statusText()}: ${body}`);
   }
-  const wave = (await waveRes.json()) as { id: string };
-  await page.goto(`/calm/wave/${wave.id}`);
-  await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
-  await expect(page.getByText(waveTitle, { exact: false }).first()).toBeVisible();
+  const track = (await trackRes.json()) as { id: string };
+  await page.goto(`/calm/track/${track.id}`);
+  await expect(page).toHaveURL(/\/calm\/track\/[^/]+$/);
+  await expect(page.getByText(trackTitle, { exact: false }).first()).toBeVisible();
 
-  // Step 3 — the wave starts empty.
+  // Step 3 — the track starts empty.
   await expect(page.locator('.term')).toHaveCount(0);
 
   // Step 4 — open the AddPanel and choose "terminal". The AddPanel

@@ -1,10 +1,10 @@
-//! #1147 S5 — safe recycling of managed wave workspaces.
+//! #1147 S5 — safe recycling of managed track workspaces.
 //!
-//! This is the only place in the tree that removes a wave's working directory,
+//! This is the only place in the tree that removes a track's working directory,
 //! and it is the only slice of #1147 that deletes user-visible bytes at all.
 //! Everything S1–S4 bought — a typed `kind` that cannot be guessed from the
 //! path, an ownership marker written inside `.git/`, canonical (not lexical)
-//! root containment, one managed directory per wave row — exists so that the
+//! root containment, one managed directory per track row — exists so that the
 //! four guards below can be *believed*.
 //!
 //! # The four guards
@@ -22,7 +22,7 @@
 //!    **Not** a lexical `starts_with`: S2's red team measured that a symlink
 //!    under the root makes a lexical prefix check pass while the real bytes sit
 //!    anywhere on the filesystem.
-//! 3. `<path>/.git/neige-workspace` exists and its contents equal this wave's
+//! 3. `<path>/.git/neige-workspace` exists and its contents equal this track's
 //!    id. "Is it a git repository" is not a substitute — S2 measured that
 //!    predicate waving a third-party repository through.
 //! 4. The owning area is not the system area. The launchpad's workspace is
@@ -31,7 +31,7 @@
 //!
 //! # Move to trash, do not `rm -rf`
 //!
-//! Recycling is a `rename` into `<workspace-root>/.trash/<wave_id>-<ts>`,
+//! Recycling is a `rename` into `<workspace-root>/.trash/<track_id>-<ts>`,
 //! never a recursive delete. The point is the blast radius of a *bug*: if some
 //! future change weakens a guard, the consequence degrades from "the user's
 //! repository is gone" to "there is a stale directory under `.trash`". GC
@@ -45,7 +45,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{CalmError, Result};
-use crate::model::{AreaKind, WaveWorkspace, WaveWorkspaceKind};
+use crate::model::{AreaKind, TrackWorkspace, TrackWorkspaceKind};
 
 /// Name of the trash directory under the workspace root. Leading dot so it can
 /// never collide with an area id (ids are never dot-prefixed) and so it does not
@@ -64,12 +64,12 @@ const OWNER_MARKER_RELATIVE: [&str; 2] = [".git", "neige-workspace"];
 ///
 /// Seven days, measured from the timestamp encoded in the entry's own name.
 /// Rationale for time-based over count-based: the thing a retention window has
-/// to survive is *a person noticing*, and "I deleted the wrong wave" is noticed
+/// to survive is *a person noticing*, and "I deleted the wrong track" is noticed
 /// on a human clock, not after N more deletions. A count-based cap (`keep the
 /// last 20`) can evict this morning's mistake before lunch if a script deletes
-/// 20 waves, and conversely pins a year-old directory forever on a quiet
+/// 20 tracks, and conversely pins a year-old directory forever on a quiet
 /// instance. Seven days covers a weekend plus slack, and the entries are
-/// workspaces of *deleted* waves, so the steady-state cost is bounded by one
+/// workspaces of *deleted* tracks, so the steady-state cost is bounded by one
 /// week of deletions rather than by history.
 pub const TRASH_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
@@ -87,12 +87,12 @@ pub enum RecycleRefusal {
     /// Guard 2 — `canonicalize` resolved outside the managed root, or the root
     /// itself could not be canonicalized.
     OutsideRoot { real: PathBuf },
-    /// Guard 2 — inside the root, but not at `<root>/<area_id>/<wave_id>`.
+    /// Guard 2 — inside the root, but not at `<root>/<area_id>/<track_id>`.
     /// An area layer or a deeper subdirectory would take siblings with it.
     WrongDepth { real: PathBuf },
     /// Guard 3 — no ownership marker.
     MarkerMissing,
-    /// Guard 3 — the marker names a different wave.
+    /// Guard 3 — the marker names a different track.
     MarkerMismatch { found: String },
     /// Any guard — the filesystem refused to answer. Fail-closed.
     Unreadable { detail: String },
@@ -139,38 +139,38 @@ impl RecycleDecision {
     }
 }
 
-/// The single controlled entry point for reclaiming a wave workspace.
+/// The single controlled entry point for reclaiming a track workspace.
 ///
 /// Returns `Ok(Refused(..))` when a guard does not hold: refusing to delete a
-/// *directory* must not block deletion of the *row*, or a wave whose marker was
+/// *directory* must not block deletion of the *row*, or a track whose marker was
 /// lost (design gap N5) would become permanently undeletable — which is a worse
 /// outcome than a leaked directory and pushes users toward `rm -rf` by hand.
 /// The refusal is logged at `warn`/`error` so the leak is visible.
 ///
 /// Returns `Err` only when a guard passed and the move itself failed — most
 /// notably `EXDEV`.
-pub fn recycle_wave_workspace(
+pub fn recycle_track_workspace(
     workspace_root: &Path,
     area_kind: Option<AreaKind>,
-    wave_id: &str,
-    workspace: &WaveWorkspace,
+    track_id: &str,
+    workspace: &TrackWorkspace,
     now_ms: i64,
 ) -> Result<RecycleDecision> {
-    let decision = decide_and_move(workspace_root, area_kind, wave_id, workspace, now_ms)?;
+    let decision = decide_and_move(workspace_root, area_kind, track_id, workspace, now_ms)?;
     match &decision {
         RecycleDecision::Trashed { from, to } => {
             tracing::info!(
-                wave_id,
+                track_id,
                 from = %from.display(),
                 to = %to.display(),
-                "recycled managed wave workspace into the trash"
+                "recycled managed track workspace into the trash"
             );
         }
         RecycleDecision::Refused(RecycleRefusal::NotManaged | RecycleRefusal::PathMissing) => {
-            // Both are ordinary: an attached wave, or a managed wave whose
+            // Both are ordinary: an attached track, or a managed track whose
             // directory was never materialized / already recycled.
             tracing::debug!(
-                wave_id,
+                track_id,
                 path = %workspace.path,
                 reason = decision.refusal().map(|r| r.tag()).unwrap_or_default(),
                 "no managed workspace to recycle"
@@ -178,11 +178,11 @@ pub fn recycle_wave_workspace(
         }
         RecycleDecision::Refused(refusal) => {
             tracing::error!(
-                wave_id,
+                track_id,
                 path = %workspace.path,
                 reason = refusal.tag(),
                 detail = ?refusal,
-                "refusing to recycle a wave workspace; the directory is left on disk. \
+                "refusing to recycle a track workspace; the directory is left on disk. \
                  This is fail-closed by design (#1147 S5): a guard could not be \
                  satisfied, so the bytes stay."
             );
@@ -194,13 +194,13 @@ pub fn recycle_wave_workspace(
 fn decide_and_move(
     workspace_root: &Path,
     area_kind: Option<AreaKind>,
-    wave_id: &str,
-    workspace: &WaveWorkspace,
+    track_id: &str,
+    workspace: &TrackWorkspace,
     now_ms: i64,
 ) -> Result<RecycleDecision> {
     // Guard 1 — typed kind. Checked first and from the stored column, never
     // inferred from the path.
-    if workspace.kind != WaveWorkspaceKind::Managed {
+    if workspace.kind != TrackWorkspaceKind::Managed {
         return Ok(RecycleDecision::Refused(RecycleRefusal::NotManaged));
     }
 
@@ -213,11 +213,11 @@ fn decide_and_move(
     //
     // * `Some(System)` — both delete routes 403 a system area before they get
     //   here. That 403 is the row-layer half of this same invariant; see
-    //   `routes/waves.rs::delete_wave`.
-    // * `None` — cannot happen either. `waves.area_id` is
+    //   `routes/tracks.rs::delete_track`.
+    // * `None` — cannot happen either. `tracks.area_id` is
     //   `NOT NULL REFERENCES areas(id) ON DELETE CASCADE`
     //   (`calm-truth/migrations/0001_init.sql`) and the pool sets
-    //   `PRAGMA foreign_keys = ON` per connection, so a wave row with no area
+    //   `PRAGMA foreign_keys = ON` per connection, so a track row with no area
     //   row is not a representable state.
     //
     // Kept anyway, deliberately: the routes' 403s are policy at a boundary,
@@ -278,12 +278,12 @@ fn decide_and_move(
         }));
     }
     // Containment is not enough: **depth** matters, because what gets renamed
-    // is a whole subtree. A managed workspace is `<root>/<area_id>/<wave_id>`
+    // is a whole subtree. A managed workspace is `<root>/<area_id>/<track_id>`
     // and nothing else.
     //
     // Measured (red team R1/R2): with only the containment check above, a valid
     // marker sitting on the `<root>/<area_id>/` layer moves the entire area
-    // directory into the trash — **including every sibling wave's repository**
+    // directory into the trash — **including every sibling track's repository**
     // — and a marker on any deeper subdirectory is recyclable too. Today those
     // are closed only by coincidence: nothing writes a marker at those depths.
     // That is not a guard, it is luck, and S3 is precisely the slice that will
@@ -295,7 +295,7 @@ fn decide_and_move(
     // about — an earlier revision of this comment stated the opposite and was
     // wrong. Six mutations, `cargo test -p calm-server` (23 lib tests in
     // `workspace_recycle::tests`, 12 integration tests in
-    // `domain_api_suite::wave_workspace_recycle`):
+    // `domain_api_suite::track_workspace_recycle`):
     //
     // | mutation                                   | lib red | itest red |
     // |--------------------------------------------|---------|-----------|
@@ -328,14 +328,14 @@ fn decide_and_move(
         }));
     }
 
-    // Guard 3 — our marker, naming THIS wave. Read from the canonical path:
+    // Guard 3 — our marker, naming THIS track. Read from the canonical path:
     // reading it through the symlinked stored path would let a link decide
     // which marker answers for which directory.
     let marker_path = OWNER_MARKER_RELATIVE
         .iter()
         .fold(real_path.clone(), |acc, part| acc.join(part));
     match std::fs::read_to_string(&marker_path) {
-        Ok(contents) if contents.trim() == wave_id => {}
+        Ok(contents) if contents.trim() == track_id => {}
         Ok(contents) => {
             return Ok(RecycleDecision::Refused(RecycleRefusal::MarkerMismatch {
                 found: contents.trim().to_string(),
@@ -352,18 +352,18 @@ fn decide_and_move(
     }
 
     // All four hold. Move, never delete.
-    let to = move_into_trash(&real_root, &trash_root, &real_path, wave_id, now_ms)?;
+    let to = move_into_trash(&real_root, &trash_root, &real_path, track_id, now_ms)?;
     Ok(RecycleDecision::Trashed {
         from: real_path,
         to,
     })
 }
 
-/// `rename` into `<root>/.trash/<wave_id>-<ts>`.
+/// `rename` into `<root>/.trash/<track_id>-<ts>`.
 ///
-/// The name is `<wave_id>-<ts_ms>` with **no** other suffix, so [`gc_trash`]
+/// The name is `<track_id>-<ts_ms>` with **no** other suffix, so [`gc_trash`]
 /// can date an entry by `rsplit_once('-')`. Collisions (two recycles of the
-/// same wave inside one millisecond, or a retry after a crash) bump the
+/// same track inside one millisecond, or a retry after a crash) bump the
 /// timestamp rather than appending a counter, which would break that parse.
 ///
 /// # The destination is validated, not assumed
@@ -376,7 +376,7 @@ fn decide_and_move(
 ///   lands wherever it points — outside the managed root. `gc_trash`
 ///   canonicalizes and would then never find it again: a permanent leak, and a
 ///   silent one, since the recycle itself reports success.
-/// * **`wave_id` is not a path segment.** It is interpolated straight into the
+/// * **`track_id` is not a path segment.** It is interpolated straight into the
 ///   name, so an id containing `../` renames the workspace to an arbitrary
 ///   location above the root (measured: it landed in `<root>/../escaped-…`).
 ///   Today ids are uuid-simple, so this is closed by coincidence rather than by
@@ -414,7 +414,7 @@ fn move_into_trash(
     real_root: &Path,
     trash_root: &Path,
     from: &Path,
-    wave_id: &str,
+    track_id: &str,
     now_ms: i64,
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(trash_root).map_err(|error| {
@@ -446,13 +446,13 @@ fn move_into_trash(
     tests::fire_pre_rename_hook(trash_root);
     let mut stamp = now_ms;
     for _ in 0..1000 {
-        let candidate = trash_root.join(format!("{wave_id}-{stamp}"));
-        // `wave_id` is interpolated, not validated upstream. `join` on a name
+        let candidate = trash_root.join(format!("{track_id}-{stamp}"));
+        // `track_id` is interpolated, not validated upstream. `join` on a name
         // containing `../` produces a path that is no longer a child of the
         // trash root, and `rename` would happily honour it.
         if candidate.parent() != Some(trash_root) {
             return Err(CalmError::Internal(format!(
-                "recycle workspace: wave id `{wave_id}` does not form a single path \
+                "recycle workspace: track id `{track_id}` does not form a single path \
                  segment; {} is not directly inside {}. Refusing to rename anywhere \
                  the GC cannot reach.",
                 candidate.display(),
@@ -481,7 +481,7 @@ fn move_into_trash(
         return Ok(candidate);
     }
     Err(CalmError::Internal(format!(
-        "recycle workspace: could not find a free trash slot for wave `{wave_id}` under {}",
+        "recycle workspace: could not find a free trash slot for track `{track_id}` under {}",
         trash_root.display()
     )))
 }
@@ -533,10 +533,10 @@ fn verify_landed_inside_trash(trash_root: &Path, from: &Path, candidate: &Path) 
     )))
 }
 
-/// One wave's identity as far as recycling is concerned.
+/// One track's identity as far as recycling is concerned.
 pub struct RecycleTarget<'a> {
-    pub wave_id: &'a str,
-    pub workspace: &'a WaveWorkspace,
+    pub track_id: &'a str,
+    pub workspace: &'a TrackWorkspace,
 }
 
 /// Report of an area-level recycle.
@@ -557,27 +557,27 @@ pub struct AreaRecycleReport {
 /// The area directory is removed with a **non-recursive** `remove_dir`: it
 /// succeeds only when the directory is genuinely empty, which makes "did every
 /// child get recycled?" a precondition the kernel cannot get wrong rather than
-/// a claim it asserts. Anything left behind (a refused wave, a stray file)
+/// a claim it asserts. Anything left behind (a refused track, a stray file)
 /// keeps the area directory, and that is the correct, visible outcome.
 pub fn recycle_area_workspaces(
     workspace_root: &Path,
     area_id: &str,
     area_kind: Option<AreaKind>,
-    waves: &[RecycleTarget<'_>],
+    tracks: &[RecycleTarget<'_>],
     now_ms: i64,
 ) -> Result<AreaRecycleReport> {
     let mut report = AreaRecycleReport::default();
-    for target in waves {
-        let decision = recycle_wave_workspace(
+    for target in tracks {
+        let decision = recycle_track_workspace(
             workspace_root,
             area_kind,
-            target.wave_id,
+            target.track_id,
             target.workspace,
             now_ms,
         )?;
         report
             .decisions
-            .push((target.wave_id.to_string(), decision));
+            .push((target.track_id.to_string(), decision));
     }
 
     if area_kind == Some(AreaKind::User) {
@@ -597,7 +597,7 @@ fn remove_empty_area_dir(workspace_root: &Path, area_id: &str) -> bool {
     let Ok(real_area_dir) = std::fs::canonicalize(&area_dir) else {
         return false;
     };
-    // Same canonical containment rule as a wave, plus "exactly one level
+    // Same canonical containment rule as a track, plus "exactly one level
     // down": an area directory is `<root>/<area_id>` and nothing else.
     if real_area_dir.parent() != Some(real_root.as_path()) {
         tracing::error!(
@@ -718,7 +718,7 @@ pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result
     Ok(removed)
 }
 
-/// `<wave_id>-<ts_ms>` → `ts_ms`. `None` for any other shape.
+/// `<track_id>-<ts_ms>` → `ts_ms`. `None` for any other shape.
 fn trash_entry_timestamp(path: &Path) -> Option<i64> {
     let name = path.file_name()?.to_str()?;
     let (_, stamp) = name.rsplit_once('-')?;
@@ -728,7 +728,7 @@ fn trash_entry_timestamp(path: &Path) -> Option<i64> {
 /// Sweep the trash, swallowing failures.
 ///
 /// Called from the delete routes. GC is housekeeping: it must never turn a
-/// successful wave/area delete into a 500. The trash only grows when something
+/// successful track/area delete into a 500. The trash only grows when something
 /// is recycled, so sweeping on each recycle keeps it bounded by one retention
 /// window of deletions without any new background-task plumbing.
 pub fn gc_trash_best_effort(workspace_root: &Path, now_ms: i64) {

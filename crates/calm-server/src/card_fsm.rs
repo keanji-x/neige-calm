@@ -10,21 +10,21 @@
 //! kind="status", payload={ state } }`. The codex card head consumes this
 //! overlay directly.
 //!
-//! Wave-level lifecycle is owned by the [`WaveLifecycle`](crate::model::WaveLifecycle)
-//! enum stamped on the `waves` row (driven by the Spec Agent) — this projector
+//! Track-level lifecycle is owned by the [`TrackLifecycle`](crate::model::TrackLifecycle)
+//! enum stamped on the `tracks` row (driven by the Spec Agent) — this projector
 //! deliberately does NOT write that column. The two responsibilities stay split
-//! cleanly: Spec Agent owns the wave's lifecycle stage, the FSM owns per-card
+//! cleanly: Spec Agent owns the track's lifecycle stage, the FSM owns per-card
 //! status, and the two get OR'd at the UI layer for the sidebar "Waiting on
 //! you" grouping (see issue #254).
 //!
 //! On top of the per-card overlay, the projector ALSO writes a single
-//! wave-scoped boolean overlay
+//! track-scoped boolean overlay
 //! `{kind:"any_card_needs_input", payload:{value: bool}}` whenever any card
-//! under the wave is in `AwaitingInput` or `Errored`. This is **not** the old
-//! `recompute_wave` projection that #248 deleted: that one re-projected the
-//! whole 6-state FSM union onto the wave (a dual source of truth with
-//! `WaveLifecycle`). This new overlay is one bool with explicit semantics —
-//! "does any card under this wave currently need a human?" — and is
+//! under the track is in `AwaitingInput` or `Errored`. This is **not** the old
+//! `recompute_track` projection that #248 deleted: that one re-projected the
+//! whole 6-state FSM union onto the track (a dual source of truth with
+//! `TrackLifecycle`). This new overlay is one bool with explicit semantics —
+//! "does any card under this track currently need a human?" — and is
 //! complementary to lifecycle, not redundant with it (#254).
 //!
 //! ## Scope (phase 1)
@@ -67,7 +67,7 @@ use tokio::time::{Instant, sleep_until};
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::NewOverlay;
 use crate::state::WriteContext;
 use crate::validation::{
@@ -119,7 +119,7 @@ impl State {
     }
 
     /// Severity ordering used both for "is this an upgrade?" and for the
-    /// wave-union pick.
+    /// track-union pick.
     ///
     /// `AwaitingInput > Errored > Working > Starting > Idle > Done`
     fn severity(self) -> u8 {
@@ -179,7 +179,7 @@ pub(crate) const CODEX_WORKER_HOOKS: &[CodexWorkerHook] = &[
 ///
 /// `Stop` → `AwaitingInput` (not `Idle`): when codex's agent loop stops it
 /// is genuinely waiting for the next user prompt, so the user is the
-/// bottleneck and the wave-union should surface that. `PostToolUse` →
+/// bottleneck and the track-union should surface that. `PostToolUse` →
 /// `Working` (not `Idle`): the agent is still active between tool calls
 /// (reasoning about the next step), and only `stop` truly ends the turn.
 /// Previously this was `Idle` with a 750ms debounce, which leaked through
@@ -294,7 +294,7 @@ pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
     },
     // Interactive Claude workers follow the same turn-boundary semantics as
     // codex foreground agents: `stop` means the worker is waiting for the
-    // user's next prompt, so the wave surfaces "waiting on you" (#358/#367) —
+    // user's next prompt, so the track surfaces "waiting on you" (#358/#367) —
     // not `Idle`.
     ClaudeWorkerHook {
         event_name: "Stop",
@@ -342,7 +342,7 @@ fn claude_kind_to_state(kind: &str, _payload: &serde_json::Value) -> Option<Stat
 /// Takes the narrow `Arc<dyn RepoEventWrite>` rather than the full
 /// `Arc<dyn Repo>` — the projector only does eventized writes (overlay
 /// upserts via `write_with_event_typed`) plus reads (`card_get`,
-/// `cards_by_wave`) inherited from the `RepoRead` supertrait. Raw
+/// `cards_by_track`) inherited from the `RepoRead` supertrait. Raw
 /// sync-domain writes like `overlay_upsert` / `card_update` are
 /// deliberately unreachable here so a future contributor can't quietly
 /// bypass the event-log invariant (PR #41).
@@ -495,12 +495,12 @@ impl Inner {
     }
 
     /// Commit a card state change: write the card-level overlay and
-    /// recompute the wave-scoped `any_card_needs_input` aggregate. Both
+    /// recompute the track-scoped `any_card_needs_input` aggregate. Both
     /// writes emit `Event::OverlaySet` so the WS bridge invalidates the
-    /// right queries. The wave-level `WaveLifecycle` column is owned by
+    /// right queries. The track-level `TrackLifecycle` column is owned by
     /// the Spec Agent — this projector still does not touch it.
     async fn commit(&self, card_id: &CardId, state: State) {
-        // Look up the owning wave so the audit row carries the full
+        // Look up the owning track so the audit row carries the full
         // ancestor chain.
         let card = match self.repo.card_get(card_id.as_ref()).await {
             Ok(Some(c)) => c,
@@ -532,15 +532,15 @@ impl Inner {
             kind: "status".to_string(),
             payload: card_payload,
         };
-        // Resolve `wave → area` so the audit row carries the full
+        // Resolve `track → area` so the audit row carries the full
         // ancestor chain (PR2 of #136). On lookup failure fall back to
         // `EventScope::System` — we'd rather emit a less-scoped event
         // than refuse the FSM commit, since the projection itself is
         // best-effort.
-        let scope = match self.repo.wave_get(card.wave_id.as_str()).await {
+        let scope = match self.repo.track_get(card.track_id.as_str()).await {
             Ok(Some(w)) => EventScope::Card {
                 card: card_id.clone(),
-                wave: w.id,
+                track: w.id,
                 area: w.area_id,
             },
             _ => EventScope::System,
@@ -564,46 +564,46 @@ impl Inner {
             tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card overlay_upsert failed");
         }
 
-        // 2. Wave-scoped `any_card_needs_input` aggregate. Issue #254 —
-        //    OR'd at the UI layer with `WaveLifecycle` for the sidebar
+        // 2. Track-scoped `any_card_needs_input` aggregate. Issue #254 —
+        //    OR'd at the UI layer with `TrackLifecycle` for the sidebar
         //    "Waiting on you" grouping. Does NOT touch the lifecycle
         //    column, so Spec Agent stays the single source of truth for
-        //    wave-level state.
-        self.recompute_wave_needs_input(&card.wave_id).await;
+        //    track-level state.
+        self.recompute_track_needs_input(&card.track_id).await;
     }
 
-    /// Aggregate every card under `wave_id` into a single boolean
-    /// `any_card_needs_input` overlay on the wave. Idempotent: if the
+    /// Aggregate every card under `track_id` into a single boolean
+    /// `any_card_needs_input` overlay on the track. Idempotent: if the
     /// computed value matches what's already on disk, no write fires
     /// (and no event is emitted). Issue #254.
     ///
-    /// Pulls the canonical card set from `repo.cards_by_wave` rather
+    /// Pulls the canonical card set from `repo.cards_by_track` rather
     /// than scanning the global FSM map. Two reasons:
     ///   - **No lock-across-IO.** The previous shape held `self.map.lock()`
     ///     across a `card_get` round-trip per entry, blocking every other
-    ///     FSM handler for the duration. Reading the wave's cards out of
+    ///     FSM handler for the duration. Reading the track's cards out of
     ///     the repo first, then taking the map lock once for an in-memory
     ///     lookup, keeps the critical section sub-microsecond.
     ///   - **Future-proof for phase 2.** Once terminal / plugin cards
-    ///     start populating the FSM map they'll be scoped to *their* wave
+    ///     start populating the FSM map they'll be scoped to *their* track
     ///     automatically — the aggregator can't accidentally pick up a
-    ///     card from a sibling wave that happens to share the map.
+    ///     card from a sibling track that happens to share the map.
     ///
     /// Concurrent `commit()` callers can race the read-then-write
     /// idempotency check below; the final write resolves via
     /// `overlay_upsert_tx`'s `ON CONFLICT DO UPDATE` (last writer wins,
     /// no lost writes — see `db/sqlite.rs::overlay_upsert_tx`).
-    async fn recompute_wave_needs_input(&self, wave_id: &WaveId) {
-        // 1. Snapshot the canonical card set for this wave. This is the
-        //    source of truth for "what cards belong to this wave" — the
+    async fn recompute_track_needs_input(&self, track_id: &TrackId) {
+        // 1. Snapshot the canonical card set for this track. This is the
+        //    source of truth for "what cards belong to this track" — the
         //    FSM map is just our live state cache for those cards.
-        let cards = match self.repo.cards_by_wave(wave_id.as_str()).await {
+        let cards = match self.repo.cards_by_track(track_id.as_str()).await {
             Ok(cs) => cs,
             Err(e) => {
                 tracing::warn!(
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
-                    "card_fsm: cards_by_wave failed during needs_input recompute"
+                    "card_fsm: cards_by_track failed during needs_input recompute"
                 );
                 return;
             }
@@ -626,19 +626,19 @@ impl Inner {
             })
         };
 
-        // 3. Idempotency: read the existing wave overlay and skip the write
+        // 3. Idempotency: read the existing track overlay and skip the write
         //    when the boolean is unchanged. Without this the projector
         //    would churn an overlay event on every per-card transition,
-        //    even when the wave-level answer didn't move.
-        let existing = match self.repo.overlays_for("wave", wave_id.as_str()).await {
+        //    even when the track-level answer didn't move.
+        let existing = match self.repo.overlays_for("track", track_id.as_str()).await {
             Ok(rows) => rows
                 .into_iter()
                 .find(|o| o.kind == "any_card_needs_input" && o.plugin_id == KERNEL_PLUGIN_ID),
             Err(e) => {
                 tracing::warn!(
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
-                    "card_fsm: overlays_for(wave) failed during needs_input recompute"
+                    "card_fsm: overlays_for(track) failed during needs_input recompute"
                 );
                 return;
             }
@@ -652,9 +652,9 @@ impl Inner {
         // Resolve area for the event scope. On failure, fall back to
         // `EventScope::System` — same defensive policy as the per-card
         // overlay write above.
-        let scope = match self.repo.wave_get(wave_id.as_str()).await {
-            Ok(Some(w)) => EventScope::Wave {
-                wave: w.id,
+        let scope = match self.repo.track_get(track_id.as_str()).await {
+            Ok(Some(w)) => EventScope::Track {
+                track: w.id,
                 area: w.area_id,
             },
             _ => EventScope::System,
@@ -665,8 +665,8 @@ impl Inner {
         });
         let new_overlay = NewOverlay {
             plugin_id: KERNEL_PLUGIN_ID.to_string(),
-            entity_kind: "wave".to_string(),
-            entity_id: wave_id.to_string(),
+            entity_kind: "track".to_string(),
+            entity_id: track_id.to_string(),
             kind: "any_card_needs_input".to_string(),
             payload,
         };
@@ -687,7 +687,7 @@ impl Inner {
         .await
         {
             tracing::warn!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 error = %e,
                 "card_fsm: any_card_needs_input overlay_upsert failed"
             );
@@ -868,17 +868,17 @@ mod tests {
     // ----- end-to-end behavior tests against an in-memory repo --------------
 
     // Tests seed fixtures via raw sync-domain writes (`area_create`,
-    // `wave_create`, `card_create`), so they need the full `Repo`. Production
+    // `track_create`, `card_create`), so they need the full `Repo`. Production
     // `spawn` takes the narrowed `Arc<dyn RepoEventWrite>` — the call below
     // relies on stable trait-object coercion at the function-argument site.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
-    use crate::ids::WaveId;
-    use crate::model::{NewArea, NewCard, NewWave};
+    use crate::ids::TrackId;
+    use crate::model::{NewArea, NewCard, NewTrack};
     use serde_json::Value;
     use std::time::Duration as StdDuration;
 
-    async fn setup() -> (Arc<dyn Repo>, EventBus, WaveId, CardId) {
+    async fn setup() -> (Arc<dyn Repo>, EventBus, TrackId, CardId) {
         let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
         let area = repo
@@ -889,8 +889,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "w".into(),
@@ -905,7 +905,7 @@ mod tests {
             .unwrap();
         let card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -913,11 +913,11 @@ mod tests {
             })
             .await
             .unwrap();
-        (repo, bus, wave.id, card.id)
+        (repo, bus, track.id, card.id)
     }
 
     // Overlay-poll ceiling for the FSM tests. 25ms * 600 = ~15s, matching the
-    // repo's other wait-for helpers (e.g. spec_harness_wave_vcs). The old 80
+    // repo's other wait-for helpers (e.g. spec_harness_track_vcs). The old 80
     // (2s) ceiling was below the real settle floor for DOWNGRADE assertions —
     // a downgrade is held `DOWNGRADE_QUIET_MS` (750ms) on a detached timer
     // before its commit even starts, so under CI scheduler starvation the 2s
@@ -926,10 +926,10 @@ mod tests {
     // only changes how long a genuinely-stuck test waits before failing.
     const OVERLAY_POLL_ATTEMPTS: usize = 600;
 
-    async fn wait_for_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &WaveId, want: bool) {
+    async fn wait_for_track_needs_input(repo: &Arc<dyn Repo>, track_id: &TrackId, want: bool) {
         for _ in 0..OVERLAY_POLL_ATTEMPTS {
             let got = repo
-                .overlays_for("wave", wave_id.as_str())
+                .overlays_for("track", track_id.as_str())
                 .await
                 .unwrap()
                 .into_iter()
@@ -940,7 +940,7 @@ mod tests {
             }
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
-        let rows = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
+        let rows = repo.overlays_for("track", track_id.as_str()).await.unwrap();
         panic!("timed out waiting for any_card_needs_input={want}; overlays={rows:?}");
     }
 
@@ -964,17 +964,17 @@ mod tests {
 
     #[tokio::test]
     async fn upgrade_commits_immediately() {
-        let (repo, bus, wave_id, card_id) = setup().await;
+        let (repo, bus, track_id, card_id) = setup().await;
         // A sentinel card driven to Working AFTER the card under test, used as
         // an order-based barrier. By the FSM's strict in-order processing
         // (single subscriber, each `handle().await` fully awaited before the
         // next `recv` — see `spawn`), the sentinel cannot be handled until the
         // card under test has been handled in FULL — card `status` AND
-        // `recompute_wave_needs_input`. Working leaves the aggregate false, so
-        // the sentinel writes no wave overlay of its own.
+        // `recompute_track_needs_input`. Working leaves the aggregate false, so
+        // the sentinel writes no track overlay of its own.
         let card_b = repo
             .card_create(NewCard {
-                wave_id: wave_id.clone(),
+                track_id: track_id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -989,7 +989,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         // Give the spawn a tick to subscribe.
@@ -1028,11 +1028,11 @@ mod tests {
         //      wall-clock budget would reintroduce the #698 starvation flake.
         //      We accept the asymmetric-only coverage rather than reintroduce
         //      flakiness for an unlikely uniform regression.
-        //   2. #248 guard: the per-card commit must NOT write a wave-level
+        //   2. #248 guard: the per-card commit must NOT write a track-level
         //      `kind == "status"` overlay (the deleted dual-source-of-truth
         //      projection; the narrower `any_card_needs_input` from #254 is
         //      fine). Because A's recompute runs before B's status (in-order),
-        //      a reintroduced wave-status write is observed here, not missed.
+        //      a reintroduced track-status write is observed here, not missed.
         //   3. The card under test reaches `Working` (not some other state).
         let timed = tokio::time::timeout(StdDuration::from_secs(15), async {
             let mut seen_a_working = false;
@@ -1047,9 +1047,9 @@ mod tests {
                     }
                 };
                 match &env.event {
-                    Event::OverlaySet(o) if o.kind == "status" && o.entity_kind == "wave" => {
+                    Event::OverlaySet(o) if o.kind == "status" && o.entity_kind == "track" => {
                         panic!(
-                            "card_fsm must not write wave-level status overlays; got {:?}",
+                            "card_fsm must not write track-level status overlays; got {:?}",
                             o
                         );
                     }
@@ -1087,13 +1087,13 @@ mod tests {
 
     #[tokio::test]
     async fn awaiting_input_beats_working() {
-        let (repo, bus, _wave_id, card_id) = setup().await;
+        let (repo, bus, _track_id, card_id) = setup().await;
         spawn(
             repo.clone(),
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1126,13 +1126,13 @@ mod tests {
         // post_tool_use now maps to Working, not Idle: between tool calls
         // the agent is still actively reasoning, so the card should not
         // briefly flicker to Idle. Only `stop` truly ends the turn.
-        let (repo, bus, _wave_id, card_id) = setup().await;
+        let (repo, bus, _track_id, card_id) = setup().await;
         spawn(
             repo.clone(),
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1174,17 +1174,17 @@ mod tests {
         wait_for_card_status(&repo, &card_id, "AwaitingInput").await;
     }
 
-    // ----- #254 wave-scoped `any_card_needs_input` aggregator ----------------
+    // ----- #254 track-scoped `any_card_needs_input` aggregator ----------------
 
     #[tokio::test]
     async fn needs_input_overlay_fires_on_awaiting_input() {
-        let (repo, bus, wave_id, card_id) = setup().await;
+        let (repo, bus, track_id, card_id) = setup().await;
         spawn(
             repo.clone(),
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1199,9 +1199,9 @@ mod tests {
             },
         );
 
-        wait_for_wave_needs_input(&repo, &wave_id, true).await;
+        wait_for_track_needs_input(&repo, &track_id, true).await;
         let o = repo
-            .overlays_for("wave", wave_id.as_str())
+            .overlays_for("track", track_id.as_str())
             .await
             .unwrap()
             .into_iter()
@@ -1213,13 +1213,13 @@ mod tests {
 
     #[tokio::test]
     async fn needs_input_overlay_clears_on_working() {
-        let (repo, bus, wave_id, card_id) = setup().await;
+        let (repo, bus, track_id, card_id) = setup().await;
         spawn(
             repo.clone(),
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1235,7 +1235,7 @@ mod tests {
             },
         );
         // Sanity: overlay is true.
-        wait_for_wave_needs_input(&repo, &wave_id, true).await;
+        wait_for_track_needs_input(&repo, &track_id, true).await;
 
         // pre_tool_use is an upgrade from AwaitingInput? No — Working
         // has lower severity than AwaitingInput. The 750ms downgrade
@@ -1249,25 +1249,25 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        wait_for_wave_needs_input(&repo, &wave_id, false).await;
+        wait_for_track_needs_input(&repo, &track_id, false).await;
     }
 
     #[tokio::test]
     async fn needs_input_overlay_is_idempotent() {
-        let (repo, bus, wave_id, card_id) = setup().await;
-        // Two more codex cards under the same wave, used as deterministic
-        // sentinels (see below). Created BEFORE the FSM spawns so the wave's
+        let (repo, bus, track_id, card_id) = setup().await;
+        // Two more codex cards under the same track, used as deterministic
+        // sentinels (see below). Created BEFORE the FSM spawns so the track's
         // canonical card set already contains them.
         //   * card B exercises the recompute idempotency path (its
-        //     AwaitingInput leaves the already-true wave aggregate unchanged,
-        //     so a correct `recompute_wave_needs_input` writes nothing).
+        //     AwaitingInput leaves the already-true track aggregate unchanged,
+        //     so a correct `recompute_track_needs_input` writes nothing).
         //   * card C is the terminal marker: by in-order processing, C's
         //     card-`status` overlay cannot appear until B has been handled in
         //     full — INCLUDING B's recompute — so the count is finalized only
         //     after the recompute-idempotency path has had its chance to (and
-        //     must not) emit a duplicate wave write.
+        //     must not) emit a duplicate track write.
         let new_codex_card = || NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1283,13 +1283,13 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
 
-        // First emit → card A goes AwaitingInput, wave overlay flips to true
-        // (false → true is a VALUE CHANGE → exactly ONE wave write).
+        // First emit → card A goes AwaitingInput, track overlay flips to true
+        // (false → true is a VALUE CHANGE → exactly ONE track write).
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1301,9 +1301,9 @@ mod tests {
         );
 
         // Second emit → card A STILL AwaitingInput (same severity, no actual
-        // transition), wave aggregate is unchanged (true → true). The
-        // idempotency guard in `recompute_wave_needs_input` must suppress the
-        // wave write (no value change → no OverlaySet).
+        // transition), track aggregate is unchanged (true → true). The
+        // idempotency guard in `recompute_track_needs_input` must suppress the
+        // track write (no value change → no OverlaySet).
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1320,15 +1320,15 @@ mod tests {
         // `recv` — see `spawn`), neither can be handled until card A's two
         // emits are fully processed, and card C cannot be handled until card B
         // is fully processed. A first-observation upgrade ALWAYS writes a
-        // card-level `status` overlay; the wave aggregate is already true (from
+        // card-level `status` overlay; the track aggregate is already true (from
         // card A), so B's and C's commits each leave it unchanged.
         //
         // We finalize the count on card C's status — NOT B's — on purpose:
         // `commit()` writes the card `status` overlay BEFORE calling
-        // `recompute_wave_needs_input`, so B's recompute (the true→true
+        // `recompute_track_needs_input`, so B's recompute (the true→true
         // idempotency path this test guards) runs AFTER B's status event.
         // Breaking on C's status guarantees B's recompute has already run and
-        // any duplicate wave write it might (wrongly) emit is counted first.
+        // any duplicate track write it might (wrongly) emit is counted first.
         for sentinel in [&card_b, &card_c] {
             bus.emit(
                 ActorId::AiCodex(sentinel.id.clone()),
@@ -1342,7 +1342,7 @@ mod tests {
         }
 
         // Block-recv until we observe card C's status overlay, counting
-        // wave-scoped `any_card_needs_input` OverlaySet events along the way.
+        // track-scoped `any_card_needs_input` OverlaySet events along the way.
         // By in-order processing, every event card A's two emits AND card B's
         // full handling (status + recompute) produced is already received
         // before C's status arrives, so the count is complete and free of
@@ -1352,7 +1352,7 @@ mod tests {
         // Bounded by an outer timeout so a broken assumption fails as a clean
         // panic instead of hanging the test forever (there is no per-test
         // timeout). 15s matches the repo's other wait-for bounds.
-        let wave_overlay_writes = tokio::time::timeout(StdDuration::from_secs(15), async {
+        let track_overlay_writes = tokio::time::timeout(StdDuration::from_secs(15), async {
             let mut writes = 0usize;
             loop {
                 let env = match rx.recv().await {
@@ -1370,8 +1370,8 @@ mod tests {
                 match &env.event {
                     Event::OverlaySet(o)
                         if o.kind == "any_card_needs_input"
-                            && o.entity_kind == "wave"
-                            && o.entity_id == wave_id.to_string() =>
+                            && o.entity_kind == "track"
+                            && o.entity_id == track_id.to_string() =>
                     {
                         writes += 1;
                     }
@@ -1397,15 +1397,15 @@ mod tests {
         .await
         .expect("timed out waiting for terminal marker (card C AwaitingInput) overlay");
         assert_eq!(
-            wave_overlay_writes, 1,
-            "expected exactly one any_card_needs_input write (idempotent), got {wave_overlay_writes}"
+            track_overlay_writes, 1,
+            "expected exactly one any_card_needs_input write (idempotent), got {track_overlay_writes}"
         );
     }
 
     #[tokio::test]
     async fn needs_input_overlay_ors_multiple_cards() {
-        // Two codex cards under the same wave. Driving ONE to
-        // AwaitingInput should light up the wave overlay even while the
+        // Two codex cards under the same track. Driving ONE to
+        // AwaitingInput should light up the track overlay even while the
         // other stays Working; flipping both to Working should clear it.
         let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
@@ -1417,8 +1417,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "w".into(),
@@ -1433,7 +1433,7 @@ mod tests {
             .unwrap();
         let card_a = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -1443,7 +1443,7 @@ mod tests {
             .unwrap();
         let card_b = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -1456,12 +1456,12 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_area_cache::WaveAreaCache::new(),
+                crate::track_area_cache::TrackAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
 
-        // A → Working, B → AwaitingInput. Wave overlay should be true.
+        // A → Working, B → AwaitingInput. Track overlay should be true.
         bus.emit(
             ActorId::AiCodex(card_a.id.clone()),
             Event::CodexHook {
@@ -1480,7 +1480,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        wait_for_wave_needs_input(&repo, &wave.id, true).await;
+        wait_for_track_needs_input(&repo, &track.id, true).await;
 
         // Flip B back to Working — past the 750ms downgrade window.
         bus.emit(
@@ -1492,6 +1492,6 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        wait_for_wave_needs_input(&repo, &wave.id, false).await;
+        wait_for_track_needs_input(&repo, &track.id, false).await;
     }
 }

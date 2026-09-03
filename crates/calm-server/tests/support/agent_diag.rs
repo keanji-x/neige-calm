@@ -197,7 +197,7 @@ async fn events_diag(repo: &SqlxRepo) -> String {
 
 async fn worktree_diag(fx: &Fixture) -> String {
     let mut out = String::new();
-    let mut cwds = vec![fx.wave_cwd.clone()];
+    let mut cwds = vec![fx.track_cwd.clone()];
     match operation_cwds(&fx.repo).await {
         None => {
             let _ = writeln!(out, "-- operation worktrees --\n  <section timed out>");

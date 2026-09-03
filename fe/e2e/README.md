@@ -5,8 +5,8 @@ stack outside this command, then run `npm run e2e` from `fe/`; Playwright starts
 on port 5180. Override the backend with `FE_API_PROXY_TARGET` or the frontend port with
 `FE_DEV_PORT` when necessary.
 
-The stack needs a codex app-server it can actually talk to: `wave-conversation-create.spec.ts`
-requires `POST /api/waves/{id}/conversations` to return 201, and without one the request dies in
+The stack needs a codex app-server it can actually talk to: `track-conversation-create.spec.ts`
+requires `POST /api/tracks/{id}/conversations` to return 201, and without one the request dies in
 the adapter's daemon preflight — before the card, session and MCP token are minted, so the failure
 tells you nothing about whether the mint is correct. Point `CALM_CODEX_HOST_BIN` at the
 `osc-probe-child` fixture, which answers the handshake (`initialize` / `thread/start` /

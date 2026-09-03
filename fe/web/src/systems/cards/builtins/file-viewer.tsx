@@ -3,7 +3,7 @@
 //
 // That last part is what makes it the one built-in with a `generic` create:
 // there is no daemon to spawn, so the row *is* the card and
-// `POST /api/waves/:id/cards` writes it verbatim. `buildPayload` is therefore
+// `POST /api/tracks/:id/cards` writes it verbatim. `buildPayload` is therefore
 // the whole create — and it takes only `path`, because `title` is a column on
 // the row rather than a member of the payload.
 

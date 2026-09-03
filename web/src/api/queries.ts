@@ -4,7 +4,7 @@
 // Why hooks (and not a hand-rolled store):
 //   - Per-query loading/error state is automatic. No more "the page is
 //     stuck on a global spinner because one of N area fetches is slow".
-//   - Request deduplication. Two components asking for `['wave', id]` at
+//   - Request deduplication. Two components asking for `['track', id]` at
 //     the same time share one fetch.
 //   - Cache invalidation is declarative. WS events become
 //     `queryClient.invalidateQueries({queryKey:[...]})` calls in one
@@ -12,8 +12,8 @@
 //
 // Query keys are arrays — pick one shape and never deviate:
 //   ['areas']                     — list of all areas
-//   ['waves', areaId]             — list of waves in an area
-//   ['wave', waveId]              — full wave detail (cards + overlays)
+//   ['tracks', areaId]             — list of tracks in an area
+//   ['track', trackId]              — full track detail (cards + overlays)
 //
 // All queries call the existing `api/calm.ts` functions as their queryFn;
 // no fetch logic lives here. Mutations call the same client and follow
@@ -35,17 +35,17 @@ import type {
   KernelCard,
   KernelArea,
   KernelOverlay,
-  KernelWave,
-  KernelWaveDetail,
+  KernelTrack,
+  KernelTrackDetail,
   NewCardBody,
   NewAreaBody,
-  NewWaveBody,
+  NewTrackBody,
   SettingsBag,
   SettingsPutBody,
-  WavePatchBody,
+  TrackPatchBody,
 } from './wire';
 
-type WaveFileQueryOpts = {
+type TrackFileQueryOpts = {
   enabled?: boolean;
 };
 
@@ -56,18 +56,18 @@ type WaveFileQueryOpts = {
 
 export const queryKeys = {
   areas: () => ['areas'] as const,
-  wavesInArea: (areaId: string) => ['waves', areaId] as const,
-  waveDetail: (waveId: string) => ['wave', waveId] as const,
-  waveReport: (waveId: string) => ['wave-report', waveId] as const,
-  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
-  waveFiles: (waveId: string) => ['wave-files', waveId] as const,
-  waveFileList: (waveId: string, path: string | null | undefined) =>
-    waveFileListQueryKey(waveId, path),
-  waveFileContent: (waveId: string, path: string | null | undefined) =>
-    waveFileContentQueryKey(waveId, path),
-  /** Global wave/card overlay snapshot — populated by the Sidebar so
-   *  per-wave status indicators stay accurate without detail fetches. */
-  overlaysByKind: (entity_kind: 'wave' | 'card') =>
+  tracksInArea: (areaId: string) => ['tracks', areaId] as const,
+  trackDetail: (trackId: string) => ['track', trackId] as const,
+  trackReport: (trackId: string) => ['track-report', trackId] as const,
+  trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
+  trackFiles: (trackId: string) => ['track-files', trackId] as const,
+  trackFileList: (trackId: string, path: string | null | undefined) =>
+    trackFileListQueryKey(trackId, path),
+  trackFileContent: (trackId: string, path: string | null | undefined) =>
+    trackFileContentQueryKey(trackId, path),
+  /** Global track/card overlay snapshot — populated by the Sidebar so
+   *  per-track status indicators stay accurate without detail fetches. */
+  overlaysByKind: (entity_kind: 'track' | 'card') =>
     ['overlays', entity_kind] as const,
   /** App-global settings bag (`http_proxy`, `https_proxy`, …). Read by
    *  the Settings page; not invalidated by WS (settings only take effect
@@ -81,19 +81,19 @@ export const queryKeys = {
    * calendar page never filters by area (issue Non-goals); if we add a
    * filter later it lands here as a third tuple element.
    */
-  wavesRange: (since: number, until: number) =>
-    ['waves-range', since, until] as const,
+  tracksRange: (since: number, until: number) =>
+    ['tracks-range', since, until] as const,
 };
 
-export const waveFileListQueryKey = (
-  waveId: string,
+export const trackFileListQueryKey = (
+  trackId: string,
   path: string | null | undefined,
-) => ['wave-files', waveId, 'ls', path ?? ''] as const;
+) => ['track-files', trackId, 'ls', path ?? ''] as const;
 
-export const waveFileContentQueryKey = (
-  waveId: string,
+export const trackFileContentQueryKey = (
+  trackId: string,
   path: string | null | undefined,
-) => ['wave-files', waveId, 'cat', path ?? ''] as const;
+) => ['track-files', trackId, 'cat', path ?? ''] as const;
 
 // ---------------- Query option factories ----------------
 //
@@ -108,34 +108,34 @@ export const areasQueryOptions = () => ({
   queryFn: () => api.listAreas(),
 });
 
-export const wavesByAreaQueryOptions = (areaId: string) => ({
-  queryKey: queryKeys.wavesInArea(areaId),
-  queryFn: () => api.wavesInArea(areaId),
+export const tracksByAreaQueryOptions = (areaId: string) => ({
+  queryKey: queryKeys.tracksInArea(areaId),
+  queryFn: () => api.tracksInArea(areaId),
 });
 
-export const waveDetailQueryOptions = (waveId: string) => ({
-  queryKey: queryKeys.waveDetail(waveId),
-  queryFn: () => api.getWaveDetail(waveId),
+export const trackDetailQueryOptions = (trackId: string) => ({
+  queryKey: queryKeys.trackDetail(trackId),
+  queryFn: () => api.getTrackDetail(trackId),
 });
 
-export const waveBacklinksQueryOptions = (waveId: string) => ({
-  queryKey: queryKeys.waveBacklinks(waveId),
-  queryFn: () => api.getWaveBacklinks(waveId),
+export const trackBacklinksQueryOptions = (trackId: string) => ({
+  queryKey: queryKeys.trackBacklinks(trackId),
+  queryFn: () => api.getTrackBacklinks(trackId),
 });
 
-export const waveReportQueryOptions = (waveId: string) => ({
-  queryKey: queryKeys.waveReport(waveId),
+export const trackReportQueryOptions = (trackId: string) => ({
+  queryKey: queryKeys.trackReport(trackId),
   queryFn: async () => {
-    const report = await api.getWaveReport(waveId);
+    const report = await api.getTrackReport(trackId);
     return {
       ...report,
       taskDiagnostics: report.taskDiagnostics.map((verdict) =>
         taskBlockVerdictSchema.parse(verdict)),
-    } as api.WaveReportRead;
+    } as api.TrackReportRead;
   },
 });
 
-export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
+export const overlaysByKindQueryOptions = (entity_kind: 'track' | 'card') => ({
   queryKey: queryKeys.overlaysByKind(entity_kind),
   queryFn: () => api.listAllOverlays(entity_kind),
 });
@@ -149,9 +149,9 @@ export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
  * cache (each distinct week is a separate query key); WS events still
  * invalidate the active window in real time.
  */
-export const wavesRangeQueryOptions = (since: number, until: number) => ({
-  queryKey: queryKeys.wavesRange(since, until),
-  queryFn: () => api.wavesRange({ since, until }),
+export const tracksRangeQueryOptions = (since: number, until: number) => ({
+  queryKey: queryKeys.tracksRange(since, until),
+  queryFn: () => api.tracksRange({ since, until }),
   gcTime: 5 * 60 * 1000,
 });
 
@@ -165,27 +165,27 @@ export function useAreasQuery(opts?: Partial<UseQueryOptions<KernelArea[], Error
   });
 }
 
-/** Waves inside a given area. Empty `areaId` keeps the query disabled. */
-export function useWavesByAreaQuery(
+/** Tracks inside a given area. Empty `areaId` keeps the query disabled. */
+export function useTracksByAreaQuery(
   areaId: string | undefined | null,
-  opts?: Partial<UseQueryOptions<KernelWave[], Error>>,
+  opts?: Partial<UseQueryOptions<KernelTrack[], Error>>,
 ) {
-  return useQuery<KernelWave[], Error>({
-    ...wavesByAreaQueryOptions(areaId ?? ''),
+  return useQuery<KernelTrack[], Error>({
+    ...tracksByAreaQueryOptions(areaId ?? ''),
     enabled: !!areaId,
     ...opts,
   });
 }
 
-/** Wave detail (cards + overlays). Disabled when `waveId` falsy.
+/** Track detail (cards + overlays). Disabled when `trackId` falsy.
  *
  * #177 — `placeholderData: keepPreviousData` keeps the last successful
  * data visible while a background refetch is in flight. Without it,
- * `useWaveDetailQuery` would briefly surface `data: undefined` across
- * an `invalidateQueries`-driven refetch (the wave-detail key is
- * invalidated by overlay.set / wave.updated / card.* events on the
- * WS bus — see `app/eventBridge.tsx`). `WaveComponent` early-returns
- * `null` on `!detailQ.data`, which would unmount the entire wave
+ * `useTrackDetailQuery` would briefly surface `data: undefined` across
+ * an `invalidateQueries`-driven refetch (the track-detail key is
+ * invalidated by overlay.set / track.updated / card.* events on the
+ * WS bus — see `app/eventBridge.tsx`). `TrackComponent` early-returns
+ * `null` on `!detailQ.data`, which would unmount the entire track
  * subtree — including the lazy-loaded `XtermView` and its
  * `pendingThemeRef` / `sendRef`. On remount, those refs reset and
  * the very next `TerminalThemeUpdate` dispatch races the new WS
@@ -204,68 +204,68 @@ export function useWavesByAreaQuery(
  * overlay.set event → invalidate. That feedback loop is wasteful
  * and worth investigating once #177 is closed.
  */
-export function useWaveDetailQuery(
-  waveId: string | undefined | null,
-  opts?: Partial<UseQueryOptions<KernelWaveDetail, Error>>,
+export function useTrackDetailQuery(
+  trackId: string | undefined | null,
+  opts?: Partial<UseQueryOptions<KernelTrackDetail, Error>>,
 ) {
-  return useQuery<KernelWaveDetail, Error>({
-    ...waveDetailQueryOptions(waveId ?? ''),
-    enabled: !!waveId,
+  return useQuery<KernelTrackDetail, Error>({
+    ...trackDetailQueryOptions(trackId ?? ''),
+    enabled: !!trackId,
     placeholderData: keepPreviousData,
     ...opts,
   });
 }
 
-export function useWaveBacklinksQuery(
-  waveId: string | undefined | null,
-  opts?: Partial<UseQueryOptions<api.WaveBacklinksResponse, Error>>,
+export function useTrackBacklinksQuery(
+  trackId: string | undefined | null,
+  opts?: Partial<UseQueryOptions<api.TrackBacklinksResponse, Error>>,
 ) {
-  return useQuery<api.WaveBacklinksResponse, Error>({
-    ...waveBacklinksQueryOptions(waveId ?? ''),
-    enabled: !!waveId,
+  return useQuery<api.TrackBacklinksResponse, Error>({
+    ...trackBacklinksQueryOptions(trackId ?? ''),
+    enabled: !!trackId,
     ...opts,
   });
 }
 
-export function useWaveFileList(
-  waveId: string | undefined | null,
+export function useTrackFileList(
+  trackId: string | undefined | null,
   path?: string | null,
-  opts?: WaveFileQueryOpts,
+  opts?: TrackFileQueryOpts,
 ) {
-  return useQuery<api.WaveFsEntry[], Error>({
-    queryKey: waveFileListQueryKey(waveId ?? '', path),
-    queryFn: () => api.listWaveFiles(waveId ?? '', path),
-    enabled: !!waveId && (opts?.enabled ?? true),
+  return useQuery<api.TrackFsEntry[], Error>({
+    queryKey: trackFileListQueryKey(trackId ?? '', path),
+    queryFn: () => api.listTrackFiles(trackId ?? '', path),
+    enabled: !!trackId && (opts?.enabled ?? true),
   });
 }
 
-export function useWaveFileContent(
-  waveId: string | undefined | null,
+export function useTrackFileContent(
+  trackId: string | undefined | null,
   path: string | null | undefined,
-  opts?: WaveFileQueryOpts,
+  opts?: TrackFileQueryOpts,
 ) {
-  return useQuery<api.WaveFsContent, Error>({
-    queryKey: waveFileContentQueryKey(waveId ?? '', path),
-    queryFn: () => api.catWaveFile(waveId ?? '', path ?? ''),
-    enabled: !!waveId && !!path && (opts?.enabled ?? true),
+  return useQuery<api.TrackFsContent, Error>({
+    queryKey: trackFileContentQueryKey(trackId ?? '', path),
+    queryFn: () => api.catTrackFile(trackId ?? '', path ?? ''),
+    enabled: !!trackId && !!path && (opts?.enabled ?? true),
   });
 }
 
-export function useWaveReportQuery(waveId: string | undefined | null) {
-  return useQuery<api.WaveReportRead, Error>({
-    ...waveReportQueryOptions(waveId ?? ''),
-    enabled: !!waveId,
+export function useTrackReportQuery(trackId: string | undefined | null) {
+  return useQuery<api.TrackReportRead, Error>({
+    ...trackReportQueryOptions(trackId ?? ''),
+    enabled: !!trackId,
   });
 }
 
 /**
- * All overlays of a given entity kind (workspace-wide). Fed into adaptWave
+ * All overlays of a given entity kind (workspace-wide). Fed into adaptTrack
  * by IndexComponent so the Sidebar's status indicators reflect overlays on
- * waves the user hasn't opened yet. eventBridge invalidates this on every
+ * tracks the user hasn't opened yet. eventBridge invalidates this on every
  * overlay.set / overlay.deleted so it stays current.
  */
 export function useOverlaysByKindQuery(
-  entity_kind: 'wave' | 'card',
+  entity_kind: 'track' | 'card',
   opts?: Partial<UseQueryOptions<KernelOverlay[], Error>>,
 ) {
   return useQuery<KernelOverlay[], Error>({
@@ -275,20 +275,20 @@ export function useOverlaysByKindQuery(
 }
 
 /**
- * Calendar window — issue #250 PR 5. Returns every wave overlapping
+ * Calendar window — issue #250 PR 5. Returns every track overlapping
  * `[since, until]` (unix ms). `keepPreviousData` keeps the prior week's
  * grid visible while the next week's fetch is in flight so the navigation
  * arrows feel snappy. Invalidation lives in `eventBridge.tsx` —
- * `wave.updated`, `wave.lifecycle_changed`, and `wave.deleted` all dirty
+ * `track.updated`, `track.lifecycle_changed`, and `track.deleted` all dirty
  * every cached window so the calendar redraws without a per-page refresh.
  */
-export function useWavesRangeQuery(
+export function useTracksRangeQuery(
   since: number,
   until: number,
-  opts?: Partial<UseQueryOptions<KernelWave[], Error>>,
+  opts?: Partial<UseQueryOptions<KernelTrack[], Error>>,
 ) {
-  return useQuery<KernelWave[], Error>({
-    ...wavesRangeQueryOptions(since, until),
+  return useQuery<KernelTrack[], Error>({
+    ...tracksRangeQueryOptions(since, until),
     placeholderData: keepPreviousData,
     ...opts,
   });
@@ -381,61 +381,61 @@ export function useDeleteAreaMutation() {
     mutationFn: (id) => api.deleteArea(id),
     onSuccess: (_v, id) => {
       void qc.invalidateQueries({ queryKey: queryKeys.areas() });
-      // Drop the dead area's wave list from cache.
-      qc.removeQueries({ queryKey: queryKeys.wavesInArea(id) });
+      // Drop the dead area's track list from cache.
+      qc.removeQueries({ queryKey: queryKeys.tracksInArea(id) });
     },
   });
 }
 
-export function useCreateWaveMutation() {
+export function useCreateTrackMutation() {
   const qc = useQueryClient();
-  return useMutation<KernelWave, Error, NewWaveBody>({
-    mutationFn: (body) => api.createWave(body),
-    onSuccess: (wave) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(wave.area_id) });
+  return useMutation<KernelTrack, Error, NewTrackBody>({
+    mutationFn: (body) => api.createTrack(body),
+    onSuccess: (track) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
     },
   });
 }
 
 /**
- * Update a wave. Optimistic for `title` (rename) and `sort` (drag-reorder
- * within the area's wave list). Other patch fields (e.g. `archived_at`)
+ * Update a track. Optimistic for `title` (rename) and `sort` (drag-reorder
+ * within the area's track list). Other patch fields (e.g. `archived_at`)
  * stay non-optimistic — archive flips trigger cascading UI moves that are
  * cleaner to drive from the server-confirmed state.
  *
- * Two caches can hold a copy of the wave: the list `['waves', area_id]`
- * and the detail `['wave', id]`. We update whichever ones are populated,
+ * Two caches can hold a copy of the track: the list `['tracks', area_id]`
+ * and the detail `['track', id]`. We update whichever ones are populated,
  * and snapshot both so onError can restore them.
  */
-export function useUpdateWaveMutation() {
+export function useUpdateTrackMutation() {
   const qc = useQueryClient();
-  type Vars = { id: string; body: WavePatchBody };
+  type Vars = { id: string; body: TrackPatchBody };
   type Ctx = {
-    previousList: { key: ReturnType<typeof queryKeys.wavesInArea>; value: KernelWave[] } | null;
-    previousDetail: KernelWaveDetail | null;
-    detailKey: ReturnType<typeof queryKeys.waveDetail>;
+    previousList: { key: ReturnType<typeof queryKeys.tracksInArea>; value: KernelTrack[] } | null;
+    previousDetail: KernelTrackDetail | null;
+    detailKey: ReturnType<typeof queryKeys.trackDetail>;
   };
-  return useMutation<KernelWave, Error, Vars, Ctx>({
-    mutationFn: ({ id, body }) => api.updateWave(id, body),
+  return useMutation<KernelTrack, Error, Vars, Ctx>({
+    mutationFn: ({ id, body }) => api.updateTrack(id, body),
     onMutate: async ({ id, body }) => {
-      const detailKey = queryKeys.waveDetail(id);
+      const detailKey = queryKeys.trackDetail(id);
       const empty: Ctx = { previousList: null, previousDetail: null, detailKey };
       const isOptimisticField =
         body.title !== undefined || body.sort !== undefined;
       if (!isOptimisticField) return empty;
 
-      // Locate the wave's area via cached detail first, then fall back to
-      // scanning cached wave lists. If neither cache is warm there's
+      // Locate the track's area via cached detail first, then fall back to
+      // scanning cached track lists. If neither cache is warm there's
       // nothing to optimistically mutate; we still let the request run.
-      const cachedDetail = qc.getQueryData<KernelWaveDetail>(detailKey);
-      let listKey: ReturnType<typeof queryKeys.wavesInArea> | null = null;
+      const cachedDetail = qc.getQueryData<KernelTrackDetail>(detailKey);
+      let listKey: ReturnType<typeof queryKeys.tracksInArea> | null = null;
       if (cachedDetail) {
-        listKey = queryKeys.wavesInArea(cachedDetail.wave.area_id);
+        listKey = queryKeys.tracksInArea(cachedDetail.track.area_id);
       } else {
-        const all = qc.getQueriesData<KernelWave[]>({ queryKey: ['waves'] });
+        const all = qc.getQueriesData<KernelTrack[]>({ queryKey: ['tracks'] });
         for (const [k, v] of all) {
           if (v && v.some((w) => w.id === id)) {
-            listKey = k as ReturnType<typeof queryKeys.wavesInArea>;
+            listKey = k as ReturnType<typeof queryKeys.tracksInArea>;
             break;
           }
         }
@@ -445,7 +445,7 @@ export function useUpdateWaveMutation() {
       if (listKey) await qc.cancelQueries({ queryKey: listKey });
 
       const now = Date.now();
-      const applyPatch = (w: KernelWave): KernelWave => ({
+      const applyPatch = (w: KernelTrack): KernelTrack => ({
         ...w,
         ...(body.title != null ? { title: body.title } : {}),
         ...(body.sort != null ? { sort: body.sort } : {}),
@@ -455,10 +455,10 @@ export function useUpdateWaveMutation() {
       const ctx: Ctx = { ...empty };
 
       if (listKey) {
-        const previousList = qc.getQueryData<KernelWave[]>(listKey);
+        const previousList = qc.getQueryData<KernelTrack[]>(listKey);
         if (previousList) {
           ctx.previousList = { key: listKey, value: previousList };
-          qc.setQueryData<KernelWave[]>(
+          qc.setQueryData<KernelTrack[]>(
             listKey,
             previousList.map((w) => (w.id === id ? applyPatch(w) : w)),
           );
@@ -467,9 +467,9 @@ export function useUpdateWaveMutation() {
 
       if (cachedDetail) {
         ctx.previousDetail = cachedDetail;
-        qc.setQueryData<KernelWaveDetail>(detailKey, {
+        qc.setQueryData<KernelTrackDetail>(detailKey, {
           ...cachedDetail,
-          wave: applyPatch(cachedDetail.wave),
+          track: applyPatch(cachedDetail.track),
         });
       }
 
@@ -484,60 +484,60 @@ export function useUpdateWaveMutation() {
         qc.setQueryData(context.detailKey, context.previousDetail);
       }
     },
-    onSettled: (wave, _err, vars, context) => {
+    onSettled: (track, _err, vars, context) => {
       // Prefer the server-confirmed area_id; fall back to whatever list
       // we touched optimistically. Either way we want the detail key
       // invalidated.
-      const areaId = wave?.area_id ?? context?.previousList?.value[0]?.area_id;
+      const areaId = track?.area_id ?? context?.previousList?.value[0]?.area_id;
       if (areaId) {
-        void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(areaId) });
+        void qc.invalidateQueries({ queryKey: queryKeys.tracksInArea(areaId) });
       }
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(vars.id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.trackDetail(vars.id) });
     },
   });
 }
 
-export function useDeleteWaveMutation() {
+export function useDeleteTrackMutation() {
   const qc = useQueryClient();
-  // We need the area id to invalidate the area's wave list, so callers
+  // We need the area id to invalidate the area's track list, so callers
   // pass `{ id, areaId }` — same shape the WS event would carry.
   return useMutation<void, Error, { id: string; areaId: string }>({
-    mutationFn: ({ id }) => api.deleteWave(id),
+    mutationFn: ({ id }) => api.deleteTrack(id),
     onSuccess: (_v, { id, areaId }) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(areaId) });
-      qc.removeQueries({ queryKey: queryKeys.waveDetail(id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.tracksInArea(areaId) });
+      qc.removeQueries({ queryKey: queryKeys.trackDetail(id) });
     },
   });
 }
 
 export function useCreateCardMutation() {
   const qc = useQueryClient();
-  return useMutation<KernelCard, Error, { waveId: string; body: NewCardBody }>({
-    mutationFn: ({ waveId, body }) => api.createCard(waveId, body),
+  return useMutation<KernelCard, Error, { trackId: string; body: NewCardBody }>({
+    mutationFn: ({ trackId, body }) => api.createCard(trackId, body),
     onSuccess: (card) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.trackDetail(card.track_id) });
     },
   });
 }
 
 /**
  * Update a card. Optimistic only for `sort` — the drag-reorder case
- * within a wave's card grid. `payload` is intentionally NOT optimistic:
+ * within a track's card grid. `payload` is intentionally NOT optimistic:
  * its shape is per-card-kind (see `cards/*` adapters) and a mid-edit
  * rollback would smear partial state across the card's bespoke UI.
  *
- * The caller doesn't pass `wave_id` in vars, so we discover it by
- * scanning cached wave details for the card. If we can't find it we
+ * The caller doesn't pass `track_id` in vars, so we discover it by
+ * scanning cached track details for the card. If we can't find it we
  * still send the mutation; onSettled then has no detail key to
  * invalidate and we rely on the WS `card.updated` fanout (see
- * `eventBridge.tsx`, which itself scans for the owning wave).
+ * `eventBridge.tsx`, which itself scans for the owning track).
  */
 export function useUpdateCardMutation() {
   const qc = useQueryClient();
   type Vars = { id: string; body: CardPatchBody };
   type Ctx = {
-    detailKey: ReturnType<typeof queryKeys.waveDetail> | null;
-    previousDetail: KernelWaveDetail | null;
+    detailKey: ReturnType<typeof queryKeys.trackDetail> | null;
+    previousDetail: KernelTrackDetail | null;
   };
   return useMutation<KernelCard, Error, Vars, Ctx>({
     mutationFn: ({ id, body }) => api.updateCard(id, body),
@@ -546,12 +546,12 @@ export function useUpdateCardMutation() {
       // Only `sort` is safe to optimistically mirror.
       if (body.sort === undefined || body.sort === null) return empty;
 
-      const entries = qc.getQueriesData<KernelWaveDetail>({ queryKey: ['wave'] });
-      let detailKey: ReturnType<typeof queryKeys.waveDetail> | null = null;
-      let previousDetail: KernelWaveDetail | null = null;
+      const entries = qc.getQueriesData<KernelTrackDetail>({ queryKey: ['track'] });
+      let detailKey: ReturnType<typeof queryKeys.trackDetail> | null = null;
+      let previousDetail: KernelTrackDetail | null = null;
       for (const [k, v] of entries) {
         if (v && v.cards.some((c) => c.id === id)) {
-          detailKey = k as ReturnType<typeof queryKeys.waveDetail>;
+          detailKey = k as ReturnType<typeof queryKeys.trackDetail>;
           previousDetail = v;
           break;
         }
@@ -561,7 +561,7 @@ export function useUpdateCardMutation() {
       await qc.cancelQueries({ queryKey: detailKey });
       const now = Date.now();
       const nextSort = body.sort;
-      qc.setQueryData<KernelWaveDetail>(detailKey, {
+      qc.setQueryData<KernelTrackDetail>(detailKey, {
         ...previousDetail,
         cards: previousDetail.cards.map((c) =>
           c.id === id ? { ...c, sort: nextSort, updated_at: now } : c,
@@ -576,9 +576,9 @@ export function useUpdateCardMutation() {
       }
     },
     onSettled: (card, _err, _vars, context) => {
-      const waveId = card?.wave_id;
-      if (waveId) {
-        void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+      const trackId = card?.track_id;
+      if (trackId) {
+        void qc.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
       } else if (context?.detailKey) {
         void qc.invalidateQueries({ queryKey: context.detailKey });
       }
@@ -588,10 +588,10 @@ export function useUpdateCardMutation() {
 
 export function useDeleteCardMutation() {
   const qc = useQueryClient();
-  return useMutation<void, Error, { id: string; waveId: string }>({
+  return useMutation<void, Error, { id: string; trackId: string }>({
     mutationFn: ({ id }) => api.deleteCard(id),
-    onSuccess: (_v, { waveId }) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    onSuccess: (_v, { trackId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
     },
   });
 }

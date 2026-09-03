@@ -74,7 +74,7 @@
 # 66-entry manifest. Distorting prose to satisfy a regex also destroys the
 # evidence that the regex is over-broad. Reword only when the new word is
 # genuinely more accurate (#1268 kept several such: comments that really were
-# about wave TEMPLATES, and the `GET /api/workflows` endpoint that no longer
+# about track TEMPLATES, and the `GET /api/workflows` endpoint that no longer
 # exists under any name). The one non-reword edit worth keeping on its own
 # merits is the comment re-wrap at
 # `web/e2e/_setup/replay-server.setup.ts:57-58`, where `.github/` and
@@ -135,8 +135,8 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #        through a migrator truncated BEFORE the rename, so the old column names
 #        (and, for 0076, the old manifest key) are the correct ones there;
 #        renaming them would break the fixture.
-13  crates/calm-truth/src/db/sqlite/wave_plugin_scope_migration_tests.rs
-4   crates/calm-truth/src/db/sqlite/wave_template_rename_migration_tests.rs
+13  crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs
+4   crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs
 # --- 4. #1268's own loud-failure guard, plus the `manifest_version` rule that
 #        covers the rollback direction. `Manifest` tolerates unknown top-level
 #        keys, so a manifest still spelling the array `workflows` would parse
@@ -145,8 +145,8 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #        explains what version 1 meant must all spell the retired key, because
 #        that string IS the thing being refused.
 13  crates/calm-server/src/plugin_host/manifest.rs
-# --- 5. The compatibility read itself. `calm_types::Wave` carries a
-#        deserialize-only `#[serde(alias)]` so historical `wave.updated` rows —
+# --- 5. The compatibility read itself. `calm_types::Track` carries a
+#        deserialize-only `#[serde(alias)]` so historical `track.updated` rows —
 #        which are immutable history — still replay with their template
 #        attribution. Deleting these two lines is the fail-open this whole
 #        slice was designed to prevent.
@@ -155,12 +155,12 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #        Their `wire` half is deliberately the OLD spelling and their
 #        `canonical` half the new one; that split is what proves the alias is
 #        one-way.
-2   crates/calm-server/tests/goldens/events/wave_updated.legacy_template_id.json
-2   crates/calm-server/tests/goldens/events/wave_updated.legacy_template_input.json
+2   crates/calm-server/tests/goldens/events/track_updated.legacy_template_id.json
+2   crates/calm-server/tests/goldens/events/track_updated.legacy_template_input.json
 1   crates/calm-server/tests/cases/event_serde_goldens.rs
 # --- 7. The tests that pin the REJECTION of the old spelling on the write side.
 #        They must send the old keys; that is the whole assertion.
-11  crates/calm-server/tests/cases/wave_template_waves.rs
+11  crates/calm-server/tests/cases/track_template_tracks.rs
 # --- 8. Explanatory comment on the Today-launchpad rename pins.
 1   crates/calm-server/tests/cases/today_launchpad.rs
 # --- 8b. The migration filename inventory has to spell the migration's name,
@@ -178,8 +178,8 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 6   fe/core/api/schemas.contract.test.ts
 4   web/src/api/schemas.ts
 5   web/src/api/schemas.test.ts
-3   web/src/wave-fs-viewers/schemas.ts
-8   web/src/wave-fs-viewers/schemas.test.ts
+3   web/src/track-fs-viewers/schemas.ts
+8   web/src/track-fs-viewers/schemas.test.ts
 # --- 10. Design + historical records. The #1209 design doc argues about both
 #         spellings by name (and #1268 added dated notes marking the plugin-side
 #         half of that argument as overtaken, rather than deleting it);
@@ -206,7 +206,7 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 1   fe/tools/mutation/runner.test.ts
 # --- 13. Ordinary English, allowlisted instead of reworded. Both lines are the
 #         plural `workflows` in running prose about GitHub Actions / operator
-#         habits, and neither has anything to do with wave templates. Clause 1
+#         habits, and neither has anything to do with track templates. Clause 1
 #         cannot tell that plural apart from the retired manifest key (the
 #         trailing `s` IS the identifier character), so the honest resolution is
 #         an allowlist entry, not a euphemism.

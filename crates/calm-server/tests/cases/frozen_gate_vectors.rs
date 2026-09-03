@@ -4,7 +4,7 @@
 //! is materialized as data files under `tests/vectors/gate_denials/*.json`.
 //! This driver loads every vector and executes it through the **real write
 //! entry** — `Repo::log_pure_event` on a real sqlite `SqlxRepo` with a
-//! seeded card-role / wave-area cache — exactly the path production MCP /
+//! seeded card-role / track-area cache — exactly the path production MCP /
 //! REST writes take after `routes`/`emit` construct the `(actor, scope,
 //! event)` tuple. It deliberately imports **no role_gate internals**
 //! (no `enforce_role`, no `RoleViolation`): the gate is observed only
@@ -28,7 +28,7 @@
 //!   "note": "optional characterization caveat",
 //!   "actor":  { "kind": "AiCodex", "id": "$WORKER_CARD" },
 //!   "event":  { "ev": "task.completed", "data": { ... } },
-//!   "scope":  { "kind": "Card", "id": { "card": "...", "wave": "...", "area": "..." } },
+//!   "scope":  { "kind": "Card", "id": { "card": "...", "track": "...", "area": "..." } },
 //!   "expected": { "decision": "allow" } | { "decision": "deny", "error_contains": "..." }
 //! }
 //! ```
@@ -46,10 +46,10 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::session_projection_repo::WorkerSessionState;
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
 };
@@ -82,7 +82,7 @@ enum Expected {
 }
 
 /// Real-sqlite fixture mirroring `dispatcher_role_scope.rs`: two areas,
-/// each with one wave; the home wave hosts a codex worker, a claude
+/// each with one track; the home track hosts a codex worker, a claude
 /// worker, a spec card, a report card, and a second ("other") worker.
 /// Roles land in both the cards table and the in-memory caches the
 /// write entry consults.
@@ -90,7 +90,7 @@ struct Fixture {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     cache: CardRoleCache,
-    wcc: WaveAreaCache,
+    wcc: TrackAreaCache,
     /// `$PLACEHOLDER` → minted id. Longest keys first so no placeholder
     /// is a prefix of an earlier-substituted one.
     subst: Vec<(&'static str, String)>,
@@ -102,27 +102,27 @@ impl Fixture {
         let bus = EventBus::new();
         let cache = CardRoleCache::new();
         repo.seed_card_role_cache(&cache).await.unwrap();
-        let wcc = WaveAreaCache::new();
-        repo.seed_wave_area_cache(&wcc).await.unwrap();
+        let wcc = TrackAreaCache::new();
+        repo.seed_track_area_cache(&wcc).await.unwrap();
 
-        let (home_area, home_wave) = seed_area_wave(&repo, &wcc, "home-area", "home-wave").await;
-        let (other_area, other_wave) =
-            seed_area_wave(&repo, &wcc, "other-area", "other-wave").await;
+        let (home_area, home_track) = seed_area_track(&repo, &wcc, "home-area", "home-track").await;
+        let (other_area, other_track) =
+            seed_area_track(&repo, &wcc, "other-area", "other-track").await;
 
-        let worker = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
-        let claude_worker = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
-        let spec = seed_card(&repo, &cache, &home_wave, CardRole::Spec).await;
-        let report = seed_card(&repo, &cache, &home_wave, CardRole::ReportCard).await;
-        let other = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
+        let worker = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
+        let claude_worker = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
+        let spec = seed_card(&repo, &cache, &home_track, CardRole::Spec).await;
+        let report = seed_card(&repo, &cache, &home_track, CardRole::ReportCard).await;
+        let other = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
         // #1189 — the Assistant arm needs an assistant card in the home
-        // wave and a report card in a *foreign* wave (the "may not write
-        // another wave's report card" cell).
-        let assistant = seed_card(&repo, &cache, &home_wave, CardRole::Assistant).await;
-        let other_wave_report = seed_card(&repo, &cache, &other_wave, CardRole::ReportCard).await;
+        // track and a report card in a *foreign* track (the "may not write
+        // another track's report card" cell).
+        let assistant = seed_card(&repo, &cache, &home_track, CardRole::Assistant).await;
+        let other_track_report = seed_card(&repo, &cache, &other_track, CardRole::ReportCard).await;
 
         let worker_session = seed_worker_session(
             &repo,
-            &home_wave,
+            &home_track,
             "session-worker-vector-0001",
             WorkerSessionState::Running,
             Some(worker.clone()),
@@ -131,7 +131,7 @@ impl Fixture {
         .await;
         let spec_session = seed_worker_session(
             &repo,
-            &home_wave,
+            &home_track,
             "session-spec-vector-0001",
             WorkerSessionState::Running,
             Some(spec.clone()),
@@ -140,7 +140,7 @@ impl Fixture {
         .await;
         let terminal_session = seed_worker_session(
             &repo,
-            &home_wave,
+            &home_track,
             "session-terminal-vector-0001",
             WorkerSessionState::Exited,
             Some(worker.clone()),
@@ -149,7 +149,7 @@ impl Fixture {
         .await;
         let cardless_session = seed_worker_session(
             &repo,
-            &home_wave,
+            &home_track,
             "session-cardless-vector-0001",
             WorkerSessionState::Running,
             None,
@@ -159,11 +159,11 @@ impl Fixture {
 
         let subst = vec![
             // Longest keys first so no placeholder is a prefix of an
-            // earlier-substituted one ($OTHER_WAVE_REPORT_CARD would
-            // otherwise be eaten by $OTHER_WAVE).
+            // earlier-substituted one ($OTHER_TRACK_REPORT_CARD would
+            // otherwise be eaten by $OTHER_TRACK).
             (
-                "$OTHER_WAVE_REPORT_CARD",
-                other_wave_report.as_str().to_string(),
+                "$OTHER_TRACK_REPORT_CARD",
+                other_track_report.as_str().to_string(),
             ),
             ("$CLAUDE_WORKER_CARD", claude_worker.as_str().to_string()),
             ("$ASSISTANT_CARD", assistant.as_str().to_string()),
@@ -177,9 +177,9 @@ impl Fixture {
             ("$REPORT_CARD", report.as_str().to_string()),
             ("$OTHER_CARD", other.as_str().to_string()),
             ("$SPEC_CARD", spec.as_str().to_string()),
-            ("$HOME_WAVE", home_wave.as_str().to_string()),
+            ("$HOME_TRACK", home_track.as_str().to_string()),
             ("$HOME_AREA", home_area.as_str().to_string()),
-            ("$OTHER_WAVE", other_wave.as_str().to_string()),
+            ("$OTHER_TRACK", other_track.as_str().to_string()),
             ("$OTHER_AREA", other_area.as_str().to_string()),
         ];
 
@@ -193,12 +193,12 @@ impl Fixture {
     }
 }
 
-async fn seed_area_wave(
+async fn seed_area_track(
     repo: &SqlxRepo,
-    wcc: &WaveAreaCache,
+    wcc: &TrackAreaCache,
     area_name: &str,
-    wave_title: &str,
-) -> (AreaId, WaveId) {
+    track_title: &str,
+) -> (AreaId, TrackId) {
     let area = repo
         .area_create(NewArea {
             name: area_name.into(),
@@ -207,11 +207,11 @@ async fn seed_area_wave(
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
-            title: wave_title.into(),
+            title: track_title.into(),
             sort: None,
             cwd: String::new(),
             template_id: None,
@@ -221,24 +221,24 @@ async fn seed_area_wave(
         })
         .await
         .unwrap();
-    let (area_id, wave_id) = (
+    let (area_id, track_id) = (
         AreaId::from(area.id.as_str()),
-        WaveId::from(wave.id.as_str()),
+        TrackId::from(track.id.as_str()),
     );
     // The gate's #234 area cross-check consults this cache.
-    wcc.insert(wave_id.clone(), area_id.clone());
-    (area_id, wave_id)
+    wcc.insert(track_id.clone(), area_id.clone());
+    (area_id, track_id)
 }
 
 async fn seed_card(
     repo: &SqlxRepo,
     cache: &CardRoleCache,
-    wave: &WaveId,
+    track: &TrackId,
     role: CardRole,
 ) -> CardId {
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.as_str().into(),
+            track_id: track.as_str().into(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -253,13 +253,13 @@ async fn seed_card(
         .execute(repo.pool())
         .await
         .unwrap();
-    cache.insert(card.id.clone(), role, wave.clone());
+    cache.insert(card.id.clone(), role, track.clone());
     CardId::from(card.id.as_str())
 }
 
 async fn seed_worker_session(
     repo: &SqlxRepo,
-    wave: &WaveId,
+    track: &TrackId,
     session_id: &str,
     state: WorkerSessionState,
     card_id: Option<CardId>,
@@ -267,7 +267,7 @@ async fn seed_worker_session(
 ) -> WorkerSessionId {
     let session = WorkerSession {
         id: WorkerSessionId::from(session_id),
-        wave_id: wave.clone(),
+        track_id: track.clone(),
         provider: WorkerProviderKind::Codex,
         mode: SessionMode::Resumable,
         contract,

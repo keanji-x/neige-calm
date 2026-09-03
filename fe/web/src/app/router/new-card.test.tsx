@@ -9,7 +9,7 @@
 //     never shows — the `+` menu closed and nothing at all happened.
 //  2. **Which endpoint a kind takes.** `createCardOfKind` is the one place that
 //     decides between the atomic per-kind endpoints and the generic
-//     `POST /api/waves/:id/cards`, and the only evidence is the request.
+//     `POST /api/tracks/:id/cards`, and the only evidence is the request.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -18,7 +18,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import type { CardWire } from '../../../../core/domain/wave.ts';
+import type { CardWire } from '../../../../core/domain/track.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
@@ -26,8 +26,8 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = {
-  id: 'w1', area_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+const TRACK = {
+  id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
 
@@ -46,24 +46,24 @@ function setup({ createFails = false, deferCreate = false } = {}) {
     send(request) {
       requests.push(request);
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
-      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([WAVE]));
-      if (request.path === '/api/waves/w1') {
-        return Promise.resolve(ok({ wave: WAVE, cards: [...cards], overlays: [] }));
+      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
+      if (request.path === '/api/tracks/w1') {
+        return Promise.resolve(ok({ track: TRACK, cards: [...cards], overlays: [] }));
       }
-      if (request.path === '/api/waves/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
+      if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       if (request.path.startsWith('/api/fs/listdir')) {
         return Promise.resolve(ok({
           path: '/repo', parent: '/', entries: [{ name: 'notes.md', is_dir: false }],
         }));
       }
-      if (request.method === 'POST' && request.path.startsWith('/api/waves/w1/')) {
+      if (request.method === 'POST' && request.path.startsWith('/api/tracks/w1/')) {
         if (createFails) {
           return Promise.resolve({
             status: 500, statusText: 'Server Error', body: { error: 'the kernel refused this card' },
           });
         }
         const created: CardWire = {
-          id: `card-${cards.length + 1}`, wave_id: 'w1', kind: 'terminal', title: null, sort: 1,
+          id: `card-${cards.length + 1}`, track_id: 'w1', kind: 'terminal', title: null, sort: 1,
           payload: {}, deletable: true, created_at: 1, updated_at: 2,
         };
         cards.push(created);
@@ -81,7 +81,7 @@ function setup({ createFails = false, deferCreate = false } = {}) {
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
   });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/wave/w1'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -157,7 +157,7 @@ describe('adding a card from the CARDS module', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Create codex' }));
     await waitFor(() => { expect(posts()).toHaveLength(1); });
     const [post] = posts();
-    expect(post?.path).toBe('/api/waves/w1/codex-cards');
+    expect(post?.path).toBe('/api/tracks/w1/codex-cards');
     // `theme` is required by the kernel (422 without it): the daemon answers
     // codex's OSC 10/11 probe with these colours.
     expect(post?.body).toHaveProperty('theme');
@@ -165,21 +165,21 @@ describe('adding a card from the CARDS module', () => {
 
   /*
    * A create is a write plus a navigation, and only the write belongs to the
-   * kernel. If the reader leaves the wave while the post is in flight, landing
-   * the answer still steered them back to the wave they had just left — a
+   * kernel. If the reader leaves the track while the post is in flight, landing
+   * the answer still steered them back to the track they had just left — a
    * navigation nobody asked for, on top of state written into an unmounted
    * body. The abort is per attempt and fires on unmount, exactly as the delete
    * path's does; the card itself is still created server-side, which is why the
    * assertion is about where the reader is, not about the request.
    */
-  it('does not navigate when a create lands after the reader left the wave', async () => {
+  it('does not navigate when a create lands after the reader left the track', async () => {
     const { router, releases, posts } = setup({ deferCreate: true });
     await pickKind('terminal');
     await waitFor(() => { expect(posts()).toHaveLength(1); });
     expect(releases).toHaveLength(1);
 
     // The reader moves on while the create is still in flight: this unmounts
-    // the wave route body that owns the pending create.
+    // the track route body that owns the pending create.
     await act(async () => { await router.navigate({ to: '/' }); });
     await waitFor(() => { expect(router.state.location.pathname).toBe('/'); });
 
@@ -240,7 +240,7 @@ describe('adding a card from the CARDS module', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Create file' }));
     await waitFor(() => { expect(posts()).toHaveLength(1); });
     const [post] = posts();
-    expect(post?.path).toBe('/api/waves/w1/cards');
+    expect(post?.path).toBe('/api/tracks/w1/cards');
     expect(post?.body).toMatchObject({ kind: 'file-viewer', payload: { path: '/repo/notes.md' } });
   });
 });

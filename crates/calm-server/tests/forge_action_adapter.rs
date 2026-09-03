@@ -14,7 +14,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{EventBus, FieldSource, ForgeEventSpec, ForgeMergeSubject};
-use calm_server::model::{NewArea, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewTrack, new_id, now_ms};
 use calm_server::operation::ProviderAdapter;
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
@@ -72,7 +72,7 @@ struct TestBoot {
     operation_repo: Arc<SqlxOperationRepo>,
     runtime: OperationRuntime,
     spawn_ctx: SpawnCtx,
-    wave_id: String,
+    track_id: String,
 }
 
 impl TestBoot {
@@ -91,8 +91,8 @@ impl TestBoot {
             })
             .await
             .expect("create area");
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
                 title: "forge-action".into(),
@@ -104,7 +104,7 @@ impl TestBoot {
                 theme: RequestTheme::default_dark(),
             })
             .await
-            .expect("create wave");
+            .expect("create track");
 
         let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
         let events = EventBus::new();
@@ -141,7 +141,7 @@ impl TestBoot {
             operation_repo,
             runtime,
             spawn_ctx,
-            wave_id: wave.id.to_string(),
+            track_id: track.id.to_string(),
         }
     }
 
@@ -201,7 +201,7 @@ fn payload_with_probe(
     output_probe_argv: Option<Vec<String>>,
 ) -> Value {
     serde_json::to_value(ForgeActionPayload {
-        wave_id: boot.wave_id.clone(),
+        track_id: boot.track_id.clone(),
         card_id: new_id(),
         subject: Some(subject()),
         argv,
@@ -505,7 +505,7 @@ async fn latest_event_scope(
     kind: &str,
 ) -> (String, Option<String>, Option<String>, Option<String>) {
     sqlx::query_as(
-        "SELECT scope_kind, scope_area, scope_wave, scope_card \
+        "SELECT scope_kind, scope_area, scope_track, scope_card \
          FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
     )
     .bind(kind)
@@ -722,7 +722,7 @@ async fn forge_action_rejects_non_forge_event_kind() -> CalmResult<()> {
         boot.temp_path("non-forge-event-kind-result.json"),
     );
     payload["subject"] = Value::Null;
-    payload["event_spec"]["event_kind"] = json!("wave.deleted");
+    payload["event_spec"]["event_kind"] = json!("track.deleted");
 
     let err = adapter
         .validate(&payload)
@@ -732,7 +732,7 @@ async fn forge_action_rejects_non_forge_event_kind() -> CalmResult<()> {
         matches!(
             err,
             CalmError::BadRequest(ref message)
-                if message == "forge-action event_kind `wave.deleted` is not a supported forge event kind"
+                if message == "forge-action event_kind `track.deleted` is not a supported forge event kind"
         ),
         "{err:?}"
     );
@@ -1568,7 +1568,7 @@ async fn forge_action_persists_non_merge_event_from_context() -> CalmResult<()> 
     );
 
     let event = latest_event_payload(&boot.repo, "forge.scan.completed").await;
-    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["track_id"], json!(boot.track_id));
     assert_eq!(event["overlapping_prs"], json!([1, 2]));
     assert!(event.get("subject").is_none());
     assert_eq!(event_count(&boot.repo, "forge.scan.completed").await, 1);
@@ -1615,7 +1615,7 @@ async fn forge_action_pr_diff_persists_artifact_and_injects_path() -> CalmResult
     }
 
     let event = latest_event_payload(&boot.repo, "forge.pr.diff.read").await;
-    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["track_id"], json!(boot.track_id));
     assert_eq!(event["pr_number"], json!(42));
     assert_eq!(event["base_sha"], json!("base123"));
     assert_eq!(event["head_sha"], json!("head456"));
@@ -1669,7 +1669,7 @@ async fn forge_action_issue_read_returns_body_inline_persists_artifact_and_emits
     }
 
     let event = latest_event_payload(&boot.repo, "forge.issue.read").await;
-    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["track_id"], json!(boot.track_id));
     assert_eq!(event["issue_number"], json!(813));
     assert_eq!(
         event["artifact_path"],
@@ -1680,7 +1680,7 @@ async fn forge_action_issue_read_returns_body_inline_persists_artifact_and_emits
 }
 
 #[tokio::test]
-async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() -> CalmResult<()> {
+async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_track() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("scoped-event-action.sh");
     write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'ok'\n");
@@ -1710,22 +1710,22 @@ async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() 
     assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
 
     let worktree_event = latest_event_payload(&boot.repo, "worktree.provisioned").await;
-    assert_eq!(worktree_event["wave_id"], json!(boot.wave_id));
+    assert_eq!(worktree_event["track_id"], json!(boot.track_id));
     assert_eq!(worktree_event["card_id"], json!(card_id));
     assert_eq!(worktree_event["path"], json!("/tmp/neige/worktrees/card-1"));
-    let (scope_kind, scope_area, scope_wave, scope_card) =
+    let (scope_kind, scope_area, scope_track, scope_card) =
         latest_event_scope(&boot.repo, "worktree.provisioned").await;
     assert_eq!(scope_kind, "card");
     assert_eq!(scope_card.as_deref(), Some(card_id.as_str()));
-    assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
+    assert_eq!(scope_track.as_deref(), Some(boot.track_id.as_str()));
     assert!(scope_area.is_some(), "card scope carries area");
 
-    let forge_idem = "forge-scan-completed-wave-scope";
+    let forge_idem = "forge-scan-completed-track-scope";
     let mut forge_input = payload(
         &boot,
         forge_idem,
         vec![action.display().to_string()],
-        boot.temp_path("scan-completed-wave-scope-result.json"),
+        boot.temp_path("scan-completed-track-scope-result.json"),
     );
     forge_input["subject"] = Value::Null;
     forge_input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
@@ -1738,12 +1738,12 @@ async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() 
     let result = boot.runtime.wait(&op_id).await?;
     assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
 
-    let (scope_kind, scope_area, scope_wave, scope_card) =
+    let (scope_kind, scope_area, scope_track, scope_card) =
         latest_event_scope(&boot.repo, "forge.scan.completed").await;
-    assert_eq!(scope_kind, "wave");
-    assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
-    assert!(scope_area.is_some(), "wave scope carries area");
-    assert!(scope_card.is_none(), "forge.* events remain wave-scoped");
+    assert_eq!(scope_kind, "track");
+    assert_eq!(scope_track.as_deref(), Some(boot.track_id.as_str()));
+    assert!(scope_area.is_some(), "track scope carries area");
+    assert!(scope_card.is_none(), "forge.* events remain track-scoped");
     Ok(())
 }
 
@@ -1845,27 +1845,27 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
 "#,
     );
 
-    let mut context_wave = payload(
+    let mut context_track = payload(
         &boot,
-        "forge-reserved-context-wave",
+        "forge-reserved-context-track",
         vec![action.display().to_string(), counter.display().to_string()],
-        boot.temp_path("reserved-context-wave-result.json"),
+        boot.temp_path("reserved-context-track-result.json"),
     );
-    context_wave["context"] = json!({ "wave_id": "plugin-wave" });
+    context_track["context"] = json!({ "track_id": "plugin-track" });
     let err = boot
         .runtime
         .submit(
             FORGE_ACTION_KIND,
-            op_key("forge-reserved-context-wave"),
-            context_wave,
+            op_key("forge-reserved-context-track"),
+            context_track,
         )
         .await
-        .expect_err("context.wave_id must be rejected before spawn");
+        .expect_err("context.track_id must be rejected before spawn");
     assert!(
         matches!(
             err,
             CalmError::BadRequest(ref message)
-                if message == "forge event context/output may not set reserved key `wave_id`"
+                if message == "forge event context/output may not set reserved key `track_id`"
         ),
         "{err:?}"
     );
@@ -1895,27 +1895,27 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
         "{err:?}"
     );
 
-    let mut field_wave = payload(
+    let mut field_track = payload(
         &boot,
-        "forge-reserved-field-wave",
+        "forge-reserved-field-track",
         vec![action.display().to_string(), counter.display().to_string()],
-        boot.temp_path("reserved-field-wave-result.json"),
+        boot.temp_path("reserved-field-track-result.json"),
     );
-    field_wave["event_spec"]["fields"]["wave_id"] = json!("exit_code");
+    field_track["event_spec"]["fields"]["track_id"] = json!("exit_code");
     let err = boot
         .runtime
         .submit(
             FORGE_ACTION_KIND,
-            op_key("forge-reserved-field-wave"),
-            field_wave,
+            op_key("forge-reserved-field-track"),
+            field_track,
         )
         .await
-        .expect_err("event_spec.fields.wave_id must be rejected before spawn");
+        .expect_err("event_spec.fields.track_id must be rejected before spawn");
     assert!(
         matches!(
             err,
             CalmError::BadRequest(ref message)
-                if message == "forge event context/output may not set reserved key `wave_id`"
+                if message == "forge event context/output may not set reserved key `track_id`"
         ),
         "{err:?}"
     );
@@ -1983,7 +1983,7 @@ while [ ! -f "$2" ]; do sleep 0.02; done
     let event_payload: Value = serde_json::from_str(&payload_text)?;
     assert_eq!(event_payload["merge_sha"], json!("abc123"));
     assert_eq!(event_payload["head_sha"], json!("def456"));
-    assert_eq!(event_payload["wave_id"], json!(boot.wave_id));
+    assert_eq!(event_payload["track_id"], json!(boot.track_id));
     assert_eq!(event_payload["subject"]["phase"], json!("impl"));
     assert_eq!(event_payload["subject"]["slice_id"], json!("slice-6"));
     assert_eq!(event_payload["subject"]["pr_number"], json!(760));
@@ -3174,7 +3174,7 @@ async fn forge_action_crash_then_probe_reextracts_probe_typed_output_fields() ->
     let event = latest_forge_event_payload(&boot.repo).await;
     assert_eq!(event["merge_sha"], json!("output-probe-sha"));
     assert_eq!(event["head_sha"], json!("output-probe-head"));
-    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["track_id"], json!(boot.track_id));
     assert_eq!(event["subject"], serde_json::to_value(subject())?);
     assert_eq!(
         read_counter(&counter),

@@ -9,7 +9,7 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, Observation,
     SpecHarness, SpecHarnessParams,
 };
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -31,8 +31,8 @@ async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "goal".into(),
@@ -46,7 +46,7 @@ async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
         .await
         .unwrap();
     repo.card_create(NewCard {
-        wave_id: wave.id,
+        track_id: track.id,
         title: None,
         kind: "codex".into(),
         sort: None,
@@ -68,7 +68,7 @@ async fn harness_with(
             .thread_start_for_card(
                 card.id.as_str(),
                 CardRole::Spec,
-                Some(card.wave_id.as_str()),
+                Some(card.track_id.as_str()),
                 SharedThreadStartParams {
                     cwd: "/tmp".into(),
                     approval_policy: "never".into(),
@@ -116,13 +116,13 @@ async fn harness_with(
 
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: card.wave_id,
+        track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id.clone()),
         repo: repo.clone(),
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         config,
         snapshot,
@@ -165,13 +165,13 @@ async fn harness_from_snapshot(
 
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: card.wave_id,
+        track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id),
         repo,
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         config: HarnessConfig::default(),
         snapshot,
@@ -280,8 +280,8 @@ async fn idle_to_turn_running_to_completed() {
     )
     .await;
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
@@ -312,8 +312,8 @@ async fn stale_turn_completed_ignored_during_active_turn() {
     )
     .await;
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
@@ -332,8 +332,8 @@ async fn stale_turn_completed_ignored_during_active_turn() {
     .await;
 
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the next wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the next track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(
@@ -374,8 +374,8 @@ async fn stale_turn_started_ignored_when_other_turn_active() {
     )
     .await;
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
@@ -412,8 +412,8 @@ async fn replayed_turn_started_after_completed_ignored() {
     )
     .await;
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
@@ -460,8 +460,8 @@ async fn stale_turn_started_in_turn_completed_ignored() {
     )
     .await;
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
@@ -586,8 +586,8 @@ async fn turn_started_without_id_ignored() {
     )
     .await;
     harness
-        .observe(Observation::WaveGoal {
-            text: "Read the wave goal.".into(),
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
         })
         .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
@@ -649,7 +649,7 @@ async fn resumed_blocks_turn_start_until_idle_status() {
     let (_repo, harness, _runtime_id, thread_id) =
         harness_with(repo, daemon.clone(), HarnessPhaseTag::Resumed, config).await;
     harness
-        .observe(Observation::WaveGoal {
+        .observe(Observation::TrackGoal {
             text: "wait for reconcile".into(),
         })
         .unwrap();
@@ -682,7 +682,7 @@ async fn resumed_reconcile_budget_allows_turn_start_after_timeout() {
     let (_repo, harness, _runtime_id, _thread_id) =
         harness_with(repo, daemon.clone(), HarnessPhaseTag::Resumed, config).await;
     harness
-        .observe(Observation::WaveGoal {
+        .observe(Observation::TrackGoal {
             text: "wait for timeout".into(),
         })
         .unwrap();
@@ -742,7 +742,7 @@ async fn turn_start_error_rolls_back_and_rebuffers() {
 }
 
 #[tokio::test]
-async fn restored_wave_goal_issues_first_turn_without_new_observation() {
+async fn restored_track_goal_issues_first_turn_without_new_observation() {
     let repo = fresh_repo().await;
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let card = seed_card(&repo).await;
@@ -750,7 +750,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
         .thread_start_for_card(
             card.id.as_str(),
             CardRole::Spec,
-            Some(card.wave_id.as_str()),
+            Some(card.track_id.as_str()),
             SharedThreadStartParams {
                 cwd: "/tmp".into(),
                 approval_policy: "never".into(),
@@ -763,7 +763,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
         .unwrap();
     let runtime_id = new_id();
     let mut snapshot =
-        HarnessSnapshot::initial(0, vec![Observation::WaveGoal { text: "go".into() }]);
+        HarnessSnapshot::initial(0, vec![Observation::TrackGoal { text: "go".into() }]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
@@ -795,13 +795,13 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
     };
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id,
-        wave_id: card.wave_id,
+        track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id),
         repo,
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
         config,
         snapshot,
@@ -819,7 +819,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
         },
     )
     .await
-    .expect("restored pending WaveGoal should issue a first turn");
+    .expect("restored pending TrackGoal should issue a first turn");
     wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
     harness.shutdown().await.unwrap();
 }

@@ -278,7 +278,7 @@
     justify-content: center;
   }
 
-  /* 3.49:1 on the dark `--bg`. Same shape as `styles/wave-grid.css` and
+  /* 3.49:1 on the dark `--bg`. Same shape as `styles/track-grid.css` and
      `styles/xterm-view.css`, which are the two existing places in this
      repository that carry a use-specific colour through both themes without
      spending a token name on it. */
@@ -493,7 +493,7 @@
    * `public.contract.test.ts`, `public.ts`), so a new name is a public-contract
    * change — for one fill used by one pseudo-element on one surface, which is
    * the definition of a use-specific value rather than a semantic step. The
-   * repository already has this exact shape twice: `styles/wave-grid.css`
+   * repository already has this exact shape twice: `styles/track-grid.css`
    * writes eight per-theme `oklch()` card-head fills, and `styles/xterm-view.css`
    * writes its own light/dark status fills, both keyed on `[data-theme="dark"]`
    * outside `tokens.css`. This follows that precedent, and the dark override
@@ -648,7 +648,7 @@
    * grow the 4px dot and the 6px active dot *to the same peak*, which under
    * `scale` means two different factors, and the active one (8 ÷ 6) would then
    * be a different curve — the active dot would reach its peak on a different
-   * part of the envelope than its neighbours and the wave would visibly dent as
+   * part of the envelope than its neighbours and the track would visibly dent as
    * it passed over it.
    *
    * **`(pointer: fine)` and nothing else.** A coarse pointer has no hover to
@@ -1177,7 +1177,7 @@
   /*
    * Failure is the one state here worth colour, and it gets the *text* role
    * rather than a fill or an icon: a failed shell run inside a conversation is
-   * information, not an alarm — the alarm, if there is one, is the wave going
+   * information, not an alarm — the alarm, if there is one, is the track going
    * `failed`, and that is on the row in the rail.
    */
   .activityFailed {
@@ -1226,7 +1226,7 @@
     white-space: nowrap;
   }
 
-  /* The same 6px accent dot and the same pulse a running wave takes. */
+  /* The same 6px accent dot and the same pulse a running track takes. */
   .live {
     display: inline-block;
     inline-size: var(--dot-sm);

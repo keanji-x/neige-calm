@@ -20,5 +20,5 @@ mod spec_harness_mcp_tool_render_persist;
 mod spec_harness_reset_clears_items;
 #[path = "cases/spec_harness_token_usage.rs"]
 mod spec_harness_token_usage;
-#[path = "cases/spec_harness_wave_vcs.rs"]
-mod spec_harness_wave_vcs;
+#[path = "cases/spec_harness_track_vcs.rs"]
+mod spec_harness_track_vcs;

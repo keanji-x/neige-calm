@@ -65,7 +65,7 @@ export interface CardCreateField {
 }
 
 /**
- * The entry's presence in the wave panel's add menu.
+ * The entry's presence in the track panel's add menu.
  *
  * Declaring it here rather than in a list held by the panel is the whole point:
  * the menu is then a *projection of the registry*, so a card kind this build
@@ -106,7 +106,7 @@ export interface CardAddMenuEntry {
  *
  * `catalog` and `kernel-minted-only` entries are excluded whatever they declare:
  * the first is created from somewhere else entirely, and the second is a kind
- * only the kernel may mint (the spec harness, the wave report). Offering either
+ * only the kernel may mint (the spec harness, the track report). Offering either
  * would be the menu promising a create that has no endpoint behind it.
  */
 export function cardAddMenuEntries(registry: CardRegistry): readonly CardAddMenuEntry[] {

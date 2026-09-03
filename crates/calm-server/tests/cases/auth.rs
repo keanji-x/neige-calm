@@ -27,11 +27,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -51,7 +51,7 @@ async fn fresh_state() -> AppState {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -138,11 +138,11 @@ async fn hook_boot() -> HookBoot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
-            title: "hook auth wave".into(),
+            title: "hook auth track".into(),
             sort: None,
             cwd: String::new(),
             template_id: None,
@@ -154,7 +154,7 @@ async fn hook_boot() -> HookBoot {
         .unwrap();
     let claude_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "claude".into(),
             sort: None,
@@ -164,7 +164,7 @@ async fn hook_boot() -> HookBoot {
         .unwrap();
     let codex_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -181,11 +181,11 @@ async fn hook_boot() -> HookBoot {
         .unwrap();
 
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(claude_card.id.clone(), CardRole::Worker, wave.id.clone());
-    card_role_cache.insert(codex_card.id.clone(), CardRole::Worker, wave.id.clone());
+    card_role_cache.insert(claude_card.id.clone(), CardRole::Worker, track.id.clone());
+    card_role_cache.insert(codex_card.id.clone(), CardRole::Worker, track.id.clone());
 
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -200,17 +200,20 @@ async fn hook_boot() -> HookBoot {
             std::env::temp_dir().join("calm-plugins-data-hook-auth"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     calm_server::card_fsm::spawn(
         repo_dyn.clone(),
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
     );
     tokio::task::yield_now().await;
 

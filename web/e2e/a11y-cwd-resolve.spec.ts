@@ -41,7 +41,7 @@
 // `resetReplayServer`).
 //
 // Note: there is no area-folder management UI in the web app as of
-// #269 P3 (Settings page covers proxy config only; Area/Wave pages
+// #269 P3 (Settings page covers proxy config only; Area/Track pages
 // don't expose folder mgmt). The second P3 checkbox in the issue
 // ("area settings page (如果有) 管理 area 的 folders 列表") is
 // therefore intentionally NOT covered by a UI smoke here — see the PR
@@ -105,7 +105,7 @@ test('multi-area disjoint claims resolve to the correct area', async ({ request 
   // claim MUST resolve to its owning area (no cross-talk), and a
   // query outside both MUST return null. This is the everyday
   // multi-area cwd contract — without it, `make dev` users would land
-  // waves in whichever area the surrounding page hinted at instead of
+  // tracks in whichever area the surrounding page hinted at instead of
   // the one that actually owns the cwd.
   //
   // Paths are namespaced per-run so a concurrent / repeated run on a
@@ -283,7 +283,7 @@ test('root `/` claim covers every absolute path on that area', async ({ request 
   // the fallback would build `format!("{parent}/")` = `"//"` and
   // miss every real cwd query.
   //
-  // We claim `/` for area A *without* using `createWaveInArea`
+  // We claim `/` for area A *without* using `createTrackInArea`
   // (which auto-attaches `/tmp/playwright-area-<id>` and would
   // collide with the root claim under the create endpoint's
   // ancestor/descendant overlap 409 — see the integration test

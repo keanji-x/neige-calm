@@ -2,23 +2,23 @@
 //!
 //! Three recipes hold the former git-forge plan as report `task` blocks, as
 //! **Rust constants**: [`TEMPLATES`] is the roster and [`template_report`] maps
-//! a key to the report it instantiates to. `POST /api/waves` with a matching
+//! a key to the report it instantiates to. `POST /api/tracks` with a matching
 //! `template_id` builds that report inside its own create transaction
-//! (`routes::waves::prepare_template_report`), reading nothing from the
+//! (`routes::tracks::prepare_template_report`), reading nothing from the
 //! database.
 //!
 //! #1300 S2 — through #1110 S6 this module described the same three plans as
-//! *seeded system-area template waves*, discovered through an overlay payload
+//! *seeded system-area template tracks*, discovered through an overlay payload
 //! `{schemaVersion: 1, template_key}` and forked on create. All three of those
-//! nouns are gone: no hidden wave, no `template_key` writer, no fork. The
+//! nouns are gone: no hidden track, no `template_key` writer, no fork. The
 //! reason is #1300's own: seeding wrote those reports through `persist_report`
 //! as `EditAuthor::User`, i.e. the kernel signing an edit as the user, which
 //! was the last production path doing so.
 
 use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
-use crate::wave_report::WaveReportPayload;
+use crate::track_report::TrackReportPayload;
 use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
-use calm_types::wave_report::report_contract_prefix_for_template;
+use calm_types::track_report::report_contract_prefix_for_template;
 use serde_json::{Value, json};
 
 pub const ISSUE_DEVELOPMENT: &str = "issue-development";
@@ -48,7 +48,7 @@ pub static TEMPLATES: [Template; 3] = [
 ];
 
 /// #1209 — the roster's single fallible lookup: "is this id a template, and
-/// if so which one". `POST /api/waves` admits an id iff this returns `Some`.
+/// if so which one". `POST /api/tracks` admits an id iff this returns `Some`.
 ///
 /// It derives from [`TEMPLATES`] rather than from a second array of
 /// keys, so "the list the picker shows" and "the set create accepts" cannot
@@ -56,9 +56,9 @@ pub static TEMPLATES: [Template; 3] = [
 /// exist — a key-array constant plus the predicate that walked it — was
 /// exactly that duplication and is gone with this slice.
 ///
-/// This is not the *only* place the roster is read — `list_wave_templates`
+/// This is not the *only* place the roster is read — `list_track_templates`
 /// iterates [`TEMPLATES`] directly for the picker, and so does
-/// `wave_template_waves::creating_from_a_template_instantiates_its_recipe`.
+/// `track_template_tracks::creating_from_a_template_instantiates_its_recipe`.
 /// (#1300 S2: the third reader this named, the seeding loop, is deleted; the
 /// point survives it, because "more than one reader" is what makes a single
 /// admission answer worth having.) It is the only place that answers "is this
@@ -68,7 +68,7 @@ pub fn template_by_key(key: &str) -> Option<&'static Template> {
     TEMPLATES.iter().find(|template| template.key == key)
 }
 
-pub fn template_report(key: &str) -> Option<WaveReportPayload> {
+pub fn template_report(key: &str) -> Option<TrackReportPayload> {
     match key {
         ISSUE_DEVELOPMENT => Some(issue_development_report()),
         SMALL_CHANGE => Some(small_change_report()),
@@ -79,7 +79,7 @@ pub fn template_report(key: &str) -> Option<WaveReportPayload> {
 
 /// The typed task list a template's constants declare, **for tests only**.
 ///
-/// #1209 had `GET /api/wave-templates` read the picker's task list through this
+/// #1209 had `GET /api/track-templates` read the picker's task list through this
 /// function. #1230 moved the production read onto
 /// [`template_task_payloads`], which returns whole task-block payloads
 /// rather than a struct that models only some of the vocabulary — see
@@ -112,7 +112,7 @@ pub fn template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
 /// "lenient" filter — and the surviving list then drove a whole-document
 /// rewrite. Two consequences, both reproduced before this was changed:
 ///
-/// * a task carrying `refs` vanished from `GET /api/wave-templates` (the exact
+/// * a task carrying `refs` vanished from `GET /api/track-templates` (the exact
 ///   drift #1230 exists to remove) and made the template permanently unsavable,
 ///   because the rewrite dropped a live task block and
 ///   `guard_task_declarations` refuses that;
@@ -128,8 +128,8 @@ pub fn template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
 ///
 /// #1300 S1 deleted the Settings editor this paragraph used to name as the
 /// consumer. The reason to keep the payload whole did not go with it: the read
-/// still feeds `POST /api/waves`, so a field this function dropped would be a
-/// field an instantiated wave never receives.
+/// still feeds `POST /api/tracks`, so a field this function dropped would be a
+/// field an instantiated track never receives.
 ///
 /// Still lenient in the one way `split_body` is: a slice that is not a
 /// well-formed `task` fence — prose, another kind, unparseable JSON — is
@@ -148,7 +148,7 @@ pub fn template_task_payloads_from_body(body: &str) -> Vec<Value> {
 /// a payload that has neither (a tombstone).
 ///
 /// Used by the read side to answer "what tasks does this template pre-set" for
-/// the New wave picker. Tombstones are *not* tasks the picker should advertise,
+/// the New track picker. Tombstones are *not* tasks the picker should advertise,
 /// but they must still survive the read untouched — which is why the
 /// filtering happens here, at the projection, and never in
 /// [`template_task_payloads_from_body`].
@@ -200,8 +200,8 @@ fn task(
     }
 }
 
-fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> WaveReportPayload {
-    // #1185 §1.5 B — these templates bypass `WaveReportPayload::initial()`, so
+fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> TrackReportPayload {
+    // #1185 §1.5 B — these templates bypass `TrackReportPayload::initial()`, so
     // without this prefix they ship with no maintenance contract at all: no
     // section list, no word budget, no current-snapshot rule. The prefix is
     // already closed; never concatenate an unclosed fragment here.
@@ -210,7 +210,7 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Wav
     body.push_str("\n\n");
     for task in tasks {
         let mut payload = plan_template_task_block_payload(task);
-        // #1300 — declared here as `spec`, which is what an instantiated wave
+        // #1300 — declared here as `spec`, which is what an instantiated track
         // ends up with either way. Before #1300 this said `user` and the fork
         // step rewrote it one instruction later; the `user` was not a claim
         // about authorship but a consequence of the seeding write going through
@@ -218,7 +218,7 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Wav
         // requiring a new task block's `declared_by` to match its author.
         //
         // Instantiation no longer goes through `persist_report` at all
-        // (`routes::waves::prepare_template_report`), so nothing constrains
+        // (`routes::tracks::prepare_template_report`), so nothing constrains
         // this to the author of a write that does not happen. `spec` is the
         // honest value: a recipe's tasks are pre-set, not user-declared, and
         // they stay `ready: false` until the normal Spec/user flow releases
@@ -228,10 +228,10 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Wav
         body.push_str(&render_fence("task", &payload));
         body.push('\n');
     }
-    WaveReportPayload::new(summary, body)
+    TrackReportPayload::new(summary, body)
 }
 
-fn issue_development_report() -> WaveReportPayload {
+fn issue_development_report() -> TrackReportPayload {
     report_from_tasks(
         "Issue development",
         ISSUE_DEVELOPMENT_INTRO,
@@ -243,8 +243,8 @@ fn issue_development_tasks() -> Vec<PlanTaskInput> {
     vec![
         task(
             "inspect-issue",
-            "Read the bound template input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the wave cwd.",
-            "The issue requirements and constraints are captured for the wave AND the wave cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
+            "Read the bound template input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the track cwd.",
+            "The issue requirements and constraints are captured for the track AND the track cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
             &[],
             Some(json!({ "tools": ["gh.issue.view"] })),
             Some("inspect does not produce a repo change to verify"),
@@ -274,7 +274,7 @@ fn issue_development_tasks() -> Vec<PlanTaskInput> {
         task(
             "implement-change",
             "Create a worktree, implement the change, and commit the result.",
-            "The change is committed in the wave worktree.",
+            "The change is committed in the track worktree.",
             &["review-design-a", "review-design-b"],
             Some(json!({ "tools": ["git.worktree.add", "git.commit"] })),
             Some(AUTHOR_REAL_GATE),
@@ -314,7 +314,7 @@ fn issue_development_tasks() -> Vec<PlanTaskInput> {
         task(
             "merge",
             "Merge the pull request and close the issue only after merge fence F4 has converged AND any merge_policy-required ratify grant is held; under hold-for-ratify with no grant yet, park at the merge_hold ratify request instead of merging.",
-            "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the wave is parked at the merge_hold ratify request with no merge performed.",
+            "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the track is parked at the merge_hold ratify request with no merge performed.",
             &["review-pr-a", "review-pr-b"],
             Some(json!({ "tools": ["gh.pr.merge", "gh.issue.close"] })),
             Some("merge is gated by review fence F4 and forge, not a local toolchain gate"),
@@ -322,7 +322,7 @@ fn issue_development_tasks() -> Vec<PlanTaskInput> {
     ]
 }
 
-fn small_change_report() -> WaveReportPayload {
+fn small_change_report() -> TrackReportPayload {
     report_from_tasks("Small change", SMALL_CHANGE_INTRO, &small_change_tasks())
 }
 
@@ -340,7 +340,7 @@ fn small_change_tasks() -> Vec<PlanTaskInput> {
         task(
             "inspect",
             "Read the requested change and the current code that it touches. Record constraints in this report before writing.",
-            "The change request and the current code path are captured in the wave report.",
+            "The change request and the current code path are captured in the track report.",
             &[],
             None,
             Some("inspect does not produce a repo change to verify"),
@@ -348,7 +348,7 @@ fn small_change_tasks() -> Vec<PlanTaskInput> {
         task(
             "implement",
             "Implement the change and commit it.",
-            "The change is committed in the wave worktree.",
+            "The change is committed in the track worktree.",
             &["inspect"],
             None,
             Some(AUTHOR_REAL_GATE),
@@ -364,7 +364,7 @@ fn small_change_tasks() -> Vec<PlanTaskInput> {
     ]
 }
 
-fn investigation_report() -> WaveReportPayload {
+fn investigation_report() -> TrackReportPayload {
     report_from_tasks("Investigation", INVESTIGATION_INTRO, &investigation_tasks())
 }
 
@@ -390,7 +390,7 @@ fn investigation_tasks() -> Vec<PlanTaskInput> {
         ),
         task(
             "write-findings",
-            "Write findings, remaining unknowns, and recommended next steps into this wave report. Do not open a PR or merge.",
+            "Write findings, remaining unknowns, and recommended next steps into this track report. Do not open a PR or merge.",
             "The report records findings and does not include a forge merge or pull request.",
             &["gather-facts"],
             None,
@@ -409,7 +409,7 @@ authoritative plan. Activate by replacing those task blocks and setting `ready: 
 — use the read's block ids and revision as replace anchors. Do not mint duplicate tasks. \
 Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
 
-For this wave, drive dual-review convergence for each review subject.
+For this track, drive dual-review convergence for each review subject.
 
 After BOTH channels for a phase complete, call calm.review.round with \
 subject:{phase,slice_id,pr_number?}, optional head_sha, n, cap, converged, \
@@ -436,7 +436,7 @@ by recording the terminal rationale in the report with calm.report.write \
 and lifecycle failed for reviewing->failed; OR ASK-HUMAN by first moving \
 reviewing->working with the normal lifecycle arg, then call \
 calm.ratify.request with reason:\"cap_exhausted\" for working->blocked. \
-On ratify.resolved grant the wave is already back in working; resume \
+On ratify.resolved grant the track is already back in working; resume \
 working->reviewing and continue reviewing the exhausted subject with \
 cap = previous cap + 2 on its next round. The kernel accepts this raise \
 at most once per subject per grant; a grant may authorize this for each \
@@ -445,15 +445,15 @@ extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
 
 Record root_cause each round; repeated facets should drive a class fix.
 
-Template input: the wave's bound `template_input` JSON is the task's \
-source of truth, not the wave title.
+Template input: the track's bound `template_input` JSON is the task's \
+source of truth, not the track title.
 
-Ingest (inspect-issue): derive the wave goal from gh.issue.view on \
+Ingest (inspect-issue): derive the track goal from gh.issue.view on \
 input.repo / input.issue_number. Record the issue's requirements and \
-constraints in the wave report before dispatching any downstream task.
+constraints in the track report before dispatching any downstream task.
 
 Repo cross-check (inspect-issue acceptance): before any write action, \
-compare input.repo against `git remote get-url origin` run in the wave \
+compare input.repo against `git remote get-url origin` run in the track \
 cwd (owner/name after stripping the host and a trailing .git). On \
 mismatch do NOT proceed: move working->blocked via calm.ratify.request \
 with reason:\"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>\" \
@@ -466,7 +466,7 @@ Drive everything up to converged reviews + green checks, then move \
 reviewing->working with the normal lifecycle arg (calm.ratify.request \
 400s outside working), and call calm.ratify.request with \
 reason:\"merge_hold: pr #<n> converged at <head_sha>\" for working->blocked. \
-On ratify.resolved grant the wave is already back in working: the grant \
+On ratify.resolved grant the track is already back in working: the grant \
 authorizes merging that already-converged head — no fresh review round is \
 required for the hold itself; resume working->reviewing and call \
 gh.pr.merge per fence F4 (expected_head_sha = the converged round's head_sha).
@@ -531,7 +531,7 @@ mod tests {
         }
     }
 
-    /// Prose the user added through the ordinary wave report editor is not a
+    /// Prose the user added through the ordinary track report editor is not a
     /// task and must not be read as one — the lenient-read claim in the
     /// function's doc, exercised rather than asserted.
     #[test]
@@ -598,7 +598,7 @@ mod tests {
     }
 
     /// #1185 §1.5 B — the built-in templates bypass
-    /// `WaveReportPayload::initial()`, so the maintenance contract has to be
+    /// `TrackReportPayload::initial()`, so the maintenance contract has to be
     /// concatenated onto their bodies explicitly. Without it they ship with no
     /// section list, no word budget and no current-snapshot rule: #1146's
     /// guardrails would vanish on exactly the first-party templates.
@@ -707,7 +707,7 @@ mod tests {
     /// The drift that actually reaches the picker — the route serving a
     /// different list than the one seeded — is out of this module's reach and
     /// is pinned in
-    /// `tests/cases/wave_templates_read.rs::every_template_lists_the_tasks_its_report_pre_sets`,
+    /// `tests/cases/track_templates_read.rs::every_template_lists_the_tasks_its_report_pre_sets`,
     /// which asserts the HTTP response's keys in order.
     ///
     /// Both directions are real, and neither is a substring count: forward,
@@ -731,7 +731,7 @@ mod tests {
 
             // The report's own reader, not a string scan: `split_body` cuts the
             // well-formed fences out and `parse_fence` gives their payloads, so
-            // this sees exactly the task blocks a forked wave would.
+            // this sees exactly the task blocks a forked track would.
             let mut seeded: Vec<String> = Vec::new();
             for slice in split_body(&body) {
                 let Some(fence) = parse_fence(&slice.raw) else {

@@ -16,7 +16,7 @@ const areas = [
   { id: 'c2', name: 'Two', color: '#654321', sort: 2, kind: 'user', created_at: 1, updated_at: 1 },
 ];
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const wave = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
+const track = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
@@ -53,19 +53,19 @@ describe('degraded workspace reads stay usable', () => {
   it.each([['Today', '/'], ['Area', '/area/c1']])('%s warns when activity is unavailable', async (_name, path) => {
     renderRoute(path, (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
       return ok([]);
     });
     const main = await screen.findByRole('main');
-    expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Wave activity is unavailable: overlays down'))).toBe(true);
+    expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Track activity is unavailable: overlays down'))).toBe(true);
   });
 
-  it('keeps Today content when one area wave read fails', async () => {
+  it('keeps Today content when one area track read fails', async () => {
     renderRoute('/', (request) => {
       if (request.path === '/api/areas') return ok(areas);
-      if (request.path === '/api/areas/c1/waves') return ok([wave]);
-      if (request.path === '/api/areas/c2/waves') return fail('area two down');
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
+      if (request.path === '/api/areas/c2/tracks') return fail('area two down');
       return ok([]);
     });
     expect((await screen.findAllByText('Reliable')).length).toBeGreaterThan(1);
@@ -73,49 +73,49 @@ describe('degraded workspace reads stay usable', () => {
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
   });
 
-  it('keeps Area content when a refetch fails after usable wave data', async () => {
-    let waveReads = 0;
+  it('keeps Area content when a refetch fails after usable track data', async () => {
+    let trackReads = 0;
     const view = renderRoute('/area/c1', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/waves') return ++waveReads === 1 ? ok([wave]) : fail('waves stale');
+      if (request.path === '/api/areas/c1/tracks') return ++trackReads === 1 ? ok([track]) : fail('tracks stale');
       return ok([]);
     });
-    expect(await screen.findByRole('button', { name: 'New wave' })).toBeTruthy();
-    await view.client.invalidateQueries({ queryKey: ['waves', 'c1'] });
-    expect(await within(screen.getByRole('main')).findByText('waves stale')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'New wave' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'New track' })).toBeTruthy();
+    await view.client.invalidateQueries({ queryKey: ['tracks', 'c1'] });
+    expect(await within(screen.getByRole('main')).findByText('tracks stale')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New track' })).toBeTruthy();
   });
 
-  it('prefers wave-detail overlays to the neutral workspace fallback', async () => {
+  it('prefers track-detail overlays to the neutral workspace fallback', async () => {
     let resolveDetail: (response: ApiTransportResponse) => void = () => undefined;
     const detail = new Promise<ApiTransportResponse>((resolve) => { resolveDetail = resolve; });
-    renderRoute('/wave/w1', (request) => {
+    renderRoute('/track/w1', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
-      if (request.path === '/api/waves/w1') return detail;
+      if (request.path === '/api/tracks/w1') return detail;
       return ok([]);
     });
     await within(await screen.findByRole('navigation', { name: 'Workspace' })).findByText('Reliable');
-    resolveDetail(ok({ wave, cards: [], overlays: [{
-      id: 'o1', plugin_id: 'cards', entity_kind: 'wave', entity_id: 'w1',
+    resolveDetail(ok({ track, cards: [], overlays: [{
+      id: 'o1', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
       kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
     }] }));
     expect(await screen.findByText('Needs input')).toBeTruthy();
   });
 
   it('uses a successful neutral detail read instead of stale workspace activity', async () => {
-    renderRoute('/wave/w1', (request) => {
+    renderRoute('/track/w1', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return ok([{
-        id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'wave', entity_id: 'w1',
+        id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
         kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
       }]);
-      if (request.path === '/api/waves/w1') return ok({ wave, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, cards: [], overlays: [] });
       return ok([]);
     });
-    await screen.findByRole('button', { name: 'Rename wave' });
+    await screen.findByRole('button', { name: 'Rename track' });
     expect(screen.queryByText('Needs input')).toBeNull();
   });
 });
@@ -123,14 +123,14 @@ describe('degraded workspace reads stay usable', () => {
 it('puts a dismissible delete failure before Today content', async () => {
   renderRoute('/', (request) => {
     if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-    if (request.path === '/api/areas/c1/waves') return ok([wave]);
+    if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path.startsWith('/api/overlays?')) return ok([]);
-    if (request.method === 'DELETE') return fail('wave changed elsewhere');
+    if (request.method === 'DELETE') return fail('track changed elsewhere');
     return ok([]);
   });
   const rail = await screen.findByRole('complementary');
   await userEvent.click(await within(rail).findByRole('button', { name: 'Delete Reliable' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   const alert = await screen.findByRole('alert');
   const todayContent = within(screen.getByRole('main')).getByRole('heading', { level: 1 });
   expect(alert.compareDocumentPosition(todayContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

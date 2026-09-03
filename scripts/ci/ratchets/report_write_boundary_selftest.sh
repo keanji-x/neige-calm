@@ -32,7 +32,7 @@ set -euo pipefail
 #     passes, so the assertion path now spawns no process at all.
 #
 # The green fixture is not a hand-written miniature — it is the real
-# `crates/calm-server/src/wave_report/write.rs`. A miniature would drift from
+# `crates/calm-server/src/track_report/write.rs`. A miniature would drift from
 # production and this suite would keep passing while the gate stopped matching
 # the file it actually runs on.
 
@@ -44,7 +44,7 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 gate="$script_dir/report_write_boundary.sh"
 [ -x "$gate" ] || { echo "::error::gate not executable: $gate"; exit 1; }
 
-real_boundary="$repo_root/crates/calm-server/src/wave_report/write.rs"
+real_boundary="$repo_root/crates/calm-server/src/track_report/write.rs"
 [ -f "$real_boundary" ] || {
   echo "::error::production boundary file missing: $real_boundary"
   exit 1
@@ -150,7 +150,7 @@ run_case "R3: an entry is removed" red \
   's/^pub(crate) async fn agent_report_op($/async fn agent_report_op(/'
 
 # R3 — a new entry in a visibility form the gate's first revision did not match.
-# `pub(super)` is visible to `wave_report`, which can `pub use` it onward; the
+# `pub(super)` is visible to `track_report`, which can `pub use` it onward; the
 # original `pub(?:\(crate\))?` group let this one through silently.
 run_case "R3: a new pub(super) entry" red \
   "R3: the exported write-entry set changed" \
@@ -215,7 +215,7 @@ macro_rules! items { ($($i:item)*) => {$($i)*}; }'
 run_case "R0: impl block" red \
   "R0:" \
   '/^use super::\*;$/a\
-impl Wave {}'
+impl Track {}'
 
 # R1b — the writer becomes `#[cfg]`-conditional. R1 still finds exactly one
 # non-pub `fn persist(`, so only the adjacency check notices.

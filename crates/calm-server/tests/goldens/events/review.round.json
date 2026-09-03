@@ -1,9 +1,9 @@
 {
-  "description": "review.round carries the wave routing id, logical review subject, convergence count, channel verdicts, and durable idempotency key",
+  "description": "review.round carries the track routing id, logical review subject, convergence count, channel verdicts, and durable idempotency key",
   "wire": {
     "ev": "review.round",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "subject": {
         "phase": "impl",
         "slice_id": "5b",
@@ -24,7 +24,7 @@
         }
       ],
       "root_cause": "tests failing",
-      "idempotency_key": "review.round:wave-01:impl:5b:760:1"
+      "idempotency_key": "review.round:track-01:impl:5b:760:1"
     }
   }
 }

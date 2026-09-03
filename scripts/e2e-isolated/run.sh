@@ -122,7 +122,7 @@ KILLER_LOG=/home/kenji/neige-killer.log
 # path of a workspace bin crate (no deps/ hash like the test binary).
 PROXY_BIN="$TARGET_DIR/debug/e2e-egress-proxy"
 # The `neige` shell CLI (crates/neige-cli, bin name `neige`) — the SPEC agent's
-# ONLY wave-read channel: the production prompt (crates/calm-server/src/
+# ONLY track-read channel: the production prompt (crates/calm-server/src/
 # spec_card.rs) tells it to run `neige state`/`neige ls`/`neige cat` EACH TURN
 # ("This is your ground truth"); writes go through the calm.* MCP tools. Like
 # codex and the stdio-shim it is host-compiled and bind-mounted (NOT an apt
@@ -380,7 +380,7 @@ build_test_bin() {
     ensure_neige_bin
 }
 
-# ---- neige CLI (SPEC agent's wave-read channel — host-compiled, PATH-mounted)
+# ---- neige CLI (SPEC agent's track-read channel — host-compiled, PATH-mounted)
 # Built here alongside the test binary + shim (same host-compile model, same
 # warm shared target): a run-container dependency compiled from source, NOT an
 # apt package. The bind-mount that puts it on the container PATH lives in
@@ -390,7 +390,7 @@ build_test_bin() {
 # pointing at the SAME in-container kernel socket the stdio-shim reaches. So the
 # only thing the container lacks is the binary on PATH.
 ensure_neige_bin() {
-    log "building neige CLI (agent shells out bare \`neige\` for wave reads) ..."
+    log "building neige CLI (agent shells out bare \`neige\` for track reads) ..."
     RUSTC_WRAPPER='' CARGO_BUILD_JOBS=4 nice -n 10 \
         cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
         -p neige-cli --bin neige
@@ -435,7 +435,7 @@ docker_run_args() {
         -v "$CODEX_REAL:$CODEX_MOUNT:ro"
         -v "$AUTH_REAL:$CONTAINER_HOME/.codex/auth.json:ro"
         # The `neige` CLI on the run container's PATH — the SPEC agent's only
-        # wave-read channel (bare `neige state`/`cat`/`ls`, spec_card.rs prompt).
+        # track-read channel (bare `neige state`/`cat`/`ls`, spec_card.rs prompt).
         # /usr/local/bin is on the exec-shell PATH (container-default PATH is
         # forwarded live through the env-cleared daemon spawn — SPAWN_ENV_PASS-
         # THROUGH "PATH" — then codex inherit=Core passes it to exec-shells;

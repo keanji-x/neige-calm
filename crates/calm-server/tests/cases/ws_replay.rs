@@ -75,7 +75,7 @@ async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>
             events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -125,7 +125,7 @@ async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i
             bus,
             &calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
             move |tx| {
                 Box::pin(async move {
@@ -336,7 +336,7 @@ async fn replay_then_live_no_drop_no_dupe() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -452,7 +452,7 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
 //    follow-up). The events table can hold an `Event::OverlaySet` row whose
 //    `schemaVersion` was written by a newer kernel binary against the same DB
 //    (downgrade or split-deploy scenario). PR #214 filtered such rows out of
-//    `/api/overlays` and `GET /api/waves/{id}`; this assertion locks the
+//    `/api/overlays` and `GET /api/tracks/{id}`; this assertion locks the
 //    invariant on the replay leg of `/api/events` too.
 // ---------------------------------------------------------------------------
 
@@ -465,7 +465,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
     // Supported: status overlay at the current schemaVersion.
     let supported = NewOverlay {
         plugin_id: "p1".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-1".into(),
         kind: "status".into(),
         payload: json!({ "schemaVersion": 1, "state": "running" }),
@@ -478,7 +478,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -495,7 +495,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
     // the same transactional unit the replay path will read.
     let future = NewOverlay {
         plugin_id: "p1".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-1".into(),
         kind: "status".into(),
         payload: json!({ "schemaVersion": 999, "state": "from-future" }),
@@ -508,7 +508,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -594,7 +594,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            &calm_server::track_area_cache::TrackAreaCache::new(),
             Event::AreaUpdated(calm_server::model::Area {
                 id: "pre-4".into(),
                 name: "n".into(),
@@ -614,7 +614,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            &calm_server::track_area_cache::TrackAreaCache::new(),
             Event::AreaUpdated(calm_server::model::Area {
                 id: "pre-5".into(),
                 name: "n".into(),
@@ -666,10 +666,10 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             "DELETE FROM overlays",
             "DELETE FROM terminals",
             "DELETE FROM cards",
-            // `worker_sessions.wave_id` is a NO ACTION FK, so sessions must
-            // leave before their parent waves.
+            // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
+            // leave before their parent tracks.
             "DELETE FROM worker_sessions",
-            "DELETE FROM waves",
+            "DELETE FROM tracks",
             "DELETE FROM areas",
             "DELETE FROM plugin_kv",
             "DELETE FROM plugin_tokens",
@@ -694,7 +694,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            &calm_server::track_area_cache::TrackAreaCache::new(),
             Event::AreaUpdated(calm_server::model::Area {
                 id: "post-1".into(),
                 name: "n".into(),
@@ -714,7 +714,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            &calm_server::track_area_cache::TrackAreaCache::new(),
             Event::AreaUpdated(calm_server::model::Area {
                 id: "post-2".into(),
                 name: "n".into(),
@@ -863,7 +863,7 @@ async fn seed_n_area_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i
                 None,
                 bus,
                 &calm_server::card_role_cache::CardRoleCache::new(),
-                &calm_server::wave_area_cache::WaveAreaCache::new(),
+                &calm_server::track_area_cache::TrackAreaCache::new(),
                 Event::AreaUpdated(calm_server::model::Area {
                     id: format!("cap-{i}").into(),
                     name: "n".into(),
@@ -1273,7 +1273,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
         None,
         &bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_area_cache::WaveAreaCache::new(),
+        &calm_server::track_area_cache::TrackAreaCache::new(),
         Event::ClaudeHook {
             card_id: CardId::from("card-hook"),
             kind: "stop".into(),
@@ -1369,7 +1369,7 @@ async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
         None,
         &bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_area_cache::WaveAreaCache::new(),
+        &calm_server::track_area_cache::TrackAreaCache::new(),
         Event::ClaudeHook {
             card_id: CardId::from("card-hook"),
             kind: "stop".into(),

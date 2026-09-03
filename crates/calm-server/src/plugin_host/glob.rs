@@ -65,7 +65,7 @@ mod tests {
         // Dot anchor enforced: "cardx.added" must NOT match "card.*".
         assert!(!glob_matches("card.*", "cardx.added"));
         // Unrelated prefix.
-        assert!(!glob_matches("card.*", "wave.added"));
+        assert!(!glob_matches("card.*", "track.added"));
     }
 
     #[test]

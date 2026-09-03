@@ -136,7 +136,7 @@ async fn stage_to_0037(pool: &SqlitePool) {
     apply_sql(pool, "0037_drop_plain_role", MIGRATION_0037_SQL).await;
 }
 
-async fn seed_wave(pool: &SqlitePool, wave_id: &str) {
+async fn seed_track(pool: &SqlitePool, track_id: &str) {
     sqlx::query(
         r#"INSERT INTO coves (id, name, color, sort, created_at, updated_at)
            VALUES ('area-0037', 'c', '#000000', 0.0, 1000, 1000)"#,
@@ -149,20 +149,20 @@ async fn seed_wave(pool: &SqlitePool, wave_id: &str) {
               (id, cove_id, title, sort, archived_at, created_at, updated_at)
            VALUES (?1, 'area-0037', 'w', 0.0, NULL, 1000, 1000)"#,
     )
-    .bind(wave_id)
+    .bind(track_id)
     .execute(pool)
     .await
     .unwrap();
 }
 
-async fn seed_card(pool: &SqlitePool, card_id: &str, wave_id: &str, role: &str) {
+async fn seed_card(pool: &SqlitePool, card_id: &str, track_id: &str, role: &str) {
     sqlx::query(
         r#"INSERT INTO cards
               (id, wave_id, kind, sort, payload, created_at, updated_at, role)
            VALUES (?1, ?2, 'codex', 0.0, '{}', 1000, 1000, ?3)"#,
     )
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(role)
     .execute(pool)
     .await
@@ -190,10 +190,10 @@ fn assert_role_validation_error(error: sqlx::Error) {
 async fn migration_0037_backfills_plain_to_worker() {
     let pool = fresh_pool().await;
     stage_to_0036(&pool).await;
-    seed_wave(&pool, "wave-0037").await;
-    seed_card(&pool, "card-plain", "wave-0037", "plain").await;
-    seed_card(&pool, "card-spec", "wave-0037", "spec").await;
-    seed_card(&pool, "card-worker", "wave-0037", "worker").await;
+    seed_track(&pool, "track-0037").await;
+    seed_card(&pool, "card-plain", "track-0037", "plain").await;
+    seed_card(&pool, "card-spec", "track-0037", "spec").await;
+    seed_card(&pool, "card-worker", "track-0037", "worker").await;
 
     apply_sql(&pool, "0037_drop_plain_role", MIGRATION_0037_SQL).await;
 
@@ -206,12 +206,12 @@ async fn migration_0037_backfills_plain_to_worker() {
 async fn migration_0037_rejects_plain_insert_after_apply() {
     let pool = fresh_pool().await;
     stage_to_0037(&pool).await;
-    seed_wave(&pool, "wave-0037").await;
+    seed_track(&pool, "track-0037").await;
 
     let result = sqlx::query(
         r#"INSERT INTO cards
               (id, wave_id, kind, sort, payload, created_at, updated_at, role)
-           VALUES ('card-plain', 'wave-0037', 'codex', 0.0, '{}', 1000, 1000, 'plain')"#,
+           VALUES ('card-plain', 'track-0037', 'codex', 0.0, '{}', 1000, 1000, 'plain')"#,
     )
     .execute(&pool)
     .await;
@@ -223,8 +223,8 @@ async fn migration_0037_rejects_plain_insert_after_apply() {
 async fn migration_0037_rejects_plain_update_after_apply() {
     let pool = fresh_pool().await;
     stage_to_0037(&pool).await;
-    seed_wave(&pool, "wave-0037").await;
-    seed_card(&pool, "card-worker", "wave-0037", "worker").await;
+    seed_track(&pool, "track-0037").await;
+    seed_card(&pool, "card-worker", "track-0037", "worker").await;
 
     let result = sqlx::query("UPDATE cards SET role = 'plain' WHERE id = 'card-worker'")
         .execute(&pool)

@@ -1,4 +1,4 @@
-//! `/api/cards`, `/api/waves/:id/cards` — Card CRUD. **Owned by Track B.**
+//! `/api/cards`, `/api/tracks/:id/cards` — Card CRUD. **Owned by Track B.**
 //!
 //! M3-mcp-apps M2: the create route accepts an optional `via_tool_call`
 //! payload variant. When present, the kernel invokes the named tool on the
@@ -18,12 +18,14 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
 use crate::harness::{HarnessPhaseTag, Observation, TokenUsage, is_harness_snapshot_value};
-use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, WaveLifecycle, new_id};
+use crate::ids::{ActorId, CardId, TrackId};
+use crate::model::{
+    Card, CardPatch, CardRole, HarnessItem, NewCard, Track, TrackLifecycle, new_id,
+};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::{
-    HarnessProfile, SpecHarnessStartOperationPayload, template_wave_spec_harness_error,
+    HarnessProfile, SpecHarnessStartOperationPayload, template_track_spec_harness_error,
 };
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
@@ -37,8 +39,8 @@ use crate::session_projection_lookup::{
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::track_lifecycle::apply_requested_transition_in_tx;
 use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
-use crate::wave_lifecycle::apply_requested_transition_in_tx;
 
 use axum::{
     Json, Router,
@@ -52,16 +54,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
 
-/// Resolve the (wave, area) ancestor pair for a wave id, returning a
+/// Resolve the (track, area) ancestor pair for a track id, returning a
 /// pre-built [`EventScope::Card`] for the given card. PR2 of #136 needs
 /// this at every card-emit site so the event row's `scope_*` columns
-/// carry the full ancestor chain. Looking up the wave outside the txn
-/// is fine — wave rows are immutable wrt their parent area.
+/// carry the full ancestor chain. Looking up the track outside the txn
+/// is fine — track rows are immutable wrt their parent area.
 ///
-/// # ⚠️ Do not call this from inside a transaction that has written `waves`
+/// # ⚠️ Do not call this from inside a transaction that has written `tracks`
 ///
 /// This reads through the **pool**, i.e. a second connection. Since #1147 S6
-/// every terminal-row creation writes `waves` (the workspace freeze), so calling
+/// every terminal-row creation writes `tracks` (the workspace freeze), so calling
 /// this after one — in the same transaction, before it commits — deadlocks the
 /// task against its own lock. Use [`card_scope_tx`], whose doc comment states
 /// the general rule and its measurement. Resolving the scope *before* the write,
@@ -69,15 +71,15 @@ use utoipa::{IntoParams, ToSchema};
 pub(crate) async fn card_scope(
     repo: &dyn RepoRead,
     card: CardId,
-    wave: WaveId,
+    track: TrackId,
 ) -> Result<EventScope> {
     let w = repo
-        .wave_get(wave.as_str())
+        .track_get(track.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {track}")))?;
     Ok(EventScope::Card {
         card,
-        wave: w.id,
+        track: w.id,
         area: w.area_id,
     })
 }
@@ -92,11 +94,11 @@ pub(crate) async fn card_scope(
 /// so that read blocks on a lock only the caller can release and the task waits
 /// on itself forever in `sqlx_sqlite::statement::unlock_notify::wait`.
 ///
-/// `waves` is not special — it is merely the table S6 added to the write set of
-/// every terminal-creating transaction (each terminal row freezes its wave's
+/// `tracks` is not special — it is merely the table S6 added to the write set of
+/// every terminal-creating transaction (each terminal row freezes its track's
 /// workspace). `cards` and `terminals` were already in that set. Measured:
 /// `ClaudeRestartAdapter::prepare_tx` created the terminal row and then read
-/// `waves` through [`card_scope`], and hung
+/// `tracks` through [`card_scope`], and hung
 /// `post_claude_restart_recreates_missing_terminal_row_and_resumes_session`
 /// forever.
 ///
@@ -113,7 +115,7 @@ pub(crate) async fn card_scope(
 /// on a single flow
 /// (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
 /// which makes a regression *on that flow* a legible red test instead of a
-/// wedged job. A new adapter that mints a terminal row and then reads `waves`
+/// wedged job. A new adapter that mints a terminal row and then reads `tracks`
 /// off `self.repo` will hang CI with no diagnosis and no test naming the cause.
 /// The tree was swept once, at S6 — every other adapter resolves its scope
 /// BEFORE creating the card, which is equally correct — and a sweep is a
@@ -124,16 +126,16 @@ pub(crate) async fn card_scope(
 pub(crate) async fn card_scope_tx(
     tx: &mut crate::operation::Tx<'_>,
     card: CardId,
-    wave: WaveId,
+    track: TrackId,
 ) -> Result<EventScope> {
-    let area: Option<(String,)> = sqlx::query_as("SELECT area_id FROM waves WHERE id = ?1")
-        .bind(wave.as_str())
+    let area: Option<(String,)> = sqlx::query_as("SELECT area_id FROM tracks WHERE id = ?1")
+        .bind(track.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-    let (area,) = area.ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
+    let (area,) = area.ok_or_else(|| CalmError::NotFound(format!("track {track}")))?;
     Ok(EventScope::Card {
         card,
-        wave,
+        track,
         area: area.into(),
     })
 }
@@ -142,15 +144,15 @@ pub(crate) async fn card_scope_tx(
 /// routes. Unknown/malformed profile values deliberately fail closed.
 ///
 /// #1189 added the assistant arm, and it is not decoration: this predicate
-/// gates `POST /api/cards/{id}/spec/input`, which is how a wave conversation's
+/// gates `POST /api/cards/{id}/spec/input`, which is how a track conversation's
 /// messages — including the first one, sent by
-/// `POST /api/waves/{id}/conversations` — reach the harness. Without it the
+/// `POST /api/tracks/{id}/conversations` — reach the harness. Without it the
 /// endpoint mints a card it can then never talk to.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     card.kind == "codex"
         && (role == CardRole::Spec
             || crate::plain_chat::card_is_plain_chat(card, Some(role), true)
-            || crate::plain_chat::card_is_wave_assistant(card, Some(role), true))
+            || crate::plain_chat::card_is_track_assistant(card, Some(role), true))
 }
 
 pub(crate) async fn interrupt_shared_card_active_turn(
@@ -184,7 +186,7 @@ pub(crate) async fn interrupt_shared_card_active_turn(
         tracing::warn!(
             target: "shared_codex_daemon::orphan_turn",
             card_id = %card.id,
-            wave_id = %card.wave_id,
+            track_id = %card.track_id,
             error = %e,
             "failed to interrupt active shared codex turn during card teardown"
         );
@@ -194,8 +196,8 @@ pub(crate) async fn interrupt_shared_card_active_turn(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/waves/{wave_id}/cards",
-            get(list_cards_by_wave).post(create_card),
+            "/api/tracks/{track_id}/cards",
+            get(list_cards_by_track).post(create_card),
         )
         .route(
             "/api/cards/{id}",
@@ -211,19 +213,19 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(
     get,
-    path = "/api/waves/{wave_id}/cards",
+    path = "/api/tracks/{track_id}/cards",
     tag = "cards",
-    params(("wave_id" = String, Path, description = "Wave id")),
+    params(("track_id" = String, Path, description = "Track id")),
     responses(
-        (status = 200, description = "Cards in wave (sorted)", body = Vec<Card>),
+        (status = 200, description = "Cards in track (sorted)", body = Vec<Card>),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn list_cards_by_wave(
+pub(crate) async fn list_cards_by_track(
     State(s): State<RouteState>,
-    Path(wave_id): Path<String>,
+    Path(track_id): Path<String>,
 ) -> Result<Json<Vec<Card>>> {
-    let mut cards = s.repo.cards_by_wave(&wave_id).await?;
+    let mut cards = s.repo.cards_by_track(&track_id).await?;
     project_runtime_into_cards_payload(s.repo.as_ref(), &mut cards).await?;
     Ok(Json(cards))
 }
@@ -301,7 +303,7 @@ pub(crate) async fn get_harness_items(
     Ok(Json(items))
 }
 
-/// Body payload accepted by `POST /api/waves/:wave_id/cards`.
+/// Body payload accepted by `POST /api/tracks/:track_id/cards`.
 ///
 /// Two mutually-exclusive paths:
 ///   * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy
@@ -316,7 +318,7 @@ pub(crate) async fn get_harness_items(
 /// unchanged.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateCardBody {
-    /// Legacy direct-create fields. Mirrors `NewCard` shape; `wave_id` is
+    /// Legacy direct-create fields. Mirrors `NewCard` shape; `track_id` is
     /// taken from the path so we omit it here.
     #[serde(default)]
     pub kind: Option<String>,
@@ -344,9 +346,9 @@ pub struct ViaToolCall {
 
 #[utoipa::path(
     post,
-    path = "/api/waves/{wave_id}/cards",
+    path = "/api/tracks/{track_id}/cards",
     tag = "cards",
-    params(("wave_id" = String, Path, description = "Wave id this card belongs to")),
+    params(("track_id" = String, Path, description = "Track id this card belongs to")),
     request_body = CreateCardBody,
     responses(
         (status = 201, description = "Card created", body = Card),
@@ -363,7 +365,7 @@ pub struct ViaToolCall {
 pub(crate) async fn create_card(
     State(s): State<AppState>,
     actor: Actor,
-    Path(wave_id): Path<String>,
+    Path(track_id): Path<String>,
     Json(body): Json<CreateCardBody>,
 ) -> Result<Response, Response> {
     // M2: tool-call path wins over direct-create. The tool-call branch
@@ -371,7 +373,7 @@ pub(crate) async fn create_card(
     // the kernel write) regardless of any `X-Calm-Actor` header — plugins
     // cannot spoof their own actor via REST (design §9 bullet 2/3).
     if let Some(via) = body.via_tool_call {
-        return create_via_tool_call(&s, wave_id, via).await;
+        return create_via_tool_call(&s, track_id, via).await;
     }
 
     // Direct-create path (legacy / pre-M2). `kind` is required here — for
@@ -392,12 +394,12 @@ pub(crate) async fn create_card(
     // `card_create_with_id_tx` (the carved-out variant the codex/terminal
     // atomic endpoints already use) keeps the actual SQL identical.
     let card_id = CardId::from(new_id());
-    let wave_id: WaveId = wave_id.into();
-    let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone())
+    let track_id: TrackId = track_id.into();
+    let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone())
         .await
         .map_err(|e| e.into_response())?;
     let new = NewCard {
-        wave_id,
+        track_id,
         kind,
         sort: body.sort,
         payload,
@@ -452,7 +454,7 @@ pub(crate) async fn create_card(
 #[allow(clippy::result_large_err)]
 async fn create_via_tool_call(
     s: &AppState,
-    wave_id: String,
+    track_id: String,
     via: ViaToolCall,
 ) -> Result<Response, Response> {
     // 1. Plugin must be a RUNNING `app`. `mcp_client` returns None when the
@@ -489,7 +491,7 @@ async fn create_via_tool_call(
     // 2. Manifest-based permission gate. Mirrors the autonomous
     //    `neige.card.create` gate in `callbacks.rs::card_create`: the
     //    plugin must have `permissions.cards_create == true`. The
-    //    migration doc speaks of `permissions.cards.create` with `wave`
+    //    migration doc speaks of `permissions.cards.create` with `track`
     //    scope; today's manifest shape only has a boolean — that's the
     //    canonical gate per `perms.rs`.
     let perms = match s.plugin.registry().get(&via.plugin_id) {
@@ -557,7 +559,7 @@ async fn create_via_tool_call(
         .validate_payload(&creation.resource_uri, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
     let new = NewCard {
-        wave_id: wave_id.into(),
+        track_id: track_id.into(),
         kind: creation.resource_uri,
         sort: None,
         payload,
@@ -571,8 +573,8 @@ async fn create_via_tool_call(
     let actor = ActorId::Plugin(via.plugin_id.clone());
     let correlation = format!("user_tool_call:{}", via.tool_name);
     let card_id = CardId::from(new_id());
-    let wave_id_for_scope: WaveId = new.wave_id.clone();
-    let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id_for_scope)
+    let track_id_for_scope: TrackId = new.track_id.clone();
+    let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id_for_scope)
         .await
         .map_err(|e| e.into_response())?;
     let card_id_for_tx = card_id.0.clone();
@@ -650,7 +652,7 @@ pub(crate) async fn update_card(
             "`deletable` is a kernel-managed field and cannot be patched via API".into(),
         ));
     }
-    // We need the existing card's wave_id for the EventScope chain
+    // We need the existing card's track_id for the EventScope chain
     // regardless of whether validation needs the kind. Fetch once.
     let existing = s
         .repo
@@ -664,7 +666,7 @@ pub(crate) async fn update_card(
         let kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
         s.card_kind_registry().validate_payload(kind, payload)?;
     }
-    let scope = card_scope(s.repo.as_ref(), existing.id.clone(), existing.wave_id).await?;
+    let scope = card_scope(s.repo.as_ref(), existing.id.clone(), existing.track_id).await?;
     let (mut card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
@@ -691,7 +693,7 @@ pub struct ResetSpecCardResponse {
     pub terminal_id: String,
     pub new_thread_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wave: Option<Wave>,
+    pub track: Option<Track>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -727,7 +729,7 @@ pub struct RatifyCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     #[schema(value_type = String)]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub decision: RatifyCardDecision,
 }
 
@@ -861,7 +863,7 @@ fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
         (status = 200, description = "User text queued for next harness turn", body = SendSpecInputResponse),
         (status = 400, description = "Empty text", body = ErrorBody),
         (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
-        (status = 404, description = "Card or wave not found", body = ErrorBody),
+        (status = 404, description = "Card or track not found", body = ErrorBody),
         (status = 409, description = "Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly", body = ErrorBody),
@@ -907,15 +909,15 @@ pub(crate) async fn send_spec_input(
     // recovery and the observe/audit below.
     let (runtime, harness, _recovery_guard) =
         ensure_live_spec_harness(&s, &w, &cs, &card.id).await?;
-    let wave = s
+    let track = s
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {} for card {id}", card.track_id)))?;
     let scope = EventScope::Card {
         card: card.id.clone(),
-        wave: wave.id.clone(),
-        area: wave.area_id.clone(),
+        track: track.id.clone(),
+        area: track.area_id.clone(),
     };
     // Migrate ONLY the AI-header path (empty placeholder card) to the live spec
     // session actor; the human web-UI path (`actor` == User) and any other actor
@@ -953,7 +955,7 @@ pub(crate) async fn send_spec_input(
             Event::HarnessUserMessageEnqueued {
                 runtime_id: runtime.id.clone(),
                 card_id: card.id.clone(),
-                wave_id: card.wave_id.clone(),
+                track_id: card.track_id.clone(),
                 char_count: char_count as u32,
             },
         )
@@ -975,8 +977,8 @@ pub(crate) async fn send_spec_input(
         (status = 200, description = "Human ratify verdict recorded", body = RatifyCardResponse),
         (status = 400, description = "Malformed request", body = ErrorBody),
         (status = 403, description = "Card is not a spec codex card, or actor is not the authenticated user", body = ErrorBody),
-        (status = 404, description = "Card or wave not found", body = ErrorBody),
-        (status = 409, description = "Wave is not awaiting ratification", body = ErrorBody),
+        (status = 404, description = "Card or track not found", body = ErrorBody),
+        (status = 409, description = "Track is not awaiting ratification", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -1006,18 +1008,18 @@ pub(crate) async fn ratify_card(
             "card {id} is not a spec codex card",
         )));
     }
-    let wave = s
+    let track = s
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {} for card {id}", card.track_id)))?;
 
     let actor_id = ActorId::User;
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        area: wave.area_id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
+        area: track.area_id.clone(),
     };
-    let wave_id = wave.id.clone();
+    let track_id = track.id.clone();
     let card_id = card.id.clone();
     let decision = body.decision;
     let message = body.message.unwrap_or_default();
@@ -1025,12 +1027,12 @@ pub(crate) async fn ratify_card(
     write_with_actor_events_typed::<(), _>(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
         let actor_id = actor_id.clone();
         let scope = scope.clone();
-        let wave_id = wave_id.clone();
+        let track_id = track_id.clone();
         let message = message.clone();
         Box::pin(async move {
-            if !ratify_request_pending_tx(tx, &wave_id).await? {
+            if !ratify_request_pending_tx(tx, &track_id).await? {
                 return Err(CalmError::Conflict(
-                    "ratify: wave is not awaiting ratification".into(),
+                    "ratify: track is not awaiting ratification".into(),
                 ));
             }
 
@@ -1038,8 +1040,8 @@ pub(crate) async fn ratify_card(
             if decision == RatifyCardDecision::Grant
                 && let Some(lifecycle_events) = apply_requested_transition_in_tx(
                     tx,
-                    &wave_id,
-                    WaveLifecycle::Working,
+                    &track_id,
+                    TrackLifecycle::Working,
                     &actor_id,
                     message,
                 )
@@ -1055,7 +1057,7 @@ pub(crate) async fn ratify_card(
                 actor_id,
                 scope,
                 Event::RatifyResolved {
-                    wave_id,
+                    track_id,
                     decision: decision.into(),
                 },
             ));
@@ -1066,7 +1068,7 @@ pub(crate) async fn ratify_card(
 
     Ok(Json(RatifyCardResponse {
         card_id,
-        wave_id: wave.id,
+        track_id: track.id,
         decision,
     }))
 }
@@ -1247,7 +1249,7 @@ pub(crate) async fn get_spec_run(
 /// Fast path: active runtime row + registry hit (untouched behavior).
 ///
 /// Registry miss with an active runtime row (e.g. server restart on a
-/// `done`-lifecycle wave, where boot recovery deliberately skips the wave)
+/// `done`-lifecycle track, where boot recovery deliberately skips the track)
 /// → lazily re-spawn the harness in place via
 /// [`crate::harness::spawn_recovered_harness`] — the exact function boot
 /// recovery uses (snapshot load, catch-up event replay, run, registry
@@ -1420,24 +1422,24 @@ pub(crate) async fn reset_spec_card(
     // established HTTP 403 contract instead of turning that decline into a
     // generic operation failure.
     if role == CardRole::Spec {
-        let wave = s
+        let track = s
             .repo
-            .wave_get(card.wave_id.as_str())
+            .track_get(card.track_id.as_str())
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-        if wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
+            .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
+        if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
             return Err(CalmError::Forbidden(format!(
-                "spec harness is disabled for area chat wave {}",
-                wave.id
+                "spec harness is disabled for area chat track {}",
+                track.id
             )));
         }
         if s.repo
-            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, wave.id.as_str())
+            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, track.id.as_str())
             .await?
             .iter()
             .any(is_template_overlay)
         {
-            return Err(template_wave_spec_harness_error(wave.id.as_str()));
+            return Err(template_track_spec_harness_error(track.id.as_str()));
         }
     }
     let response = reset_spec_card_shared(s, actor, card).await?;
@@ -1473,11 +1475,11 @@ async fn reset_spec_harness_card(
     card: Card,
     runtime: Option<WorkerSessionProjection>,
 ) -> Result<ResetSpecCardResponse> {
-    let wave = s
+    let track = s
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
 
     // #1098 §5.3 / #1189: a marked conversation card restarts under its OWN
     // profile. Restarting an assistant under `Spec` would re-mint its thread
@@ -1485,29 +1487,29 @@ async fn reset_spec_harness_card(
     // `assistant`, so the thread and the card would disagree about what the
     // session may do.
     //
-    // #1211 S1: no profile inherits the wave title as a goal on this
-    // user-driven reset path. A seeded `Observation::WaveGoal` makes the agent
+    // #1211 S1: no profile inherits the track title as a goal on this
+    // user-driven reset path. A seeded `Observation::TrackGoal` makes the agent
     // speak before the user does, and this path no longer treats the title as
     // intent — whether the title is currently blank or not, and whoever wrote
-    // it. (Child waves are the one remaining place where a title IS intent:
-    // `operation/child_wave_adapter.rs` copies the parent spec's declared task
+    // it. (Child tracks are the one remaining place where a title IS intent:
+    // `operation/child_track_adapter.rs` copies the parent spec's declared task
     // goal into it. That is machine-written and stays; it just is not read
     // here.)
     let role = s.write.verify_role(&card.id);
     let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
         HarnessProfile::PlainChat
-    } else if crate::plain_chat::card_is_wave_assistant(&card, role, true) {
+    } else if crate::plain_chat::card_is_track_assistant(&card, role, true) {
         HarnessProfile::Assistant
     } else {
         HarnessProfile::Spec
     };
     let start_request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: card.id.clone(),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: None,
         reset_harness_items: true,
         force_new_thread: true,
@@ -1536,17 +1538,17 @@ async fn reset_spec_harness_card(
             card.id
         ))
     })?;
-    let wave = s
+    let track = s
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
 
     Ok(ResetSpecCardResponse {
         card_id: card.id,
         terminal_id: String::new(),
         new_thread_id,
-        wave: Some(wave),
+        track: Some(track),
     })
 }
 
@@ -1615,7 +1617,7 @@ pub(crate) async fn delete_card(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    // Look up first so we have the wave_id for the delete event.
+    // Look up first so we have the track_id for the delete event.
     let card = s
         .repo
         .card_get(&id)
@@ -1623,17 +1625,17 @@ pub(crate) async fn delete_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     // Issue #229 PR A — kernel-owned card guard. Spec cards (and PR B's
     // report cards) carry `deletable = false`; refuse direct REST delete.
-    // Wave delete via `DELETE /api/waves/:id` still cascades through the
+    // Track delete via `DELETE /api/tracks/:id` still cascades through the
     // FK chain — the guard fires only on this `/api/cards/:id` path.
     if !card.deletable {
         return Err(CalmError::Forbidden(format!(
             "card {id} is kernel-owned and cannot be deleted via this endpoint; \
-             delete the parent wave to remove it",
+             delete the parent track to remove it",
         )));
     }
     let card_id = card.id.clone();
-    let wave_id = card.wave_id.clone();
-    let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
+    let track_id = card.track_id.clone();
+    let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
 
     interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await;
 
@@ -1647,7 +1649,7 @@ pub(crate) async fn delete_card(
     // terminal row and the card row inside one commit, keeping the
     // audit signal coherent (`Event::CardDeleted` is the headline; the
     // terminal row delete rides under it without a separate event —
-    // same shape as wave-delete cascading through cards). If cleanup
+    // same shape as track-delete cascading through cards). If cleanup
     // fails *before* the txn opens we surface 500; the row stays and
     // the sweeper retries on the next tick, so we don't end up with
     // a half-torn-down terminal. Spec cards (CardRole::Spec) take the
@@ -1682,7 +1684,7 @@ pub(crate) async fn delete_card(
                     scope,
                     Event::CardDeleted {
                         id: card_id,
-                        wave_id,
+                        track_id,
                     },
                 ));
                 Ok(((), events))

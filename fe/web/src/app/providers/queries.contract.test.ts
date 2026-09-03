@@ -9,12 +9,12 @@ import { z } from 'zod';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  readWaveReport, WAVE_REPORT_CARD_KIND, type TaskVerdict,
+  readTrackReport, TRACK_REPORT_CARD_KIND, type TaskVerdict,
 } from '../../../../core/domain/report.ts';
-import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
 import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
-  useAreaMutations, useWaveMutations, useWorkspace, wavesInAreaQueryOptions,
+  useAreaMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -35,7 +35,7 @@ function ok(body: unknown): ApiTransportResponse {
 const systemArea = { id: 'sys', name: 'system', color: '#000', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
 const userArea = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const baseWaveWire = {
+const baseTrackWire = {
   id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
@@ -85,21 +85,21 @@ describe('failure channel', () => {
     await expect(areaListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
   });
 
-  it('keeps neutral waves readable while exporting an overlay failure', async () => {
-    const wave = { id: 'w1', area_id: 'c1', title: 'Task', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  it('keeps neutral tracks readable while exporting an overlay failure', async () => {
+    const track = { id: 'w1', area_id: 'c1', title: 'Task', sort: 1, lifecycle: 'working', cwd: '/tmp',
       archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
     const { transport } = recordingTransport((request) => {
       if (request.path === '/api/areas') return ok([userArea]);
-      if (request.path === '/api/areas/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
       return { status: 500, statusText: 'Server Error', body: { error: 'overlays down' } };
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
     const { result } = renderHook(() => useWorkspace(transport, unauthorized), { wrapper });
-    await waitFor(() => expect(result.current.waves).toHaveLength(1));
+    await waitFor(() => expect(result.current.tracks).toHaveLength(1));
     expect(result.current.areasError).toBeNull();
     expect(result.current.overlaysError).toBeInstanceOf(ApiError);
-    expect(result.current.waves[0]).toMatchObject(NEUTRAL_ACTIVITY);
+    expect(result.current.tracks[0]).toMatchObject(NEUTRAL_ACTIVITY);
   });
 
   it('rejects when the payload does not match the schema instead of rendering junk', async () => {
@@ -108,12 +108,12 @@ describe('failure channel', () => {
   });
 });
 
-describe('wave list', () => {
+describe('track list', () => {
   it('reads one area at a time so each area keeps its own cache entry', async () => {
     const { transport, paths } = recordingTransport(() => ok([]));
-    await wavesInAreaQueryOptions(transport, 'c1', unauthorized).queryFn();
-    await wavesInAreaQueryOptions(transport, 'c2', unauthorized).queryFn();
-    expect(paths).toEqual(['/api/areas/c1/waves', '/api/areas/c2/waves']);
+    await tracksInAreaQueryOptions(transport, 'c1', unauthorized).queryFn();
+    await tracksInAreaQueryOptions(transport, 'c2', unauthorized).queryFn();
+    expect(paths).toEqual(['/api/areas/c1/tracks', '/api/areas/c2/tracks']);
   });
 });
 
@@ -124,8 +124,8 @@ describe('delete mutation wiring', () => {
   }
 
   it.each([
-    ['wave', (transport: ApiTransportPort) => useWaveMutations(transport, unauthorized),
-      (mutations: ReturnType<typeof useWaveMutations>, signal: AbortSignal) => mutations.remove('w1', 'c1', signal)],
+    ['track', (transport: ApiTransportPort) => useTrackMutations(transport, unauthorized),
+      (mutations: ReturnType<typeof useTrackMutations>, signal: AbortSignal) => mutations.remove('w1', 'c1', signal)],
     ['area', (transport: ApiTransportPort) => useAreaMutations(transport, unauthorized),
       (mutations: ReturnType<typeof useAreaMutations>, signal: AbortSignal) => mutations.remove('c1', signal)],
   ] as const)('relays the caller signal through the real %s mutation operation', async (_kind, useMutations, remove) => {
@@ -145,16 +145,16 @@ describe('delete mutation wiring', () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
-  it('invalidates the wave list even when an aborted delete may have committed', async () => {
+  it('invalidates the track list even when an aborted delete may have committed', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    client.setQueryData(queryKeys.wavesInArea('c1'), [{ id: 'w1' }]);
+    client.setQueryData(queryKeys.tracksInArea('c1'), [{ id: 'w1' }]);
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const transport: ApiTransportPort = { send: () => Promise.reject(new DOMException('aborted', 'AbortError')) };
-    const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper: mutationWrapper(client) });
+    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper: mutationWrapper(client) });
     const controller = new AbortController();
     controller.abort();
     await expect(result.current.remove('w1', 'c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.wavesInArea('c1') });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.tracksInArea('c1') });
   });
 
   it('invalidates the area list even when an aborted delete may have committed', async () => {
@@ -173,7 +173,7 @@ describe('delete mutation wiring', () => {
 /*
  * ── What the card mutations do to the cache ────────────────────────────────
  *
- * The row the board draws comes out of `['wave', waveId]`, and both of these
+ * The row the board draws comes out of `['track', trackId]`, and both of these
  * write it directly rather than waiting for the refetch they also queue. That is
  * not an optimisation in either direction:
  *
@@ -183,27 +183,27 @@ describe('delete mutation wiring', () => {
  *   * the creates — the caller navigates to `?card=<id>` in the same tick, and
  *     the board can only draw a card the detail cache already holds.
  *
- * Nothing here is observing `['wave', waveId]`, so the invalidation these
+ * Nothing here is observing `['track', trackId]`, so the invalidation these
  * mutations queue cannot refetch: what the assertions read is the write itself.
  */
 describe('card mutation cache writes', () => {
   const cardWire = (id: string) => ({
-    id, wave_id: 'w1', kind: 'terminal', title: null, sort: 1, payload: {},
+    id, track_id: 'w1', kind: 'terminal', title: null, sort: 1, payload: {},
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    wave: { ...baseWaveWire }, cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
+    track: { ...baseTrackWire }, cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 
   function mounted(transport: ApiTransportPort) {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client }, children);
-    const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper });
+    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper });
     return { client, result };
   }
 
-  it('drops the deleted row from the cached wave detail without waiting for a refetch', async () => {
+  it('drops the deleted row from the cached track detail without waiting for a refetch', async () => {
     let reads = 0;
     const transport: ApiTransportPort = {
       send: (request) => {
@@ -212,11 +212,11 @@ describe('card mutation cache writes', () => {
       },
     };
     const { client, result } = mounted(transport);
-    client.setQueryData(queryKeys.waveDetail('w1'), detail);
+    client.setQueryData(queryKeys.trackDetail('w1'), detail);
 
     await act(() => result.current.removeCard('w1', 'card-a'));
 
-    const after = client.getQueryData<typeof detail>(queryKeys.waveDetail('w1'));
+    const after = client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'));
     expect(after?.cards.map((card) => card.id)).toEqual(['card-b']);
     // And it was this write, not a re-read: the detail was never fetched at all.
     expect(reads).toBe(0);
@@ -226,7 +226,7 @@ describe('card mutation cache writes', () => {
     const transport: ApiTransportPort = { send: () => Promise.resolve(ok(undefined)) };
     const { client, result } = mounted(transport);
     await act(() => result.current.removeCard('w1', 'card-a'));
-    expect(client.getQueryData(queryKeys.waveDetail('w1'))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.trackDetail('w1'))).toBeUndefined();
   });
 
   it('writes a created card into the cached detail so the board can draw it at once', async () => {
@@ -237,11 +237,11 @@ describe('card mutation cache writes', () => {
         : new Promise<ApiTransportResponse>(() => undefined)),
     };
     const { client, result } = mounted(transport);
-    client.setQueryData(queryKeys.waveDetail('w1'), detail);
+    client.setQueryData(queryKeys.trackDetail('w1'), detail);
 
     await act(() => result.current.createCard('w1', { kind: 'file-viewer', payload: { path: '/x' } }));
 
-    expect(client.getQueryData<typeof detail>(queryKeys.waveDetail('w1'))?.cards.map((card) => card.id))
+    expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id))
       .toEqual(['card-a', 'card-b', 'card-new']);
   });
 
@@ -254,16 +254,16 @@ describe('card mutation cache writes', () => {
         : new Promise<ApiTransportResponse>(() => undefined)),
     };
     const { client, result } = mounted(transport);
-    client.setQueryData(queryKeys.waveDetail('w1'), detail);
+    client.setQueryData(queryKeys.trackDetail('w1'), detail);
 
     await act(() => result.current.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [1, 1, 1] } }));
 
-    expect(client.getQueryData<typeof detail>(queryKeys.waveDetail('w1'))?.cards.map((card) => card.id))
+    expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id))
       .toEqual(['card-a', 'card-b']);
   });
 });
 
-describe('wave create folders cache', () => {
+describe('track create folders cache', () => {
   it('drops a successful empty folders cache after attach_folder create', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     client.setQueryData(queryKeys.areaFolders('c1'), []);
@@ -274,7 +274,7 @@ describe('wave create folders cache', () => {
     };
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client }, children);
-    const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper });
+    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper });
     await act(() => result.current.create({
       area_id: 'c1',
       title: 'Ship',
@@ -289,7 +289,7 @@ describe('wave create folders cache', () => {
 describe('spec history pagination', () => {
   it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
     const firstPage = Array.from({ length: 300 }, (_, index) => ({
-      id: 701 + index, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+      id: 701 + index, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
       turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: '{}', created_at_ms: index,
     }));
@@ -304,7 +304,7 @@ describe('spec history pagination', () => {
 });
 
 /*
- * The wave page's task-verdict timer, at the two states the query can be in.
+ * The track page's task-verdict timer, at the two states the query can be in.
  *
  * This is the whole convergence story for `worker_card_id`: the kernel's
  * `mark_running` stamps it without emitting anything, so if this callback
@@ -321,8 +321,8 @@ describe('task-verdict poll interval', () => {
   const declaration = (id: string, key: string) => ({
     id, kind: 'task', rev: 1, payload: { key, kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' },
   });
-  const blocks = (declarations = [declaration('b-1', 'k')]) => readWaveReport([{
-    id: 'c1', wave_id: 'w1', kind: WAVE_REPORT_CARD_KIND, title: null, sort: 0,
+  const blocks = (declarations = [declaration('b-1', 'k')]) => readTrackReport([{
+    id: 'c1', track_id: 'w1', kind: TRACK_REPORT_CARD_KIND, title: null, sort: 0,
     payload: { body: 'x', blocks: declarations }, deletable: false, created_at: 0, updated_at: 0,
   }])?.blocks ?? null;
   const interval = taskVerdictsRefetchInterval(blocks());
@@ -352,16 +352,16 @@ describe('task-verdict poll interval', () => {
    * The defect: when the FIRST load fails there is no data at all, so
    * `hasLiveTaskRun` is vacuously false and the timer never starts. Once
    * react-query has exhausted its retries nothing in the page ever asks again,
-   * and a wave that was mid-dispatch shows declaration words with no
+   * and a track that was mid-dispatch shows declaration words with no
    * click-through for as long as the tab stays open.
    */
   it('still schedules a retry when the initial load failed and there is no data', () => {
     expect(interval(state({ errorUpdateCount: 1 }))).toBe(15_000);
   });
 
-  /* Bounded, because `GET /api/waves/{id}/report` also fails *permanently*: a
-     deleted wave 404s and a wave missing its `wave-report` card 500s
-     (`resolve_report_for_wave`). An unconditional poll on "no data" would leave
+  /* Bounded, because `GET /api/tracks/{id}/report` also fails *permanently*: a
+     deleted track 404s and a track missing its `track-report` card 500s
+     (`resolve_report_for_track`). An unconditional poll on "no data" would leave
      a stale tab hitting a dead route every few seconds forever. */
   it('gives up after a bounded number of failed loads rather than hammering a dead route', () => {
     expect(interval(state({ errorUpdateCount: 4 }))).toBe(15_000);

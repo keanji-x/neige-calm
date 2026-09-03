@@ -9,29 +9,29 @@ import {
 } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
-import type { ReportBlock } from '../../cards/builtins/wave-report';
-import type { WaveCardSlot } from '../../types';
-import { WaveReportPage } from '../WaveReportPage';
+import type { ReportBlock } from '../../cards/builtins/track-report';
+import type { TrackCardSlot } from '../../types';
+import { TrackReportPage } from '../TrackReportPage';
 import { ReportBlockView } from './index';
 
 vi.mock('../../api/queries', () => ({
   useOverlaysByKindQuery: vi.fn(() => ({ data: [] })),
-  useWaveBacklinksQuery: vi.fn(() => ({
+  useTrackBacklinksQuery: vi.fn(() => ({
     data: { backlinks: [], truncated: false, skipped_sources: 0 },
     error: null,
   })),
-  useWaveFileContent: vi.fn(() => ({
+  useTrackFileContent: vi.fn(() => ({
     data: undefined,
-    error: new TypeError('Failed to parse URL from /api/waves/wave_1/fs/report.md'),
+    error: new TypeError('Failed to parse URL from /api/tracks/track_1/fs/report.md'),
     isLoading: false,
   })),
-  useWaveFileList: vi.fn(() => ({
+  useTrackFileList: vi.fn(() => ({
     data: [],
     error: null,
     isLoading: false,
   })),
-  useWaveReportQuery: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
-  useWavesByAreaQuery: vi.fn(() => ({ data: [] })),
+  useTrackReportQuery: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
+  useTracksByAreaQuery: vi.fn(() => ({ data: [] })),
 }));
 
 vi.mock('../../cards/useCardOverlay', () => ({
@@ -52,20 +52,20 @@ describe('report links with the real router', () => {
               kind: 'prose',
               rev: 1,
               payload: {
-                markdown: '[Target](neige://wave/wave_2#b_cafe)',
+                markdown: '[Target](neige://wave/track_2#b_cafe)',
               },
             } as ReportBlock
           }
         />
       ),
     });
-    const waveRoute = createRoute({
+    const trackRoute = createRoute({
       getParentRoute: () => rootRoute,
-      path: '/wave/$waveId',
+      path: '/track/$trackId',
       component: () => null,
     });
     const router = createRouter({
-      routeTree: rootRoute.addChildren([indexRoute, waveRoute]),
+      routeTree: rootRoute.addChildren([indexRoute, trackRoute]),
       history: createMemoryHistory({ initialEntries: ['/calm/'] }),
       basepath: '/calm',
     });
@@ -79,7 +79,7 @@ describe('report links with the real router', () => {
 
     expect(await screen.findByRole('link', { name: 'Target' })).toHaveAttribute(
       'href',
-      '/calm/wave/wave_2#b_cafe',
+      '/calm/track/track_2#b_cafe',
     );
   });
 
@@ -89,9 +89,9 @@ describe('report links with the real router', () => {
       getParentRoute: () => rootRoute,
       path: '/',
       component: () => (
-        <WaveReportPage
-          wave={{
-            id: 'wave_1',
+        <TrackReportPage
+          track={{
+            id: 'track_1',
             areaId: 'area_1',
             title: 'Flat report',
             lifecycle: 'draft',
@@ -108,24 +108,24 @@ describe('report links with the real router', () => {
             {
               kind: 'card',
               card: {
-                type: 'wave-report',
+                type: 'track-report',
                 id: 'report_1',
                 summary: '',
-                body: '[Flat target](neige://wave/wave_3#b_1f3a)',
+                body: '[Flat target](neige://wave/track_3#b_1f3a)',
               },
               deletable: false,
-            } as WaveCardSlot,
+            } as TrackCardSlot,
           ]}
         />
       ),
     });
-    const waveRoute = createRoute({
+    const trackRoute = createRoute({
       getParentRoute: () => rootRoute,
-      path: '/wave/$waveId',
+      path: '/track/$trackId',
       component: () => null,
     });
     const router = createRouter({
-      routeTree: rootRoute.addChildren([indexRoute, waveRoute]),
+      routeTree: rootRoute.addChildren([indexRoute, trackRoute]),
       history: createMemoryHistory({ initialEntries: ['/calm/'] }),
       basepath: '/calm',
     });
@@ -139,6 +139,6 @@ describe('report links with the real router', () => {
 
     expect(
       await screen.findByRole('link', { name: 'Flat target' }),
-    ).toHaveAttribute('href', '/calm/wave/wave_3#b_1f3a');
+    ).toHaveAttribute('href', '/calm/track/track_3#b_1f3a');
   });
 });

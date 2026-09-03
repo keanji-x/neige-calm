@@ -1,15 +1,15 @@
 // #1147 S3 — real on-disk directories for specs whose SUBJECT is the
 // attached-workspace `cwd`.
 //
-// Since S3, `POST /api/waves` with an explicit `cwd` (the *attached*
+// Since S3, `POST /api/tracks` with an explicit `cwd` (the *attached*
 // branch) requires that path to be absolute, to already exist, and to
 // sit inside a Git work tree — see
 // `crates/calm-server/src/workspace_materialize.rs::validate_attached_workspace`.
-// Specs that only need *a* wave should omit `cwd` entirely and take the
-// kernel-managed branch (see `helpers/reset.ts::createWaveInArea`).
+// Specs that only need *a* track should omit `cwd` entirely and take the
+// kernel-managed branch (see `helpers/reset.ts::createTrackInArea`).
 // This module is for the ones that cannot: the legacy `web/` NewTaskForm
 // always puts the cwd input's value on the wire, and a handful of specs
-// assert on `wave.cwd` / `area_folders.path`.
+// assert on `track.cwd` / `area_folders.path`.
 //
 // ## Why $HOME
 //
@@ -22,7 +22,7 @@
 //     path inside the container. So a directory this module creates is
 //     visible to the kernel under the same absolute path, and the spec
 //     can type that one path into the form and assert it back off the
-//     wave row.
+//     track row.
 //   * `a11y` runs the `replay` binary natively on the runner, so the
 //     filesystem is simply shared.
 //
@@ -31,7 +31,7 @@
 // container); on a developer box that variable points at the repo drive
 // instead and the container gets its own private `/tmp`. `$HOME` is
 // mounted by design in every environment, which is why
-// `wave-create-browse-cwd.spec.ts` already depended on it before this
+// `track-create-browse-cwd.spec.ts` already depended on it before this
 // change.
 
 import { execFileSync } from 'node:child_process';
@@ -88,7 +88,7 @@ export function attachedWorkspacePath(name: string): string {
  * `git init` alone is enough: the kernel's check is
  * `git -C <path> rev-parse --show-toplevel`, which succeeds on a fresh
  * repository with no commits. We deliberately do not commit anything —
- * the specs here assert on the wave row and the folder claim, not on
+ * the specs here assert on the track row and the folder claim, not on
  * repository contents.
  */
 export function createGitWorkTree(dir: string): string {
@@ -106,7 +106,7 @@ export function createGitWorkTree(dir: string): string {
  * absolute path. `rev-parse --show-toplevel` succeeds anywhere under the
  * work tree, so a descendant is a valid attached workspace too — which is
  * exactly the shape the area-auto-match specs need (an area claims the
- * root, the wave attaches a directory beneath it).
+ * root, the track attaches a directory beneath it).
  */
 export function createWorkTreeSubdir(root: string, ...segments: string[]): string {
   const dir = path.join(root, ...segments);

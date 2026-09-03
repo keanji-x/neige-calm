@@ -38,9 +38,9 @@ export const TERMINAL_CARD_ENTRY = Object.freeze({
   accessibleName: (card: TerminalCard) => card.title ?? 'Terminal',
   create: Object.freeze({
     mode: 'atomic' as const,
-    submit: (): Promise<{ cardId: string }> => Promise.reject(new Error('TerminalCardSubmitViaWaveRoute')),
+    submit: (): Promise<{ cardId: string }> => Promise.reject(new Error('TerminalCardSubmitViaTrackRoute')),
   }),
-  /* No fields: a terminal has nothing to ask. It opens in the wave's own
+  /* No fields: a terminal has nothing to ask. It opens in the track's own
      directory, and naming it before it exists is a decision the reader has no
      information for yet — the head is renamable once there is something in it. */
   addPanel: Object.freeze({ label: 'terminal' }),

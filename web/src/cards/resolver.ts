@@ -1,12 +1,12 @@
 import { useCallback } from 'react';
-import type { WaveCardData } from '../types';
+import type { TrackCardData } from '../types';
 import type { CardInstanceCtx } from './registry';
 import type { CardLifecycleWriter } from './lifecycle';
 
 export type { CardLifecycleWriter } from './lifecycle';
 
 export interface CardEntryResolverValue {
-  card: WaveCardData;
+  card: TrackCardData;
   instance: Pick<CardInstanceCtx, 'cardId' | 'useCardSlot'>;
   /**
    * Host-only lifecycle back-channel. Card children must keep using

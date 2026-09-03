@@ -9,7 +9,7 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
 };
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -35,8 +35,8 @@ async fn seed_harness(
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "items persist".into(),
@@ -51,7 +51,7 @@ async fn seed_harness(
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -89,17 +89,17 @@ async fn seed_harness(
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    wave_area_cache.insert(wave.id.clone(), area.id);
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    track_area_cache.insert(track.id.clone(), area.id);
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id,
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache,
+        track_area_cache,
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -113,7 +113,7 @@ async fn seed_harness(
         harness,
         daemon,
         card.id.to_string(),
-        card.wave_id.to_string(),
+        card.track_id.to_string(),
     )
 }
 
@@ -206,7 +206,7 @@ async fn item_notification_persists_row_and_emits_event() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let mut rx = events.subscribe();
-    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    let (harness, daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
     wait_for_notification_receiver(&daemon).await;
 
     daemon.emit_notification_for_test(Notification::Item {
@@ -225,7 +225,7 @@ async fn item_notification_persists_row_and_emits_event() {
     let rows = wait_for_rows(&repo, &card_id, 1).await;
     let row = &rows[0];
     assert_eq!(row.card_id.as_str(), card_id);
-    assert_eq!(row.wave_id.as_str(), wave_id);
+    assert_eq!(row.track_id.as_str(), track_id);
     assert_eq!(row.thread_id, SEED_THREAD_ID);
     assert_eq!(row.turn_id.as_deref(), Some("turn-items-1"));
     assert_eq!(row.item_uuid.as_deref(), Some("item-agent-1"));
@@ -240,7 +240,7 @@ async fn item_notification_persists_row_and_emits_event() {
     match envelope.event {
         Event::HarnessItemAdded {
             card_id: event_card_id,
-            wave_id: event_wave_id,
+            track_id: event_track_id,
             item_db_id,
             item_uuid,
             item_type,
@@ -249,7 +249,7 @@ async fn item_notification_persists_row_and_emits_event() {
             ..
         } => {
             assert_eq!(event_card_id.as_str(), card_id);
-            assert_eq!(event_wave_id.as_str(), wave_id);
+            assert_eq!(event_track_id.as_str(), track_id);
             assert_eq!(item_db_id, row.id);
             assert_eq!(item_uuid.as_deref(), Some("item-agent-1"));
             assert_eq!(item_type.as_deref(), Some("agent_message"));
@@ -261,8 +261,8 @@ async fn item_notification_persists_row_and_emits_event() {
     assert!(
         matches!(
             event_scope,
-            EventScope::Card { ref card, ref wave, .. }
-                if card.as_str() == card_id && wave.as_str() == wave_id
+            EventScope::Card { ref card, ref track, .. }
+                if card.as_str() == card_id && track.as_str() == track_id
         ),
         "HarnessItemAdded envelope must be card-scoped, got {event_scope:?}"
     );
@@ -304,7 +304,7 @@ async fn turn_plan_updated_persists_rows_without_events() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let mut rx = events.subscribe();
-    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    let (harness, daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
     wait_for_notification_receiver(&daemon).await;
 
     daemon.emit_notification_for_test(Notification::Other {
@@ -315,7 +315,7 @@ async fn turn_plan_updated_persists_rows_without_events() {
     let rows = wait_for_rows(&repo, &card_id, 1).await;
     let row = &rows[0];
     assert_eq!(row.card_id.as_str(), card_id);
-    assert_eq!(row.wave_id.as_str(), wave_id);
+    assert_eq!(row.track_id.as_str(), track_id);
     assert_eq!(row.thread_id, SEED_THREAD_ID);
     assert_eq!(row.method, "turn/plan/updated");
     // `turnId` is top-level on a plan, not under `turn.id`.
@@ -376,7 +376,7 @@ async fn turn_plan_updated_persists_rows_without_events() {
 
     // A plan row emits NO event, and the absence is the contract (#1255): no UI
     // reads plan rows, so `harness.item.added` would only buy a 300-row refetch
-    // plus a wave-vcs commit per frame. The UI slice must revisit this.
+    // plus a track-vcs commit per frame. The UI slice must revisit this.
     //
     // Fenced against a race rather than a sleep: a real item is sent last, and
     // its `HarnessItemAdded` is logged after both plan rows were already
@@ -428,7 +428,7 @@ async fn turn_plan_updated_persists_rows_without_events() {
 async fn phase_log_failure_keeps_last_phase_for_retry() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
-    let (harness, _daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    let (harness, _daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
 
     harness
         .set_state_for_test(HarnessState::TurnRunning {
@@ -461,11 +461,11 @@ async fn phase_log_failure_keeps_last_phase_for_retry() {
             event,
             Event::HarnessPhaseChanged {
                 card_id: event_card_id,
-                wave_id: event_wave_id,
+                track_id: event_track_id,
                 old_phase: HarnessPhaseTag::Idle,
                 new_phase: HarnessPhaseTag::TurnRunning,
                 ..
-            } if event_card_id.as_str() == card_id && event_wave_id.as_str() == wave_id
+            } if event_card_id.as_str() == card_id && event_track_id.as_str() == track_id
         )),
         "retry must persist Idle -> TurnRunning after first log failure: {events:?}"
     );
@@ -478,7 +478,7 @@ async fn phase_transition_persists_row_and_emits_durable_event_id() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let mut rx = events.subscribe();
-    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    let (harness, daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
     wait_for_notification_receiver(&daemon).await;
 
     daemon.emit_notification_for_test(Notification::TurnStarted {
@@ -491,13 +491,13 @@ async fn phase_transition_persists_row_and_emits_durable_event_id() {
     match envelope.event {
         Event::HarnessPhaseChanged {
             card_id: event_card_id,
-            wave_id: event_wave_id,
+            track_id: event_track_id,
             old_phase,
             new_phase,
             ..
         } => {
             assert_eq!(event_card_id.as_str(), card_id);
-            assert_eq!(event_wave_id.as_str(), wave_id);
+            assert_eq!(event_track_id.as_str(), track_id);
             assert_eq!(old_phase, HarnessPhaseTag::Idle);
             assert_eq!(new_phase, HarnessPhaseTag::TurnRunning);
         }

@@ -23,8 +23,8 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ResetSpecCardResponse', 'SendSpecInputResponse', 'SettingsBag', 'Terminal',
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadResolved', 'TodaySummaryStarted',
   'VersionInfo',
-  'ViewCatalogEntry', 'WaveBacklinksResponse', 'WaveDetail', 'WaveFsContent', 'WaveFsEntry',
-  'WaveReportReadResponse', 'WaveTemplate',
+  'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
+  'TrackReportReadResponse', 'TrackTemplate',
 ]);
 
 function object(value: unknown): value is JsonObject {

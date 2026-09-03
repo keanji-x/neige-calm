@@ -11,7 +11,7 @@ use calm_server::db::sqlite::{
     session_supersede_and_start_tx,
 };
 use calm_server::ids::CardId;
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_lookup::project_runtime_into_card_payload;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind,
@@ -29,7 +29,7 @@ async fn fresh_repo() -> SqlxRepo {
         .expect("open in-memory sqlite repo")
 }
 
-async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
+async fn make_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
         .area_create(NewArea {
             name: "runtime-repo".into(),
@@ -38,7 +38,7 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         })
         .await
         .expect("create area");
-    repo.wave_create(NewWave {
+    repo.track_create(NewTrack {
         template_input: None,
         area_id: area.id,
         title: "runtime repo".into(),
@@ -50,17 +50,21 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
-    .expect("create wave")
+    .expect("create track")
 }
 
 async fn make_card(repo: &SqlxRepo, kind: &str) -> Card {
-    let wave = make_wave(repo).await;
-    make_card_in_wave(repo, wave.id, kind).await
+    let track = make_track(repo).await;
+    make_card_in_track(repo, track.id, kind).await
 }
 
-async fn make_card_in_wave(repo: &SqlxRepo, wave_id: calm_server::ids::WaveId, kind: &str) -> Card {
+async fn make_card_in_track(
+    repo: &SqlxRepo,
+    track_id: calm_server::ids::TrackId,
+    kind: &str,
+) -> Card {
     repo.card_create(NewCard {
-        wave_id,
+        track_id,
         title: None,
         kind: kind.into(),
         sort: None,
@@ -126,11 +130,11 @@ async fn runtime_by_id_tx_snapshot(
 async fn mint_terminal_session(
     repo: &SqlxRepo,
     spawn_op_id: Option<&str>,
-) -> (WorkerSessionId, calm_server::ids::WaveId) {
+) -> (WorkerSessionId, calm_server::ids::TrackId) {
     if let Some(op_id) = spawn_op_id {
         ensure_test_operation(repo, op_id, "terminal-worker", op_id).await;
     }
-    let wave = make_wave(repo).await;
+    let track = make_track(repo).await;
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     card_with_terminal_create_tx(
@@ -138,7 +142,7 @@ async fn mint_terminal_session(
         new_id(),
         &runtime_id,
         spawn_op_id,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "bash".into(),
@@ -152,17 +156,17 @@ async fn mint_terminal_session(
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    (WorkerSessionId(runtime_id), wave.id)
+    (WorkerSessionId(runtime_id), track.id)
 }
 
 async fn mint_codex_session(
     repo: &SqlxRepo,
     spawn_op_id: Option<&str>,
-) -> (WorkerSessionId, calm_server::ids::WaveId) {
+) -> (WorkerSessionId, calm_server::ids::TrackId) {
     if let Some(op_id) = spawn_op_id {
         ensure_test_operation(repo, op_id, "codex-worker", op_id).await;
     }
-    let wave = make_wave(repo).await;
+    let track = make_track(repo).await;
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     card_with_codex_create_tx(
@@ -170,7 +174,7 @@ async fn mint_codex_session(
         new_id(),
         &runtime_id,
         spawn_op_id,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -186,12 +190,12 @@ async fn mint_codex_session(
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    (WorkerSessionId(runtime_id), wave.id)
+    (WorkerSessionId(runtime_id), track.id)
 }
 
 async fn ensure_test_operation(repo: &SqlxRepo, op_id: &str, kind: &str, idempotency_key: &str) {
     let now = now_ms();
-    let target_json = serde_json::to_string(&json!({"type": "wave"})).unwrap();
+    let target_json = serde_json::to_string(&json!({"type": "track"})).unwrap();
     let payload_json = serde_json::to_string(&json!({
         "idempotency_key": idempotency_key
     }))
@@ -203,7 +207,7 @@ async fn ensure_test_operation(repo: &SqlxRepo, op_id: &str, kind: &str, idempot
                phase, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, ?5,
-                   'wave', NULL, ?6, ?7,
+                   'track', NULL, ?6, ?7,
                    'pending', ?8, ?8)"#,
     )
     .bind(op_id)
@@ -221,14 +225,14 @@ async fn ensure_test_operation(repo: &SqlxRepo, op_id: &str, kind: &str, idempot
 
 fn worker_session(
     id: &str,
-    wave_id: calm_server::ids::WaveId,
+    track_id: calm_server::ids::TrackId,
     state: WorkerSessionState,
     hash: &str,
 ) -> WorkerSession {
     let now = now_ms();
     WorkerSession {
         id: WorkerSessionId::from(id),
-        wave_id,
+        track_id,
         provider: WorkerProviderKind::Codex,
         mode: SessionMode::Resumable,
         contract: WorkerContract::Planner,
@@ -258,7 +262,7 @@ fn worker_session(
 #[tokio::test]
 async fn session_get_by_active_token_hash_filters_terminal_rows() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let rows = [
         (
             "ws-active-starting",
@@ -305,7 +309,7 @@ async fn session_get_by_active_token_hash_filters_terminal_rows() {
     ];
     let mut tx = repo.pool().begin().await.unwrap();
     for (id, state, hash, _) in rows {
-        session_insert_tx(&mut tx, worker_session(id, wave.id.clone(), state, hash))
+        session_insert_tx(&mut tx, worker_session(id, track.id.clone(), state, hash))
             .await
             .unwrap();
     }
@@ -316,7 +320,7 @@ async fn session_get_by_active_token_hash_filters_terminal_rows() {
         if active {
             let session = got.expect("active session should resolve by hash");
             assert_eq!(session.id.as_str(), id);
-            assert_eq!(session.wave_id, wave.id);
+            assert_eq!(session.track_id, track.id);
             assert_eq!(session.mcp_token_hash.as_deref(), Some(hash));
         } else {
             assert!(
@@ -328,7 +332,7 @@ async fn session_get_by_active_token_hash_filters_terminal_rows() {
 }
 
 #[tokio::test]
-async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
+async fn runtime_start_shared_spec_restarts_track_root_on_respawn() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
@@ -345,8 +349,8 @@ async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
     .unwrap();
     tx.commit().await.unwrap();
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(card.wave_id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(card.track_id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -368,8 +372,8 @@ async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
     tx.commit().await.unwrap();
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(card.wave_id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(card.track_id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -377,10 +381,10 @@ async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
 }
 
 #[tokio::test]
-async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
+async fn runtime_start_terminal_shared_spec_does_not_stamp_track_root() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
-    let failed_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
+    let track = make_track(&repo).await;
+    let failed_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
     let failed = session_start_runtime_tx(
@@ -397,14 +401,14 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
     tx.commit().await.unwrap();
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
     assert_eq!(root, None);
 
-    let live_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
+    let live_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
     let live = session_start_runtime_tx(
         &mut tx,
@@ -420,14 +424,14 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
     tx.commit().await.unwrap();
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
     assert_eq!(root.as_deref(), Some(live.id.as_str()));
 
-    let exited_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
+    let exited_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
     let exited = session_start_runtime_tx(
         &mut tx,
@@ -443,8 +447,8 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
     tx.commit().await.unwrap();
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -454,11 +458,11 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
 }
 
 #[tokio::test]
-async fn runtime_start_executor_respawn_leaves_wave_root_unchanged() {
+async fn runtime_start_executor_respawn_leaves_track_root_unchanged() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
-    let planner_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
-    let executor_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
+    let track = make_track(&repo).await;
+    let planner_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
+    let executor_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
     let root = session_start_runtime_tx(
@@ -501,8 +505,8 @@ async fn runtime_start_executor_respawn_leaves_wave_root_unchanged() {
     tx.commit().await.unwrap();
 
     let current_root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -625,8 +629,8 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
     assert_eq!(linked.as_deref(), Some(old.id.as_str()));
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(card.wave_id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(card.track_id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -659,7 +663,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
         .unwrap()
         .expect("restored session should resolve card identity");
     assert_eq!(identity.card_id, card.id);
-    assert_eq!(identity.wave_id, card.wave_id);
+    assert_eq!(identity.track_id, card.track_id);
 }
 
 #[tokio::test]
@@ -707,8 +711,8 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
     assert_eq!(old_session.state, WorkerSessionState::Superseded);
 
     let active_root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(active_card.wave_id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(active_card.track_id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -737,8 +741,8 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
             .unwrap();
     assert_eq!(fresh_link.as_deref(), Some(fresh_placeholder_id.as_str()));
     let fresh_root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(fresh_card.wave_id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(fresh_card.track_id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -871,7 +875,7 @@ async fn chat_placeholder_refreshes_in_place_on_the_same_card() {
 async fn executor_same_id_cross_card_refresh_is_rejected() {
     let repo = fresh_repo().await;
     let first = make_card(&repo, "codex").await;
-    let second = make_card_in_wave(&repo, first.wave_id.clone(), "codex").await;
+    let second = make_card_in_track(&repo, first.track_id.clone(), "codex").await;
     let placeholder = runtime_init(
         first.id.to_string(),
         WorkerSessionKind::CodexCard,
@@ -1022,7 +1026,7 @@ async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
 }
 
 #[tokio::test]
-async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_same_wave() {
+async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_same_track() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1051,7 +1055,7 @@ async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_
     .unwrap();
     tx.commit().await.unwrap();
     let rows: Vec<(String, String, String)> = sqlx::query_as(
-        r#"SELECT id, state, wave_id
+        r#"SELECT id, state, track_id
            FROM worker_sessions
            WHERE id IN (?1, ?2)
            ORDER BY id ASC"#,
@@ -1212,14 +1216,14 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
 #[tokio::test]
 async fn session_start_runtime_tx_terminal_persists_active_row() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -1254,14 +1258,14 @@ async fn session_start_runtime_tx_terminal_persists_active_row() {
 #[tokio::test]
 async fn runtime_complete_for_terminal_exited_path() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -1305,14 +1309,14 @@ async fn runtime_complete_for_terminal_exited_path() {
 #[tokio::test]
 async fn runtime_complete_for_terminal_failed_path() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -1362,14 +1366,14 @@ async fn runtime_complete_for_terminal_noop_when_no_active() {
 #[tokio::test]
 async fn runtime_set_status_for_card_noop_when_no_active() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -1413,14 +1417,14 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
 #[tokio::test]
 async fn runtime_complete_for_card_noop_when_no_active() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -1464,14 +1468,14 @@ async fn runtime_complete_for_card_noop_when_no_active() {
 #[tokio::test]
 async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "bash".into(),
@@ -1520,14 +1524,14 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
 #[tokio::test]
 async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term, _token) = card_with_codex_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "/workspace".into(),
@@ -2029,14 +2033,14 @@ async fn runtime_pending_drop_completes_failed() {
 #[tokio::test]
 async fn session_start_runtime_tx_claude_records_session_when_present() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let session_id = "11111111-1111-4111-8111-111111111111".to_string();
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term) = card_with_claude_create_tx(
         &mut tx,
         new_id(),
         &new_id(),
-        wave.id,
+        track.id,
         None,
         None,
         "claude --session-id".into(),
@@ -2242,10 +2246,10 @@ async fn session_start_runtime_tx_shared_spec_thread_present_running() {
 #[tokio::test]
 async fn projection_overwrites_stale_legacy_keys_from_runtime() {
     let repo = fresh_repo().await;
-    let wave = make_wave(&repo).await;
+    let track = make_track(&repo).await;
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,

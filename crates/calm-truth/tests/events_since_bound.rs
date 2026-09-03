@@ -12,7 +12,7 @@ use calm_truth::db::sqlite::SqlxRepo;
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::ActorId;
 use calm_truth::model::{Area, AreaKind};
-use calm_truth::wave_area_cache::WaveAreaCache;
+use calm_truth::track_area_cache::TrackAreaCache;
 
 async fn seed_area_updates(repo: &SqlxRepo, n: usize) -> Vec<i64> {
     let bus = EventBus::new();
@@ -25,7 +25,7 @@ async fn seed_area_updates(repo: &SqlxRepo, n: usize) -> Vec<i64> {
                 None,
                 &bus,
                 &CardRoleCache::new(),
-                &WaveAreaCache::new(),
+                &TrackAreaCache::new(),
                 Event::AreaUpdated(Area {
                     id: format!("c-{i}").into(),
                     name: "n".into(),
@@ -120,7 +120,7 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
 
 /// #1252 S0 R1/F1 — `harness.transcript.cleared` gained three telemetry
 /// fields. Rows written before that carry only `{card_id, runtime_id,
-/// wave_id}` (9 such rows in the live prod db at the time of the fix), and
+/// track_id}` (9 such rows in the live prod db at the time of the fix), and
 /// `events_since` feeds every stored row back through
 /// `Event::from_kind_and_payload`. If the new fields were required, those
 /// rows would fail to deserialize and be silently `continue`d past — while
@@ -136,7 +136,7 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'harness.transcript.cleared',
-             '{"card_id":"card-old","runtime_id":"rt-old","wave_id":"wave-old"}',
+             '{"card_id":"card-old","runtime_id":"rt-old","track_id":"track-old"}',
              'kernel',
              0,
              1
@@ -160,13 +160,13 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
             Event::HarnessTranscriptCleared {
                 runtime_id,
                 card_id,
-                wave_id,
+                track_id,
                 cleared_item_count: None,
                 cleared_params_bytes: None,
                 card_age_ms_at_clear: None,
             } if runtime_id == "rt-old"
                 && card_id.as_str() == "card-old"
-                && wave_id.as_str() == "wave-old"
+                && track_id.as_str() == "track-old"
         ),
         "pre-#1252 row must replay with unmeasured telemetry, got {:?}",
         rows[0].3

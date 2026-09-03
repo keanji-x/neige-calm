@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
 import type {
-  AreaConversationSummary, HarnessItem, WaveConversationSummary,
+  AreaConversationSummary, HarnessItem, TrackConversationSummary,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_VERDICT_TOOL, WAVE_RENAME_TOOL, WAVE_TOOL_PREFIX,
+  TASK_VERDICT_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
@@ -20,7 +20,7 @@ import { sha256Hex } from './sha256.js';
  * persisted marker (`AreaConversationSummary.kind`). Do not "fix" this union
  * back into a mirror of `WorkerSessionKind` by deleting the last members.
  *
- * `'wave-assistant'` (#1189) is the same arrangement one layer over: an
+ * `'track-assistant'` (#1189) is the same arrangement one layer over: an
  * assistant conversation is also an ordinary codex-card session, and the server
  * derives the value from that card's own marker. It is a value distinct from
  * `'shared-chat'` on purpose — the two lists have different contracts, and
@@ -28,7 +28,7 @@ import { sha256Hex } from './sha256.js';
  * presentation.
  */
 export type ConversationKind =
-  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'shared-chat' | 'wave-assistant';
+  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'shared-chat' | 'track-assistant';
 
 /** Mirrors `WorkerSessionState` — the session state machine (#679 §1). */
 export type ConversationState =
@@ -36,24 +36,24 @@ export type ConversationState =
 
 export type Conversation = Readonly<{
   id: string;
-  waveId: string;
+  trackId: string;
   /**
-   * The wave's title, resolved by whoever knows about waves — absent when
+   * The track's title, resolved by whoever knows about tracks — absent when
    * nobody does.
    *
-   * Optional because an area conversation lives on the area's hidden chat wave:
-   * the server withholds that wave's title on purpose
+   * Optional because an area conversation lives on the area's hidden chat track:
+   * the server withholds that track's title on purpose
    * (`AreaConversationSummary`), so there is no title to resolve rather than an
-   * empty one. A surface that names waves must therefore handle its absence;
+   * empty one. A surface that names tracks must therefore handle its absence;
    * `undefined` is what makes that a type error instead of `", on undefined"`.
    */
-  waveTitle?: string;
+  trackTitle?: string;
   /**
    * The conversation's own name, or null before it has one.
    *
    * The kernel's session card carries a `title`; this mirrors it. It is not the
-   * wave's title and must never be filled with one — a wave holds several
-   * conversations, and naming them all after their wave names none of them.
+   * track's title and must never be filled with one — a track holds several
+   * conversations, and naming them all after their track names none of them.
    */
   title: string | null;
   kind: ConversationKind;
@@ -92,9 +92,9 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   /* Every area conversation reads "Chat" until one is named: the server mints
      the card with no title and nothing writes one yet (#1098 §7). */
   'shared-chat': 'Chat',
-  /* Same, on a wave. "Assistant" rather than "Chat" because a wave already
+  /* Same, on a track. "Assistant" rather than "Chat" because a track already
      holds other conversations and the name has to say which one this is. */
-  'wave-assistant': 'Assistant',
+  'track-assistant': 'Assistant',
 });
 
 /**
@@ -123,7 +123,7 @@ export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'serve
   claude: 'route',
   'shared-spec': 'route',
   'shared-chat': 'server',
-  'wave-assistant': 'server',
+  'track-assistant': 'server',
 });
 
 /**
@@ -131,7 +131,7 @@ export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'serve
  *
  * It lives here because two surfaces show it — the list in the panel and the
  * drawer's own head — and they must not disagree. The drawer used to show the
- * *wave's* title, which made every conversation on a wave look like the same
+ * *track's* title, which made every conversation on a track look like the same
  * conversation.
  */
 export function conversationName(conversation: Conversation): string {
@@ -193,7 +193,7 @@ export type ConversationTurn = Readonly<{
 }>;
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
-  id: z.number(), runtime_id: z.string(), card_id: z.string(), wave_id: z.string(),
+  id: z.number(), runtime_id: z.string(), card_id: z.string(), track_id: z.string(),
   thread_id: z.string(), turn_id: z.string().nullable(), item_uuid: z.string().nullable(),
   item_type: z.string().nullable(), method: z.string(), params: z.string(), created_at_ms: z.number(),
 });
@@ -249,7 +249,7 @@ export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: 
  * `POST /api/cards/:id/spec/reset` still exists on the server and is not going
  * anywhere; what was removed is every *front-end* way to reach it. Clearing one
  * conversation in place has no value here, because conversations are not
- * singular: an area's chat wave carries as many `harness_profile: plain_chat`
+ * singular: an area's chat track carries as many `harness_profile: plain_chat`
  * cards as you like, side by side. A thread that has gone wrong is answered by
  * opening a new one — the old one stays in the list, readable — which is the
  * model codex and Claude Code both use. "Empty this one" only makes sense when
@@ -259,7 +259,7 @@ export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: 
 /* ── Area conversations (#1098) ─────────────────────────────────────────────
  *
  * An area's conversations are ordinary plain-chat harness cards on a hidden chat
- * wave. Everything *inside* one is the spec-harness surface unchanged — items,
+ * track. Everything *inside* one is the spec-harness surface unchanged — items,
  * phase, input, interrupt all take a card id and do not care how the
  * card was made. Only two things are new: where the list comes from, and how
  * the first message creates the card it is sent to.
@@ -276,7 +276,7 @@ const conversationStateSchema = z.enum([
 
 const areaConversationSummarySchema: z.ZodType<AreaConversationSummary> = z.object({
   id: z.string(),
-  waveId: z.string(),
+  trackId: z.string(),
   title: z.string().nullable(),
   kind: z.string(),
   state: conversationStateSchema.nullable(),
@@ -286,7 +286,7 @@ const areaConversationSummarySchema: z.ZodType<AreaConversationSummary> = z.obje
 /**
  * The wire row as this app's own `Conversation`.
  *
- * `waveTitle` and `turns` are left absent rather than filled with `''` and `0`:
+ * `trackTitle` and `turns` are left absent rather than filled with `''` and `0`:
  * the server does not send them (and says why it will not), so any value here
  * would be this function's invention. `kind` is pinned to `'shared-chat'`
  * because that is the only value this endpoint produces — the wire's `string`
@@ -295,7 +295,7 @@ const areaConversationSummarySchema: z.ZodType<AreaConversationSummary> = z.obje
 export function toAreaConversation(row: AreaConversationSummary): Conversation {
   return {
     id: row.id,
-    waveId: row.waveId,
+    trackId: row.trackId,
     title: row.title,
     kind: 'shared-chat',
     state: row.state,
@@ -337,25 +337,25 @@ export function createAreaConversationOperation(
  *  rejected message costs no round trip (`NewAreaConversationBody`). */
 export const AREA_CONVERSATION_TEXT_MAX = 32768;
 
-/* ── Wave conversations (#1189) ─────────────────────────────────────────────
+/* ── Track conversations (#1189) ─────────────────────────────────────────────
  *
- * A wave's conversations are `harness_profile: assistant` cards on the wave
+ * A track's conversations are `harness_profile: assistant` cards on the track
  * itself — its own list, its own endpoint (`§4.1`), and its own row type on the
- * wire, which the server explains at `WaveConversationSummary`: the area row's
- * contract says `waveTitle` is absent *because every row lives on one hidden
- * wave*, and on a real wave that reasoning is simply false. The fields coincide
+ * wire, which the server explains at `TrackConversationSummary`: the area row's
+ * contract says `trackTitle` is absent *because every row lives on one hidden
+ * track*, and on a real track that reasoning is simply false. The fields coincide
  * today; the contracts do not, so the schema is written out rather than aliased
  * to the area one — an alias would make the next divergence a silent one.
  *
  * Same reason as the area block above for living here and not in
  * `core/api/schemas.ts`: that module mirrors the kernel's *event* vocabulary,
- * and `kind: 'wave-assistant'` is not in it — the wire spells the field as a
+ * and `kind: 'track-assistant'` is not in it — the wire spells the field as a
  * bare string derived from a card marker, and narrowing it is this layer's job.
  */
 
-const waveConversationSummarySchema: z.ZodType<WaveConversationSummary> = z.object({
+const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.object({
   id: z.string(),
-  waveId: z.string(),
+  trackId: z.string(),
   title: z.string().nullable(),
   kind: z.string(),
   state: conversationStateSchema.nullable(),
@@ -365,33 +365,33 @@ const waveConversationSummarySchema: z.ZodType<WaveConversationSummary> = z.obje
 /**
  * The wire row as this app's own `Conversation`.
  *
- * `waveTitle` is absent for a different reason than the area list's: the wave
+ * `trackTitle` is absent for a different reason than the area list's: the track
  * is real and does have a title, but this endpoint does not send it (every row
- * belongs to the wave in the request path, so whoever asked already knows it).
+ * belongs to the track in the request path, so whoever asked already knows it).
  * Inventing one here would be this function's fiction; a caller that names
- * waves resolves it from the wave it asked about. `turns` is absent because the
+ * tracks resolves it from the track it asked about. `turns` is absent because the
  * server will not count them, as on the area list.
  *
- * `kind` is pinned to `'wave-assistant'` because that is the only value this
+ * `kind` is pinned to `'track-assistant'` because that is the only value this
  * endpoint produces — the wire's `string` is a ts-rs artefact, not a variation
  * point.
  */
-export function toWaveConversation(row: WaveConversationSummary): Conversation {
+export function toTrackConversation(row: TrackConversationSummary): Conversation {
   return {
     id: row.id,
-    waveId: row.waveId,
+    trackId: row.trackId,
     title: row.title,
-    kind: 'wave-assistant',
+    kind: 'track-assistant',
     state: row.state,
     updatedAt: row.updatedAt,
   };
 }
 
-export function waveConversationsOperation(waveId: string): ApiOperation<Conversation[]> {
+export function trackConversationsOperation(trackId: string): ApiOperation<Conversation[]> {
   return {
     method: 'GET',
-    path: `/api/waves/${encodeURIComponent(waveId)}/conversations`,
-    responseSchema: z.array(waveConversationSummarySchema).transform((rows) => rows.map(toWaveConversation)),
+    path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
+    responseSchema: z.array(trackConversationSummarySchema).transform((rows) => rows.map(toTrackConversation)),
   };
 }
 
@@ -422,48 +422,48 @@ export function areaConversationCardId(areaId: string, idempotencyKey: string): 
 }
 
 /**
- * Mint a wave assistant conversation and deliver its first message (#1189 §4.1).
+ * Mint a track assistant conversation and deliver its first message (#1189 §4.1).
  *
  * The area twin's contract holds verbatim, including the four retry arms the
  * server documents on the endpoint, so the reason `idempotencyKey` is a
  * parameter is the same: it identifies the *draft*, and a key minted per call
  * would be a new key per attempt.
  *
- * What is not shared is the derived namespace — see `waveConversationCardId`.
+ * What is not shared is the derived namespace — see `trackConversationCardId`.
  */
-export function createWaveConversationOperation(
-  waveId: string, text: string, idempotencyKey: string,
+export function createTrackConversationOperation(
+  trackId: string, text: string, idempotencyKey: string,
 ): ApiOperation<Conversation> {
   return {
     method: 'POST',
-    path: `/api/waves/${encodeURIComponent(waveId)}/conversations`,
+    path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
     headers: { 'Idempotency-Key': idempotencyKey },
     body: { text },
-    responseSchema: waveConversationSummarySchema.transform(toWaveConversation),
+    responseSchema: trackConversationSummarySchema.transform(toTrackConversation),
   };
 }
 
 /**
- * The wave flavour of `areaConversationCardId`, and it exists for exactly the
+ * The track flavour of `areaConversationCardId`, and it exists for exactly the
  * same reason: a failed create has to be able to ask "is **my** row there?"
  * rather than "did the list grow?".
  *
- * `derive_wave_conversation_keys` (`crates/calm-server/src/conversation_keys.rs`)
- * is `"conv-" + sha256("wave-conversation:{wave_id}:{idempotency_key}")[..32]`,
+ * `derive_track_conversation_keys` (`crates/calm-server/src/conversation_keys.rs`)
+ * is `"conv-" + sha256("wave-conversation:{track_id}:{idempotency_key}")[..32]`,
  * lower-case hex, and its doc comment names this function as the mirror it must
  * be written against. The server's own golden is asserted here too
  * (`conversation.test.ts`), because two implementations of one formula that
  * agree only by inspection agree until one of them is edited.
  *
- * **The namespace is the load-bearing difference.** An area id and a wave id are
+ * **The namespace is the load-bearing difference.** An area id and a track id are
  * drawn from the same id space, so sharing the `area-chat-conversation:` prefix
- * would let one `(id, key)` pair name one card from two endpoints — a wave
+ * would let one `(id, key)` pair name one card from two endpoints — a track
  * draft could adopt an area chat's row and open somebody else's conversation.
  * The visible `conv-` prefix is deliberately identical; the separation lives
  * inside the hashed string.
  */
-export function waveConversationCardId(waveId: string, idempotencyKey: string): string {
-  return `conv-${sha256Hex(`wave-conversation:${waveId}:${idempotencyKey}`).slice(0, 32)}`;
+export function trackConversationCardId(trackId: string, idempotencyKey: string): string {
+  return `conv-${sha256Hex(`wave-conversation:${trackId}:${idempotencyKey}`).slice(0, 32)}`;
 }
 
 /**
@@ -561,7 +561,7 @@ export function areaConversationFailure(failure: ApiFailure): AreaConversationFa
   return { kind: 'retry', message };
 }
 
-const DIFF_PREFIX = '## Wave state changes since your last turn';
+const DIFF_PREFIX = '## Track state changes since your last turn';
 const DIFF_END = '\n\n---\n\n';
 const USER_SAYS = 'User says:\n';
 
@@ -709,20 +709,20 @@ function toolShape(tool: string): ActivityShape {
   if (tool === PLAN_LIST_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };
   }
-  // #1211 S3 — the one `calm.wave.*` tool that changes the wave rather than
+  // #1211 S3 — the one `calm.track.*` tool that changes the track rather than
   // looking at it. It has to be tested before the prefix fallback below, and it
   // is why that fallback is no longer "everything under the prefix is a look".
-  if (tool === WAVE_RENAME_TOOL) {
-    return { running: 'Naming the wave', done: 'Named the wave', target: null };
+  if (tool === TRACK_RENAME_TOOL) {
+    return { running: 'Naming the track', done: 'Named the track', target: null };
   }
-  // `cat`, `ls`, `state`, `log`, `diff` — the wave's tree and history. These
+  // `cat`, `ls`, `state`, `log`, `diff` — the track's tree and history. These
   // are looks; one phrase covers them because which one it was is a detail of
   // how the agent went looking, not of what happened. The prefix as a whole no
-  // longer implies "read" (see `calm.wave.rename` above), so any new
-  // `calm.wave.*` WRITE needs its own branch ahead of this one rather than
+  // longer implies "read" (see `calm.track.rename` above), so any new
+  // `calm.track.*` WRITE needs its own branch ahead of this one rather than
   // falling in here.
-  if (tool.startsWith(WAVE_TOOL_PREFIX)) {
-    return { running: 'Reading the wave', done: 'Read the wave', target: null };
+  if (tool.startsWith(TRACK_TOOL_PREFIX)) {
+    return { running: 'Reading the track', done: 'Read the track', target: null };
   }
   return { running: 'Calling', done: 'Called', target: clip(tool) };
 }

@@ -1,15 +1,15 @@
-// Regression pin for `useTodayTerminal`'s wave-create body (#1147 S3).
+// Regression pin for `useTodayTerminal`'s track-create body (#1147 S3).
 //
-// The hook used to mint the Today wave with `cwd: '/'` + `attach_folder: false`.
+// The hook used to mint the Today track with `cwd: '/'` + `attach_folder: false`.
 // Since #1131/S2 an *omitted* `cwd` is the managed branch (the kernel allocates,
-// creates and `git init`s `<workspace-root>/<area>/<wave>`), while an *explicit*
+// creates and `git init`s `<workspace-root>/<area>/<track>`), while an *explicit*
 // `cwd` means "attach this existing repository" and is validated as absolute +
 // existing + inside a Git work tree. `/` is not a Git work tree, so the old body
 // was both the live source of the #1147 symptom (workers dying in
-// `git_repo_root_for_wave_cwd` with a bare `spawn-failed`) and, after S3, an
+// `git_repo_root_for_track_cwd` with a bare `spawn-failed`) and, after S3, an
 // outright 400 on the Today bootstrap.
 //
-// So the thing worth pinning is not a value but an *absence*: the wave-create
+// So the thing worth pinning is not a value but an *absence*: the track-create
 // request body must carry neither key. We assert on the JSON that actually goes
 // on the wire (global `fetch` is stubbed, `api/calm` is the real module) rather
 // than on hook state, because "what we send" is the contract that broke.
@@ -49,17 +49,17 @@ function installFetchStub() {
     if (method === 'POST' && path === '/api/areas/system') {
       return json(200, { id: 'area-system', title: 'system', kind: 'system' });
     }
-    if (method === 'GET' && path === '/api/areas/area-system/waves') {
-      // No Today wave yet → the hook takes the mint branch under test.
+    if (method === 'GET' && path === '/api/areas/area-system/tracks') {
+      // No Today track yet → the hook takes the mint branch under test.
       return json(200, []);
     }
-    if (method === 'POST' && path === '/api/waves') {
-      return json(201, { id: 'wave-today', area_id: 'area-system', title: 'Today' });
+    if (method === 'POST' && path === '/api/tracks') {
+      return json(201, { id: 'track-today', area_id: 'area-system', title: 'Today' });
     }
-    if (method === 'GET' && path === '/api/waves/wave-today') {
-      return json(200, { id: 'wave-today', cards: [] });
+    if (method === 'GET' && path === '/api/tracks/track-today') {
+      return json(200, { id: 'track-today', cards: [] });
     }
-    if (method === 'POST' && path === '/api/waves/wave-today/terminal-cards') {
+    if (method === 'POST' && path === '/api/tracks/track-today/terminal-cards') {
       return json(201, {
         id: 'card-today',
         kind: 'terminal',
@@ -91,8 +91,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('useTodayTerminal wave-create body', () => {
-  it('omits `cwd` and `attach_folder` entirely when minting the Today wave', async () => {
+describe('useTodayTerminal track-create body', () => {
+  it('omits `cwd` and `attach_folder` entirely when minting the Today track', async () => {
     const { result } = renderHook(() => useTodayTerminal(), { wrapper: wrapper() });
 
     await waitFor(() => {
@@ -100,11 +100,11 @@ describe('useTodayTerminal wave-create body', () => {
     });
     expect(result.current.error).toBeNull();
 
-    const createWave = calls.filter(
-      (c) => c.method === 'POST' && c.path === '/api/waves',
+    const createTrack = calls.filter(
+      (c) => c.method === 'POST' && c.path === '/api/tracks',
     );
-    expect(createWave).toHaveLength(1);
-    const body = createWave[0].body as Record<string, unknown>;
+    expect(createTrack).toHaveLength(1);
+    const body = createTrack[0].body as Record<string, unknown>;
 
     // Key ABSENCE, not `=== undefined`: `cwd: undefined` would be dropped by
     // `JSON.stringify` here but a future refactor could reintroduce a real

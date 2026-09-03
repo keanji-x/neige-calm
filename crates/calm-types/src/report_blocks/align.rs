@@ -13,7 +13,7 @@
 use super::fence::{NonProseFence, parse_fence, render_fence};
 use super::kinds::KIND_PROSE;
 use super::{BlockSlice, flat_text};
-use crate::wave_report::ReportBlock;
+use crate::track_report::ReportBlock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -348,7 +348,7 @@ fn levenshtein(left: &[char], right: &[char]) -> usize {
 /// position, probing until it misses every id in `used` (which the
 /// caller must pre-seed with all live ids and which this function
 /// extends with the returned id). Public so the CRDT layer
-/// (`calm-server::wave_report_doc`) mints ids in the same style.
+/// (`calm-server::track_report_doc`) mints ids in the same style.
 pub fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
     let mut hash = 0x811c9dc5u32;
     for byte in raw.bytes().chain(index.to_le_bytes()) {

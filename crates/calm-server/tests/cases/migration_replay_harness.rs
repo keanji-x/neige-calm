@@ -34,7 +34,7 @@ async fn synthetic_fixture_replays_from_every_version() {
     // Guard against an empty-vs-empty trivially-green diff: the fresh
     // fingerprint must describe the schema we know is at head.
     for key in [
-        "table:waves",
+        "table:tracks",
         "table:cards",
         "table:worker_sessions",
         "table:operations",

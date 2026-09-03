@@ -32,8 +32,8 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, SpecHarness,
     SpecHarnessParams,
 };
-use calm_server::ids::WaveId;
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::ids::TrackId;
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -52,7 +52,7 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     _tmp: TempDir,
 }
 
@@ -71,8 +71,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "interrupt route".into(),
@@ -88,9 +88,9 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -105,11 +105,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-spec-card-interrupt"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     // Swap in the fixture fake shared app-server: it records
     // `turn/interrupt` calls (`interrupted_turns_for_test`) instead of
@@ -128,7 +131,7 @@ async fn boot() -> Boot {
         app,
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         _tmp: tmp,
     }
 }
@@ -171,7 +174,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -184,7 +187,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
         .expect("seed codex card");
     boot.state
         .card_role_cache
-        .insert(card.id.clone(), role, WaveId::from(boot.wave_id.clone()));
+        .insert(card.id.clone(), role, TrackId::from(boot.track_id.clone()));
     card
 }
 
@@ -230,13 +233,13 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, String, SpecHarne
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id.clone()),
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_area_cache: boot.state.wave_area_cache.clone(),
+        track_area_cache: boot.state.track_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig::default(),
         snapshot,

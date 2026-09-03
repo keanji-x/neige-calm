@@ -102,7 +102,7 @@
    * trailing column stamps `data-nc-panel` on its `<aside>`. `.main` scopes it
    * so this is a statement about one main region, not about the document.
    *
-   * The marker is on all three of them — Today, area, wave — and the set is
+   * The marker is on all three of them — Today, area, track — and the set is
    * exactly the set of routes that render `chat.drawer`, which is the invariant
    * to re-check when a fourth route grows a panel column. Settings has neither
    * and needs neither.
@@ -361,7 +361,7 @@
    * Measured, at 12.5px/--leading-tight in 24px rows and 11px/--leading-none in
    * a 24px label slot:
    *
-   *   area name  -> its first wave    --space-0    0px   ->  9.6px
+   *   area name  -> its first track    --space-0    0px   ->  9.6px
    *   row        -> row               --space-1    2px   -> 11.6px
    *   section lb -> its first row     --space-2    4px   -> 15.3px
    *   area group -> area group        --space-6   12px   -> 21.6px
@@ -380,7 +380,7 @@
    * parent's". That is a tidier sentence and it is wrong: it ranks by DOM
    * nesting, and DOM nesting is not structural-break size. It handed the area
    * name the same 4px a section label gets, putting it 13.6px from its own
-   * first wave while the waves sat 11.6px apart — grouping stated backwards.
+   * first track while the tracks sat 11.6px apart — grouping stated backwards.
    *
    * Every step is a `gap` on the container that owns the relationship, never a
    * margin on a child. §2.3 requires both halves of that: "内容元素禁止纵向
@@ -401,7 +401,7 @@
   }
 
   .sectionRows,
-  .waveList {
+  .trackList {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
@@ -467,11 +467,11 @@
   }
 
   /*
-   * The area name starts exactly where every wave title starts: one 28px
+   * The area name starts exactly where every track title starts: one 28px
    * leading gutter (4px inset + 20px box + 4px clearance) for the chevron,
-   * which is the same arithmetic as the wave row's pin gutter, and then text.
+   * which is the same arithmetic as the track row's pin gutter, and then text.
    *
-   * The empty 6px cell that used to sit between them is gone with the wave
+   * The empty 6px cell that used to sit between them is gone with the track
    * row's leading status dot — that dot moved to the trailing edge, so there is
    * no longer a column for an area to reserve space in for a status it does not
    * have. Removing an apology is usually a better fix than writing a better
@@ -484,15 +484,15 @@
 
     /* --row-h-sm, not §6.2's --row-h. That 28 was sized for a row carrying an
        8px identity dot and a 12.5px name; the dot is gone, and §2.5 lists
-       --row-h-sm for "rail 里的 wave 行、菜单项、树行" — an area row is a tree
+       --row-h-sm for "rail 里的 track 行、菜单项、树行" — an area row is a tree
        row. 24 still clears the 20px chevron, and it is what lets the name sit
-       closer to its first wave than the waves sit to each other. */
+       closer to its first track than the tracks sit to each other. */
     min-block-size: var(--row-h-sm);
     padding-block: 0;
 
     /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
        because the row carries `×` *and* a permanent `+` (4 + 20 + 4 + 20 + 4 =
-       52) — the same term the wave row spends on its two-controls-one-side
+       52) — the same term the track row spends on its two-controls-one-side
        case. Both are reserved at rest, so the name ellipsizes at the same
        column whether or not the `×` has been revealed: nothing in this row is
        allowed to move on hover. */
@@ -514,7 +514,7 @@
     outline-offset: -2px;
   }
 
-  /* Fill + weight only; see the same note in wave-row's row.module.css. */
+  /* Fill + weight only; see the same note in track-row's row.module.css. */
   .areaRowActive {
     background: var(--accent-soft);
   }
@@ -534,7 +534,7 @@
     position: absolute;
     inset-block-start: 50%;
     /* 4px = (--control-h − --control-h-sm) / 2. This box shares one column with
-       every wave row's pin, and the column is set by the 28px chrome icons
+       every track row's pin, and the column is set by the 28px chrome icons
        above it (the collapse chevron, the section `+`), which are flush to the
        rail padding; a 20px box inset by half the difference lands its glyph on
        their centre line. The row's own padding reserves the space. */
@@ -561,7 +561,7 @@
   }
 
   /*
-   * Same size as its waves, same weight — **tone is the only thing that
+   * Same size as its tracks, same weight — **tone is the only thing that
    * demotes it**. One channel, and the cheapest one on §3.1's table.
    *
    * Two rounds got this wrong in opposite directions. First 12.5/500/--text-2:
@@ -574,7 +574,7 @@
    * What actually carries the hierarchy now is everything that is free (§3.2
    * rule 6 — 位置是免费通道，先用它): the disclosure chevron this row alone
    * owns, the 12px above it and 0 below it, and the empty status column that
-   * every wave fills and no area does. Type only has to stay out of the way,
+   * every track fills and no area does. Type only has to stay out of the way,
    * so it spends one step of tone and nothing else (§3.2 rule 7 — 降低优于抬高).
    */
   .areaName {
@@ -596,7 +596,7 @@
   }
 
   /* Fill + tone: §5.1's two channels. Weight stays out of it — rest is 400
-     here and 400 on the waves, so a weight step would be the row's third. */
+     here and 400 on the tracks, so a weight step would be the row's third. */
   .areaRowActive .areaName {
     color: var(--text);
   }
@@ -606,12 +606,12 @@
    * whole reason it is here rather than 0.
    *
    * The rail's chrome icons (the collapse chevron, the section `+`) are 28px
-   * boxes flush to the rail's inline padding; its row icons (this ×, the wave
+   * boxes flush to the rail's inline padding; its row icons (this ×, the track
    * row's pin and ×) are 20px. Flush-right on both meant their *glyphs* sat on
    * two vertical lines 4px apart — near enough to read as a mistake, far enough
    * to see. Insetting the small boxes by half the difference puts every icon in
    * the rail on one column. The same 4px is applied in
-   * `features/wave/row/row.module.css`; both derive it, neither hardcodes it.
+   * `features/track/row/row.module.css`; both derive it, neither hardcodes it.
    */
   .areaDelete,
   .areaNew {
@@ -634,7 +634,7 @@
    * persists at rest goes outermost, so a resting row shows a single glyph
    * flush to the trailing gutter rather than one floating beside a gap. That is
    * the `+`. The `×` takes the inboard slot — 4 + 20 + 4 — which is the same
-   * step `features/wave/row/row.module.css` puts between its pin and its
+   * step `features/track/row/row.module.css` puts between its pin and its
    * delete, derived from the same two tokens.
    *
    * Both slots are reserved by `.areaRow`'s trailing padding, so revealing the
@@ -754,7 +754,7 @@
     /* A `<button>` shrinks to fit even at `display: flex`, so without this the
        hover fill was the width of the *word* rather than of the row it sits in
        — "Settings" lit a 60px box inside a 154px menu. Found while fixing the
-       same defect in the wave panel's add menu (#1231), which has since moved
+       same defect in the track panel's add menu (#1231), which has since moved
        onto astryx's `DropdownMenu` and gets the row for free. */
     inline-size: 100%;
     block-size: var(--row-h-sm);
@@ -774,7 +774,7 @@
   }
 
   /* Collapsed strip: "where am I", not "what is there". No section labels (11px
-     uppercase does not fit in 44px), no wave rows, and zero-row sections still
+     uppercase does not fit in 44px), no track rows, and zero-row sections still
      do not render. */
   .stripItem {
     display: grid;

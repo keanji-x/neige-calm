@@ -23,7 +23,7 @@
 //! | `Overlay.payload` | `"now"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
 //! | `Overlay.payload` | `"template"`  | `{ schemaVersion: 1, template_key?: String }` (kernel view marker; #1110 S1/S6) |
-//! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (wave-scoped — see issue #254) |
+//! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (track-scoped — see issue #254) |
 //!
 //! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
 //! unchanged — the validator returns `Ok(())` without inspecting the payload.
@@ -76,18 +76,18 @@ pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "claude"`.
 pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
-/// `schemaVersion` for `Card.payload` when `kind == "wave-report"` (issue
-/// #229 PR B). Mirrors `calm_types::wave_report::WaveReportPayload::SCHEMA_VERSION`.
+/// `schemaVersion` for `Card.payload` when `kind == "track-report"` (issue
+/// #229 PR B). Mirrors `calm_types::track_report::TrackReportPayload::SCHEMA_VERSION`.
 ///
 /// `3` since #979: the CRDT root carries `doc_rev`, mirrored as
 /// `docRev` in the payload. There is no SQL migration — v1/v2 rows
 /// deserialize with revision zero and are lazily upgraded to v3 on
 /// their next write through the report-edit boundary
-/// (`calm_server::wave_report::write::persist`), whose CRDT migrator
+/// (`calm_server::track_report::write::persist`), whose CRDT migrator
 /// (`ReportDoc::ensure_blocks_layout`) rebuilds the block layout. The
 /// read path carries no version guard for this kind, so v1 rows stay
 /// readable in place.
-pub const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 3;
+pub const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 3;
 /// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
 pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "progress"`.
@@ -100,14 +100,14 @@ pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "template"` (#1110 S1).
 pub const OVERLAY_TEMPLATE_SCHEMA_VERSION: u32 = 1;
-/// Overlay `kind` for the kernel view marker that a wave is a template.
+/// Overlay `kind` for the kernel view marker that a track is a template.
 pub const OVERLAY_TEMPLATE_KIND: &str = "template";
 /// The reserved `plugin_id` namespace the kernel stamps on overlay rows it
 /// authors itself (`card_fsm`'s status / `any_card_needs_input` aggregates,
 /// the `view` layout and template markers).
 ///
 /// Rows under this namespace are read as kernel-authored fact by scheduler
-/// admission, spec-harness start and wave-list visibility, so nothing outside
+/// admission, spec-harness start and track-list visibility, so nothing outside
 /// the process may write it: the plugin RPC path forces `plugin_id` to the
 /// calling plugin's own id, and the public REST endpoints reject it outright
 /// (issue #1297). Kept here as the single definition so those call sites and
@@ -115,12 +115,12 @@ pub const OVERLAY_TEMPLATE_KIND: &str = "template";
 pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
 /// `plugin_id` for the kernel view/template overlay.
 pub const OVERLAY_TEMPLATE_PLUGIN_ID: &str = KERNEL_OVERLAY_PLUGIN_ID;
-/// `entity_kind` for the kernel view/template overlay (`entity_id` = wave id).
+/// `entity_kind` for the kernel view/template overlay (`entity_id` = track id).
 pub const OVERLAY_TEMPLATE_ENTITY_KIND: &str = "view";
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`
-/// — the wave-scoped boolean aggregate written by `card_fsm` (issue #254).
+/// — the track-scoped boolean aggregate written by `card_fsm` (issue #254).
 pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy)]
@@ -222,7 +222,7 @@ fn validate_template_overlay_payload(payload: &Value) -> Result<()> {
         #[serde(rename = "schemaVersion")]
         schema_version: u32,
         /// Stable seeded-template identity (#1110 S6). Omitted on ordinary
-        /// `as_template` waves; required (non-empty) when present.
+        /// `as_template` tracks; required (non-empty) when present.
         #[serde(default)]
         template_key: Option<String>,
     }
@@ -244,7 +244,7 @@ pub fn template_overlay_payload() -> Value {
     serde_json::json!({ "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION })
 }
 
-/// True when `overlay` is the kernel view/template marker for a wave (#1110 S1).
+/// True when `overlay` is the kernel view/template marker for a track (#1110 S1).
 pub fn is_template_overlay(overlay: &Overlay) -> bool {
     overlay.plugin_id == OVERLAY_TEMPLATE_PLUGIN_ID
         && overlay.entity_kind == OVERLAY_TEMPLATE_ENTITY_KIND
@@ -352,7 +352,7 @@ pub struct OverlayEntityScopeEntry {
     /// `false` marks a kernel-reserved namespace: `view` and `system` carry
     /// projections the kernel itself reads back as fact (the `template`
     /// marker gates scheduler dispatch and spec-harness start; `layout` is
-    /// rebuilt by the kernel's own wave structure code), so both entry
+    /// rebuilt by the kernel's own track structure code), so both entry
     /// points must refuse them. Renamed from `plugin_writable` in #1297 —
     /// the plugin RPC path had been asking this column since it was
     /// introduced, the REST path had not, and the name made the second
@@ -408,27 +408,27 @@ fn card_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFu
             Some(card) => card,
             None => return Ok(EventScope::System),
         };
-        let wave = match repo.wave_get(card.wave_id.as_str()).await? {
-            Some(wave) => wave,
+        let track = match repo.track_get(card.track_id.as_str()).await? {
+            Some(track) => track,
             None => return Ok(EventScope::System),
         };
         Ok(EventScope::Card {
             card: card.id,
-            wave: wave.id,
-            area: wave.area_id,
+            track: track.id,
+            area: track.area_id,
         })
     })
 }
 
-fn wave_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFuture<'a> {
+fn track_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFuture<'a> {
     Box::pin(async move {
-        let wave = match repo.wave_get(id).await? {
-            Some(wave) => wave,
+        let track = match repo.track_get(id).await? {
+            Some(track) => track,
             None => return Ok(EventScope::System),
         };
-        Ok(EventScope::Wave {
-            wave: wave.id,
-            area: wave.area_id,
+        Ok(EventScope::Track {
+            track: track.id,
+            area: track.area_id,
         })
     })
 }
@@ -445,8 +445,8 @@ pub static OVERLAY_ENTITY_SCOPE_REGISTRY: OverlayEntityScopeRegistry =
             externally_writable: true,
         },
         OverlayEntityScopeEntry {
-            kind: "wave",
-            route_scope_fn: wave_overlay_scope,
+            kind: "track",
+            route_scope_fn: track_overlay_scope,
             externally_writable: true,
         },
         OverlayEntityScopeEntry {
@@ -599,14 +599,14 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
     OVERLAY_KIND_REGISTRY.validate(kind, payload)
 }
 
-/// Grid column count — mirrors `web/src/WaveGrid.tsx::COLS`. Any layout
+/// Grid column count — mirrors `web/src/TrackGrid.tsx::COLS`. Any layout
 /// whose `x + w` exceeds this would render off-screen, so the kernel
 /// rejects it at the write boundary rather than coping with the resulting
 /// half-broken RGL state on the client. If `COLS` ever changes on the
 /// frontend, this constant must move in lock-step.
 const LAYOUT_GRID_COLS: u32 = 12;
 
-/// Validate a `layout` overlay payload — the WaveGrid card position
+/// Validate a `layout` overlay payload — the TrackGrid card position
 /// record that backs `useOverlayState({ entity_kind: 'view', kind: 'layout' })`
 /// per design doc §5.2.
 ///
@@ -721,14 +721,14 @@ mod tests {
             .iter()
             .map(|entry| entry.kind)
             .collect();
-        assert_eq!(kinds, vec!["card", "wave", "view", "system"]);
+        assert_eq!(kinds, vec!["card", "track", "view", "system"]);
         assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("card"));
-        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("wave"));
+        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("track"));
         assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("view"));
         assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("system"));
         assert_eq!(
             OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable_kinds(),
-            vec!["card", "wave"]
+            vec!["card", "track"]
         );
     }
 
@@ -1410,33 +1410,33 @@ mod tests {
         assert!(msg.contains("codex"), "msg = {msg}");
     }
 
-    // ---------------- Card: wave-report (issue #229 PR B) ----------------
+    // ---------------- Card: track-report (issue #229 PR B) ----------------
 
     #[test]
-    fn wave_report_happy() {
+    fn track_report_happy() {
         validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "schemaVersion": 3, "docRev": 1, "summary": "", "body": "# Goal\n" }),
         )
         .unwrap();
     }
 
     #[test]
-    fn wave_report_accepts_missing_schema_version() {
+    fn track_report_accepts_missing_schema_version() {
         // Missing schemaVersion is accepted — legacy v1 rows never
         // carried one reliably; they are lazily upgraded at the next
         // persist, not rejected at the write gate.
         validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "summary": "hi", "body": "# Done\n" }),
         )
         .unwrap();
     }
 
     #[test]
-    fn wave_report_v3_rejects_missing_doc_rev() {
+    fn track_report_v3_rejects_missing_doc_rev() {
         let err = validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "schemaVersion": 3, "summary": "", "body": "# Goal\n" }),
         )
         .unwrap_err();
@@ -1447,9 +1447,9 @@ mod tests {
     }
 
     #[test]
-    fn wave_report_rejects_missing_summary() {
+    fn track_report_rejects_missing_summary() {
         let err = validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "schemaVersion": 3, "body": "# Goal" }),
         )
         .unwrap_err();
@@ -1460,9 +1460,9 @@ mod tests {
     }
 
     #[test]
-    fn wave_report_rejects_missing_body() {
+    fn track_report_rejects_missing_body() {
         let err = validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "schemaVersion": 3, "summary": "x" }),
         )
         .unwrap_err();
@@ -1473,9 +1473,9 @@ mod tests {
     }
 
     #[test]
-    fn wave_report_rejects_wrong_field_type() {
+    fn track_report_rejects_wrong_field_type() {
         let err = validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "schemaVersion": 3, "summary": 42, "body": "x" }),
         )
         .unwrap_err();
@@ -1483,24 +1483,24 @@ mod tests {
     }
 
     #[test]
-    fn wave_report_rejects_unknown_schema_version() {
+    fn track_report_rejects_unknown_schema_version() {
         let err = validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({ "schemaVersion": 4, "summary": "", "body": "" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
             panic!("expected BadRequest");
         };
-        assert!(msg.contains("wave-report"), "msg = {msg}");
+        assert!(msg.contains("track-report"), "msg = {msg}");
         assert!(msg.contains('4'), "msg = {msg}");
     }
 
     #[test]
-    fn wave_report_rejects_declared_legacy_schema_versions() {
+    fn track_report_rejects_declared_legacy_schema_versions() {
         for version in [1, 2] {
             let err = validate_builtin_card(
-                "wave-report",
+                "track-report",
                 &json!({ "schemaVersion": version, "summary": "", "body": "" }),
             )
             .unwrap_err();
@@ -1513,12 +1513,12 @@ mod tests {
     }
 
     #[test]
-    fn wave_report_tolerates_unknown_fields() {
+    fn track_report_tolerates_unknown_fields() {
         // Forward-compat: extra fields are passed through (serde
         // ignores by default). A v2 that adds e.g. `lastWriter` lands
         // without an old-binary error.
         validate_builtin_card(
-            "wave-report",
+            "track-report",
             &json!({
                 "schemaVersion": 3,
                 "docRev": 0,

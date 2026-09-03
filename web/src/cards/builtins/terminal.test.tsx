@@ -37,7 +37,7 @@ import {
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
     id: 'card_1',
-    wave_id: 'wave_1',
+    track_id: 'track_1',
     kind: 'terminal',
     sort: 0,
     payload: { terminal_id: 'term_42' },

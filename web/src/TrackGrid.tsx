@@ -1,0 +1,313 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from 'react';
+import {
+  GridLayout,
+  useContainerWidth,
+  type Layout,
+  type LayoutItem,
+} from 'react-grid-layout';
+import 'react-grid-layout/css/styles.css';
+import 'react-resizable/css/styles.css';
+
+import { TrackCard } from './shared/components/TrackCard';
+import { sizeFor, type CardSize } from './cards/registry';
+import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
+import { dlog } from './util/debug';
+import type { TrackCardSlot } from './types';
+import { useOverlayState } from './hooks/useOverlayState';
+import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
+import { useCardVisibilityFocus } from './cards/useCardVisibilityFocus';
+import { useRevealCard } from './cards/useRevealCard';
+
+const COLS = 12;
+const ROW_HEIGHT = 40;
+const MARGIN: readonly [number, number] = [14, 14];
+// Card identity: kernel id if we have it, otherwise positional fallback.
+// Stable across reorders so RGL keys + persisted layout don't drift.
+// Works uniformly across `card` slots (id from TrackCardData) and `unknown`
+// slots (id is the KernelCard.id, always present).
+function slotKey(slot: TrackCardSlot, idx: number): string {
+  if (slot.kind === 'card') return slot.card.id ?? `idx-${idx}`;
+  return slot.id || `idx-${idx}`;
+}
+
+function slotSize(slot: TrackCardSlot): CardSize {
+  return slot.kind === 'card' ? sizeFor(slot.card) : UNKNOWN_CARD_SIZE;
+}
+
+interface StoredEntry {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface LayoutOverlayValue {
+  /** Tier A persistence contract — see
+   *  `web/src/cards/builtins/schemaVersions.ts`. Optional on read because
+   *  rows written before this field existed are treated as v1; new writes
+   *  set it explicitly. */
+  schemaVersion?: number;
+  positions: Record<string, StoredEntry>;
+}
+
+// Build a complete LayoutItem[] for the current slot list: reuse stored
+// positions where we have them, auto-pack newcomers in row-major order at
+// the bottom.
+function reconcile(
+  slots: TrackCardSlot[],
+  stored: Record<string, StoredEntry>,
+): LayoutItem[] {
+  // The lowest free row, computed from stored entries we plan to keep.
+  let nextY = 0;
+  for (let i = 0; i < slots.length; i++) {
+    const key = slotKey(slots[i], i);
+    const e = stored[key];
+    if (e) nextY = Math.max(nextY, e.y + e.h);
+  }
+  let cursorX = 0;
+  let rowH = 0;
+  const result: LayoutItem[] = [];
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const key = slotKey(slot, i);
+    const size = slotSize(slot);
+    const e = stored[key];
+    if (e) {
+      result.push({
+        i: key,
+        x: e.x,
+        y: e.y,
+        w: e.w,
+        h: e.h,
+        minW: size.minW,
+        minH: size.minH,
+      });
+      continue;
+    }
+    // New card — pack at the bottom-left, wrapping when row is full.
+    if (cursorX + size.w > COLS) {
+      cursorX = 0;
+      nextY += rowH;
+      rowH = 0;
+    }
+    result.push({
+      i: key,
+      x: cursorX,
+      y: nextY,
+      w: size.w,
+      h: size.h,
+      minW: size.minW,
+      minH: size.minH,
+    });
+    cursorX += size.w;
+    rowH = Math.max(rowH, size.h);
+  }
+  return result;
+}
+
+function layoutToPositions(layout: Layout): Record<string, StoredEntry> {
+  const out: Record<string, StoredEntry> = {};
+  for (const it of layout) {
+    out[it.i] = { x: it.x, y: it.y, w: it.w, h: it.h };
+  }
+  return out;
+}
+
+export function TrackGrid({
+  trackId,
+  cards,
+  onRemoveCard,
+  revealCardId,
+}: {
+  trackId: string;
+  /**
+   * Heterogeneous card slots: a parsed `TrackCardData` per slot, or an
+   * `unknown` placeholder for kernel cards the registry couldn't adapt.
+   * The placeholder rendering lives in `cards/UnknownCard.tsx`; rendering
+   * here keeps the fallback adjacent to its sibling cards in the grid
+   * rather than dropping the row entirely.
+   */
+  cards: TrackCardSlot[];
+  onRemoveCard: (idx: number) => void;
+  /**
+   * Card the caller wants brought into view — today the target of a report
+   * task block's "Open worker output" link. The scroll lives here rather than
+   * in `pages/Track.tsx` because this subtree is lazy-loaded: when the page
+   * picks the grid, no `data-card-id` node exists yet for the page to find.
+   */
+  revealCardId?: string;
+}) {
+  const { width, containerRef, mounted } = useContainerWidth();
+  const scrollRootRef = useRef<HTMLDivElement | null>(null);
+  const setScrollRootRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node;
+      scrollRootRef.current = node;
+    },
+    [containerRef],
+  );
+  useCardVisibilityFocus(scrollRootRef);
+  useRevealCard(scrollRootRef, revealCardId);
+  dlog('TrackGrid', 'render', { trackId, width, mounted, cardsCount: cards.length });
+
+  // Scope E: layout now lives in an Overlay row. The hook handles
+  // optimistic update + rollback + WS replay across reloads; what we get
+  // back is the same `Persistent<{positions}>` shape every consumer sees.
+  const [layoutValue, setLayoutValue] = useOverlayState<LayoutOverlayValue>({
+    entity_kind: 'view',
+    entity_id: trackId,
+    kind: 'layout',
+    default: { positions: {} },
+  });
+
+  const storedPositions = layoutValue.positions;
+
+  // Layout key set — recompute only when cards arrive/leave or the track
+  // changes. Note: we deliberately do NOT mirror RGL's runtime layout in
+  // a React useState. Mirroring created a feedback loop where RGL's
+  // internal layout normalization (e.g. minW/minH vs stored values) fought
+  // our setState in a tight render cycle, alternating between two layout
+  // snapshots ~hundreds of times per second. See PR #12 + issue #13.
+  //
+  // Using useMemo + reference-stable output: when cards don't change, RGL
+  // sees the same `layout` prop reference and doesn't re-normalize.
+  const cardKeys = useMemo(
+    () => cards.map((c, i) => slotKey(c, i)).join('|'),
+    [cards],
+  );
+  const layout = useMemo<LayoutItem[]>(
+    () => reconcile(cards, storedPositions),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [trackId, cardKeys, storedPositions],
+  );
+
+  // Render-time diagnostic — confirm the layout reference is stable across
+  // re-renders that aren't card-driven.
+  dlog('TrackGrid', 'render-detail', {
+    layoutLen: layout.length,
+    layoutSig: layout.map((l) => `${l.i}@${l.x},${l.y},${l.w}x${l.h}`).join('|'),
+  });
+
+  // Coalesce RGL's drag-event firehose. RGL fires `onLayoutChange` on
+  // every pointer-move during a drag, sometimes hundreds of times per
+  // gesture — we don't want one POST per frame. `requestAnimationFrame`
+  // is the right granularity: one mutation per visual frame at most,
+  // and the final frame of a gesture is the one we ultimately want
+  // persisted. The setter latches the most recent layout; the rAF
+  // callback reads the latch and posts.
+  //
+  // A simple debounce (e.g. setTimeout 200ms) would also work, but rAF
+  // ties the cadence to the browser's paint loop, which is the actual
+  // rate at which the layout *visually* changes. No need to add a
+  // human-tuned delay constant.
+  const pendingRef = useRef<Layout | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const persistLayout = useCallback(
+    (next: Layout) => {
+      pendingRef.current = next;
+      if (rafRef.current !== null) return;
+      // rAF is missing in some test/jsdom configs. Fall back to
+      // `setTimeout(0)` so the coalescer still flushes — production
+      // jsdom in vitest does ship rAF, but this keeps the fallback
+      // self-contained.
+      const schedule =
+        typeof requestAnimationFrame === 'function'
+          ? requestAnimationFrame
+          : (cb: FrameRequestCallback) =>
+              setTimeout(() => cb(performance.now()), 0) as unknown as number;
+      rafRef.current = schedule(() => {
+        rafRef.current = null;
+        const latched = pendingRef.current;
+        pendingRef.current = null;
+        if (!latched) return;
+        setLayoutValue({
+          schemaVersion: OVERLAY_LAYOUT_SCHEMA_VERSION,
+          positions: layoutToPositions(latched),
+        });
+      });
+    },
+    [setLayoutValue],
+  );
+
+  // Cancel any pending rAF on unmount — if the user drags then navigates
+  // away mid-gesture, the latched layout is stale relative to their
+  // intent. Letting the rAF fire after unmount would persist the
+  // pre-navigation snapshot, which is harmless but wasted I/O.
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
+
+  return (
+    <div ref={setScrollRootRef} className="track-grid-wrap">
+      {mounted && (
+        <GridLayout
+          className="track-grid"
+          width={width}
+          layout={layout}
+          gridConfig={{
+            cols: COLS,
+            rowHeight: ROW_HEIGHT,
+            margin: MARGIN,
+            containerPadding: [0, 0],
+          }}
+          dragConfig={{ handle: '.card-drag-handle' }}
+          resizeConfig={{ handles: ['se'] }}
+          onLayoutChange={(next) => {
+            dlog('TrackGrid', 'onLayoutChange', {
+              items: next.length,
+              sig: next.map((l) => `${l.i}@${l.x},${l.y},${l.w}x${l.h}`).join('|'),
+            });
+            persistLayout(next);
+          }}
+        >
+          {cards.map((slot, i) => {
+            // Issue #229 PR A — kernel-owned cards (spec today;
+            // track-report in PR B) come through with `deletable: false`
+            // on the kernel `Card` row, propagated onto the slot in
+            // `app/router.tsx`. Omit the `onClose` handler in that
+            // case so the card head doesn't render the X — every
+            // built-in card component already treats
+            // `onClose: undefined` as "don't show the close
+            // affordance", per the contract in
+            // `cards/registry.ts::CardComponentProps`. We treat
+            // *anything other than literal `false`* as deletable so
+            // legacy event-log replays / older wire shapes that omit
+            // the field still get the close button (the kernel
+            // default and the OpenAPI emission both bias toward
+            // `true`).
+            const closable = slot.deletable !== false;
+            const onClose = closable ? () => onRemoveCard(i) : undefined;
+            return (
+              <div
+                key={slotKey(slot, i)}
+                className="track-card"
+                data-wheel-card
+                data-card-id={slot.kind === 'card' ? slot.card?.id : undefined}
+              >
+                {slot.kind === 'card' ? (
+                  <TrackCard
+                    card={slot.card}
+                    onClose={onClose}
+                    deletable={slot.deletable}
+                  />
+                ) : (
+                  <UnknownCard kernelKind={slot.kernelKind} onClose={onClose} />
+                )}
+              </div>
+            );
+          })}
+        </GridLayout>
+      )}
+    </div>
+  );
+}

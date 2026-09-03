@@ -33,9 +33,9 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
 #[cfg(test)]
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
+use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
 
 use super::events::SubscriptionFilter;
 use super::mcp::{CallToolResult, McpClient, RpcError};
@@ -109,15 +109,15 @@ async fn overlay_scope_for_callback(
         .unwrap_or(EventScope::System)
 }
 
-/// Build a `EventScope::Card { card, wave, area }` for the given wave +
-/// pre-minted card id. Falls back to `EventScope::System` when the wave
+/// Build a `EventScope::Card { card, track, area }` for the given track +
+/// pre-minted card id. Falls back to `EventScope::System` when the track
 /// lookup fails so the dispatch doesn't refuse the write on a transient
 /// read error.
-async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, wave_id: &str) -> EventScope {
-    match repo.wave_get(wave_id).await {
+async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, track_id: &str) -> EventScope {
+    match repo.track_get(track_id).await {
         Ok(Some(w)) => EventScope::Card {
             card,
-            wave: w.id,
+            track: w.id,
             area: w.area_id,
         },
         _ => EventScope::System,
@@ -387,7 +387,7 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
 
 #[derive(Deserialize)]
 struct CardCreateParams {
-    wave_id: String,
+    track_id: String,
     kind: String,
     #[serde(default)]
     payload: Value,
@@ -416,9 +416,9 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     // plugin-prefixed and ui:// kinds remain opaque.
     validate_card_kind_global(&p.kind, &payload)
         .map_err(|e| RpcError::invalid_params(e.to_string()))?;
-    let wave_id_for_scope = p.wave_id.clone();
+    let track_id_for_scope = p.track_id.clone();
     let new = NewCard {
-        wave_id: p.wave_id.into(),
+        track_id: p.track_id.into(),
         kind: p.kind,
         sort: p.sort,
         payload,
@@ -431,7 +431,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     // refactor in PR2 of #136).
     let card_id = CardId::from(new_id());
     let scope =
-        card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &wave_id_for_scope).await;
+        card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &track_id_for_scope).await;
     let card_id_for_tx = card_id.0.clone();
     let write_for_tx = ctx.write.clone();
     let (mut stored, _id) = write_with_event_typed(
@@ -446,7 +446,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                 // Issue #229 PR A — plugin-driven creates are
                 // user-deletable. Plugins cannot today mint kernel-owned
                 // (undeletable) cards; only internal kernel paths
-                // (wave-create, dispatcher) hold that authority.
+                // (track-create, dispatcher) hold that authority.
                 let stored = card_create_with_id_tx(
                     tx,
                     card_id_for_tx,
@@ -531,7 +531,7 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let correlation = ctx.correlation();
     let card_id = p.card_id.clone();
     let scope =
-        card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), card.wave_id.as_str()).await;
+        card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), card.track_id.as_str()).await;
     let (mut updated, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         actor,
@@ -590,11 +590,12 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             ctx.plugin_id, p.card_id, card.kind,
         )));
     }
-    let wave_id = card.wave_id.clone();
+    let track_id = card.track_id.clone();
     let card_id = p.card_id.clone();
     let actor = ctx.actor();
     let correlation = ctx.correlation();
-    let scope = card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), wave_id.as_str()).await;
+    let scope =
+        card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), track_id.as_str()).await;
     let write_for_tx = ctx.write.clone();
 
     // Issue #197 — eager teardown. Mirrors `routes::cards::delete_card`:
@@ -639,7 +640,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                     scope,
                     Event::CardDeleted {
                         id: card_id.into(),
-                        wave_id,
+                        track_id,
                     },
                 ));
                 Ok(((), events))
@@ -874,13 +875,13 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 mod tests {
     use super::*;
     // Tests still seed fixtures via raw sync-domain writes (`area_create`,
-    // `wave_create`, `card_create`), so the harness keeps a full
+    // `track_create`, `card_create`), so the harness keeps a full
     // `Arc<dyn Repo>`. Production `CallbackCtx::repo` is the narrowed
     // `Arc<dyn RouteRepo>` — `ctx()` does the upcast.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::model::{NewArea, NewCard, NewPlugin, NewWave};
+    use crate::model::{NewArea, NewCard, NewPlugin, NewTrack};
     use crate::plugin_host::InitializeMeta;
     use crate::plugin_host::manifest::Manifest;
     use crate::plugin_host::mcp::McpClient;
@@ -890,12 +891,12 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
-    /// Test scaffold: builds a CallbackCtx with a seeded area + wave so card
+    /// Test scaffold: builds a CallbackCtx with a seeded area + track so card
     /// tests have something to attach to. The McpClient is a real one wired
     /// to a stub "plugin" that auto-replies to `initialize` then drains.
     struct Harness {
         ctx_storage: Arc<HarnessStorage>,
-        wave_id: String,
+        track_id: String,
     }
 
     /// Owned state that backs every test's CallbackCtx. Stored behind an
@@ -926,7 +927,7 @@ mod tests {
             "display_name": "Test",
             "entrypoint": { "command": "bin/stub" },
             "permissions": {
-                "overlays_write": ["wave", "card"],
+                "overlays_write": ["track", "card"],
                 "cards_create": true,
                 "cards_read_all": true,
                 "events_subscribe": ["*"],
@@ -1030,7 +1031,7 @@ mod tests {
             })
             .await
             .unwrap();
-            // Seed an area + wave so card tests can attach.
+            // Seed an area + track so card tests can attach.
             let area = repo
                 .area_create(NewArea {
                     name: "test".into(),
@@ -1039,8 +1040,8 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let wave = repo
-                .wave_create(NewWave {
+            let track = repo
+                .track_create(NewTrack {
                     template_input: None,
                     area_id: area.id.clone(),
                     title: "w".into(),
@@ -1067,10 +1068,10 @@ mod tests {
             repo.seed_card_role_cache(&card_role_cache)
                 .await
                 .expect("seed role cache");
-            let wave_area_cache = WaveAreaCache::new();
-            repo.seed_wave_area_cache(&wave_area_cache)
+            let track_area_cache = TrackAreaCache::new();
+            repo.seed_track_area_cache(&track_area_cache)
                 .await
-                .expect("seed wave-area cache");
+                .expect("seed track-area cache");
 
             Self {
                 ctx_storage: Arc::new(HarnessStorage {
@@ -1081,15 +1082,15 @@ mod tests {
                     registry,
                     mcp,
                     subs,
-                    write: WriteContext::new(card_role_cache, wave_area_cache),
+                    write: WriteContext::new(card_role_cache, track_area_cache),
                 }),
-                wave_id: wave.id.to_string(),
+                track_id: track.id.to_string(),
             }
         }
 
         fn ctx(&self) -> CallbackCtx<'_> {
             // Upcast `Arc<dyn Repo>` (held in the harness so fixture seeds
-            // like `area_create` / `wave_create` work) to the narrow
+            // like `area_create` / `track_create` work) to the narrow
             // `Arc<dyn RouteRepo>` the production `CallbackCtx` exposes.
             // The let-binding with explicit type drives stable trait-object
             // upcasting (Rust 1.86+) — `Arc::clone(&_)` alone wouldn't
@@ -1119,8 +1120,8 @@ mod tests {
             json!({
                 // Plugin tries to lie about plugin_id — server must ignore it.
                 "plugin_id": "evil",
-                "entity_kind": "wave",
-                "entity_id": h.wave_id,
+                "entity_kind": "track",
+                "entity_id": h.track_id,
                 "kind": "status",
                 "payload": { "state": "running" }
             }),
@@ -1132,7 +1133,7 @@ mod tests {
         let stored = h
             .ctx_storage
             .repo
-            .overlays_for("wave", &h.wave_id)
+            .overlays_for("track", &h.track_id)
             .await
             .unwrap();
         assert_eq!(stored.len(), 1);
@@ -1147,7 +1148,7 @@ mod tests {
             .ctx_storage
             .repo
             .card_create(NewCard {
-                wave_id: h.wave_id.clone().into(),
+                track_id: h.track_id.clone().into(),
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
@@ -1156,7 +1157,8 @@ mod tests {
             .await
             .unwrap();
 
-        for (entity_kind, entity_id) in [("wave", h.wave_id.as_str()), ("card", card.id.as_str())] {
+        for (entity_kind, entity_id) in [("track", h.track_id.as_str()), ("card", card.id.as_str())]
+        {
             let res = dispatch(
                 &h.ctx(),
                 "neige.overlay.set",
@@ -1180,8 +1182,8 @@ mod tests {
             &h.ctx(),
             "neige.overlay.set",
             json!({
-                "entity_kind": "wave",
-                "entity_id": h.wave_id,
+                "entity_kind": "track",
+                "entity_id": h.track_id,
                 "kind": "status",
                 "payload": {}
             }),
@@ -1198,8 +1200,8 @@ mod tests {
             &h.ctx(),
             "neige.overlay.set",
             json!({
-                "entity_kind": "wave",
-                "entity_id": h.wave_id,
+                "entity_kind": "track",
+                "entity_id": h.track_id,
                 "kind": "status",
                 // D4: `status` payload must include `state` since it's a
                 // kernel-owned overlay kind.
@@ -1212,8 +1214,8 @@ mod tests {
             &h.ctx(),
             "neige.overlay.delete",
             json!({
-                "entity_kind": "wave",
-                "entity_id": h.wave_id,
+                "entity_kind": "track",
+                "entity_id": h.track_id,
                 "kind": "status",
             }),
         )
@@ -1224,7 +1226,7 @@ mod tests {
         let stored = h
             .ctx_storage
             .repo
-            .overlays_for("wave", &h.wave_id)
+            .overlays_for("track", &h.track_id)
             .await
             .unwrap();
         assert!(stored.is_empty());
@@ -1267,7 +1269,7 @@ mod tests {
             assert_eq!(err.code, RpcError::INVALID_PARAMS);
             assert_eq!(
                 err.message,
-                format!("entity_kind must be one of [card, wave], got `{entity_kind}`")
+                format!("entity_kind must be one of [card, track], got `{entity_kind}`")
             );
         }
     }
@@ -1281,7 +1283,7 @@ mod tests {
             &h.ctx(),
             "neige.card.create",
             json!({
-                "wave_id": h.wave_id,
+                "track_id": h.track_id,
                 "kind": "plugin:p1:demo",
                 "payload": { "x": 1 }
             }),
@@ -1289,7 +1291,12 @@ mod tests {
         .await
         .expect("create");
         assert_eq!(res["kind"], "plugin:p1:demo");
-        let cards = h.ctx_storage.repo.cards_by_wave(&h.wave_id).await.unwrap();
+        let cards = h
+            .ctx_storage
+            .repo
+            .cards_by_track(&h.track_id)
+            .await
+            .unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].kind, "plugin:p1:demo");
     }
@@ -1301,7 +1308,7 @@ mod tests {
             &h.ctx(),
             "neige.card.create",
             json!({
-                "wave_id": h.wave_id,
+                "track_id": h.track_id,
                 "kind": "terminal"
             }),
         )
@@ -1317,7 +1324,7 @@ mod tests {
             &h.ctx(),
             "neige.card.create",
             json!({
-                "wave_id": h.wave_id,
+                "track_id": h.track_id,
                 "kind": "plugin:other:demo"
             }),
         )
@@ -1334,7 +1341,7 @@ mod tests {
             .ctx_storage
             .repo
             .card_create(NewCard {
-                wave_id: h.wave_id.clone().into(),
+                track_id: h.track_id.clone().into(),
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
@@ -1358,7 +1365,7 @@ mod tests {
         let create = dispatch(
             &h.ctx(),
             "neige.card.create",
-            json!({ "wave_id": h.wave_id, "kind": "plugin:p1:demo" }),
+            json!({ "track_id": h.track_id, "kind": "plugin:p1:demo" }),
         )
         .await
         .unwrap();
@@ -1379,7 +1386,7 @@ mod tests {
         let create = dispatch(
             &h.ctx(),
             "neige.card.create",
-            json!({ "wave_id": h.wave_id, "kind": "plugin:p1:demo" }),
+            json!({ "track_id": h.track_id, "kind": "plugin:p1:demo" }),
         )
         .await
         .unwrap();
@@ -1388,7 +1395,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res, json!({}));
-        let cards = h.ctx_storage.repo.cards_by_wave(&h.wave_id).await.unwrap();
+        let cards = h
+            .ctx_storage
+            .repo
+            .cards_by_track(&h.track_id)
+            .await
+            .unwrap();
         assert!(cards.is_empty());
     }
 
@@ -1396,7 +1408,7 @@ mod tests {
     /// even when the plugin would otherwise be authorized for the
     /// card kind (`can_card_delete` would say yes). We mint the
     /// undeletable card via `card_create_with_id_tx` directly so the
-    /// test does not depend on the production wave-create→spec path
+    /// test does not depend on the production track-create→spec path
     /// (which carries a terminal row and a daemon stub we don't need
     /// here). Plugin-owned `plugin:p1:demo` kind ensures the kind
     /// check would otherwise let the plugin through — proving the
@@ -1411,7 +1423,7 @@ mod tests {
             &mut tx,
             crate::model::new_id(),
             NewCard {
-                wave_id: h.wave_id.clone().into(),
+                track_id: h.track_id.clone().into(),
                 title: None,
                 kind: "plugin:p1:demo".into(),
                 sort: None,

@@ -154,7 +154,7 @@
         "tags": [
           "areas"
         ],
-        "summary": "Issue #175 — idempotent upsert for the singleton system area that\nhosts the default Today terminal's wave + card. Returns 200 with the\nexisting row when one is present; otherwise mints a new row and\nreturns 201. The DB-level partial unique index on\n`areas(kind) WHERE kind = 'system'` enforces the at-most-one\ninvariant as a backstop, so two tabs racing this endpoint can both\nsafely call it: the loser of the write race catches the unique\nviolation, re-reads the row the winner committed, and returns 200\nto its own caller. From the frontend's perspective both racers see a\nsuccess and a populated `Area` body — the only observable difference\nis the status code (201 vs 200), and `useTodayTerminal` treats both\nas success.",
+        "summary": "Issue #175 — idempotent upsert for the singleton system area that\nhosts the default Today terminal's track + card. Returns 200 with the\nexisting row when one is present; otherwise mints a new row and\nreturns 201. The DB-level partial unique index on\n`areas(kind) WHERE kind = 'system'` enforces the at-most-one\ninvariant as a backstop, so two tabs racing this endpoint can both\nsafely call it: the loser of the write race catches the unique\nviolation, re-reads the row the winner committed, and returns 200\nto its own caller. From the frontend's perspective both racers see a\nsuccess and a populated `Area` body — the only observable difference\nis the status code (201 vs 200), and `useTodayTerminal` treats both\nas success.",
         "description": "The endpoint exists so the frontend's `useTodayTerminal` hook can\nbootstrap a default terminal without exposing the underlying system\narea to the regular `POST /api/areas` surface (which the sidebar\n\"+ New area\" affordance consumes and which would otherwise need a\nreserved-name policy).",
         "operationId": "get_or_create_system_area",
         "responses": {
@@ -191,14 +191,14 @@
         }
       }
     },
-    "/api/areas/{area_id}/chat-wave/ensure": {
+    "/api/areas/{area_id}/chat-track/ensure": {
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "summary": "Ensure the area's single chat wave exists.",
-        "description": "The workspace is selected only while creating the wave. When the area has\nfolder claims it is the claimed path with the fewest path components,\nbreaking ties lexicographically (attached semantics: the user pointed at\nthat directory). Area folder claims cannot be equal, ancestors, or\ndescendants of one another, so \"closest to the area root\" is defined here as\nthis deterministic shallow path ordering rather than containment.\n\n#1147 D10 — an area with **no** claim gets a managed default instead of the\n409 this used to return. Since #1109 made areas pure namespaces, \"no claim\"\nis the normal state of a new area, so that 409 made\n`POST /api/areas/{id}/conversations` fail by definition for every new area.\n\nOnce created, later folder claims or changes deliberately do not update the\nwave's workspace, so an existing conversation cannot drift between working\ndirectories from one message to the next.",
-        "operationId": "ensure_area_chat_wave",
+        "summary": "Ensure the area's single chat track exists.",
+        "description": "The workspace is selected only while creating the track. When the area has\nfolder claims it is the claimed path with the fewest path components,\nbreaking ties lexicographically (attached semantics: the user pointed at\nthat directory). Area folder claims cannot be equal, ancestors, or\ndescendants of one another, so \"closest to the area root\" is defined here as\nthis deterministic shallow path ordering rather than containment.\n\n#1147 D10 — an area with **no** claim gets a managed default instead of the\n409 this used to return. Since #1109 made areas pure namespaces, \"no claim\"\nis the normal state of a new area, so that 409 made\n`POST /api/areas/{id}/conversations` fail by definition for every new area.\n\nOnce created, later folder claims or changes deliberately do not update the\ntrack's workspace, so an existing conversation cannot drift between working\ndirectories from one message to the next.",
+        "operationId": "ensure_area_chat_track",
         "parameters": [
           {
             "name": "area_id",
@@ -212,21 +212,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Existing chat wave",
+            "description": "Existing chat track",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Wave"
+                  "$ref": "#/components/schemas/Track"
                 }
               }
             }
           },
           "201": {
-            "description": "Chat wave created",
+            "description": "Chat track created",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Wave"
+                  "$ref": "#/components/schemas/Track"
                 }
               }
             }
@@ -263,7 +263,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Conversations on this area's chat wave, newest activity first. Empty when the area has no chat wave yet — this endpoint never creates one.",
+            "description": "Conversations on this area's chat track, newest activity first. Empty when the area has no chat track yet — this endpoint never creates one.",
             "content": {
               "application/json": {
                 "schema": {
@@ -366,7 +366,7 @@
             }
           },
           "409": {
-            "description": "Distinguished by the body's `code`:\n* `conflict` — the area has no claimed folder (no cwd for the chat wave), or the derived card already exists.\n* `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as \"server broke\" rather than \"this key is used up\").",
+            "description": "Distinguished by the body's `code`:\n* `conflict` — the area has no claimed folder (no cwd for the chat track), or the derived card already exists.\n* `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as \"server broke\" rather than \"this key is used up\").",
             "content": {
               "application/json": {
                 "schema": {
@@ -565,12 +565,12 @@
         }
       }
     },
-    "/api/areas/{area_id}/waves": {
+    "/api/areas/{area_id}/tracks": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "list_waves_by_area",
+        "operationId": "list_tracks_by_area",
         "parameters": [
           {
             "name": "area_id",
@@ -584,13 +584,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Waves under area",
+            "description": "Tracks under area",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Wave"
+                    "$ref": "#/components/schemas/Track"
                   }
                 }
               }
@@ -1116,7 +1116,7 @@
             }
           },
           "404": {
-            "description": "Card or wave not found",
+            "description": "Card or track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -1126,7 +1126,7 @@
             }
           },
           "409": {
-            "description": "Wave is not awaiting ratification",
+            "description": "Track is not awaiting ratification",
             "content": {
               "application/json": {
                 "schema": {
@@ -1207,7 +1207,7 @@
             }
           },
           "404": {
-            "description": "Card or wave not found",
+            "description": "Card or track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -1783,7 +1783,7 @@
           {
             "name": "entity_id",
             "in": "query",
-            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-wave status without fetching each wave's detail.",
+            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-track status without fetching each track's detail.",
             "required": false,
             "schema": {
               "type": [
@@ -2873,14 +2873,14 @@
     "/api/today/launchpad": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
-        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad wave* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad wave with no `wave-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The wave and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
+        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad track* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad track with no `track-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The track and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
         "operationId": "resolve_today_launchpad",
         "responses": {
           "200": {
-            "description": "The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.",
+            "description": "The launchpad track and whether its report has been written, or `null` when no launchpad track exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2897,7 +2897,7 @@
             }
           },
           "404": {
-            "description": "The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs.",
+            "description": "The launchpad track exists but carries no `track-report` card. Not a reachable state; see the handler docs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2912,7 +2912,7 @@
     "/api/today/launchpad/ensure": {
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "operationId": "ensure_today_launchpad",
         "responses": {
@@ -2952,7 +2952,7 @@
     "/api/today/summary": {
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "summary": "Ask the summary conversation to write today's progress.",
         "description": "See the module docs for the shape of the whole path; the comments below only\nsay what each step's alternative got wrong.",
@@ -3001,41 +3001,21 @@
         }
       }
     },
-    "/api/version": {
+    "/api/track-templates": {
       "get": {
         "tags": [
-          "version"
+          "tracks"
         ],
-        "operationId": "get_version",
+        "operationId": "list_track_templates",
         "responses": {
           "200": {
-            "description": "Kernel + protocol version metadata",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VersionInfo"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/wave-templates": {
-      "get": {
-        "tags": [
-          "waves"
-        ],
-        "operationId": "list_wave_templates",
-        "responses": {
-          "200": {
-            "description": "Selectable wave templates",
+            "description": "Selectable track templates",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/WaveTemplate"
+                    "$ref": "#/components/schemas/TrackTemplate"
                   }
                 }
               }
@@ -3054,19 +3034,19 @@
         }
       }
     },
-    "/api/waves": {
+    "/api/tracks": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "summary": "Issue #250 PR 2 — calendar / dashboard window query.",
-        "description": "`GET /api/waves?since=<ms>&until=<ms>&area_id=<id>` — every\nparameter is optional. Returns the full wave row (so the frontend\ncan render lifecycle / area / terminal-at without an N+1 detail\nfetch). Pre-#250 callers that hit `GET /api/waves` would 405 on\nthe old `POST`-only route; this is an additive contract.",
-        "operationId": "list_waves_window",
+        "description": "`GET /api/tracks?since=<ms>&until=<ms>&area_id=<id>` — every\nparameter is optional. Returns the full track row (so the frontend\ncan render lifecycle / area / terminal-at without an N+1 detail\nfetch). Pre-#250 callers that hit `GET /api/tracks` would 405 on\nthe old `POST`-only route; this is an additive contract.",
+        "operationId": "list_tracks_window",
         "parameters": [
           {
             "name": "since",
             "in": "query",
-            "description": "Lower bound (inclusive) in unix milliseconds. Wave is included\nwhen `terminal_at IS NULL OR terminal_at >= since`. Omitting\ndisables the lower-bound filter.",
+            "description": "Lower bound (inclusive) in unix milliseconds. Track is included\nwhen `terminal_at IS NULL OR terminal_at >= since`. Omitting\ndisables the lower-bound filter.",
             "required": false,
             "schema": {
               "type": [
@@ -3079,7 +3059,7 @@
           {
             "name": "until",
             "in": "query",
-            "description": "Upper bound (inclusive) in unix milliseconds. Wave is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter.",
+            "description": "Upper bound (inclusive) in unix milliseconds. Track is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter.",
             "required": false,
             "schema": {
               "type": [
@@ -3092,7 +3072,7 @@
           {
             "name": "area_id",
             "in": "query",
-            "description": "Optional per-area filter. Mirrors `list_waves_by_area` for\ncallers that want one area's window in a single endpoint.",
+            "description": "Optional per-area filter. Mirrors `list_tracks_by_area` for\ncallers that want one area's window in a single endpoint.",
             "required": false,
             "schema": {
               "type": [
@@ -3104,13 +3084,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Waves overlapping the window, sorted by created_at",
+            "description": "Tracks overlapping the window, sorted by created_at",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Wave"
+                    "$ref": "#/components/schemas/Track"
                   }
                 }
               }
@@ -3140,14 +3120,14 @@
       },
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "create_wave",
+        "operationId": "create_track",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateWaveRequest"
+                "$ref": "#/components/schemas/CreateTrackRequest"
               }
             }
           },
@@ -3155,11 +3135,11 @@
         },
         "responses": {
           "201": {
-            "description": "Wave created",
+            "description": "Track created",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Wave"
+                  "$ref": "#/components/schemas/Track"
                 }
               }
             }
@@ -3177,17 +3157,17 @@
         }
       }
     },
-    "/api/waves/{id}": {
+    "/api/tracks/{id}": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "get_wave_detail",
+        "operationId": "get_track_detail",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3196,17 +3176,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Wave detail (wave + its cards + overlays)",
+            "description": "Track detail (track + its cards + overlays)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveDetail"
+                  "$ref": "#/components/schemas/TrackDetail"
                 }
               }
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3229,14 +3209,14 @@
       },
       "delete": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "delete_wave",
+        "operationId": "delete_track",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3245,10 +3225,10 @@
         ],
         "responses": {
           "204": {
-            "description": "Wave deleted"
+            "description": "Track deleted"
           },
           "403": {
-            "description": "Wave belongs to the system area and cannot be deleted via REST",
+            "description": "Track belongs to the system area and cannot be deleted via REST",
             "content": {
               "application/json": {
                 "schema": {
@@ -3258,7 +3238,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3268,7 +3248,7 @@
             }
           },
           "409": {
-            "description": "Wave has a descendant or active forge action",
+            "description": "Track has a descendant or active forge action",
             "content": {
               "application/json": {
                 "schema": {
@@ -3291,14 +3271,14 @@
       },
       "patch": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "update_wave",
+        "operationId": "update_track",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3309,7 +3289,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WavePatch"
+                "$ref": "#/components/schemas/TrackPatch"
               }
             }
           },
@@ -3317,11 +3297,11 @@
         },
         "responses": {
           "200": {
-            "description": "Wave updated",
+            "description": "Track updated",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Wave"
+                  "$ref": "#/components/schemas/Track"
                 }
               }
             }
@@ -3347,7 +3327,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3379,17 +3359,17 @@
         }
       }
     },
-    "/api/waves/{id}/backlinks": {
+    "/api/tracks/{id}/backlinks": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "get_wave_backlinks",
+        "operationId": "get_track_backlinks",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3398,17 +3378,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Report links from waves in the same area",
+            "description": "Report links from tracks in the same area",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveBacklinksResponse"
+                  "$ref": "#/components/schemas/TrackBacklinksResponse"
                 }
               }
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3420,17 +3400,17 @@
         }
       }
     },
-    "/api/waves/{id}/files/cat": {
+    "/api/tracks/{id}/files/cat": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "cat_wave_file",
+        "operationId": "cat_track_file",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3451,11 +3431,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Wave file view content",
+            "description": "Track file view content",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveFsContent"
+                  "$ref": "#/components/schemas/TrackFsContent"
                 }
               }
             }
@@ -3481,7 +3461,7 @@
             }
           },
           "403": {
-            "description": "Referenced card is outside the wave",
+            "description": "Referenced card is outside the track",
             "content": {
               "application/json": {
                 "schema": {
@@ -3491,7 +3471,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3513,17 +3493,17 @@
         }
       }
     },
-    "/api/waves/{id}/files/ls": {
+    "/api/tracks/{id}/files/ls": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "list_wave_files",
+        "operationId": "list_track_files",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3532,7 +3512,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "Logical path to list. Omitted or `/` lists the wave root.",
+            "description": "Logical path to list. Omitted or `/` lists the track root.",
             "required": false,
             "schema": {
               "type": [
@@ -3544,13 +3524,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Wave file view directory entries",
+            "description": "Track file view directory entries",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/WaveFsEntry"
+                    "$ref": "#/components/schemas/TrackFsEntry"
                   }
                 }
               }
@@ -3577,7 +3557,7 @@
             }
           },
           "403": {
-            "description": "Referenced card is outside the wave",
+            "description": "Referenced card is outside the track",
             "content": {
               "application/json": {
                 "schema": {
@@ -3587,7 +3567,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3609,17 +3589,17 @@
         }
       }
     },
-    "/api/waves/{id}/report": {
+    "/api/tracks/{id}/report": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "get_wave_report",
+        "operationId": "get_track_report",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3632,7 +3612,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveReportReadResponse"
+                  "$ref": "#/components/schemas/TrackReportReadResponse"
                 }
               }
             }
@@ -3648,7 +3628,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3661,16 +3641,16 @@
       },
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "summary": "`POST /api/waves/:id/report` — user-driven wave-report edit. The\nREST-side counterpart of the spec-MCP `calm.report.write` tool;\nboth paths funnel through the `wave_report::write` module — this\none via `rest_user_replace`, the tool via `agent_report_op` — so the\ndual-event invariant (`CardUpdated` + `WaveReportEdited`) and the\nCRDT write happen identically regardless of who's editing.",
-        "description": "**Auth contract** (issue #247 PR3 acceptance):\n\n  * No session cookie → 401 (`auth::require_session` middleware\n    short-circuits before this handler runs).\n  * Authenticated session BUT non-user actor declared via\n    `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only\n    [`ActorId::User`] is allowed. This closes the \"spec card's\n    own session cookie forwards a User edit\" hole — a future\n    surface that lets the spec card hold a session must not be\n    able to bypass the User-only contract by claiming `ai:codex`.\n  * Wave doesn't exist → 404.\n  * Wave exists but the wave-report card is missing → 500\n    (invariant violation; PR1 backfill guarantees the row).\n\nThe response is the *projected* [`WaveReportPayload`] read back\nfrom the CRDT post-merge — not the request body verbatim — so the\nfrontend sees what every other reader will see (the JSON cache\nmirrors the CRDT projection, which under single-writer is the\nsame bytes as the input, but reading from the doc keeps the\n\"CRDT is source of truth\" contract true by construction).",
-        "operationId": "update_wave_report",
+        "summary": "`POST /api/tracks/:id/report` — user-driven track-report edit. The\nREST-side counterpart of the spec-MCP `calm.report.write` tool;\nboth paths funnel through the `track_report::write` module — this\none via `rest_user_replace`, the tool via `agent_report_op` — so the\ndual-event invariant (`CardUpdated` + `TrackReportEdited`) and the\nCRDT write happen identically regardless of who's editing.",
+        "description": "**Auth contract** (issue #247 PR3 acceptance):\n\n  * No session cookie → 401 (`auth::require_session` middleware\n    short-circuits before this handler runs).\n  * Authenticated session BUT non-user actor declared via\n    `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only\n    [`ActorId::User`] is allowed. This closes the \"spec card's\n    own session cookie forwards a User edit\" hole — a future\n    surface that lets the spec card hold a session must not be\n    able to bypass the User-only contract by claiming `ai:codex`.\n  * Track doesn't exist → 404.\n  * Track exists but the track-report card is missing → 500\n    (invariant violation; PR1 backfill guarantees the row).\n\nThe response is the *projected* [`TrackReportPayload`] read back\nfrom the CRDT post-merge — not the request body verbatim — so the\nfrontend sees what every other reader will see (the JSON cache\nmirrors the CRDT projection, which under single-writer is the\nsame bytes as the input, but reading from the doc keeps the\n\"CRDT is source of truth\" contract true by construction).",
+        "operationId": "update_track_report",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -3681,7 +3661,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateWaveReportBody"
+                "$ref": "#/components/schemas/UpdateTrackReportBody"
               }
             }
           },
@@ -3689,11 +3669,11 @@
         },
         "responses": {
           "200": {
-            "description": "Updated wave-report payload",
+            "description": "Updated track-report payload",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveReportPayload"
+                  "$ref": "#/components/schemas/TrackReportPayload"
                 }
               }
             }
@@ -3719,7 +3699,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3751,10 +3731,10 @@
         }
       }
     },
-    "/api/waves/{id}/report/blocks": {
+    "/api/tracks/{id}/report/blocks": {
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "operationId": "create_block",
         "parameters": [
@@ -3851,10 +3831,10 @@
         }
       }
     },
-    "/api/waves/{id}/report/blocks/{block_id}": {
+    "/api/tracks/{id}/report/blocks/{block_id}": {
       "delete": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "operationId": "delete_block",
         "parameters": [
@@ -3960,7 +3940,7 @@
       },
       "patch": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "operationId": "update_block",
         "parameters": [
@@ -4065,10 +4045,10 @@
         }
       }
     },
-    "/api/waves/{id}/report/blocks/{block_id}/move": {
+    "/api/tracks/{id}/report/blocks/{block_id}/move": {
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
         "operationId": "move_block",
         "parameters": [
@@ -4173,17 +4153,17 @@
         }
       }
     },
-    "/api/waves/{wave_id}/cards": {
+    "/api/tracks/{track_id}/cards": {
       "get": {
         "tags": [
           "cards"
         ],
-        "operationId": "list_cards_by_wave",
+        "operationId": "list_cards_by_track",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -4192,7 +4172,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Cards in wave (sorted)",
+            "description": "Cards in track (sorted)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4223,9 +4203,9 @@
         "operationId": "create_card",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id this card belongs to",
+            "description": "Track id this card belongs to",
             "required": true,
             "schema": {
               "type": "string"
@@ -4316,7 +4296,7 @@
         }
       }
     },
-    "/api/waves/{wave_id}/claude-cards": {
+    "/api/tracks/{track_id}/claude-cards": {
       "post": {
         "tags": [
           "claude"
@@ -4324,9 +4304,9 @@
         "operationId": "create_claude_card",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id to create the Claude card under",
+            "description": "Track id to create the Claude card under",
             "required": true,
             "schema": {
               "type": "string"
@@ -4356,7 +4336,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -4388,7 +4368,7 @@
         }
       }
     },
-    "/api/waves/{wave_id}/codex-cards": {
+    "/api/tracks/{track_id}/codex-cards": {
       "post": {
         "tags": [
           "codex"
@@ -4396,9 +4376,9 @@
         "operationId": "create_codex_card",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id to create the codex card under",
+            "description": "Track id to create the codex card under",
             "required": true,
             "schema": {
               "type": "string"
@@ -4428,7 +4408,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -4460,17 +4440,17 @@
         }
       }
     },
-    "/api/waves/{wave_id}/conversations": {
+    "/api/tracks/{track_id}/conversations": {
       "get": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "operationId": "list_wave_conversations",
+        "operationId": "list_track_conversations",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -4479,20 +4459,20 @@
         ],
         "responses": {
           "200": {
-            "description": "Assistant conversations on this wave, newest activity first. The wave's spec card, report card and dispatched worker cards are never listed here.",
+            "description": "Assistant conversations on this track, newest activity first. The track's spec card, report card and dispatched worker cards are never listed here.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/WaveConversationSummary"
+                    "$ref": "#/components/schemas/TrackConversationSummary"
                   }
                 }
               }
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -4515,16 +4495,16 @@
       },
       "post": {
         "tags": [
-          "waves"
+          "tracks"
         ],
-        "summary": "Mint a wave assistant conversation and deliver its first message.",
+        "summary": "Mint a track assistant conversation and deliver its first message.",
         "description": "The `Idempotency-Key` contract, the first-message claim and both of its\nknown gaps are identical to `create_area_conversation`, whose doc comment is\nthe long-form statement of all of them; this handler differs only in the\nprofile it mints under and the namespace its ids come from. The gaps are\nrestated in brief where they bite:\n\n* the first-message claim asks \"has this CARD ever had a user message\n  enqueued?\", not \"has THIS request's message landed?\", so a foreign\n  `POST /api/cards/{id}/spec/input` between a failed send and its retry\n  satisfies the claim;\n* the evidence is written non-transactionally, so a send whose audit write\n  fails is re-sent on retry.\n\nBoth are tracked on #1098 and deliberately unchanged here: fixing them means\nfolding the first message into the mint operation, which would change both\nendpoints at once and belongs in one dedicated change rather than being\nhalf-done on the newer of the two.",
-        "operationId": "create_wave_conversation",
+        "operationId": "create_track_conversation",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id",
+            "description": "Track id",
             "required": true,
             "schema": {
               "type": "string"
@@ -4544,7 +4524,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NewWaveConversationBody"
+                "$ref": "#/components/schemas/NewTrackConversationBody"
               }
             }
           },
@@ -4556,13 +4536,13 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveConversationSummary"
+                  "$ref": "#/components/schemas/TrackConversationSummary"
                 }
               }
             }
           },
           "400": {
-            "description": "Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.",
+            "description": "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4572,7 +4552,7 @@
             }
           },
           "403": {
-            "description": "The wave is an area chat wave; its conversations are created through the area endpoint.",
+            "description": "The track is an area chat track; its conversations are created through the area endpoint.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4582,7 +4562,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -4624,7 +4604,7 @@
         }
       }
     },
-    "/api/waves/{wave_id}/terminal-cards": {
+    "/api/tracks/{track_id}/terminal-cards": {
       "post": {
         "tags": [
           "terminals"
@@ -4632,9 +4612,9 @@
         "operationId": "create_terminal_card",
         "parameters": [
           {
-            "name": "wave_id",
+            "name": "track_id",
             "in": "path",
-            "description": "Wave id to create the terminal card under",
+            "description": "Track id to create the terminal card under",
             "required": true,
             "schema": {
               "type": "string"
@@ -4664,7 +4644,7 @@
             }
           },
           "404": {
-            "description": "Wave not found",
+            "description": "Track not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -4689,6 +4669,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/version": {
+      "get": {
+        "tags": [
+          "version"
+        ],
+        "operationId": "get_version",
+        "responses": {
+          "200": {
+            "description": "Kernel + protocol version metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionInfo"
                 }
               }
             }
@@ -4745,10 +4745,10 @@
       },
       "AreaConversationSummary": {
         "type": "object",
-        "description": "One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).\n\nDeliberately absent:\n* `waveTitle` — every row belongs to the same hidden area chat wave, so\n  returning its title would leak an object the user is never shown.\n* `turns` — the server cannot produce a turn count that agrees with the\n  drawer without re-parsing every `harness_items.params` blob; a number\n  that silently disagrees is worse than no number.",
+        "description": "One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).\n\nDeliberately absent:\n* `trackTitle` — every row belongs to the same hidden area chat track, so\n  returning its title would leak an object the user is never shown.\n* `turns` — the server cannot produce a turn count that agrees with the\n  drawer without re-parsing every `harness_items.params` blob; a number\n  that silently disagrees is worse than no number.",
         "required": [
           "id",
-          "waveId",
+          "trackId",
           "kind",
           "updatedAt"
         ],
@@ -4777,15 +4777,15 @@
               "string",
               "null"
             ],
-            "description": "The conversation's own name, or null before it has one. Never the\nwave's title."
+            "description": "The conversation's own name, or null before it has one. Never the\ntrack's title."
+          },
+          "trackId": {
+            "type": "string"
           },
           "updatedAt": {
             "type": "integer",
             "format": "int64",
             "description": "The session's last update, falling back to the card's own — a card\nminted seconds ago with no session yet still sorts sensibly."
-          },
-          "waveId": {
-            "type": "string"
           }
         }
       },
@@ -4907,13 +4907,13 @@
           "blockId": {
             "type": "string"
           },
-          "childWaveDeleted": {
+          "childTrackDeleted": {
             "type": [
               "boolean",
               "null"
             ]
           },
-          "childWaveId": {
+          "childTrackId": {
             "type": [
               "string",
               "null"
@@ -4944,7 +4944,7 @@
               "string",
               "null"
             ],
-            "description": "Issue #1147 slice ① / #1149 — the failure classifier plus its\nhuman reason tail (`\"spawn-failed: wave … is not a git\nrepository\"`). Without it a failed task reads as a bare\nclassifier on every surface and the real diagnosis stays buried\nin the operation's `phase_detail_json`."
+            "description": "Issue #1147 slice ① / #1149 — the failure classifier plus its\nhuman reason tail (`\"spawn-failed: track … is not a git\nrepository\"`). Without it a failed task reads as a bare\nclassifier on every surface and the real diagnosis stays buried\nin the operation's `phase_detail_json`."
           },
           "workerCardId": {
             "type": [
@@ -4958,7 +4958,7 @@
         "type": "object",
         "required": [
           "id",
-          "wave_id",
+          "track_id",
           "kind",
           "sort",
           "payload",
@@ -4972,7 +4972,7 @@
           },
           "deletable": {
             "type": "boolean",
-            "description": "Issue #229 PR A — system-card guard. `true` for user-facing cards\n(the default; all pre-#229 rows backfill via the column DEFAULT in\nmigration 0013). `false` for kernel-owned cards that the user\ncannot remove via REST / plugin callbacks — currently spec cards\n(retroactively undeletable via the same migration's UPDATE) and\nPR B's wave-report cards.\n\n`#[serde(default = \"default_deletable\")]` so wire payloads emitted\nbefore #229 landed (event-log replay fixtures, old test seeds)\nparse as `true` without forcing a fixture rewrite — matches the\nDB DEFAULT (1) in migration 0013. The default-fn lives below\nbecause `bool::default()` would give `false` (the *un*safe\nfallback for a deny-by-omission auth bit)."
+            "description": "Issue #229 PR A — system-card guard. `true` for user-facing cards\n(the default; all pre-#229 rows backfill via the column DEFAULT in\nmigration 0013). `false` for kernel-owned cards that the user\ncannot remove via REST / plugin callbacks — currently spec cards\n(retroactively undeletable via the same migration's UPDATE) and\nPR B's track-report cards.\n\n`#[serde(default = \"default_deletable\")]` so wire payloads emitted\nbefore #229 landed (event-log replay fixtures, old test seeds)\nparse as `true` without forcing a fixture rewrite — matches the\nDB DEFAULT (1) in migration 0013. The default-fn lives below\nbecause `bool::default()` would give `false` (the *un*safe\nfallback for a deny-by-omission auth bit)."
           },
           "id": {
             "type": "string"
@@ -5005,12 +5005,12 @@
               "null"
             ]
           },
+          "track_id": {
+            "type": "string"
+          },
           "updated_at": {
             "type": "integer",
             "format": "int64"
-          },
-          "wave_id": {
-            "type": "string"
           }
         }
       },
@@ -5123,14 +5123,14 @@
       },
       "CreateCardBody": {
         "type": "object",
-        "description": "Body payload accepted by `POST /api/waves/:wave_id/cards`.\n\nTwo mutually-exclusive paths:\n  * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy\n    pre-M2 wire). The kernel writes the row verbatim.\n  * **`via_tool_call`** — kernel invokes the plugin's tool, extracts the\n    `ui://` resource URI from `_meta.ui.resourceUri`, persists a Card with\n    `kind = <resource_uri>` and `payload = structuredContent`.\n\nWhen both are sent, `via_tool_call` wins. Documented in this module's\nheader. We keep the legacy fields alongside via `#[serde(flatten)]` so\nexisting clients (web-calm AddPanel for terminal/doc cards) keep working\nunchanged.",
+        "description": "Body payload accepted by `POST /api/tracks/:track_id/cards`.\n\nTwo mutually-exclusive paths:\n  * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy\n    pre-M2 wire). The kernel writes the row verbatim.\n  * **`via_tool_call`** — kernel invokes the plugin's tool, extracts the\n    `ui://` resource URI from `_meta.ui.resourceUri`, persists a Card with\n    `kind = <resource_uri>` and `payload = structuredContent`.\n\nWhen both are sent, `via_tool_call` wins. Documented in this module's\nheader. We keep the legacy fields alongside via `#[serde(flatten)]` so\nexisting clients (web-calm AddPanel for terminal/doc cards) keep working\nunchanged.",
         "properties": {
           "kind": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Legacy direct-create fields. Mirrors `NewCard` shape; `wave_id` is\ntaken from the path so we omit it here."
+            "description": "Legacy direct-create fields. Mirrors `NewCard` shape; `track_id` is\ntaken from the path so we omit it here."
           },
           "payload": {
             "type": [
@@ -5196,7 +5196,7 @@
         },
         "additionalProperties": false
       },
-      "CreateWaveRequest": {
+      "CreateTrackRequest": {
         "type": "object",
         "required": [
           "area_id",
@@ -5218,14 +5218,14 @@
               "string",
               "null"
             ],
-            "description": "Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else\nprocess cwd) on the wave row and skip `area_folders`. Present values\n(including the empty string) keep the pre-#1131 absolute-path + claim\nrules. The SQLite column stays NOT NULL; only the request field is\noptional."
+            "description": "Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else\nprocess cwd) on the track row and skip `area_folders`. Present values\n(including the empty string) keep the pre-#1131 absolute-path + claim\nrules. The SQLite column stays NOT NULL; only the request field is\noptional."
           },
           "fork_report_from": {
             "type": [
               "string",
               "null"
             ],
-            "description": "One-time creation instruction: copy this wave's report snapshot into\nthe new report inside the wave-create transaction."
+            "description": "One-time creation instruction: copy this track's report snapshot into\nthe new report inside the track-create transaction."
           },
           "sort": {
             "type": [
@@ -5251,7 +5251,7 @@
           },
           "title": {
             "type": "string",
-            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe wave's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled wave` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec\nagent then names the wave via `calm.wave.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
+            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe track's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled track` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The spec\nagent then names the track via `calm.track.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
           }
         },
         "additionalProperties": false
@@ -5309,7 +5309,7 @@
               "type": "string"
             }
           },
-          "relatedWaveId": {
+          "relatedTrackId": {
             "type": [
               "string",
               "null"
@@ -5506,7 +5506,7 @@
           "id",
           "runtime_id",
           "card_id",
-          "wave_id",
+          "track_id",
           "thread_id",
           "method",
           "params",
@@ -5548,14 +5548,14 @@
           "thread_id": {
             "type": "string"
           },
+          "track_id": {
+            "type": "string"
+          },
           "turn_id": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "wave_id": {
-            "type": "string"
           }
         }
       },
@@ -5791,15 +5791,15 @@
               "null"
             ]
           },
-          "wave_id": {
+          "track_id": {
             "type": "string",
-            "description": "Defaulted so the REST handler can override from the `:wave_id` path\nparam without forcing every client body to repeat it. Direct repo\ncallers must still set this — passing \"\" produces a NotFound."
+            "description": "Defaulted so the REST handler can override from the `:track_id` path\nparam without forcing every client body to repeat it. Direct repo\ncallers must still set this — passing \"\" produces a NotFound."
           }
         }
       },
       "NewClaudeCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/waves/:wave_id/claude-cards`.",
+        "description": "Body for `POST /api/tracks/:track_id/claude-cards`.",
         "required": [
           "theme"
         ],
@@ -5838,7 +5838,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+            "description": "Sort order within the track. `None` defaults to \"append to end\"."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
@@ -5855,7 +5855,7 @@
       },
       "NewCodexCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/waves/:wave_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\npersists schema/UI fields and projects identity from `runtimes`). Empty\n`cwd` falls back to `$HOME` then the server's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel starts\na shared thread, binds it to the runtime row, sends the prompt via\n`turn/start`, waits for `turn/started` or `turn/completed`, and starts\nthe TUI as `codex resume <thread_id> --remote unix://...`.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots through the shared remote, the composer is empty, the user types\nand hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.\n\n`theme` is required end-to-end (#177): callers MUST send the host\nbrowser's current foreground/background RGB. The renderer uses it so\ncodex's OSC 10/11 startup probe gets matching colors. Forcing it at\nthe type layer means a\ncaller that forgets — the exact bug that motivated this refactor —\nfails at compile time (TS) or at the deserialize step (Rust/JSON,\n422). No `Option`, no `#[serde(default)]`, no implicit fallback.",
+        "description": "Body for `POST /api/tracks/:track_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\npersists schema/UI fields and projects identity from `runtimes`). Empty\n`cwd` falls back to `$HOME` then the server's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel starts\na shared thread, binds it to the runtime row, sends the prompt via\n`turn/start`, waits for `turn/started` or `turn/completed`, and starts\nthe TUI as `codex resume <thread_id> --remote unix://...`.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots through the shared remote, the composer is empty, the user types\nand hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.\n\n`theme` is required end-to-end (#177): callers MUST send the host\nbrowser's current foreground/background RGB. The renderer uses it so\ncodex's OSC 10/11 startup probe gets matching colors. Forcing it at\nthe type layer means a\ncaller that forgets — the exact bug that motivated this refactor —\nfails at compile time (TS) or at the deserialize step (Rust/JSON,\n422). No `Option`, no `#[serde(default)]`, no implicit fallback.",
         "required": [
           "theme"
         ],
@@ -5894,7 +5894,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+            "description": "Sort order within the track. `None` defaults to \"append to end\"."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
@@ -5938,14 +5938,14 @@
       },
       "NewTerminalCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/waves/:wave_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\npersists schema payload and projects identity from `runtimes`). Empty\n`program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to\nthe wave's workspace (#1147 S6). `env` is merged into the daemon's environment\nas additional vars on top of `TERM` / `COLORTERM` / inherited.",
+        "description": "Body for `POST /api/tracks/:track_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\npersists schema payload and projects identity from `runtimes`). Empty\n`program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to\nthe track's workspace (#1147 S6). `env` is merged into the daemon's environment\nas additional vars on top of `TERM` / `COLORTERM` / inherited.",
         "required": [
           "theme"
         ],
         "properties": {
           "cwd": {
             "type": "string",
-            "description": "Empty string or missing → the wave's workspace path (#1147 S6)."
+            "description": "Empty string or missing → the track's workspace path (#1147 S6)."
           },
           "env": {
             "type": "object",
@@ -5961,7 +5961,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+            "description": "Sort order within the track. `None` defaults to \"append to end\"."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
@@ -5975,7 +5975,7 @@
           }
         }
       },
-      "NewWave": {
+      "NewTrack": {
         "type": "object",
         "required": [
           "area_id",
@@ -5989,18 +5989,18 @@
           },
           "attach_folder": {
             "type": "boolean",
-            "description": "Issue #250 PR 2 — opt-in for \"claim this `cwd` for the body's\n`area_id` as a new folder, in the same transaction as the\nwave-create write\". Default `false`: the cwd must already be\ncovered by some existing folder under the same area. Both the\ncovering scan and the claim insert run inside that one\ntransaction (issue #275), through the same\n[`crate::area_folder_claim::find_owner`] rule\n`GET /api/areas/resolve` uses. `true` adds a `area_folder` row\nfirst and then the wave; folder-conflict rules\n(equal/ancestor/descendant of any existing claim) still apply and\nroll the whole tx back on conflict."
+            "description": "Issue #250 PR 2 — opt-in for \"claim this `cwd` for the body's\n`area_id` as a new folder, in the same transaction as the\ntrack-create write\". Default `false`: the cwd must already be\ncovered by some existing folder under the same area. Both the\ncovering scan and the claim insert run inside that one\ntransaction (issue #275), through the same\n[`crate::area_folder_claim::find_owner`] rule\n`GET /api/areas/resolve` uses. `true` adds a `area_folder` row\nfirst and then the track; folder-conflict rules\n(equal/ancestor/descendant of any existing claim) still apply and\nroll the whole tx back on conflict."
           },
           "cwd": {
             "type": "string",
-            "description": "Issue #250 PR 2 — absolute filesystem path the spec daemon will\nspawn under. Required (no `Option`): every wave-creating path\nmust declare a cwd or the spec daemon has no defensible\nworking directory. The `POST /api/waves` route enforces\nabsolute-path shape and the area-folder claim check; the\ninner `wave_create_tx` writes whatever the route lands here\nverbatim."
+            "description": "Issue #250 PR 2 — absolute filesystem path the spec daemon will\nspawn under. Required (no `Option`): every track-creating path\nmust declare a cwd or the spec daemon has no defensible\nworking directory. The `POST /api/tracks` route enforces\nabsolute-path shape and the area-folder claim check; the\ninner `track_create_tx` writes whatever the route lands here\nverbatim."
           },
           "plugin_scope": {
             "type": [
               "string",
               "null"
             ],
-            "description": "#1110 S4 — copied from the owning Manifest at create. Not accepted on\n`POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route\nstamps it from the resolved trusted plugin. `#[serde(default)]` keeps\ndirect repo callers additive under `deny_unknown_fields`."
+            "description": "#1110 S4 — copied from the owning Manifest at create. Not accepted on\n`POST /api/tracks` (CreateTrackRequest deny_unknown_fields); the route\nstamps it from the resolved trusted plugin. `#[serde(default)]` keeps\ndirect repo callers additive under `deny_unknown_fields`."
           },
           "sort": {
             "type": [
@@ -6020,11 +6020,11 @@
               "object",
               "null"
             ],
-            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted spec card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every wave-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::wave_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::waves::create_wave`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
+            "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted spec card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every track-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::track_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::tracks::create_track`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
           },
           "title": {
             "type": "string"
@@ -6032,9 +6032,9 @@
         },
         "additionalProperties": false
       },
-      "NewWaveConversationBody": {
+      "NewTrackConversationBody": {
         "type": "object",
-        "description": "Body of `POST /api/waves/{wave_id}/conversations`: the first message.",
+        "description": "Body of `POST /api/tracks/{track_id}/conversations`: the first message.",
         "required": [
           "text"
         ],
@@ -6062,7 +6062,7 @@
           },
           "entity_kind": {
             "type": "string",
-            "description": "`\"wave\"` or `\"card\"`."
+            "description": "`\"track\"` or `\"card\"`."
           },
           "id": {
             "type": "string"
@@ -6118,7 +6118,7 @@
               "string",
               "null"
             ],
-            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-wave status without fetching each wave's detail."
+            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-track status without fetching each track's detail."
           },
           "entity_kind": {
             "type": "string"
@@ -6300,7 +6300,7 @@
         "type": "object",
         "required": [
           "card_id",
-          "wave_id",
+          "track_id",
           "decision"
         ],
         "properties": {
@@ -6310,7 +6310,7 @@
           "decision": {
             "$ref": "#/components/schemas/RatifyCardDecision"
           },
-          "wave_id": {
+          "track_id": {
             "type": "string"
           }
         }
@@ -6342,7 +6342,7 @@
       },
       "ReportBlock": {
         "type": "object",
-        "description": "A derived, addressable slice of a wave report.",
+        "description": "A derived, addressable slice of a track report.",
         "required": [
           "id",
           "kind",
@@ -6398,7 +6398,7 @@
       },
       "RequestTheme": {
         "type": "object",
-        "description": "Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
+        "description": "Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
         "required": [
           "fg",
           "bg"
@@ -6466,13 +6466,13 @@
           "terminal_id": {
             "type": "string"
           },
-          "wave": {
+          "track": {
             "oneOf": [
               {
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/Wave"
+                "$ref": "#/components/schemas/Track"
               }
             ]
           }
@@ -6669,7 +6669,7 @@
           "thread_id": {
             "type": "string"
           },
-          "wave_id": {
+          "track_id": {
             "type": [
               "string",
               "null"
@@ -6680,7 +6680,7 @@
       "TodayLaunchpad": {
         "type": "object",
         "required": [
-          "wave_id",
+          "track_id",
           "spec_card_id",
           "terminal_card_id",
           "terminal_id"
@@ -6695,24 +6695,24 @@
           "terminal_id": {
             "type": "string"
           },
-          "wave_id": {
+          "track_id": {
             "type": "string"
           }
         }
       },
       "TodayLaunchpadResolved": {
         "type": "object",
-        "description": "#1253 §5.1 — what the Today **page load** reads.\n\nA deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it\ndoes not grow into it: `ensure`'s shape is the bootstrap's, this one is the\nreader's, and the two answer different questions.\n\nThere is no `report_card_id` here on purpose. The wave detail already\nreturns the wave's cards and the frontend locates the report by\n`kind == \"wave-report\"` (`fe/core/domain/report.ts::readWaveReport`), so\nsuch a field would have no consumer.",
+        "description": "#1253 §5.1 — what the Today **page load** reads.\n\nA deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it\ndoes not grow into it: `ensure`'s shape is the bootstrap's, this one is the\nreader's, and the two answer different questions.\n\nThere is no `report_card_id` here on purpose. The track detail already\nreturns the track's cards and the frontend locates the report by\n`kind == \"track-report\"` (`fe/core/domain/report.ts::readTrackReport`), so\nsuch a field would have no consumer.",
         "required": [
-          "wave_id",
+          "track_id",
           "report_has_noninitial_content"
         ],
         "properties": {
           "report_has_noninitial_content": {
             "type": "boolean",
-            "description": "Whether this report's `summary`/`body` differ **right now** from the\ncanonical freshly-minted pair.\n\nIt is NOT \"has anyone ever written it\": no history is consulted, so\nnone can be reported, and restoring the text to the canonical pair\nturns this back to `false`. Do not build a \"the summary has run\" marker\non it — see the first bullet below.\n\nIt is computed server-side by\n[`WaveReportPayload::report_startup_read_required`], the kernel's one\ncanonical \"has this been written\" predicate. It is deliberately NOT\nnamed `report_started`, and the difference is not cosmetic (design D7):\n\n* **It is a statement about the report's CURRENT content, not about its\n  history.** The name says exactly that, and the name is the contract:\n  it is `has_noninitial_content`, not `has_ever_been_written`. Restoring\n  `summary` and `body` byte-for-byte to the canonical initial pair\n  flips it back to `false`, whatever happened in between — no history is\n  consulted, so none can be reported.\n* It therefore also answers \"has *anyone* written it\", not \"has today's\n  summary run\": a user hand-editing the document flips it exactly as a\n  summary agent would, and a stale document still reads as content.\n  Anything that really needs \"did the summary run\" needs a durable\n  marker or event, not this.\n* It compares `summary + body` only; `doc_rev` and `blocks` are\n  deliberately ignored, so a canonical placeholder that CRDT has\n  already materialised still reads `false` — and so does a report whose\n  text was reverted to canonical while those two stayed non-zero.\n\nThe frontend must not re-derive this by looking at the report body:\n`readWaveReport` returns non-null for the canonical initial report\n(its body carries the maintenance-contract comment and four H1s), so a\nnull-check there renders four empty headings instead of an empty state."
+            "description": "Whether this report's `summary`/`body` differ **right now** from the\ncanonical freshly-minted pair.\n\nIt is NOT \"has anyone ever written it\": no history is consulted, so\nnone can be reported, and restoring the text to the canonical pair\nturns this back to `false`. Do not build a \"the summary has run\" marker\non it — see the first bullet below.\n\nIt is computed server-side by\n[`TrackReportPayload::report_startup_read_required`], the kernel's one\ncanonical \"has this been written\" predicate. It is deliberately NOT\nnamed `report_started`, and the difference is not cosmetic (design D7):\n\n* **It is a statement about the report's CURRENT content, not about its\n  history.** The name says exactly that, and the name is the contract:\n  it is `has_noninitial_content`, not `has_ever_been_written`. Restoring\n  `summary` and `body` byte-for-byte to the canonical initial pair\n  flips it back to `false`, whatever happened in between — no history is\n  consulted, so none can be reported.\n* It therefore also answers \"has *anyone* written it\", not \"has today's\n  summary run\": a user hand-editing the document flips it exactly as a\n  summary agent would, and a stale document still reads as content.\n  Anything that really needs \"did the summary run\" needs a durable\n  marker or event, not this.\n* It compares `summary + body` only; `doc_rev` and `blocks` are\n  deliberately ignored, so a canonical placeholder that CRDT has\n  already materialised still reads `false` — and so does a report whose\n  text was reverted to canonical while those two stayed non-zero.\n\nThe frontend must not re-derive this by looking at the report body:\n`readTrackReport` returns non-null for the canonical initial report\n(its body carries the maintenance-contract comment and four H1s), so a\nnull-check there renders four empty headings instead of an empty state."
           },
-          "wave_id": {
+          "track_id": {
             "type": "string"
           }
         }
@@ -6721,7 +6721,7 @@
         "type": "object",
         "description": "What the caller gets back on success.",
         "required": [
-          "wave_id",
+          "track_id",
           "card_id"
         ],
         "properties": {
@@ -6729,9 +6729,9 @@
             "type": "string",
             "description": "The summary conversation's card. Stable for the launchpad's lifetime\n(INV-TODAYDOC-011) and openable in Today's Conversations module."
           },
-          "wave_id": {
+          "track_id": {
             "type": "string",
-            "description": "The launchpad wave, whose report the agent is being asked to rewrite."
+            "description": "The launchpad track, whose report the agent is being asked to rewrite."
           }
         }
       },
@@ -6754,6 +6754,928 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "Track": {
+        "type": "object",
+        "required": [
+          "id",
+          "area_id",
+          "title",
+          "sort",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "area_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`.\n\nRust readers must use `workspace.path`; this field only preserves the\nexisting wire shape."
+          },
+          "id": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/TrackLifecycle"
+          },
+          "pinned_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "plugin_scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Owning plugin copied from the bound template. Immutable after creation."
+          },
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-owned structural marker. Public track creation cannot set this."
+          },
+          "sort": {
+            "type": "number",
+            "format": "double"
+          },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Template this track was created from.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
+          },
+          "template_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Template input is validated at creation and otherwise remains opaque.\n\nCarries the same deserialization-only alias as `template_id`."
+          },
+          "terminal_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #250 PR 2 — unix-ms timestamp the track most recently\nentered a terminal lifecycle state (Done / Canceled / Failed),\nor `None` while the track is non-terminal. Stamped inside the\nsame transaction as the `TrackLifecycleChanged` event by\n`track_update_tx`; cleared back to `None` on reopen\n(Done/Canceled/Failed → Planning). The calendar window query\n`GET /api/tracks?since&until` uses `(terminal_at IS NULL OR\nterminal_at >= since)` to keep open tracks visible across every\nday they span.\n\nBackfill semantics: rows that existed before this migration\nstay `None` even when their lifecycle is already terminal —\nthe event log carries the original transition timestamp but\nthe migration deliberately doesn't read from `events` (mixing\nmigration with replay is fragile). A user-driven reopen →\nre-Done cycle stamps the column with the current time, which\nis the first defensible point."
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/TrackWorkspace"
+          }
+        }
+      },
+      "TrackBacklink": {
+        "type": "object",
+        "description": "A report link from another track that targets this track.",
+        "required": [
+          "src_track_id",
+          "src_track_title",
+          "src_block_id",
+          "label",
+          "quote",
+          "updated_at"
+        ],
+        "properties": {
+          "dst_block_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "quote": {
+            "$ref": "#/components/schemas/BacklinkQuote"
+          },
+          "src_block_id": {
+            "type": "string"
+          },
+          "src_track_id": {
+            "type": "string"
+          },
+          "src_track_title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TrackBacklinksResponse": {
+        "type": "object",
+        "description": "A bounded page of report backlinks.",
+        "required": [
+          "backlinks",
+          "truncated",
+          "skipped_sources"
+        ],
+        "properties": {
+          "backlinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackBacklink"
+            }
+          },
+          "skipped_sources": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TrackConversationSummary": {
+        "type": "object",
+        "description": "One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).\n\nIts own type rather than a reuse of [`AreaConversationSummary`], which is\nwhat #1189 §6 Q3 leaned towards and what the shapes turned out to require:\nthe area type's contract says \"`trackTitle` is absent because every row lives\non one hidden track\", and on a track that reasoning is simply not true. Two\nlists with different contracts should not share one name just because their\ncurrent fields coincide.",
+        "required": [
+          "id",
+          "trackId",
+          "kind",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The assistant card's id. This is the conversation's identity everywhere,\nand it is also the card the CARDS panel and `/api/cards/{id}/spec/*`\naddress."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Always `\"track-assistant\"`, derived from the card's persisted marker.\nA distinct value from the area list's `\"shared-chat\"` on purpose: the\nfrontend branches on it, and a shared value would route assistant rows\nthrough the area chat's presentation."
+          },
+          "state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerSessionState",
+                "description": "The live session's state, or **null when the card has no session row**.\n\nNullable for the same reason as the area list's: the query LEFT JOINs so\na card whose session is gone (failed start, superseded runtime, shut\ndown harness) stays visible. Never fill it with an invented value."
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The conversation's own name, or null before it has one. Never the\ntrack's title."
+          },
+          "trackId": {
+            "type": "string",
+            "description": "The track this conversation lives on. Always the track in the request\npath; carried so a client holding a bare row can navigate."
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The session's last update, falling back to the card's own."
+          }
+        }
+      },
+      "TrackDetail": {
+        "type": "object",
+        "description": "What a Track detail page renders: the track itself plus its cards and\nany overlays scoped to the track (status/progress badges) and its cards.",
+        "required": [
+          "track",
+          "cards",
+          "overlays"
+        ],
+        "properties": {
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Card"
+            }
+          },
+          "overlays": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Overlay"
+            }
+          },
+          "track": {
+            "$ref": "#/components/schemas/Track"
+          }
+        }
+      },
+      "TrackFsCardMeta": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "deletable",
+          "id",
+          "kind",
+          "role",
+          "sort",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deletable": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/CardRole"
+          },
+          "sort": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TrackFsCatQuery": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Logical path to read. Required."
+          }
+        }
+      },
+      "TrackFsContent": {
+        "type": "object",
+        "required": [
+          "content",
+          "content_type"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          }
+        }
+      },
+      "TrackFsEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "TrackFsHookEvent": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "event_id",
+          "hook_kind",
+          "kind",
+          "payload"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "hook_kind": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {}
+        }
+      },
+      "TrackFsLsQuery": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Logical path to list. Omitted or `/` lists the track root."
+          }
+        }
+      },
+      "TrackFsRunDetail": {
+        "type": "object",
+        "required": [
+          "events",
+          "finished_at",
+          "idempotency_key",
+          "kind",
+          "requested_at",
+          "status",
+          "verdict",
+          "worker_card_id",
+          "worker_card_payload"
+        ],
+        "properties": {
+          "events": {
+            "$ref": "#/components/schemas/TrackFsRunEvents"
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TrackFsRunStatus"
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackFsRunVerdict"
+              }
+            ]
+          },
+          "worker_card_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_card_payload": {}
+        }
+      },
+      "TrackFsRunEventRef": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "event_id",
+          "kind",
+          "payload"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {}
+        }
+      },
+      "TrackFsRunEvents": {
+        "type": "object",
+        "required": [
+          "completed",
+          "failed",
+          "requested",
+          "verdict"
+        ],
+        "properties": {
+          "completed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackFsRunEventRef"
+              }
+            ]
+          },
+          "failed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackFsRunEventRef"
+              }
+            ]
+          },
+          "requested": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackFsRunEventRef"
+              }
+            ]
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackFsRunEventRef"
+              }
+            ]
+          }
+        }
+      },
+      "TrackFsRunIndexEntry": {
+        "type": "object",
+        "required": [
+          "finished_at",
+          "idempotency_key",
+          "kind",
+          "requested_at",
+          "status",
+          "verdict",
+          "worker_card_id"
+        ],
+        "properties": {
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TrackFsRunStatus"
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackFsRunVerdictSummary"
+              }
+            ]
+          },
+          "worker_card_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TrackFsRunStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "running",
+          "requested",
+          "unknown"
+        ]
+      },
+      "TrackFsRunVerdict": {
+        "type": "object",
+        "required": [
+          "at",
+          "reason",
+          "status"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "TrackFsRunVerdictSummary": {
+        "type": "object",
+        "required": [
+          "at",
+          "status"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "TrackLifecycle": {
+        "type": "string",
+        "description": "Issue #145 — Track lifecycle state machine.\n\nOne explicit state per track, advanced through a typed state machine\n(see `crate::track_lifecycle`). The Spec Agent drives the happy path\n(`draft → planning → dispatching → working → reviewing → done`);\nthe user can cancel any non-terminal state and reopen terminals;\nworker cards have no authority to touch this field at all.\n\n**`archived` is intentionally NOT a lifecycle state.** Archive is\nvisibility / history management, orthogonal to execution semantics —\na `done`/`failed`/`canceled` track can also be archived without\ndestroying the lifecycle truth. Archival continues to live on the\nexisting `archived_at: Option<i64>` field.\n\nPersisted as a lowercase string in `tracks.lifecycle` (migration\n0012). The serde + sqlx `rename_all = \"lowercase\"` keeps the wire\nand storage shape stable; ts-rs exports the matching TS union into\n`fe/core/api/generated/wire.ts` so the frontend can render the\nbadge against the same vocabulary.",
+        "enum": [
+          "draft",
+          "planning",
+          "dispatching",
+          "working",
+          "blocked",
+          "reviewing",
+          "done",
+          "canceled",
+          "failed"
+        ]
+      },
+      "TrackPatch": {
+        "type": "object",
+        "description": "INV-1110-004: `plugin_scope` is create-time only and is not a field here.\nPATCH `/api/tracks` cannot widen or change it. Extra JSON keys are ignored\n(`deny_unknown_fields` is not set).",
+        "properties": {
+          "archived_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,\nor omit (`None`) to leave alone."
+          },
+          "automation_policy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Issue #985 — per-track declaration policy. A present null resets to\nthe kernel default."
+          },
+          "lifecycle": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackLifecycle",
+                "description": "Issue #145 — request a lifecycle transition. The actual\ntransition validation runs through `crate::track_lifecycle`,\ninside the write transaction. Omitting (`None`) means \"leave\nalone\"; `Some(<state>)` triggers the validator against the\n(actor, from → to) triple before any DB write or event emit."
+              }
+            ]
+          },
+          "pinned_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,\nor omit (`None`) to leave alone."
+          },
+          "require_task_gates": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Issue #644 — track-level gate policy (`tracks.require_task_gates`,\nmigration 0041). `Some(v)` sets the flag, omit to leave alone.\nEnforced by `calm.plan.upsert` rule 6 only from PR-C onward."
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "spec_task_ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #985 — maximum admitted spec-declared task inventory. A\npresent null resets to the kernel default."
+          },
+          "task_budget": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #644 — per-track scheduler budget (`tracks.task_budget`,\nmigration 0041). Pass `Some(Some(n))` to set, `Some(None)` to\nclear back to the kernel default, or omit (`None`) to leave\nalone. Inert until the PR-B scheduler reads it."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tree_task_budget": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a\ntrack with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TrackWorkspacePatch",
+                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::tracks::update_track` and **never** by\n`track_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
+              }
+            ]
+          }
+        }
+      },
+      "TrackReportPayload": {
+        "type": "object",
+        "description": "The payload persisted in a track-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 3,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the TrackReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
+        "required": [
+          "schemaVersion",
+          "docRev",
+          "summary",
+          "body"
+        ],
+        "properties": {
+          "blocks": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ReportBlock"
+            },
+            "description": "Block mirror of the authoritative CRDT block map (#960 PR2).\nSince schema v2 the CRDT `blocks`/`order` layout is the source\nof truth; this JSON field and `body` are both projections the\npersist boundary rewrites on every write. v1 rows may omit it."
+          },
+          "body": {
+            "type": "string",
+            "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."
+          },
+          "docRev": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Document-wide optimistic-concurrency revision. This is mirrored\nfrom the authoritative CRDT root and increments after every\nsuccessful report persist (whole-document or block-level).",
+            "minimum": 0
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Tier A persistence contract — see\n`TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `3` since #979 added document-wide optimistic\nconcurrency; blocks remain authoritative and `body` is their\nflat projection. v1/v2 rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-line summary used by sidebars / track-list previews. Empty\nstring is valid (means \"spec agent has not produced a summary\nyet\"); the field stays a required `String` per the\n[[required-over-option]] rule."
+          }
+        }
+      },
+      "TrackReportReadResponse": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "docRev",
+          "summary",
+          "body",
+          "blocks",
+          "taskDiagnostics"
+        ],
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportBlock"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "docRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string"
+          },
+          "taskDiagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockVerdict"
+            }
+          }
+        }
+      },
+      "TrackTemplate": {
+        "type": "object",
+        "description": "One selectable starting point for a new track.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/tracks` with no `template_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "required": [
+          "id",
+          "title",
+          "tasks"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Template key. Passed back verbatim as `template_id` on\n`POST /api/tracks` — see the seam note on this module."
+          },
+          "input_schema": {
+            "description": "JSON Schema for `template_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `template_input` for it is a 400 on create."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackTemplateTask"
+            },
+            "description": "The tasks this template pre-sets, in plan order.\n\nAlways present; **not** always non-empty. That was true while this came\nfrom the constants, but the projection drops tombstones, so retiring\nevery task of a template (through the ordinary report block DELETE)\nleaves this empty. A client must render that state rather than assume it\naway."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "TrackTemplateTask": {
+        "type": "object",
+        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the seeded plan. Acceptance\ncriteria, dependencies and gate advice belong to the track's report once it\nexists, not to the chooser.",
+        "required": [
+          "key",
+          "goal"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string",
+            "description": "What that task is for, verbatim from the template."
+          },
+          "key": {
+            "type": "string",
+            "description": "The task block's `key` in the seeded report."
+          }
+        }
+      },
+      "TrackWorkspace": {
+        "type": "object",
+        "description": "A track's typed workspace. `path` is its single stored path.",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "frozen_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change\nagain.\n\nThe system-area launchpad remains unfrozen because it is repointed by\n`today_launchpad_ensure_tx`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TrackWorkspaceKind"
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path."
+          }
+        }
+      },
+      "TrackWorkspaceKind": {
+        "type": "string",
+        "description": "Ownership must be explicit because only managed workspaces may be recycled.",
+        "enum": [
+          "managed",
+          "attached"
+        ]
+      },
+      "TrackWorkspacePatch": {
+        "type": "object",
+        "description": "#1147 S3 — point a track at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<area_id>/<track_id>`, see\n`workspace_materialize::managed_workspace_path`) from a track's area and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<area>/<track>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "attach_folder": {
+            "type": "boolean",
+            "description": "Claim `path` for this track's area in the same transaction, exactly as\n`POST /api/tracks`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless track."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TrackWorkspaceKind",
+            "description": "Must be `attached`. `managed` is a documented 400, not a silent no-op."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TracksWindowQuery": {
+        "type": "object",
+        "description": "Issue #250 PR 2 — calendar window query parameters for\n`GET /api/tracks`. Every field is optional so omitting all three\ndegenerates to \"every track in the DB\" (the route delegates to\n`Repo::tracks_window` which builds the SQL `WHERE` clause from the\nnon-`None` subset).\n\nThe semantic for `since` + `until` is **inclusive at both\nendpoints**:\n  * `created_at <= until`  — exclude tracks that hadn't been created\n    yet by the right edge of the window.\n  * `terminal_at IS NULL OR terminal_at >= since` — include any\n    track that's still open (never reached a terminal lifecycle\n    state) or whose terminal stamp lands inside / past the left\n    edge.\n\nTogether the two predicates implement the \"the track is visible on\nat least one day inside `[since, until]`\" calendar contract from\nthe issue, even when the track hasn't terminated yet.",
+        "properties": {
+          "area_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional per-area filter. Mirrors `list_tracks_by_area` for\ncallers that want one area's window in a single endpoint."
+          },
+          "since": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Lower bound (inclusive) in unix milliseconds. Track is included\nwhen `terminal_at IS NULL OR terminal_at >= since`. Omitting\ndisables the lower-bound filter."
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Upper bound (inclusive) in unix milliseconds. Track is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter."
           }
         }
       },
@@ -6782,9 +7704,9 @@
         },
         "additionalProperties": false
       },
-      "UpdateWaveReportBody": {
+      "UpdateTrackReportBody": {
         "type": "object",
-        "description": "Request body for `POST /api/waves/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`WaveReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
+        "description": "Request body for `POST /api/tracks/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`TrackReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`TrackReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
         "required": [
           "ifDocRev",
           "summary",
@@ -6803,7 +7725,7 @@
           },
           "summary": {
             "type": "string",
-            "description": "One-line summary the wave-list sidebars surface. Empty string\nis a valid value; the caller must commit."
+            "description": "One-line summary the track-list sidebars surface. Empty string\nis a valid value; the caller must commit."
           }
         },
         "additionalProperties": false
@@ -6917,7 +7839,7 @@
           },
           "scope": {
             "type": "string",
-            "description": "`\"card\"` for M3 — wave/area are banned per design §10."
+            "description": "`\"card\"` for M3 — track/area are banned per design §10."
           },
           "title": {
             "type": "string"
@@ -6959,928 +7881,6 @@
           }
         }
       },
-      "Wave": {
-        "type": "object",
-        "required": [
-          "id",
-          "area_id",
-          "title",
-          "sort",
-          "created_at",
-          "updated_at"
-        ],
-        "properties": {
-          "archived_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "area_id": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "cwd": {
-            "type": "string",
-            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`.\n\nRust readers must use `workspace.path`; this field only preserves the\nexisting wire shape."
-          },
-          "id": {
-            "type": "string"
-          },
-          "lifecycle": {
-            "$ref": "#/components/schemas/WaveLifecycle"
-          },
-          "pinned_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "plugin_scope": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Owning plugin copied from the bound template. Immutable after creation."
-          },
-          "purpose": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Server-owned structural marker. Public wave creation cannot set this."
-          },
-          "sort": {
-            "type": "number",
-            "format": "double"
-          },
-          "template_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Template this wave was created from.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
-          },
-          "template_input": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Template input is validated at creation and otherwise remains opaque.\n\nCarries the same deserialization-only alias as `template_id`."
-          },
-          "terminal_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Issue #250 PR 2 — unix-ms timestamp the wave most recently\nentered a terminal lifecycle state (Done / Canceled / Failed),\nor `None` while the wave is non-terminal. Stamped inside the\nsame transaction as the `WaveLifecycleChanged` event by\n`wave_update_tx`; cleared back to `None` on reopen\n(Done/Canceled/Failed → Planning). The calendar window query\n`GET /api/waves?since&until` uses `(terminal_at IS NULL OR\nterminal_at >= since)` to keep open waves visible across every\nday they span.\n\nBackfill semantics: rows that existed before this migration\nstay `None` even when their lifecycle is already terminal —\nthe event log carries the original transition timestamp but\nthe migration deliberately doesn't read from `events` (mixing\nmigration with replay is fragile). A user-driven reopen →\nre-Done cycle stamps the column with the current time, which\nis the first defensible point."
-          },
-          "title": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "workspace": {
-            "$ref": "#/components/schemas/WaveWorkspace"
-          }
-        }
-      },
-      "WaveBacklink": {
-        "type": "object",
-        "description": "A report link from another wave that targets this wave.",
-        "required": [
-          "src_wave_id",
-          "src_wave_title",
-          "src_block_id",
-          "label",
-          "quote",
-          "updated_at"
-        ],
-        "properties": {
-          "dst_block_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "quote": {
-            "$ref": "#/components/schemas/BacklinkQuote"
-          },
-          "src_block_id": {
-            "type": "string"
-          },
-          "src_wave_id": {
-            "type": "string"
-          },
-          "src_wave_title": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "WaveBacklinksResponse": {
-        "type": "object",
-        "description": "A bounded page of report backlinks.",
-        "required": [
-          "backlinks",
-          "truncated",
-          "skipped_sources"
-        ],
-        "properties": {
-          "backlinks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WaveBacklink"
-            }
-          },
-          "skipped_sources": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "truncated": {
-            "type": "boolean"
-          }
-        }
-      },
-      "WaveConversationSummary": {
-        "type": "object",
-        "description": "One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).\n\nIts own type rather than a reuse of [`AreaConversationSummary`], which is\nwhat #1189 §6 Q3 leaned towards and what the shapes turned out to require:\nthe area type's contract says \"`waveTitle` is absent because every row lives\non one hidden wave\", and on a wave that reasoning is simply not true. Two\nlists with different contracts should not share one name just because their\ncurrent fields coincide.",
-        "required": [
-          "id",
-          "waveId",
-          "kind",
-          "updatedAt"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "The assistant card's id. This is the conversation's identity everywhere,\nand it is also the card the CARDS panel and `/api/cards/{id}/spec/*`\naddress."
-          },
-          "kind": {
-            "type": "string",
-            "description": "Always `\"wave-assistant\"`, derived from the card's persisted marker.\nA distinct value from the area list's `\"shared-chat\"` on purpose: the\nfrontend branches on it, and a shared value would route assistant rows\nthrough the area chat's presentation."
-          },
-          "state": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WorkerSessionState",
-                "description": "The live session's state, or **null when the card has no session row**.\n\nNullable for the same reason as the area list's: the query LEFT JOINs so\na card whose session is gone (failed start, superseded runtime, shut\ndown harness) stays visible. Never fill it with an invented value."
-              }
-            ]
-          },
-          "title": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The conversation's own name, or null before it has one. Never the\nwave's title."
-          },
-          "updatedAt": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The session's last update, falling back to the card's own."
-          },
-          "waveId": {
-            "type": "string",
-            "description": "The wave this conversation lives on. Always the wave in the request\npath; carried so a client holding a bare row can navigate."
-          }
-        }
-      },
-      "WaveDetail": {
-        "type": "object",
-        "description": "What a Wave detail page renders: the wave itself plus its cards and\nany overlays scoped to the wave (status/progress badges) and its cards.",
-        "required": [
-          "wave",
-          "cards",
-          "overlays"
-        ],
-        "properties": {
-          "cards": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Card"
-            }
-          },
-          "overlays": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Overlay"
-            }
-          },
-          "wave": {
-            "$ref": "#/components/schemas/Wave"
-          }
-        }
-      },
-      "WaveFsCardMeta": {
-        "type": "object",
-        "required": [
-          "created_at",
-          "deletable",
-          "id",
-          "kind",
-          "role",
-          "sort",
-          "updated_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "deletable": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "role": {
-            "$ref": "#/components/schemas/CardRole"
-          },
-          "sort": {
-            "type": "number",
-            "format": "double"
-          },
-          "updated_at": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "WaveFsCatQuery": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Logical path to read. Required."
-          }
-        }
-      },
-      "WaveFsContent": {
-        "type": "object",
-        "required": [
-          "content",
-          "content_type"
-        ],
-        "properties": {
-          "content": {
-            "type": "string"
-          },
-          "content_type": {
-            "type": "string"
-          }
-        }
-      },
-      "WaveFsEntry": {
-        "type": "object",
-        "required": [
-          "name",
-          "kind"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "size": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "updated_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          }
-        }
-      },
-      "WaveFsHookEvent": {
-        "type": "object",
-        "required": [
-          "created_at",
-          "event_id",
-          "hook_kind",
-          "kind",
-          "payload"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "event_id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "hook_kind": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "payload": {}
-        }
-      },
-      "WaveFsLsQuery": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Logical path to list. Omitted or `/` lists the wave root."
-          }
-        }
-      },
-      "WaveFsRunDetail": {
-        "type": "object",
-        "required": [
-          "events",
-          "finished_at",
-          "idempotency_key",
-          "kind",
-          "requested_at",
-          "status",
-          "verdict",
-          "worker_card_id",
-          "worker_card_payload"
-        ],
-        "properties": {
-          "events": {
-            "$ref": "#/components/schemas/WaveFsRunEvents"
-          },
-          "finished_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "requested_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "status": {
-            "$ref": "#/components/schemas/WaveFsRunStatus"
-          },
-          "verdict": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveFsRunVerdict"
-              }
-            ]
-          },
-          "worker_card_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "worker_card_payload": {}
-        }
-      },
-      "WaveFsRunEventRef": {
-        "type": "object",
-        "required": [
-          "created_at",
-          "event_id",
-          "kind",
-          "payload"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "event_id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "payload": {}
-        }
-      },
-      "WaveFsRunEvents": {
-        "type": "object",
-        "required": [
-          "completed",
-          "failed",
-          "requested",
-          "verdict"
-        ],
-        "properties": {
-          "completed": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveFsRunEventRef"
-              }
-            ]
-          },
-          "failed": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveFsRunEventRef"
-              }
-            ]
-          },
-          "requested": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveFsRunEventRef"
-              }
-            ]
-          },
-          "verdict": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveFsRunEventRef"
-              }
-            ]
-          }
-        }
-      },
-      "WaveFsRunIndexEntry": {
-        "type": "object",
-        "required": [
-          "finished_at",
-          "idempotency_key",
-          "kind",
-          "requested_at",
-          "status",
-          "verdict",
-          "worker_card_id"
-        ],
-        "properties": {
-          "finished_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "requested_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "status": {
-            "$ref": "#/components/schemas/WaveFsRunStatus"
-          },
-          "verdict": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveFsRunVerdictSummary"
-              }
-            ]
-          },
-          "worker_card_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "WaveFsRunStatus": {
-        "type": "string",
-        "enum": [
-          "completed",
-          "failed",
-          "running",
-          "requested",
-          "unknown"
-        ]
-      },
-      "WaveFsRunVerdict": {
-        "type": "object",
-        "required": [
-          "at",
-          "reason",
-          "status"
-        ],
-        "properties": {
-          "at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "status": {
-            "type": "string"
-          }
-        }
-      },
-      "WaveFsRunVerdictSummary": {
-        "type": "object",
-        "required": [
-          "at",
-          "status"
-        ],
-        "properties": {
-          "at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "status": {
-            "type": "string"
-          }
-        }
-      },
-      "WaveLifecycle": {
-        "type": "string",
-        "description": "Issue #145 — Wave lifecycle state machine.\n\nOne explicit state per wave, advanced through a typed state machine\n(see `crate::wave_lifecycle`). The Spec Agent drives the happy path\n(`draft → planning → dispatching → working → reviewing → done`);\nthe user can cancel any non-terminal state and reopen terminals;\nworker cards have no authority to touch this field at all.\n\n**`archived` is intentionally NOT a lifecycle state.** Archive is\nvisibility / history management, orthogonal to execution semantics —\na `done`/`failed`/`canceled` wave can also be archived without\ndestroying the lifecycle truth. Archival continues to live on the\nexisting `archived_at: Option<i64>` field.\n\nPersisted as a lowercase string in `waves.lifecycle` (migration\n0012). The serde + sqlx `rename_all = \"lowercase\"` keeps the wire\nand storage shape stable; ts-rs exports the matching TS union into\n`fe/core/api/generated/wire.ts` so the frontend can render the\nbadge against the same vocabulary.",
-        "enum": [
-          "draft",
-          "planning",
-          "dispatching",
-          "working",
-          "blocked",
-          "reviewing",
-          "done",
-          "canceled",
-          "failed"
-        ]
-      },
-      "WavePatch": {
-        "type": "object",
-        "description": "INV-1110-004: `plugin_scope` is create-time only and is not a field here.\nPATCH `/api/waves` cannot widen or change it. Extra JSON keys are ignored\n(`deny_unknown_fields` is not set).",
-        "properties": {
-          "archived_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,\nor omit (`None`) to leave alone."
-          },
-          "automation_policy": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Issue #985 — per-wave declaration policy. A present null resets to\nthe kernel default."
-          },
-          "lifecycle": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveLifecycle",
-                "description": "Issue #145 — request a lifecycle transition. The actual\ntransition validation runs through `crate::wave_lifecycle`,\ninside the write transaction. Omitting (`None`) means \"leave\nalone\"; `Some(<state>)` triggers the validator against the\n(actor, from → to) triple before any DB write or event emit."
-              }
-            ]
-          },
-          "pinned_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,\nor omit (`None`) to leave alone."
-          },
-          "require_task_gates": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Issue #644 — wave-level gate policy (`waves.require_task_gates`,\nmigration 0041). `Some(v)` sets the flag, omit to leave alone.\nEnforced by `calm.plan.upsert` rule 6 only from PR-C onward."
-          },
-          "sort": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "double"
-          },
-          "spec_task_ceiling": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Issue #985 — maximum admitted spec-declared task inventory. A\npresent null resets to the kernel default."
-          },
-          "task_budget": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Issue #644 — per-wave scheduler budget (`waves.task_budget`,\nmigration 0041). Pass `Some(Some(n))` to set, `Some(None)` to\nclear back to the kernel default, or omit (`None`) to leave\nalone. Inert until the PR-B scheduler reads it."
-          },
-          "title": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "tree_task_budget": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a\nwave with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
-          },
-          "workspace": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WaveWorkspacePatch",
-                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::waves::update_wave` and **never** by\n`wave_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
-              }
-            ]
-          }
-        }
-      },
-      "WaveReportPayload": {
-        "type": "object",
-        "description": "The payload persisted in a wave-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 3,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the WaveReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
-        "required": [
-          "schemaVersion",
-          "docRev",
-          "summary",
-          "body"
-        ],
-        "properties": {
-          "blocks": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "$ref": "#/components/schemas/ReportBlock"
-            },
-            "description": "Block mirror of the authoritative CRDT block map (#960 PR2).\nSince schema v2 the CRDT `blocks`/`order` layout is the source\nof truth; this JSON field and `body` are both projections the\npersist boundary rewrites on every write. v1 rows may omit it."
-          },
-          "body": {
-            "type": "string",
-            "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."
-          },
-          "docRev": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Document-wide optimistic-concurrency revision. This is mirrored\nfrom the authoritative CRDT root and increments after every\nsuccessful report persist (whole-document or block-level).",
-            "minimum": 0
-          },
-          "schemaVersion": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Tier A persistence contract — see\n`WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `3` since #979 added document-wide optimistic\nconcurrency; blocks remain authoritative and `body` is their\nflat projection. v1/v2 rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
-            "minimum": 0
-          },
-          "summary": {
-            "type": "string",
-            "description": "One-line summary used by sidebars / wave-list previews. Empty\nstring is valid (means \"spec agent has not produced a summary\nyet\"); the field stays a required `String` per the\n[[required-over-option]] rule."
-          }
-        }
-      },
-      "WaveReportReadResponse": {
-        "type": "object",
-        "required": [
-          "schemaVersion",
-          "docRev",
-          "summary",
-          "body",
-          "blocks",
-          "taskDiagnostics"
-        ],
-        "properties": {
-          "blocks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ReportBlock"
-            }
-          },
-          "body": {
-            "type": "string"
-          },
-          "docRev": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "schemaVersion": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          },
-          "summary": {
-            "type": "string"
-          },
-          "taskDiagnostics": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/BlockVerdict"
-            }
-          }
-        }
-      },
-      "WaveTemplate": {
-        "type": "object",
-        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `template_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
-        "required": [
-          "id",
-          "title",
-          "tasks"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Template key. Passed back verbatim as `template_id` on\n`POST /api/waves` — see the seam note on this module."
-          },
-          "input_schema": {
-            "description": "JSON Schema for `template_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `template_input` for it is a 400 on create."
-          },
-          "tasks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WaveTemplateTask"
-            },
-            "description": "The tasks this template pre-sets, in plan order.\n\nAlways present; **not** always non-empty. That was true while this came\nfrom the constants, but the projection drops tombstones, so retiring\nevery task of a template (through the ordinary report block DELETE)\nleaves this empty. A client must render that state rather than assume it\naway."
-          },
-          "title": {
-            "type": "string"
-          }
-        }
-      },
-      "WaveTemplateTask": {
-        "type": "object",
-        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the seeded plan. Acceptance\ncriteria, dependencies and gate advice belong to the wave's report once it\nexists, not to the chooser.",
-        "required": [
-          "key",
-          "goal"
-        ],
-        "properties": {
-          "goal": {
-            "type": "string",
-            "description": "What that task is for, verbatim from the template."
-          },
-          "key": {
-            "type": "string",
-            "description": "The task block's `key` in the seeded report."
-          }
-        }
-      },
-      "WaveWorkspace": {
-        "type": "object",
-        "description": "A wave's typed workspace. `path` is its single stored path.",
-        "required": [
-          "kind",
-          "path"
-        ],
-        "properties": {
-          "frozen_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change\nagain.\n\nThe system-area launchpad remains unfrozen because it is repointed by\n`today_launchpad_ensure_tx`."
-          },
-          "kind": {
-            "$ref": "#/components/schemas/WaveWorkspaceKind"
-          },
-          "path": {
-            "type": "string",
-            "description": "Absolute path."
-          }
-        }
-      },
-      "WaveWorkspaceKind": {
-        "type": "string",
-        "description": "Ownership must be explicit because only managed workspaces may be recycled.",
-        "enum": [
-          "managed",
-          "attached"
-        ]
-      },
-      "WaveWorkspacePatch": {
-        "type": "object",
-        "description": "#1147 S3 — point a wave at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<area_id>/<wave_id>`, see\n`workspace_materialize::managed_workspace_path`) from a wave's area and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<area>/<wave>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
-        "required": [
-          "kind",
-          "path"
-        ],
-        "properties": {
-          "attach_folder": {
-            "type": "boolean",
-            "description": "Claim `path` for this wave's area in the same transaction, exactly as\n`POST /api/waves`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless wave."
-          },
-          "kind": {
-            "$ref": "#/components/schemas/WaveWorkspaceKind",
-            "description": "Must be `attached`. `managed` is a documented 400, not a silent no-op."
-          },
-          "path": {
-            "type": "string",
-            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
-          }
-        },
-        "additionalProperties": false
-      },
-      "WavesWindowQuery": {
-        "type": "object",
-        "description": "Issue #250 PR 2 — calendar window query parameters for\n`GET /api/waves`. Every field is optional so omitting all three\ndegenerates to \"every wave in the DB\" (the route delegates to\n`Repo::waves_window` which builds the SQL `WHERE` clause from the\nnon-`None` subset).\n\nThe semantic for `since` + `until` is **inclusive at both\nendpoints**:\n  * `created_at <= until`  — exclude waves that hadn't been created\n    yet by the right edge of the window.\n  * `terminal_at IS NULL OR terminal_at >= since` — include any\n    wave that's still open (never reached a terminal lifecycle\n    state) or whose terminal stamp lands inside / past the left\n    edge.\n\nTogether the two predicates implement the \"the wave is visible on\nat least one day inside `[since, until]`\" calendar contract from\nthe issue, even when the wave hasn't terminated yet.",
-        "properties": {
-          "area_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional per-area filter. Mirrors `list_waves_by_area` for\ncallers that want one area's window in a single endpoint."
-          },
-          "since": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Lower bound (inclusive) in unix milliseconds. Wave is included\nwhen `terminal_at IS NULL OR terminal_at >= since`. Omitting\ndisables the lower-bound filter."
-          },
-          "until": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Upper bound (inclusive) in unix milliseconds. Wave is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter."
-          }
-        }
-      },
       "WorkerSessionKind": {
         "type": "string",
         "enum": [
@@ -7915,8 +7915,8 @@
       "description": "Area ↔ folder mapping: claim filesystem paths for an area, resolve a cwd to its owning area"
     },
     {
-      "name": "waves",
-      "description": "Wave CRUD + composite detail"
+      "name": "tracks",
+      "description": "Track CRUD + composite detail"
     },
     {
       "name": "cards",
@@ -7924,7 +7924,7 @@
     },
     {
       "name": "overlays",
-      "description": "Plugin-rendered overlays attached to waves/cards"
+      "description": "Plugin-rendered overlays attached to tracks/cards"
     },
     {
       "name": "terminals",

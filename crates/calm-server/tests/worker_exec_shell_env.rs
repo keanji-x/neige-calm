@@ -41,18 +41,18 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
-use calm_server::ids::{AreaId, CardId, WaveId};
+use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
+use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::track_report::TrackReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -97,9 +97,9 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     cache: CardRoleCache,
-    wcc: calm_server::wave_area_cache::WaveAreaCache,
+    wcc: calm_server::track_area_cache::TrackAreaCache,
     area_id: AreaId,
-    wave_id: WaveId,
+    track_id: TrackId,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
     renderer: Arc<TerminalRendererRegistry>,
@@ -113,7 +113,7 @@ struct Boot {
 
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir");
-    let repo_root = tmp.path().join("wave-repo");
+    let repo_root = tmp.path().join("track-repo");
     init_git_repo(&repo_root);
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
@@ -125,8 +125,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "worker-shared".into(),
@@ -141,7 +141,7 @@ async fn boot() -> Boot {
         .unwrap();
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -151,28 +151,28 @@ async fn boot() -> Boot {
         .unwrap();
     let report_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
-            kind: "wave-report".into(),
+            kind: "track-report".into(),
             sort: Some(-1.0),
-            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
         })
         .await
         .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
         .await;
     cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
-        wave.id.clone(),
+        track.id.clone(),
     );
-    seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wcc).await.unwrap();
+    seed_spec_session(&sqlx_repo, track.id.as_str(), spec_card.id.as_str()).await;
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&wcc).await.unwrap();
 
     let mut codex = CodexClient::new_stub();
     codex.codex_bin = fake_codex_bin();
@@ -207,9 +207,9 @@ async fn boot() -> Boot {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: repo
+        track_vcs: repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: WriteContext::new(cache.clone(), wcc.clone()),
         daemon_token_hash: None,
@@ -226,7 +226,7 @@ async fn boot() -> Boot {
         cache,
         wcc,
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         codex,
         daemon,
         renderer,
@@ -239,7 +239,7 @@ async fn boot() -> Boot {
     }
 }
 
-async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
+async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -260,11 +260,11 @@ async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
-        .bind(wave_id)
+    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(track_id)
         .execute(&mut *tx)
         .await
-        .expect("mark spec session as wave root");
+        .expect("mark spec session as track root");
     tx.commit().await.unwrap();
 }
 
@@ -285,8 +285,8 @@ async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
 async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
     let tmp = TempDir::new().expect("mcp socket tempdir");
     let socket_path = tmp.path().join("mcp.sock");
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
-    boot.repo.seed_wave_area_cache(&wcc).await.unwrap();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
+    boot.repo.seed_track_area_cache(&wcc).await.unwrap();
     let server = McpServer::spawn(
         boot.repo.clone(),
         boot.events.clone(),
@@ -323,7 +323,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
@@ -340,7 +340,7 @@ async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
         .await
         .unwrap()
         .expect("report card");
-    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+    let report: TrackReportPayload = serde_json::from_value(report.payload).unwrap();
     let handler = boot
         .registry
         .lookup(TOOL_REPORT_BLOCKS_UPSERT)

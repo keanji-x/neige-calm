@@ -162,7 +162,7 @@ describe('Dialog child-view stack contract', () => {
 });
 
 // ---------------------------------------------------------------------------
-// hideTitleRow (#891 signoff round 2) — the New-wave dialog drops its
+// hideTitleRow (#891 signoff round 2) — the New-track dialog drops its
 // visible title row so the content reads as one cohesive card, but the
 // dialog must NEVER go nameless: `title` keeps flowing into the panel's
 // aria-label. Pushed child views are exempt — they always render the

@@ -18,7 +18,7 @@ import { initialEventState, reduceEventFrame, type EventState } from '../../../.
 import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import type { UnconfiguredEventStream } from '../../systems/events/event-stream.ts';
 import { applyEventEffects } from './query-invalidation-adapter.ts';
-import { waveLookupContext } from './wave-lookup.ts';
+import { trackLookupContext } from './track-lookup.ts';
 
 export type EventBridgeProps = Readonly<{
   client: QueryClient;
@@ -27,7 +27,7 @@ export type EventBridgeProps = Readonly<{
   syncEventVersion: number;
   dbInstanceId: string;
   cursor: SyncCursorPort;
-  /** Lets card-scoped events resolve their owning wave; defaults to "unknown". */
+  /** Lets card-scoped events resolve their owning track; defaults to "unknown". */
   context?: InvalidationContext;
 }>;
 
@@ -53,7 +53,7 @@ export function EventBridge({ client, stream, syncEventVersion, dbInstanceId, cu
     const configured = stream.configure({ syncEventVersion, topics: ['*'] });
     const unsubscribe = stream.onFrame((frame) => {
       const current = latest.current;
-      const reduction = reduceEventFrame(state, frame, current.context ?? waveLookupContext(current.client));
+      const reduction = reduceEventFrame(state, frame, current.context ?? trackLookupContext(current.client));
       state = reduction.state;
       for (const effect of reduction.effects) {
         if (effect.type === 'persist-cursor') current.cursor.write(effect.id);

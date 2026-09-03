@@ -1,4 +1,4 @@
-// The report document — the main column on a wave and an area.
+// The report document — the main column on a track and an area.
 //
 // **A report is a sequence of typed blocks, not one Markdown string** (§8.3).
 // `prose` blocks render through `core/markdown`'s sanitized AST; `table`,
@@ -20,8 +20,8 @@
 //
 // It lives in `features/` and not `ui/`: it reads `core/domain` and
 // `core/markdown`, and `ui/**` may import `core` *types* from three files only.
-// The area and wave pages therefore receive it by injection from `app/router`,
-// the same way they receive the wave list.
+// The area and track pages therefore receive it by injection from `app/router`,
+// the same way they receive the track list.
 
 import { useEffect, type ReactNode } from 'react';
 
@@ -31,7 +31,7 @@ import {
 } from '../../../../../core/markdown/public.ts';
 import {
   isTaskBlock, parseReportLink,
-  type ReportBlock, type ReportLinkTarget, type WaveReport,
+  type ReportBlock, type ReportLinkTarget, type TrackReport,
 } from '../../../../../core/domain/report.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
@@ -42,8 +42,8 @@ import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
 
 export type ReportDocumentProps = Readonly<{
-  /** The wave's report. `null` when it has none. */
-  report: WaveReport | null;
+  /** The track's report. `null` when it has none. */
+  report: TrackReport | null;
   /** What the empty state should offer, which differs per route. */
   empty: ReactNode;
   /** The outline rail (§6.16), which hangs in the document's leading gutter. */
@@ -99,7 +99,7 @@ export function ReportDocument({
            * ── The document, then the reference section ──────────────────────
            *
            * The report is meant to be a deliverable, and it was not reading as
-           * one. Measured on a real wave: 8141 characters of body, 11 blocks —
+           * one. Measured on a real track: 8141 characters of body, 11 blocks —
            * four prose and seven `task`. The prose a reader is meant to take
            * away was about 700 characters; the rest was worker prompts,
            * acceptance criteria and gate shell commands, set inline at content
@@ -107,7 +107,7 @@ export function ReportDocument({
            *
            * Those are not the report's argument, they are the machinery that
            * produced it. So they come out of the flow and go to the end, inside
-           * one collapsed section. The reading column is then what the wave
+           * one collapsed section. The reading column is then what the track
            * *concluded*; the appendix is how it got there, one line each, for
            * the reader who wants to check.
            *
@@ -359,7 +359,7 @@ function Block({ block, headingIds, onOpenLink }: { block: SafeBlock } & BlockCo
   switch (block.type) {
     case 'heading': {
       // The kernel derives sections by splitting at H1, so H1 is a *section*
-      // rule here, not a page title — the page title is the wave's name in the
+      // rule here, not a page title — the page title is the track's name in the
       // header, and a document may not carry a second one. H1 and H2 are all
       // `REPORT_MAX_DEPTH` admits; anything deeper renders as H2 rather than
       // vanishing, because dropping a heading loses the text under it.

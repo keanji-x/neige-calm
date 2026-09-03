@@ -3,7 +3,7 @@
 // The area conversation panel, driven through the real router and the real
 // transport port (#1098 slice 4).
 //
-// Everything here is about the two things an area conversation does that a wave
+// Everything here is about the two things an area conversation does that a track
 // conversation does not: it is listed by the server, and its card does not
 // exist until the first message is sent. The rules those two facts imply — the
 // `+` mints nothing, the key belongs to the draft rather than to the attempt,
@@ -24,20 +24,20 @@ import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = { id: 'w1', area_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
 /* A second area, used only where walking between two of them is the point. */
 const OTHER_AREA = { id: 'c2', name: 'Home', color: '#000', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
-const CHAT_WAVE_ID = 'chat-wave-hidden';
+const CHAT_TRACK_ID = 'chat-track-hidden';
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 type Row = {
-  id: string; waveId: string; title: string | null; kind: string;
+  id: string; trackId: string; title: string | null; kind: string;
   state: string | null; updatedAt: number;
 };
 
 function row(overrides: Partial<Row> = {}): Row {
   return {
-    id: 'chat-1', waveId: CHAT_WAVE_ID, title: null, kind: 'shared-chat',
+    id: 'chat-1', trackId: CHAT_TRACK_ID, title: null, kind: 'shared-chat',
     state: 'idle', updatedAt: 10, ...overrides,
   };
 }
@@ -74,9 +74,9 @@ function setup(reply?: Reply) {
         if (response) return response;
       }
       if (request.path === '/api/areas') return ok([AREA]);
-      if (request.path === '/api/areas/c1/waves') return ok([WAVE]);
-      if (request.path === '/api/overlays?entity_kind=wave') return ok([]);
-      if (request.path === '/api/waves/w1') return ok({ wave: WAVE, cards: [], overlays: [] });
+      if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
+      if (request.path === '/api/overlays?entity_kind=track') return ok([]);
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, cards: [], overlays: [] });
       if (request.path === CONVERSATIONS) return ok([]);
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/spec/run')) return ok({ card_id: 'chat-1', runtime_id: 'r', phase: 'idle' });
@@ -121,7 +121,7 @@ async function openDraft() {
  * `combobox`, not `textbox`. The composer on an area route carries the `/`
  * command menu, and `useTriggerMenu` only emits the combobox role — and the
  * `aria-expanded` / `aria-haspopup` that go with it — when a trigger is
- * actually configured. A wave route's composer has no command to offer and so
+ * actually configured. A track route's composer has no command to offer and so
  * stays a plain `textbox`; that difference is the accessibility tree telling
  * the truth about which field can pop a menu, and this lookup follows it.
  */
@@ -207,7 +207,7 @@ afterEach(() => {
 });
 
 describe('area conversations', () => {
-  it('lists what the server sends, naming it Chat and never its hidden wave', async () => {
+  it('lists what the server sends, naming it Chat and never its hidden track', async () => {
     setup((request) => request.path === CONVERSATIONS && request.method === 'GET'
       ? ok([row({ title: null }), row({ id: 'chat-2', title: 'Named one', updatedAt: 20 })])
       : undefined);
@@ -455,10 +455,10 @@ describe('area conversations', () => {
 
   /*
    * Opening a row must not navigate. Every one of these rows lives on the
-   * area's hidden chat wave, so `go({name:'wave'})` would walk the reader into
-   * a wave that is deliberately not on any list.
+   * area's hidden chat track, so `go({name:'track'})` would walk the reader into
+   * a track that is deliberately not on any list.
    */
-  it('opens a conversation in place, without navigating to its hidden wave', async () => {
+  it('opens a conversation in place, without navigating to its hidden track', async () => {
     const { requests } = setup((request) => request.path === CONVERSATIONS && request.method === 'GET'
       ? ok([row({ id: 'chat-1', title: 'Read me' })]) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Read me' }));
@@ -469,11 +469,11 @@ describe('area conversations', () => {
      * click passes even when the app did decide to leave, so that assertion
      * cannot be what pins this. The drawer rendering is only a proxy too — it
      * says something rendered here, not that nothing was fetched over there.
-     * Landing on the hidden wave fetches its detail; staying never asks for it,
+     * Landing on the hidden track fetches its detail; staying never asks for it,
      * so its absence is the one fact that means exactly "did not navigate".
      */
     await waitFor(() => {
-      expect(requests.filter(({ path }) => path === `/api/waves/${CHAT_WAVE_ID}`)).toEqual([]);
+      expect(requests.filter(({ path }) => path === `/api/tracks/${CHAT_TRACK_ID}`)).toEqual([]);
       expect(screen.queryByRole('complementary', { name: 'Read me' })).not.toBeNull();
     });
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c1`);
@@ -482,7 +482,7 @@ describe('area conversations', () => {
   /*
    * The single gate in `useConversationStore`: a `'rows'` route never calls
    * `registry.remember`. Today lists the registry and navigates on open, so a
-   * remembered chat row would be a link into the hidden wave — and Today has no
+   * remembered chat row would be a link into the hidden track — and Today has no
    * second filter that would quietly cover for this one.
    */
   it('never leaks an area conversation onto Today', async () => {
@@ -552,10 +552,10 @@ describe('area conversations', () => {
 /** Two turns of transcript for `cardId`, in the shape the harness serves. */
 function harnessTurns(cardId: string) {
   return [
-    { id: 1, runtime_id: 'r', card_id: cardId, wave_id: CHAT_WAVE_ID, thread_id: 't',
+    { id: 1, runtime_id: 'r', card_id: cardId, track_id: CHAT_TRACK_ID, thread_id: 't',
       turn_id: null, item_uuid: null, item_type: 'userMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: `ask ${cardId}` } }), created_at_ms: 1 },
-    { id: 2, runtime_id: 'r', card_id: cardId, wave_id: CHAT_WAVE_ID, thread_id: 't',
+    { id: 2, runtime_id: 'r', card_id: cardId, track_id: CHAT_TRACK_ID, thread_id: 't',
       turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: `answer ${cardId}` } }), created_at_ms: 2 },
   ];

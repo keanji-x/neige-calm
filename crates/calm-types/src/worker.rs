@@ -5,7 +5,7 @@ use serde_json::Value;
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-use crate::ids::{AreaId, CardId, WaveId};
+use crate::ids::{AreaId, CardId, TrackId};
 use crate::runtime::TimestampMs;
 
 /// Opaque execution-session identifier.
@@ -52,7 +52,7 @@ pub enum Principal {
     Kernel,
     Agent {
         session_id: WorkerSessionId,
-        wave_id: WaveId,
+        track_id: TrackId,
         area_id: AreaId,
     },
 }
@@ -223,7 +223,7 @@ impl ExitInterpretation {
 /// projection vocabulary with the legacy `shared-spec` arm) and from
 /// [`crate::runtime::AgentProvider`] (which has no terminal arm): in the
 /// session model the planner is just another worker, so its provider is
-/// plain `codex`, and root-ness lives on the wave row instead of a special
+/// plain `codex`, and root-ness lives on the track row instead of a special
 /// kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -382,12 +382,12 @@ impl From<&Liveness> for LivenessTag {
 /// at it (`cards.session_id`) instead of owning it.
 ///
 /// Pure struct, field-per-column against the current `worker_sessions` schema.
-/// Root-ness is **not** a field — it is derived from `wave.root_session_id`
+/// Root-ness is **not** a field — it is derived from `track.root_session_id`
 /// (single source of truth, §1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkerSession {
     pub id: WorkerSessionId,
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub provider: WorkerProviderKind,
     pub mode: SessionMode,
     pub contract: WorkerContract,

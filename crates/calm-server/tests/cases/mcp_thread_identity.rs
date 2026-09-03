@@ -23,7 +23,7 @@ use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, require_role,
 };
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -46,7 +46,7 @@ struct Boot {
     card_role_cache: CardRoleCache,
     socket_path: PathBuf,
     raw_token: String,
-    wave_id: String,
+    track_id: String,
     spec_card_id: String,
     worker_card_id: String,
     _tmp: TempDir,
@@ -72,8 +72,8 @@ async fn boot_with_registry_and_daemon_hash(
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-thread-identity-test".into(),
@@ -95,7 +95,7 @@ async fn boot_with_registry_and_daemon_hash(
         spec_card_id.clone(),
         &calm_server::model::new_id(),
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -114,7 +114,7 @@ async fn boot_with_registry_and_daemon_hash(
 
     let worker = repo
         .card_create(calm_server::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -122,14 +122,14 @@ async fn boot_with_registry_and_daemon_hash(
         })
         .await
         .unwrap();
-    card_role_cache.insert(worker.id.clone(), CardRole::Worker, wave.id.clone());
+    card_role_cache.insert(worker.id.clone(), CardRole::Worker, track.id.clone());
 
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -147,7 +147,7 @@ async fn boot_with_registry_and_daemon_hash(
         card_role_cache,
         socket_path,
         raw_token: mcp_token.unwrap(),
-        wave_id: wave.id.as_str().to_string(),
+        track_id: track.id.as_str().to_string(),
         spec_card_id: spec_card_id.as_str().to_string(),
         worker_card_id: worker.id.as_str().to_string(),
         _tmp: tmp,
@@ -249,8 +249,8 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "mcp-token-wrapper".into(),
@@ -270,7 +270,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         &mut tx,
         card_id.clone(),
         calm_server::model::NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -342,8 +342,8 @@ async fn remint_updates_one_worker_session_hash_row() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "mcp-token-remint".into(),
@@ -365,7 +365,7 @@ async fn remint_updates_one_worker_session_hash_row() {
         card_id.clone(),
         &runtime_id,
         None,
-        wave.id,
+        track.id,
         None,
         None,
         "/workspace".into(),
@@ -436,7 +436,7 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
     let runtime_id = calm_server::model::new_id();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
     let card = calm_server::model::NewCard {
-        wave_id: boot.wave_id.as_str().into(),
+        track_id: boot.track_id.as_str().into(),
         title: None,
         kind: "codex".into(),
         sort: None,
@@ -601,7 +601,7 @@ async fn cardbound_with_matching_thread_id_uses_resolved_thread() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.spec_card_id);
     assert_eq!(identity.role, CardRole::Spec);
-    assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
+    assert_eq!(identity.track_id.as_deref(), Some(boot.track_id.as_str()));
     assert_eq!(identity.thread_id, "T1");
     let _ = &boot.server;
 }
@@ -718,7 +718,7 @@ async fn cardbound_without_thread_id_uses_bound_card() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.spec_card_id);
     assert_eq!(identity.role, CardRole::Spec);
-    assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
+    assert_eq!(identity.track_id.as_deref(), Some(boot.track_id.as_str()));
     assert_eq!(identity.thread_id, "card-bound");
     let _ = &boot.server;
 }
@@ -830,7 +830,7 @@ async fn tools_call_malformed_meta_rejects_even_when_cardbound_token_present() {
             "method": "tools/call",
             "_meta": "not-an-object",
             "params": {
-                "name": "calm.wave.state",
+                "name": "calm.track.state",
                 "arguments": {}
             }
         }),
@@ -860,7 +860,7 @@ async fn tools_call_malformed_params_meta_also_rejects() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "calm.wave.state",
+                "name": "calm.track.state",
                 "arguments": {},
                 "_meta": ["array-not-object"]
             }
@@ -996,9 +996,9 @@ async fn daemontrust_with_unresolvable_thread_id_rejects() {
 }
 
 #[tokio::test]
-async fn default_wave_state_tool_without_thread_id_uses_cardbound_spec_identity() {
+async fn default_track_state_tool_without_thread_id_uses_cardbound_spec_identity() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let resp = call_with_token(&boot, &boot.raw_token, "calm.wave.state", None, json!({})).await;
+    let resp = call_with_token(&boot, &boot.raw_token, "calm.track.state", None, json!({})).await;
     assert!(
         resp.get("error").is_none(),
         "shell-neige style CardBound no-thread call must succeed: {resp:#?}"
@@ -1013,7 +1013,7 @@ async fn pre_initialize_tools_call_rejects() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "calm.wave.state", None, json!({})),
+        tools_call_frame(2, "calm.track.state", None, json!({})),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
@@ -1028,7 +1028,14 @@ async fn pre_initialize_tools_call_rejects() {
 async fn cardbound_role_gate_still_applies() {
     let boot = boot_with_registry(build_default_registry()).await;
     let report = seed_card_with_mcp_token(&boot, "c-report-cardbound", CardRole::ReportCard).await;
-    let resp = call_with_token(&boot, &report.mcp_token, "calm.wave.state", None, json!({})).await;
+    let resp = call_with_token(
+        &boot,
+        &report.mcp_token,
+        "calm.track.state",
+        None,
+        json!({}),
+    )
+    .await;
     assert!(
         resp.get("error").is_some(),
         "ReportCard CardBound identity must still be rejected: {resp:#?}"
@@ -1070,7 +1077,7 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
                 "reason": "should not run"
             }),
         ),
-        ("calm.wave.state", json!({})),
+        ("calm.track.state", json!({})),
         (
             "calm.task.verdict",
             json!({

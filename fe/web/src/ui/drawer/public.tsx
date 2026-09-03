@@ -6,7 +6,7 @@
 //
 // It is deliberately **not modal** — no focus trap, no inert background, no
 // overlay. A conversation is something you read *alongside* the page, and a
-// trap would mean you cannot click the next wave without closing it first.
+// trap would mean you cannot click the next track without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
 import { useEffect, useRef, type ReactNode } from 'react';
@@ -237,7 +237,7 @@ export function Drawer({ open, title, mobileBackLabel, onClose, children, footer
        *
        * A drawer whose content asked for the caret in the same commit that
        * opened it — `ChatComposer`'s `focusOnMount`, the landing a
-       * just-created wave gets (#1211 S2) — has made a *more specific* request
+       * just-created track gets (#1211 S2) — has made a *more specific* request
        * than "focus moves in", and children's effects run before this one. So
        * this would not be moving focus in; it would be pulling it back out of
        * the one control the reader was put in front of. It would also record

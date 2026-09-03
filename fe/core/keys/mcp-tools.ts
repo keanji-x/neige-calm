@@ -36,10 +36,10 @@ export const REPORT_READ_TOOLS: readonly string[] = Object.freeze([
   'calm.report.links.backlinks',
 ]);
 
-export const WAVE_TOOL_PREFIX = 'calm.wave.';
+export const TRACK_TOOL_PREFIX = 'calm.track.';
 
-/** #1211 S3 — the first `calm.wave.*` tool that is a WRITE. It names the wave,
+/** #1211 S3 — the first `calm.track.*` tool that is a WRITE. It names the track,
  *  once, and the event row it leaves behind is what says the agent (not the
  *  user) chose that name; the transcript has to say so too. Keep it out of the
- *  `WAVE_TOOL_PREFIX` read bucket. */
-export const WAVE_RENAME_TOOL = 'calm.wave.rename';
+ *  `TRACK_TOOL_PREFIX` read bucket. */
+export const TRACK_RENAME_TOOL = 'calm.track.rename';

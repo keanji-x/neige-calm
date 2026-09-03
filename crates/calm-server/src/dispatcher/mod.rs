@@ -1,6 +1,6 @@
 //! Dispatcher worker.
 //!
-//! Subscribes to task, report, hook, plan, and wave events that drive
+//! Subscribes to task, report, hook, plan, and track events that drive
 //! spec-harness push observations and scheduler pokes.
 //!
 //! Worker spawns are now owned by the plan scheduler: specs maintain
@@ -27,9 +27,9 @@ use crate::harness::{
     HarnessRegistry, HookKind as HarnessHookKind, Observation as HarnessObservation, PushLockGuard,
     is_harness_snapshot_value,
 };
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::CardRole;
-use crate::operation::child_wave_adapter::ChildWaveAdapter;
+use crate::operation::child_track_adapter::ChildTrackAdapter;
 use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
@@ -86,7 +86,7 @@ pub(crate) fn event_warrants_spec_push_with_role(
 ) -> bool {
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-            !crate::wave_lifecycle::actor_is_spec_author(actor)
+            !crate::track_lifecycle::actor_is_spec_author(actor)
         }
         // Issue #644 PR-C (§6.5) — the gate runner's verdict is always
         // pushed: it is kernel-only at the role gate (actor
@@ -109,7 +109,7 @@ pub(crate) fn event_warrants_spec_push_with_role(
         // session editing the spec's work product, so it cannot loop, and
         // leaving the spec unaware that its report changed under it is a
         // worse failure than one extra wake-up.
-        Event::WaveReportEdited { author, .. } => SPEC_WAKE_AUTHORS.contains(author),
+        Event::TrackReportEdited { author, .. } => SPEC_WAKE_AUTHORS.contains(author),
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
         | Event::ReviewRound { .. }
@@ -128,9 +128,9 @@ pub(crate) fn event_warrants_spec_push_with_role(
         }
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
-        | Event::WaveUpdated(_)
-        | Event::WaveDeleted { .. }
-        | Event::WaveLifecycleChanged { .. }
+        | Event::TrackUpdated(_)
+        | Event::TrackDeleted { .. }
+        | Event::TrackLifecycleChanged { .. }
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }
@@ -338,7 +338,7 @@ fn dispatcher_operation_runtime(
     );
     let forge_action_adapter =
         Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
-    let child_wave_adapter = Arc::new(ChildWaveAdapter::new(
+    let child_track_adapter = Arc::new(ChildTrackAdapter::new(
         write.role_cache().clone(),
         write.area_cache().clone(),
         workspace_root.clone(),
@@ -359,7 +359,7 @@ fn dispatcher_operation_runtime(
             spec_harness_shutdown_adapter,
             task_verify_adapter,
             forge_action_adapter,
-            child_wave_adapter,
+            child_track_adapter,
         ],
         events.clone(),
         completion.clone(),
@@ -473,16 +473,16 @@ impl Dispatcher {
     /// call is a no-op (it `<= cursor`); see the dedup invariant in
     /// `Inner::push_to_spec`.
     ///
-    /// Wave-scope-only: the live push path discards events without a wave
+    /// Track-scope-only: the live push path discards events without a track
     /// scope before they reach the observer; this helper preserves that
-    /// invariant (caller filters to wave-scoped events).
+    /// invariant (caller filters to track-scoped events).
     pub async fn catch_up_push(
         &self,
-        wave_id: WaveId,
+        track_id: TrackId,
         event: crate::event::Event,
         envelope_id: i64,
     ) {
-        Inner::observe_harness(&self.inner, wave_id, &event, envelope_id).await;
+        Inner::observe_harness(&self.inner, track_id, &event, envelope_id).await;
     }
 
     /// Reference to the global semaphore. Exposed so tests can probe
@@ -770,7 +770,7 @@ impl Dispatcher {
             // a push only fires when `envelope_id > cursor`, making pushes
             // idempotent under the broadcast's at-least-once delivery.
             push_cursor: EventCursorCache::new(),
-            // #293 PR3b (S1) — per-wave push serialization lock-map.
+            // #293 PR3b (S1) — per-track push serialization lock-map.
             push_locks: DashMap::new(),
             semaphore: Arc::clone(&semaphore),
         });
@@ -788,8 +788,8 @@ impl Dispatcher {
             // verdict terminalizes the task — budget freed / deps
             // satisfiable).
             "task.gate_result".into(),
-            "wave.report_edited".into(),
-            "wave.deleted".into(),
+            "track.report_edited".into(),
+            "track.deleted".into(),
             "area.deleted".into(),
             "workspace.leased".into(),
             "workspace.released".into(),
@@ -807,12 +807,12 @@ impl Dispatcher {
             "claude.hook".into(),
             // Issue #644 PR-B — scheduler triggers (§5.1). These
             // only poke the scheduler; they never enter the push branch.
-            // `wave.updated` (round-2 review
+            // `track.updated` (round-2 review
             // F4) covers budget-changing PATCHes, which emit no
             // lifecycle event when the lifecycle is unchanged.
             "plan.updated".into(),
-            "wave.lifecycle_changed".into(),
-            "wave.updated".into(),
+            "track.lifecycle_changed".into(),
+            "track.updated".into(),
         ];
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
@@ -956,7 +956,7 @@ struct Inner {
     /// through the active harness registry.
     harness: HarnessRegistry,
     /// Issue #644 PR-B — scheduler poked by the subscription arms
-    /// (`plan.updated`, `wave.lifecycle_changed`, `wave.updated`, and
+    /// (`plan.updated`, `track.lifecycle_changed`, `track.updated`, and
     /// the task report kinds after their push handling).
     scheduler: Arc<Scheduler>,
     context_monitor: Arc<TaskContextMonitor>,
@@ -965,18 +965,18 @@ struct Inner {
     /// this makes pushes idempotent under at-least-once broadcast delivery
     /// and survives a re-delivered envelope without double-pushing.
     push_cursor: EventCursorCache,
-    /// #293 PR3b (S1) — per-wave serialization lock for the push path. The
+    /// #293 PR3b (S1) — per-track serialization lock for the push path. The
     /// dispatcher runs `push_to_spec` concurrently (one `tokio::spawn` per
     /// envelope), so without serialization the watermark
     /// `(get → compare → bump → push_observation)` is a non-atomic
     /// read-modify-write: if envelope id 11 bumps the cursor before id 10 is
     /// checked, id 10 (a DISTINCT real event — e.g. a `task.failed` carrying
     /// a `reason`) is wrongly deduped and silently dropped. Holding this
-    /// per-wave async `Mutex` across the whole dedup-check-and-deliver makes
-    /// same-wave pushes process in id order, so the monotonic watermark only
-    /// dedups TRUE redeliveries. Keyed by `WaveId` (one spec card per wave).
-    /// Pushes are low-frequency, so per-wave serialization is cheap.
-    push_locks: DashMap<WaveId, Arc<tokio::sync::Mutex<()>>>,
+    /// per-track async `Mutex` across the whole dedup-check-and-deliver makes
+    /// same-track pushes process in id order, so the monotonic watermark only
+    /// dedups TRUE redeliveries. Keyed by `TrackId` (one spec card per track).
+    /// Pushes are low-frequency, so per-track serialization is cheap.
+    push_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>>,
     semaphore: Arc<Semaphore>,
 }
 
@@ -1004,8 +1004,8 @@ impl Inner {
             }
         };
 
-        // #293 — push branch. The wave-event kinds the filter matches route
-        // HERE. For `wave.report_edited` we act ONLY on a User- or
+        // #293 — push branch. The track-event kinds the filter matches route
+        // HERE. For `track.report_edited` we act ONLY on a User- or
         // Plugin-authored edit (#955 §5.7) — Spec/Kernel-authored edits are
         // the spec writing its own report, and
         // pushing those back would be a feedback loop. Worker hook events
@@ -1026,13 +1026,13 @@ impl Inner {
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write)
                     && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
                 {
-                    if let Some(wave_id) = envelope.scope.wave_id().cloned() {
-                        self.observe_harness(wave_id, &envelope.event, envelope.id)
+                    if let Some(track_id) = envelope.scope.track_id().cloned() {
+                        self.observe_harness(track_id, &envelope.event, envelope.id)
                             .await;
                     } else {
                         tracing::debug!(
                             kind = envelope.event.kind_tag(),
-                            "dispatcher push: task event has no wave scope; skipping"
+                            "dispatcher push: task event has no track scope; skipping"
                         );
                     }
                 }
@@ -1040,59 +1040,59 @@ impl Inner {
                 // event may free budget / satisfy deps; poke the
                 // scheduler AFTER the push branch. Fire-and-forget; the
                 // scheduler's guards make spurious pokes no-ops.
-                if let Some(wave_id) = envelope.scope.wave_id().cloned() {
-                    self.scheduler.poke(wave_id);
+                if let Some(track_id) = envelope.scope.track_id().cloned() {
+                    self.scheduler.poke(track_id);
                 }
             }
             // Issue #644 PR-B (§5.1 triggers 1 + 4) — scheduler-only
             // arms. They never enter the push branch or the worker-spawn
             // path below.
-            Event::PlanUpdated { wave_id, .. } => {
-                self.scheduler.poke(wave_id.clone());
+            Event::PlanUpdated { track_id, .. } => {
+                self.scheduler.poke(track_id.clone());
             }
-            Event::WaveLifecycleChanged { id, .. } => {
-                self.scheduler.reconcile_child_wave(id.clone());
+            Event::TrackLifecycleChanged { id, .. } => {
+                self.scheduler.reconcile_child_track(id.clone());
                 self.scheduler.poke(id.clone());
             }
-            // Round-2 review F4 — `PATCH /api/waves` emits only
-            // `wave.updated` when it changes `task_budget` without a
+            // Round-2 review F4 — `PATCH /api/tracks` emits only
+            // `track.updated` when it changes `task_budget` without a
             // lifecycle transition; without this arm a raised budget
             // would strand pending tasks until the reconcile tick. Poke
             // only (never the push branch); pokes are idempotent and
             // cheap, so no budget diffing.
-            Event::WaveUpdated(payload) => {
+            Event::TrackUpdated(payload) => {
                 self.scheduler.poke(payload.id.clone());
             }
-            Event::WaveReportEdited {
-                author, wave_id, ..
+            Event::TrackReportEdited {
+                author, track_id, ..
             } => {
                 // #985 PR3a-ii: mechanical invalidation is independent of
                 // author and runs before the self-push suppression below.
                 let context_monitor = Arc::clone(&self.context_monitor);
-                let detection_wave_id = wave_id.clone();
+                let detection_track_id = track_id.clone();
                 tokio::spawn(async move {
                     if let Err(error) = context_monitor
-                        .detect_wave_edit(detection_wave_id.as_str())
+                        .detect_track_edit(detection_track_id.as_str())
                         .await
                     {
-                        tracing::warn!(%error, wave_id = %detection_wave_id, "task context edit detection failed");
+                        tracing::warn!(%error, track_id = %detection_track_id, "task context edit detection failed");
                     }
                 });
                 // Only user/plugin edits warrant a push (#955 §5.7).
                 // The spec authored Spec/Kernel edits itself;
                 // re-notifying it would loop.
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
-                    self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
+                    self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
                     tracing::trace!(
                         ?author,
-                        "dispatcher push: ignoring spec/kernel-authored wave.report_edited"
+                        "dispatcher push: ignoring spec/kernel-authored track.report_edited"
                     );
                 }
             }
-            Event::WaveDeleted { id, .. } => {
-                self.scheduler.reconcile_child_wave(id.clone());
+            Event::TrackDeleted { id, .. } => {
+                self.scheduler.reconcile_child_track(id.clone());
                 let context_monitor = Arc::clone(&self.context_monitor);
                 tokio::spawn(async move {
                     if let Err(error) = context_monitor.sweep().await {
@@ -1102,7 +1102,7 @@ impl Inner {
             }
             Event::AreaDeleted { .. } => {
                 // Payloads intentionally stay unchanged. The tasks-based
-                // sweep discovers vanished waves/areas fail-closed.
+                // sweep discovers vanished tracks/areas fail-closed.
                 let context_monitor = Arc::clone(&self.context_monitor);
                 tokio::spawn(async move {
                     if let Err(error) = context_monitor.sweep().await {
@@ -1110,24 +1110,24 @@ impl Inner {
                     }
                 });
             }
-            Event::WorkspaceLeased { wave_id, .. } | Event::WorkspaceReleased { wave_id, .. } => {
+            Event::WorkspaceLeased { track_id, .. } | Event::WorkspaceReleased { track_id, .. } => {
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
-                    self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
+                    self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
                 }
             }
-            Event::ForgePrMerged { wave_id, .. }
-            | Event::ReviewRound { wave_id, .. }
-            | Event::RatifyRequested { wave_id, .. }
-            | Event::RatifyResolved { wave_id, .. }
-            | Event::ForgeScanCompleted { wave_id, .. }
-            | Event::ForgePrOpened { wave_id, .. }
-            | Event::ForgePrChecks { wave_id, .. }
-            | Event::ForgeIssueClosed { wave_id, .. }
-            | Event::WorktreeProvisioned { wave_id, .. }
-            | Event::WorktreeCommitted { wave_id, .. } => {
+            Event::ForgePrMerged { track_id, .. }
+            | Event::ReviewRound { track_id, .. }
+            | Event::RatifyRequested { track_id, .. }
+            | Event::RatifyResolved { track_id, .. }
+            | Event::ForgeScanCompleted { track_id, .. }
+            | Event::ForgePrOpened { track_id, .. }
+            | Event::ForgePrChecks { track_id, .. }
+            | Event::ForgeIssueClosed { track_id, .. }
+            | Event::WorktreeProvisioned { track_id, .. }
+            | Event::WorktreeCommitted { track_id, .. } => {
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
-                    self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
+                    self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
                 }
             }
@@ -1141,17 +1141,17 @@ impl Inner {
                 // cards can emit their own hook lifecycle events, but only
                 // worker cards should notify the spec. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
-                // wake-up that asks the spec to re-read wave state.
+                // wake-up that asks the spec to re-read track state.
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
-                    if let Some(wave_id) = envelope.scope.wave_id().cloned() {
-                        self.observe_harness(wave_id, &envelope.event, envelope.id)
+                    if let Some(track_id) = envelope.scope.track_id().cloned() {
+                        self.observe_harness(track_id, &envelope.event, envelope.id)
                             .await;
                     } else {
                         tracing::debug!(
                             kind = envelope.event.kind_tag(),
                             hook_kind = %kind,
                             card_id = %card_id,
-                            "dispatcher push: worker hook stop has no wave scope; skipping"
+                            "dispatcher push: worker hook stop has no track scope; skipping"
                         );
                     }
                 } else {
@@ -1187,7 +1187,7 @@ impl Inner {
             | Event::ForgeIssueRead { .. }
             // Issue #955 — proposal lifecycle events reach the spec
             // indirectly: an accepted proposal lands a plugin-authored
-            // `wave.report_edited` in the same tx, and THAT frame is
+            // `track.report_edited` in the same tx, and THAT frame is
             // the wake-up. The proposal records themselves are
             // adjudication history (user/plugin facing), so they are
             // not in the dispatcher's kind filter.
@@ -1202,25 +1202,25 @@ impl Inner {
         }
     }
 
-    async fn observe_harness(self: &Arc<Self>, wave_id: WaveId, event: &Event, envelope_id: i64) {
-        let guard = self.acquire_push_lock(&wave_id).await;
+    async fn observe_harness(self: &Arc<Self>, track_id: TrackId, event: &Event, envelope_id: i64) {
+        let guard = self.acquire_push_lock(&track_id).await;
         self.observe_harness_under_lock(&guard, event, envelope_id)
             .await;
     }
 
-    /// #313 round-2 (B3) — per-wave push lock helper used by harness
-    /// observation so same-wave replay and live pushes serialize around
+    /// #313 round-2 (B3) — per-track push lock helper used by harness
+    /// observation so same-track replay and live pushes serialize around
     /// `(get → compare → bump)`.
-    async fn acquire_push_lock(self: &Arc<Self>, wave_id: &WaveId) -> PushLockGuard {
+    async fn acquire_push_lock(self: &Arc<Self>, track_id: &TrackId) -> PushLockGuard {
         // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the shard
         // guard must drop at this statement's `;` before we `.await` below.
         let lock = self
             .push_locks
-            .entry(wave_id.clone())
+            .entry(track_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
         let guard = lock.lock_owned().await;
-        PushLockGuard::new(wave_id.clone(), guard)
+        PushLockGuard::new(track_id.clone(), guard)
     }
 
     async fn observe_harness_under_lock(
@@ -1229,14 +1229,14 @@ impl Inner {
         event: &Event,
         envelope_id: i64,
     ) {
-        let wave_id = guard.wave_id().clone();
-        // Resolve the spec card for this wave via the role cache.
-        let spec_card_id = match self.resolve_spec_card(&wave_id).await {
+        let track_id = guard.track_id().clone();
+        // Resolve the spec card for this track via the role cache.
+        let spec_card_id = match self.resolve_spec_card(&track_id).await {
             Some(id) => id,
             None => {
                 tracing::debug!(
-                    wave_id = %wave_id,
-                    "dispatcher push: no spec card found for wave; skipping"
+                    track_id = %track_id,
+                    "dispatcher push: no spec card found for track; skipping"
                 );
                 return;
             }
@@ -1248,12 +1248,12 @@ impl Inner {
         // the initial 0 cursor, so it is skipped — we only push real,
         // persisted, ordered events. `bump` is monotonic, so a re-delivered
         // (lower-or-equal) id is a no-op and can't double-push. Under the
-        // per-wave lock above this check-then-bump is now atomic w.r.t. other
-        // same-wave pushes.
+        // per-track lock above this check-then-bump is now atomic w.r.t. other
+        // same-track pushes.
         let cursor = self.push_cursor.get(&spec_card_id);
         if envelope_id <= cursor {
             tracing::debug!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 spec_card_id = %spec_card_id,
                 envelope_id,
                 cursor,
@@ -1264,7 +1264,7 @@ impl Inner {
 
         let Some(runtime_id) = self.harness_runtime_id_for_spec_card(&spec_card_id).await else {
             tracing::debug!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 spec_card_id = %spec_card_id,
                 envelope_id,
                 kind = event.kind_tag(),
@@ -1272,9 +1272,9 @@ impl Inner {
             );
             return;
         };
-        let Some(observation) = harness_observation_from_event(&wave_id, event) else {
+        let Some(observation) = harness_observation_from_event(&track_id, event) else {
             tracing::debug!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 spec_card_id = %spec_card_id,
                 envelope_id,
                 kind = event.kind_tag(),
@@ -1284,7 +1284,7 @@ impl Inner {
         };
         let Some(harness) = self.harness.get(&runtime_id) else {
             tracing::warn!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 spec_card_id = %spec_card_id,
                 runtime_id = %runtime_id,
                 envelope_id,
@@ -1294,7 +1294,7 @@ impl Inner {
             return;
         };
         tracing::info!(
-            wave_id = %wave_id,
+            track_id = %track_id,
             spec_card_id = %spec_card_id,
             runtime_id = %runtime_id,
             envelope_id,
@@ -1303,7 +1303,7 @@ impl Inner {
         );
         if let Err(e) = harness.observe_envelope(observation, envelope_id) {
             tracing::warn!(
-                wave_id = %wave_id,
+                track_id = %track_id,
                 spec_card_id = %spec_card_id,
                 runtime_id = %runtime_id,
                 envelope_id,
@@ -1316,18 +1316,18 @@ impl Inner {
         self.push_cursor.bump(spec_card_id.clone(), envelope_id);
     }
 
-    /// Find the [`CardRole::Spec`] card for a wave. Scans the wave's cards
+    /// Find the [`CardRole::Spec`] card for a track. Scans the track's cards
     /// and consults `card_role_cache` (write-through, in-memory) for the
-    /// role. Returns `None` if the wave has no spec card (shouldn't happen
-    /// for a live push-enabled wave) or the lookup errors.
-    async fn resolve_spec_card(self: &Arc<Self>, wave_id: &WaveId) -> Option<CardId> {
-        let cards = match self.repo.cards_by_wave(wave_id.as_str()).await {
+    /// role. Returns `None` if the track has no spec card (shouldn't happen
+    /// for a live push-enabled track) or the lookup errors.
+    async fn resolve_spec_card(self: &Arc<Self>, track_id: &TrackId) -> Option<CardId> {
+        let cards = match self.repo.cards_by_track(track_id.as_str()).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
-                    "dispatcher push: cards_by_wave failed; cannot resolve spec card"
+                    "dispatcher push: cards_by_track failed; cannot resolve spec card"
                 );
                 return None;
             }
@@ -1373,7 +1373,7 @@ impl Inner {
 }
 
 pub(crate) fn harness_observation_from_event(
-    wave_id: &WaveId,
+    track_id: &TrackId,
     event: &Event,
 ) -> Option<HarnessObservation> {
     match event {
@@ -1395,7 +1395,7 @@ pub(crate) fn harness_observation_from_event(
         }),
         // Issue #644 PR-C (§6.5) — the gate runner's verdict. The plan
         // key is recovered from the task-id convention
-        // `"{wave_id}:{key}"` (§2.1) for the turn text's
+        // `"{track_id}:{key}"` (§2.1) for the turn text's
         // `plan/<key>/gate.log` path.
         Event::TaskGateResult {
             task_id,
@@ -1409,7 +1409,7 @@ pub(crate) fn harness_observation_from_event(
         } => Some(HarnessObservation::TaskGateResult {
             idempotency_key: idempotency_key.clone(),
             key: task_id
-                .strip_prefix(&format!("{}:", wave_id.as_str()))
+                .strip_prefix(&format!("{}:", track_id.as_str()))
                 .unwrap_or(task_id)
                 .to_string(),
             passed: *passed,
@@ -1418,10 +1418,10 @@ pub(crate) fn harness_observation_from_event(
             log_tail: log_tail.clone(),
             attempt: *attempt,
         }),
-        Event::WaveReportEdited {
+        Event::TrackReportEdited {
             body_after, author, ..
         } => Some(HarnessObservation::ReportEdited {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             body_sha256: sha256_hex(body_after),
             body: body_after.clone(),
             // #1252 S0 R1/F2 — the event's own attribution, carried through
@@ -1435,7 +1435,7 @@ pub(crate) fn harness_observation_from_event(
             path,
             ..
         } => Some(HarnessObservation::WorkspaceLeased {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             card_id: card_id.clone(),
             lease_id: lease_id.clone(),
             path: path.clone(),
@@ -1443,12 +1443,12 @@ pub(crate) fn harness_observation_from_event(
         Event::WorkspaceReleased {
             card_id, lease_id, ..
         } => Some(HarnessObservation::WorkspaceReleased {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             card_id: card_id.clone(),
             lease_id: lease_id.clone(),
         }),
         Event::ForgePrMerged { subject, .. } => Some(HarnessObservation::ForgePrMerged {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             pr_number: subject.pr_number,
         }),
         Event::ReviewRound {
@@ -1459,7 +1459,7 @@ pub(crate) fn harness_observation_from_event(
             converged,
             ..
         } => Some(HarnessObservation::ReviewRound {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             phase: subject.phase.clone(),
             slice_id: subject.slice_id.clone(),
             pr_number: subject.pr_number,
@@ -1469,21 +1469,21 @@ pub(crate) fn harness_observation_from_event(
             converged: *converged,
         }),
         Event::RatifyRequested { reason, .. } => Some(HarnessObservation::RatifyRequested {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             reason: reason.clone(),
         }),
         Event::RatifyResolved { decision, .. } => Some(HarnessObservation::RatifyResolved {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             decision: *decision,
         }),
         Event::ForgeScanCompleted {
             overlapping_prs, ..
         } => Some(HarnessObservation::ForgeScanCompleted {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             overlapping_prs: overlapping_prs.clone(),
         }),
         Event::ForgePrOpened { pr_number, .. } => Some(HarnessObservation::ForgePrOpened {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             pr_number: *pr_number,
         }),
         Event::ForgePrChecks {
@@ -1491,19 +1491,19 @@ pub(crate) fn harness_observation_from_event(
             conclusion,
             ..
         } => Some(HarnessObservation::ForgePrChecks {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             pr_number: *pr_number,
             conclusion: conclusion.clone(),
         }),
         Event::ForgeIssueClosed { issue_number, .. } => {
             Some(HarnessObservation::ForgeIssueClosed {
-                wave_id: wave_id.clone(),
+                track_id: track_id.clone(),
                 issue_number: *issue_number,
             })
         }
         Event::WorktreeProvisioned { card_id, path, .. } => {
             Some(HarnessObservation::WorktreeProvisioned {
-                wave_id: wave_id.clone(),
+                track_id: track_id.clone(),
                 card_id: card_id.clone(),
                 path: path.clone(),
             })
@@ -1514,7 +1514,7 @@ pub(crate) fn harness_observation_from_event(
             branch,
             ..
         } => Some(HarnessObservation::WorktreeCommitted {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             card_id: card_id.clone(),
             commit_sha: commit_sha.clone(),
             branch: branch.clone(),
@@ -1525,7 +1525,7 @@ pub(crate) fn harness_observation_from_event(
             hook_idempotency_key,
             ..
         } if kind == "hook.codex.stop" => Some(HarnessObservation::WorkerHookStop {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             card_id: card_id.clone(),
             kind: HarnessHookKind::CodexStop,
             idempotency_key: hook_idempotency_key.clone(),
@@ -1536,7 +1536,7 @@ pub(crate) fn harness_observation_from_event(
             hook_idempotency_key,
             ..
         } if kind == "hook.claude.stop" => Some(HarnessObservation::WorkerHookStop {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             card_id: card_id.clone(),
             kind: HarnessHookKind::ClaudeStop,
             idempotency_key: hook_idempotency_key.clone(),
@@ -1544,9 +1544,9 @@ pub(crate) fn harness_observation_from_event(
         Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
-        | Event::WaveUpdated(_)
-        | Event::WaveDeleted { .. }
-        | Event::WaveLifecycleChanged { .. }
+        | Event::TrackUpdated(_)
+        | Event::TrackDeleted { .. }
+        | Event::TrackLifecycleChanged { .. }
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }

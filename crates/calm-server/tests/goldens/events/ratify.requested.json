@@ -1,9 +1,9 @@
 {
-  "description": "ratify.requested carries the wave routing id and the spec-authored reason for parking on human ratification",
+  "description": "ratify.requested carries the track routing id and the spec-authored reason for parking on human ratification",
   "wire": {
     "ev": "ratify.requested",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "reason": "cap_exhausted"
     }
   }

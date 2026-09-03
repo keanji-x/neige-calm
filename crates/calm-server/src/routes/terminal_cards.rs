@@ -1,4 +1,4 @@
-//! `POST /api/waves/:wave_id/terminal-cards` — atomic terminal-card creation.
+//! `POST /api/tracks/:track_id/terminal-cards` — atomic terminal-card creation.
 //!
 //! Collapses what used to be a 3-step recipe (card-add -> terminal-create ->
 //! card-update with `terminal_id` payload) into a single runtime-backed
@@ -37,29 +37,29 @@ use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
-        "/api/waves/{wave_id}/terminal-cards",
+        "/api/tracks/{track_id}/terminal-cards",
         post(create_terminal_card),
     )
 }
 
-/// Body for `POST /api/waves/:wave_id/terminal-cards`.
+/// Body for `POST /api/tracks/:track_id/terminal-cards`.
 ///
 /// Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
 /// persists schema payload and projects identity from `runtimes`). Empty
 /// `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
-/// the wave's workspace (#1147 S6). `env` is merged into the daemon's environment
+/// the track's workspace (#1147 S6). `env` is merged into the daemon's environment
 /// as additional vars on top of `TERM` / `COLORTERM` / inherited.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewTerminalCardBody {
     #[serde(default)]
     pub title: Option<String>,
-    /// Sort order within the wave. `None` defaults to "append to end".
+    /// Sort order within the track. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
     /// Empty string or missing → `$SHELL` (then `/bin/sh`).
     #[serde(default)]
     pub program: String,
-    /// Empty string or missing → the wave's workspace path (#1147 S6).
+    /// Empty string or missing → the track's workspace path (#1147 S6).
     #[serde(default)]
     pub cwd: String,
     /// Extra env on top of the inherited set. JSON object: `{"FOO":"bar"}`.
@@ -75,13 +75,13 @@ pub struct NewTerminalCardBody {
 
 #[utoipa::path(
     post,
-    path = "/api/waves/{wave_id}/terminal-cards",
+    path = "/api/tracks/{track_id}/terminal-cards",
     tag = "terminals",
-    params(("wave_id" = String, Path, description = "Wave id to create the terminal card under")),
+    params(("track_id" = String, Path, description = "Track id to create the terminal card under")),
     request_body(content = NewTerminalCardBody, description = "Body required (theme is mandatory; program/cwd/env optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; daemon spawned", body = Card),
-        (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 404, description = "Track not found", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed; the saga rolled back the committed transaction (no leaked rows).", body = ErrorBody),
     ),
@@ -91,11 +91,11 @@ pub(crate) async fn create_terminal_card(
     State(s): State<RouteState>,
     actor: Actor,
     headers: HeaderMap,
-    Path(wave_id): Path<String>,
+    Path(track_id): Path<String>,
     Json(p): Json<NewTerminalCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_terminal_create_request(TerminalCreateRequestPayload {
-        wave_id,
+        track_id,
         title: p.title,
         sort: p.sort,
         program: p.program,

@@ -71,13 +71,13 @@ async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
     let shared_path = codex.codex_home_dir().to_path_buf();
     assert!(
         path.exists(),
-        "`new_stub()` must create the tempdir eagerly so wave-create / \
+        "`new_stub()` must create the tempdir eagerly so track-create / \
          spec-card spawn paths can immediately `mkdir <path>/<card_id>` \
          without checking; got non-existent {}",
         path.display(),
     );
 
-    // Simulate the real wave-create / spec-card spawn: create a UUID
+    // Simulate the real track-create / spec-card spawn: create a UUID
     // named per-card subdir and a sentinel file inside it. This is the
     // exact shape `spec_card.rs:230` / `codex_cards.rs:178` write.
     let card_id = uuid::Uuid::new_v4().to_string();
@@ -109,11 +109,11 @@ async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
 }
 
 #[tokio::test]
-async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_tempdir() {
+async fn codex_homes_dir_cleanup_appstate_track_create_subdir_is_under_per_test_tempdir() {
     // End-to-end: build a full `AppState` the way integration tests do
     // (this is the construction shape `cargo test -p calm-server --test
-    // wave_create_with_theme` — the test that triggered the #267
-    // incident — uses), simulate a wave-create that mints a per-card
+    // track_create_with_theme` — the test that triggered the #267
+    // incident — uses), simulate a track-create that mints a per-card
     // codex home, and assert that subdir lives under a per-instance
     // tempdir (i.e. NOT the pre-#267 hardcoded
     // `temp_dir().join("neige-codex-homes-stub")`).
@@ -138,7 +138,7 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
 
     let daemon = Arc::new(DaemonClient::new_stub());
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
 
     let plugin_data_root = tempfile::tempdir().expect("plugin data tempdir");
     let plugin = Arc::new(PluginHost::new_full(
@@ -148,7 +148,7 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
         plugin_data_root.path().to_path_buf(),
         Vec::new(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
 
     let state = AppState::from_parts(
@@ -158,10 +158,10 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
         plugin,
         codex,
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
 
-    // Simulate a wave-create that mints a per-card codex home — exactly
+    // Simulate a track-create that mints a per-card codex home — exactly
     // what the real handlers do via `<codex_homes_dir>/<card_id>/`
     // (see `spec_card.rs:230` and `codex_cards.rs:178`).
     let card_id = uuid::Uuid::new_v4().to_string();
@@ -254,7 +254,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
 
     let daemon = Arc::new(DaemonClient::new_stub());
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let plugin_data_root = tempfile::tempdir().expect("plugin data tempdir");
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
@@ -263,7 +263,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         plugin_data_root.path().to_path_buf(),
         Vec::new(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
 
     // Construction-shape mirrors the integration tests that triggered
@@ -278,7 +278,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         plugin,
         codex, // moved into state.codex
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
 
     // Seed a per-card subdir + file so the assertion has bytes on disk

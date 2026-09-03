@@ -4,8 +4,8 @@
 //! transport and broadcast behavior live outside this IO-free crate.
 
 use crate::harness::HarnessPhaseTag;
-use crate::ids::{AreaId, CardId, WaveId};
-use crate::model::{Area, Card, Overlay, Wave, WaveLifecycle};
+use crate::ids::{AreaId, CardId, TrackId};
+use crate::model::{Area, Card, Overlay, Track, TrackLifecycle};
 use crate::proposal::{ProposalDecision, ProposalOp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,7 +17,7 @@ use ts_rs::TS;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskContextRef {
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub block_id: String,
     pub rev: i64,
     pub hash: String,
@@ -30,7 +30,7 @@ pub struct TaskContextRef {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskContextChangedRef {
     #[serde(default)]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     #[serde(default)]
     pub block_id: String,
     #[serde(default)]
@@ -73,34 +73,34 @@ impl std::fmt::Display for ArtifactRef {
     }
 }
 
-/// Payload for `Event::WaveUpdated`.
+/// Payload for `Event::TrackUpdated`.
 ///
-/// `wave` is flattened to preserve the historical wire shape: the event data
-/// remains the full wave row at top level.
+/// `track` is flattened to preserve the historical wire shape: the event data
+/// remains the full track row at top level.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct WaveUpdatedPayload {
+pub struct TrackUpdatedPayload {
     #[serde(flatten)]
-    pub wave: Wave,
+    pub track: Track,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub agent_message: Option<String>,
 }
 
-impl WaveUpdatedPayload {
-    pub fn new(wave: Wave, agent_message: Option<String>) -> Self {
+impl TrackUpdatedPayload {
+    pub fn new(track: Track, agent_message: Option<String>) -> Self {
         Self {
-            wave,
+            track,
             agent_message,
         }
     }
 }
 
-impl Deref for WaveUpdatedPayload {
-    type Target = Wave;
+impl Deref for TrackUpdatedPayload {
+    type Target = Track;
 
     fn deref(&self) -> &Self::Target {
-        &self.wave
+        &self.track
     }
 }
 
@@ -110,17 +110,17 @@ impl AsRef<str> for ArtifactRef {
     }
 }
 
-/// Producer of a wave-report edit. Existing variants are persisted wire values.
+/// Producer of a track-report edit. Existing variants are persisted wire values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum EditAuthor {
     Spec,
     User,
-    /// #1189 — a wave-scoped assistant conversation (`CardRole::Assistant`).
+    /// #1189 — a track-scoped assistant conversation (`CardRole::Assistant`).
     /// Deliberately a unit variant, like `Plugin`: the bare-lowercase wire
     /// encoding and `Copy` must survive. Note that
-    /// `wave_report_edit_guard::author_name` maps this to `None`, i.e. an
+    /// `track_report_edit_guard::author_name` maps this to `None`, i.e. an
     /// assistant may not author task declaration blocks.
     Assistant,
     /// Server-internal rewrite — FSM scaffolding, migrations, etc.
@@ -129,7 +129,7 @@ pub enum EditAuthor {
     /// Historical proposal-channel apply author.
     /// Reserved; no emitter today.
     /// Plugin attribution rides in the sibling
-    /// `WaveReportEdited::author_plugin_id` field.
+    /// `TrackReportEdited::author_plugin_id` field.
     /// Deliberately a unit variant — a data-carrying `Plugin(String)`
     /// would change the bare-lowercase wire encoding and drop `Copy`.
     Plugin,
@@ -140,7 +140,7 @@ impl EditAuthor {
     /// from the derived `Serialize` impl rather than re-spelled by hand —
     /// both the spec system prompt and `Observation::ReportEdited`'s turn
     /// text name the author to the agent, and those two must agree with the
-    /// `wave.report_edited` payload the agent can also see.
+    /// `track.report_edited` payload the agent can also see.
     pub fn wire_str(self) -> String {
         serde_json::to_value(self)
             .expect("EditAuthor serializes")
@@ -150,10 +150,10 @@ impl EditAuthor {
     }
 }
 
-/// Where an event lives in the area → wave → card hierarchy.
+/// Where an event lives in the area → track → card hierarchy.
 ///
 /// `EventScope::System` is the catch-all for events that genuinely don't
-/// belong to a single area/wave/card (`Event::PluginState`, the
+/// belong to a single area/track/card (`Event::PluginState`, the
 /// AreaCreated case where the area doesn't exist before the event, and
 /// malformed legacy rows). Prefer the narrowest available scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -162,16 +162,16 @@ impl EditAuthor {
 pub enum EventScope {
     /// No entity scope — server-internal or cross-entity event.
     System,
-    /// Scoped to one area. No wave or card context.
+    /// Scoped to one area. No track or card context.
     Area { area: AreaId },
-    /// Scoped to one wave. Carries the owning area for filter ergonomics
+    /// Scoped to one track. Carries the owning area for filter ergonomics
     /// (`scope_area IS NOT NULL` already narrows the rowset for area-level
     /// subscribers without a join).
-    Wave { wave: WaveId, area: AreaId },
-    /// Scoped to one card. Carries wave + area for the same reason.
+    Track { track: TrackId, area: AreaId },
+    /// Scoped to one card. Carries track + area for the same reason.
     Card {
         card: CardId,
-        wave: WaveId,
+        track: TrackId,
         area: AreaId,
     },
 }
@@ -184,7 +184,7 @@ impl EventScope {
         match self {
             EventScope::System => "system",
             EventScope::Area { .. } => "area",
-            EventScope::Wave { .. } => "wave",
+            EventScope::Track { .. } => "track",
             EventScope::Card { .. } => "card",
         }
     }
@@ -193,17 +193,17 @@ impl EventScope {
         match self {
             EventScope::System => None,
             EventScope::Area { area } => Some(area),
-            EventScope::Wave { area, .. } => Some(area),
+            EventScope::Track { area, .. } => Some(area),
             EventScope::Card { area, .. } => Some(area),
         }
     }
 
-    /// Owning wave id, if the scope is wave-or-narrower.
-    pub fn wave_id(&self) -> Option<&WaveId> {
+    /// Owning track id, if the scope is track-or-narrower.
+    pub fn track_id(&self) -> Option<&TrackId> {
         match self {
             EventScope::System | EventScope::Area { .. } => None,
-            EventScope::Wave { wave, .. } => Some(wave),
-            EventScope::Card { wave, .. } => Some(wave),
+            EventScope::Track { track, .. } => Some(track),
+            EventScope::Card { track, .. } => Some(track),
         }
     }
 
@@ -219,7 +219,7 @@ impl EventScope {
     pub fn from_row(
         kind: Option<&str>,
         area: Option<&str>,
-        wave: Option<&str>,
+        track: Option<&str>,
         card: Option<&str>,
     ) -> EventScope {
         match kind.unwrap_or("system") {
@@ -229,17 +229,17 @@ impl EventScope {
                 },
                 None => EventScope::System,
             },
-            "wave" => match (wave, area) {
-                (Some(w), Some(c)) => EventScope::Wave {
-                    wave: WaveId::from(w),
+            "track" => match (track, area) {
+                (Some(w), Some(c)) => EventScope::Track {
+                    track: TrackId::from(w),
                     area: AreaId::from(c),
                 },
                 _ => EventScope::System,
             },
-            "card" => match (card, wave, area) {
+            "card" => match (card, track, area) {
                 (Some(card), Some(w), Some(c)) => EventScope::Card {
                     card: CardId::from(card),
-                    wave: WaveId::from(w),
+                    track: TrackId::from(w),
                     area: AreaId::from(c),
                 },
                 _ => EventScope::System,
@@ -255,7 +255,7 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 14;
+pub const SYNC_EVENT_VERSION: u32 = 15;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -319,34 +319,34 @@ pub enum Event {
     #[serde(rename = "area.deleted")]
     AreaDeleted { id: AreaId },
 
-    #[serde(rename = "wave.updated")]
-    WaveUpdated(WaveUpdatedPayload),
-    #[serde(rename = "wave.deleted")]
-    WaveDeleted { id: WaveId, area_id: AreaId },
+    #[serde(rename = "track.updated")]
+    TrackUpdated(TrackUpdatedPayload),
+    #[serde(rename = "track.deleted")]
+    TrackDeleted { id: TrackId, area_id: AreaId },
 
-    /// Issue #145 — explicit Wave lifecycle transition.
+    /// Issue #145 — explicit Track lifecycle transition.
     ///
     /// Emitted exactly once per (validated) `from → to` change. Carries
-    /// the wave id + the typed `from` / `to` so reducers downstream can
-    /// drive UI updates without re-parsing every `WaveUpdated` payload.
-    /// Wave-scoped: routes to `wave:<id>` and `area:<area>` subscribers.
+    /// the track id + the typed `from` / `to` so reducers downstream can
+    /// drive UI updates without re-parsing every `TrackUpdated` payload.
+    /// Track-scoped: routes to `track:<id>` and `area:<area>` subscribers.
     ///
     /// The state machine that gates which (from, to, actor) triples
-    /// produce this envelope lives in `crate::wave_lifecycle`. Illegal
+    /// produce this envelope lives in `crate::track_lifecycle`. Illegal
     /// transitions surface as `CalmError::Forbidden` at the call site
     /// and **no event is persisted**.
     ///
-    /// Cleaner than overloading `WaveUpdated`: lifecycle subscribers
+    /// Cleaner than overloading `TrackUpdated`: lifecycle subscribers
     /// (sidebar pills, Today schedule, the spec agent's own status
-    /// loop) can filter on `kind = wave.lifecycle_changed` without
-    /// inspecting every wave-row update for a possibly-unchanged
+    /// loop) can filter on `kind = track.lifecycle_changed` without
+    /// inspecting every track-row update for a possibly-unchanged
     /// `lifecycle` field.
-    #[serde(rename = "wave.lifecycle_changed")]
-    WaveLifecycleChanged {
-        id: WaveId,
+    #[serde(rename = "track.lifecycle_changed")]
+    TrackLifecycleChanged {
+        id: TrackId,
         area_id: AreaId,
-        from: WaveLifecycle,
-        to: WaveLifecycle,
+        from: TrackLifecycle,
+        to: TrackLifecycle,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_message: Option<String>,
@@ -357,7 +357,7 @@ pub enum Event {
     #[serde(rename = "card.updated")]
     CardUpdated(Card),
     #[serde(rename = "card.deleted")]
-    CardDeleted { id: CardId, wave_id: WaveId },
+    CardDeleted { id: CardId, track_id: TrackId },
 
     #[serde(rename = "runtime.started")]
     RuntimeStarted {
@@ -384,7 +384,7 @@ pub enum Event {
     HarnessItemAdded {
         runtime_id: String,
         card_id: CardId,
-        wave_id: WaveId,
+        track_id: TrackId,
         item_db_id: i64,
         item_uuid: Option<String>,
         item_type: Option<String>,
@@ -395,7 +395,7 @@ pub enum Event {
     HarnessPhaseChanged {
         runtime_id: String,
         card_id: CardId,
-        wave_id: WaveId,
+        track_id: TrackId,
         old_phase: HarnessPhaseTag,
         new_phase: HarnessPhaseTag,
     },
@@ -413,9 +413,9 @@ pub enum Event {
     /// existing "an absent `Option` field is `None`" rule, not the thing
     /// doing the work (removing it changes nothing — verified by mutation).
     ///   * Absence must deserialize because rows written before #1252 carry
-    ///     only `{card_id, runtime_id, wave_id}`, and
+    ///     only `{card_id, runtime_id, track_id}`, and
     ///     [`Event::from_kind_and_payload`] is how `events_since` /
-    ///     `events_for_wave` rebuild stored rows. A required field makes
+    ///     `events_for_track` rebuild stored rows. A required field makes
     ///     those rows fail to deserialize, and both readers `continue` past
     ///     the error — the row vanishes from WS replay while its id still
     ///     advances the client cursor, splicing a client's spec history
@@ -431,7 +431,7 @@ pub enum Event {
     HarnessTranscriptCleared {
         runtime_id: String,
         card_id: CardId,
-        wave_id: WaveId,
+        track_id: TrackId,
         /// Number of `harness_items` rows deleted by this reset.
         /// `None` on pre-#1252 rows only.
         #[serde(default)]
@@ -449,8 +449,8 @@ pub enum Event {
     },
     /// #615 F1 — emitted when `POST /api/cards/{id}/spec/input` queues
     /// a user-authored text observation onto the spec harness. Card-scoped
-    /// (the spec card), `wave_id` carried so wave-timeline subscribers can
-    /// filter without a card→wave lookup. Actor is on the envelope
+    /// (the spec card), `track_id` carried so track-timeline subscribers can
+    /// filter without a card→track lookup. Actor is on the envelope
     /// (`X-Calm-Actor` → `events.actor`), `char_count` lets audit/replay
     /// surface size without keeping the body text on the event row.
     ///
@@ -462,25 +462,25 @@ pub enum Event {
     HarnessUserMessageEnqueued {
         runtime_id: String,
         card_id: CardId,
-        wave_id: WaveId,
+        track_id: TrackId,
         char_count: u32,
     },
 
-    /// Issue #247 PR2 — structured wave-report edit-log entry. Emitted
+    /// Issue #247 PR2 — structured track-report edit-log entry. Emitted
     /// alongside `Event::CardUpdated` from every successful
-    /// `calm_server::wave_report::write::persist` call so PR4's UI can
+    /// `calm_server::track_report::write::persist` call so PR4's UI can
     /// render an edit timeline and PR5's spec agent can wake on
     /// user-authored edits. (#1318 §1 fixed the path here: the writer has
     /// never lived under `mcp_server::tools`, and it is now private to
-    /// `wave_report::write`, reachable through that module's three entry
+    /// `track_report::write`, reachable through that module's three entry
     /// points.)
     ///
     /// `CardUpdated` stays the generic "the row changed, re-fetch" signal
-    /// every existing frontend subscriber already consumes — `WaveReportEdited`
+    /// every existing frontend subscriber already consumes — `TrackReportEdited`
     /// is the *additional* structured edit-log entry, not a replacement.
     /// Both events land in the same transaction; the broadcast order
     /// matches the persisted order so a subscriber that wants edit-log
-    /// semantics can ignore `CardUpdated` for wave-report cards without
+    /// semantics can ignore `CardUpdated` for track-report cards without
     /// missing anything.
     ///
     /// `summary_before` / `body_before` are the projected text values
@@ -504,12 +504,12 @@ pub enum Event {
     /// replay.
     ///
     /// Card-scoped: the kernel persists this row with
-    /// `scope_wave = wave_id` and `scope_card = card_id` so the
-    /// dispatcher's push filter can subscribe to a single wave's edit
+    /// `scope_track = track_id` and `scope_card = card_id` so the
+    /// dispatcher's push filter can subscribe to a single track's edit
     /// log without scanning the firehose.
-    #[serde(rename = "wave.report_edited")]
-    WaveReportEdited {
-        wave_id: WaveId,
+    #[serde(rename = "track.report_edited")]
+    TrackReportEdited {
+        track_id: TrackId,
         card_id: CardId,
         author: EditAuthor,
         /// Submitting plugin id when `author == EditAuthor::Plugin`
@@ -651,7 +651,7 @@ pub enum Event {
     /// card. PR4 schema-only; PR5's `Dispatcher` was the consumer until
     /// #644 PR-D removed that live dispatch arm.
     ///
-    /// `cwd` is `None` when the spec card defers to the wave/area default
+    /// `cwd` is `None` when the spec card defers to the track/area default
     /// working directory.
     #[serde(rename = "terminal.worker_requested", alias = "terminal.job_requested")]
     TerminalWorkerRequested {
@@ -710,7 +710,7 @@ pub enum Event {
     /// report edits may produce this event.
     #[serde(rename = "plan.updated")]
     PlanUpdated {
-        wave_id: WaveId,
+        track_id: TrackId,
         changed_keys: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -724,8 +724,8 @@ pub enum Event {
     /// this record is the projection's requested-record fallback
     /// (`requested_at`, `kind`, the `requested`/`running` statuses).
     ///
-    /// `idempotency_key` is the task id (`"{wave_id}:{key}"`); `kind` is
-    /// the worker kind (`"codex"` / `"terminal"`). Wave-scoped, actor
+    /// `idempotency_key` is the task id (`"{track_id}:{key}"`); `kind` is
+    /// the worker kind (`"codex"` / `"terminal"`). Track-scoped, actor
     /// `ActorId::KernelDispatcher`, kernel-only: the in-tx role gate
     /// refuses it from any card-derived actor (spec included) — only the
     /// scheduler may claim tasks.
@@ -745,7 +745,7 @@ pub enum Event {
     #[serde(rename = "task.context_frozen")]
     TaskContextFrozen {
         #[serde(default)]
-        wave_id: WaveId,
+        track_id: TrackId,
         #[serde(default)]
         task_key: String,
         #[serde(default)]
@@ -765,7 +765,7 @@ pub enum Event {
     #[serde(rename = "task.context_advanced")]
     TaskContextAdvanced {
         #[serde(default)]
-        wave_id: WaveId,
+        track_id: TrackId,
         #[serde(default)]
         task_key: String,
         task_id: String,
@@ -780,11 +780,11 @@ pub enum Event {
     /// isolated workspace lease for a Codex task. The lease is just a
     /// directory plus a durable row; git/worktree semantics are layered
     /// by later plugin slices. The event is persisted with card scope,
-    /// and the card/wave ids are also carried here so topic filtering can
+    /// and the card/track ids are also carried here so topic filtering can
     /// route replay/live frames without inspecting the envelope scope.
     #[serde(rename = "workspace.leased")]
     WorkspaceLeased {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         lease_id: String,
         path: String,
@@ -796,25 +796,25 @@ pub enum Event {
     /// durable lease id for audit correlation.
     #[serde(rename = "workspace.released")]
     WorkspaceReleased {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         lease_id: String,
     },
 
     /// Issue #760 slice 6 — a forge adapter merged the authoritative
-    /// phase/slice PR for a wave. `wave_id` and `subject` identify the
+    /// phase/slice PR for a track. `track_id` and `subject` identify the
     /// C6/R4-4 target; `head_sha` and `merge_sha` are the forge output
     /// values extracted from the action result.
     #[serde(rename = "forge.pr.merged")]
     ForgePrMerged {
-        wave_id: WaveId,
+        track_id: TrackId,
         subject: ForgeMergeSubject,
         head_sha: String,
         merge_sha: String,
     },
     #[serde(rename = "review.round")]
     ReviewRound {
-        wave_id: WaveId,
+        track_id: TrackId,
         subject: ReviewSubject,
         head_sha: Option<String>,
         n: u32,
@@ -825,10 +825,10 @@ pub enum Event {
         idempotency_key: String,
     },
     #[serde(rename = "ratify.requested")]
-    RatifyRequested { wave_id: WaveId, reason: String },
+    RatifyRequested { track_id: TrackId, reason: String },
     #[serde(rename = "ratify.resolved")]
     RatifyResolved {
-        wave_id: WaveId,
+        track_id: TrackId,
         decision: RatifyDecision,
     },
 
@@ -841,7 +841,7 @@ pub enum Event {
     /// plugin-id mismatch (design §5.4).
     #[serde(rename = "proposal.submitted")]
     ProposalSubmitted {
-        wave_id: WaveId,
+        track_id: TrackId,
         proposal_id: String,
         /// Submitting plugin. Injected kernel-side from the callback
         /// connection (never trusted from plugin input) and
@@ -857,7 +857,7 @@ pub enum Event {
         ops: Vec<ProposalOp>,
         /// Human-facing rationale rendered in the adjudication UI.
         note: String,
-        /// Pending-scoped idempotency key: while a `(plugin, wave,
+        /// Pending-scoped idempotency key: while a `(plugin, track,
         /// idem_key)` proposal is pending, re-submits return the
         /// original proposal id; resolution releases the key.
         idem_key: String,
@@ -871,25 +871,25 @@ pub enum Event {
     /// `accepted`/`rejected`/`stale` ⇒ `ActorId::User` only).
     #[serde(rename = "proposal.resolved")]
     ProposalResolved {
-        wave_id: WaveId,
+        track_id: TrackId,
         proposal_id: String,
         plugin_id: String,
         decision: ProposalDecision,
     },
     #[serde(rename = "forge.scan.completed")]
     ForgeScanCompleted {
-        wave_id: WaveId,
+        track_id: TrackId,
         overlapping_prs: Vec<u64>,
     },
     #[serde(rename = "forge.pr.opened")]
     ForgePrOpened {
-        wave_id: WaveId,
+        track_id: TrackId,
         pr_number: u64,
         head_sha: String,
     },
     #[serde(rename = "forge.pr.diff.read")]
     ForgePrDiffRead {
-        wave_id: WaveId,
+        track_id: TrackId,
         pr_number: u64,
         base_sha: String,
         head_sha: String,
@@ -897,34 +897,37 @@ pub enum Event {
     },
     #[serde(rename = "forge.pr.checks")]
     ForgePrChecks {
-        wave_id: WaveId,
+        track_id: TrackId,
         pr_number: u64,
         conclusion: String,
     },
     #[serde(rename = "forge.issue.read")]
     ForgeIssueRead {
-        wave_id: WaveId,
+        track_id: TrackId,
         issue_number: u64,
         artifact_path: String,
     },
     #[serde(rename = "forge.issue.closed")]
-    ForgeIssueClosed { wave_id: WaveId, issue_number: u64 },
+    ForgeIssueClosed {
+        track_id: TrackId,
+        issue_number: u64,
+    },
     #[serde(rename = "worktree.provisioned")]
     WorktreeProvisioned {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         path: String,
     },
     #[serde(rename = "worktree.committed")]
     WorktreeCommitted {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         commit_sha: String,
         branch: String,
     },
     #[serde(rename = "worktree.removed")]
     WorktreeRemoved {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         path: String,
     },
@@ -933,13 +936,13 @@ pub enum Event {
     /// `task-verify` attempt and recorded its verdict. Appended in the
     /// SAME tx as the `verifying → done|failed` tasks-row flip (the
     /// gate observer's completion tx, or the scheduler's reconcile
-    /// backstop), wave-scoped, actor `ActorId::KernelDispatcher` —
+    /// backstop), track-scoped, actor `ActorId::KernelDispatcher` —
     /// every kernel-emitted task event uses `KernelDispatcher` so
     /// `is_spec_verdict_event` never classifies it as a spec verdict
     /// (design §6.5).
     ///
     /// `task_id` and `idempotency_key` both carry the task id
-    /// (`"{wave_id}:{key}"`); the duplicate key field keeps the
+    /// (`"{track_id}:{key}"`); the duplicate key field keeps the
     /// task-event correlation convention every other `task.*` kind
     /// uses. `passed` is the machine verdict (wrapper exit 0);
     /// `failing_step` is the last `::gate-step` sentinel before a red
@@ -1054,7 +1057,7 @@ impl ForgeEventSpec {
 /// kind, or entity id; plugins that want those signals must filter via the
 /// events glob clause and omit the classifier clauses.
 ///
-/// Issue #247 PR2 treats `Event::WaveReportEdited` as card-scoped for plugin
+/// Issue #247 PR2 treats `Event::TrackReportEdited` as card-scoped for plugin
 /// filters: `entity_kind = "card"` and `entity_id = card_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventMetadata {
@@ -1087,22 +1090,22 @@ impl Event {
                 entity_kind: None,
                 entity_id: Some(id.to_string()),
             },
-            Event::WaveUpdated(w) => EventMetadata {
+            Event::TrackUpdated(w) => EventMetadata {
                 kind_tag,
                 plugin_id: None,
-                entity_kind: Some("wave".into()),
+                entity_kind: Some("track".into()),
                 entity_id: Some(w.id.to_string()),
             },
-            Event::WaveDeleted { id, .. } => EventMetadata {
+            Event::TrackDeleted { id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
-                entity_kind: Some("wave".into()),
+                entity_kind: Some("track".into()),
                 entity_id: Some(id.to_string()),
             },
-            Event::WaveLifecycleChanged { id, .. } => EventMetadata {
+            Event::TrackLifecycleChanged { id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
-                entity_kind: Some("wave".into()),
+                entity_kind: Some("track".into()),
                 entity_id: Some(id.to_string()),
             },
             Event::CardAdded(c) => EventMetadata {
@@ -1140,7 +1143,7 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
-            Event::WaveReportEdited { card_id, .. } => EventMetadata {
+            Event::TrackReportEdited { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
@@ -1217,15 +1220,15 @@ impl Event {
                 entity_kind: None,
                 entity_id: None,
             },
-            Event::PlanUpdated { wave_id, .. } => EventMetadata {
+            Event::PlanUpdated { track_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
-                entity_kind: Some("wave".into()),
-                entity_id: Some(wave_id.to_string()),
+                entity_kind: Some("track".into()),
+                entity_id: Some(track_id.to_string()),
             },
             // Issue #644 PR-B — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via the
-            // events kind clause + the envelope's wave scope.
+            // events kind clause + the envelope's track scope.
             Event::TaskDispatched { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1246,35 +1249,39 @@ impl Event {
                     entity_id: Some(card_id.to_string()),
                 }
             }
-            Event::ForgePrMerged { wave_id, .. }
-            | Event::ReviewRound { wave_id, .. }
-            | Event::RatifyRequested { wave_id, .. }
-            | Event::RatifyResolved { wave_id, .. }
-            | Event::ForgeScanCompleted { wave_id, .. }
-            | Event::ForgePrOpened { wave_id, .. }
-            | Event::ForgePrDiffRead { wave_id, .. }
-            | Event::ForgePrChecks { wave_id, .. }
-            | Event::ForgeIssueRead { wave_id, .. }
-            | Event::ForgeIssueClosed { wave_id, .. } => EventMetadata {
+            Event::ForgePrMerged { track_id, .. }
+            | Event::ReviewRound { track_id, .. }
+            | Event::RatifyRequested { track_id, .. }
+            | Event::RatifyResolved { track_id, .. }
+            | Event::ForgeScanCompleted { track_id, .. }
+            | Event::ForgePrOpened { track_id, .. }
+            | Event::ForgePrDiffRead { track_id, .. }
+            | Event::ForgePrChecks { track_id, .. }
+            | Event::ForgeIssueRead { track_id, .. }
+            | Event::ForgeIssueClosed { track_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
-                entity_kind: Some("wave".into()),
-                entity_id: Some(wave_id.to_string()),
+                entity_kind: Some("track".into()),
+                entity_id: Some(track_id.to_string()),
             },
             // Issue #955 — proposal events carry genuine plugin
-            // attribution (the submitter) with wave entity scope, so a
+            // attribution (the submitter) with track entity scope, so a
             // plugin's `neige.event.subscribe` classifier clauses can
             // narrow its view to its own proposals (design §5.5).
             Event::ProposalSubmitted {
-                wave_id, plugin_id, ..
+                track_id,
+                plugin_id,
+                ..
             }
             | Event::ProposalResolved {
-                wave_id, plugin_id, ..
+                track_id,
+                plugin_id,
+                ..
             } => EventMetadata {
                 kind_tag,
                 plugin_id: Some(plugin_id.clone()),
-                entity_kind: Some("wave".into()),
-                entity_id: Some(wave_id.to_string()),
+                entity_kind: Some("track".into()),
+                entity_id: Some(track_id.to_string()),
             },
             Event::WorktreeProvisioned { card_id, .. }
             | Event::WorktreeCommitted { card_id, .. }
@@ -1286,7 +1293,7 @@ impl Event {
             },
             // Issue #644 PR-C — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via
-            // the events kind clause + the envelope's wave scope.
+            // the events kind clause + the envelope's track scope.
             Event::TaskGateResult { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1304,9 +1311,9 @@ impl Event {
         match self {
             Event::AreaUpdated(_) => "area.updated",
             Event::AreaDeleted { .. } => "area.deleted",
-            Event::WaveUpdated(_) => "wave.updated",
-            Event::WaveDeleted { .. } => "wave.deleted",
-            Event::WaveLifecycleChanged { .. } => "wave.lifecycle_changed",
+            Event::TrackUpdated(_) => "track.updated",
+            Event::TrackDeleted { .. } => "track.deleted",
+            Event::TrackLifecycleChanged { .. } => "track.lifecycle_changed",
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
@@ -1317,7 +1324,7 @@ impl Event {
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
-            Event::WaveReportEdited { .. } => "wave.report_edited",
+            Event::TrackReportEdited { .. } => "track.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
@@ -1392,7 +1399,7 @@ impl Event {
 ///
 /// **Topic grammar** (mirror in frontend):
 ///   - `area:<id>`           — events touching a specific area
-///   - `wave:<id>`           — events touching a specific wave
+///   - `track:<id>`           — events touching a specific track
 ///   - `card:<id>`           — events touching a specific card
 ///   - `plugin:<id>`         — events emitted by/about a specific plugin
 ///   - `plugin:*`            — all plugin events
@@ -1402,68 +1409,68 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::AreaUpdated(c) => vec![format!("area:{}", c.id), "*".into()],
         Event::AreaDeleted { id } => vec![format!("area:{}", id), "*".into()],
 
-        Event::WaveUpdated(w) => vec![
-            format!("wave:{}", w.id),
+        Event::TrackUpdated(w) => vec![
+            format!("track:{}", w.id),
             format!("area:{}", w.area_id),
             "*".into(),
         ],
-        Event::WaveDeleted { id, area_id } => vec![
-            format!("wave:{}", id),
+        Event::TrackDeleted { id, area_id } => vec![
+            format!("track:{}", id),
             format!("area:{}", area_id),
             "*".into(),
         ],
 
-        Event::WaveLifecycleChanged { id, area_id, .. } => vec![
-            format!("wave:{}", id),
+        Event::TrackLifecycleChanged { id, area_id, .. } => vec![
+            format!("track:{}", id),
             format!("area:{}", area_id),
             "*".into(),
         ],
 
         Event::CardAdded(c) | Event::CardUpdated(c) => vec![
             format!("card:{}", c.id),
-            format!("wave:{}", c.wave_id),
+            format!("track:{}", c.track_id),
             "*".into(),
         ],
-        Event::CardDeleted { id, wave_id } => vec![
+        Event::CardDeleted { id, track_id } => vec![
             format!("card:{}", id),
-            format!("wave:{}", wave_id),
+            format!("track:{}", track_id),
             "*".into(),
         ],
         // Runtime payloads intentionally route by card only: the §F payloads do
-        // not carry wave_id, and today's web client subscribes with ["*"].
-        // Future wave-only subscribers can revisit by threading EventScope into
-        // topics() or adding wave_id to these payloads.
+        // not carry track_id, and today's web client subscribes with ["*"].
+        // Future track-only subscribers can revisit by threading EventScope into
+        // topics() or adding track_id to these payloads.
         Event::RuntimeStarted { card_id, .. }
         | Event::RuntimeStatusChanged { card_id, .. }
         | Event::RuntimeSuperseded { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
         Event::HarnessItemAdded {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         }
         | Event::HarnessPhaseChanged {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         }
         | Event::HarnessTranscriptCleared {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         }
         | Event::HarnessUserMessageEnqueued {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         } => vec![
             format!("card:{}", card_id),
-            format!("wave:{}", wave_id),
+            format!("track:{}", track_id),
             "*".into(),
         ],
 
-        // Issue #247 PR2 — wave-report edit log. Card-scoped on the
+        // Issue #247 PR2 — track-report edit log. Card-scoped on the
         // events row; topic mapping mirrors `Card*` so a subscriber
-        // listening on the report card (or its wave) sees the
+        // listening on the report card (or its track) sees the
         // structured edit alongside the generic `card.updated`.
-        Event::WaveReportEdited {
-            wave_id, card_id, ..
+        Event::TrackReportEdited {
+            track_id, card_id, ..
         } => vec![
             format!("card:{}", card_id),
-            format!("wave:{}", wave_id),
+            format!("track:{}", track_id),
             "*".into(),
         ],
 
@@ -1503,7 +1510,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         }
 
         // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
-        // No card/wave/area ids on the payload itself (the BroadcastEnvelope
+        // No card/track/area ids on the payload itself (the BroadcastEnvelope
         // carries the originating `EventScope` instead — see `Dispatcher`).
         // Subscribers identify these via the firehose plus the dispatcher's
         // `kinds=` filter (PR5).
@@ -1517,63 +1524,67 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskGateResult { .. } => vec!["*".into()],
 
         Event::WorkspaceLeased {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         }
         | Event::WorkspaceReleased {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         } => vec![
             format!("card:{}", card_id),
-            format!("wave:{}", wave_id),
+            format!("track:{}", track_id),
             "*".into(),
         ],
 
-        Event::ForgePrMerged { wave_id, .. }
-        | Event::ReviewRound { wave_id, .. }
-        | Event::RatifyRequested { wave_id, .. }
-        | Event::RatifyResolved { wave_id, .. }
-        | Event::ForgeScanCompleted { wave_id, .. }
-        | Event::ForgePrOpened { wave_id, .. }
-        | Event::ForgePrDiffRead { wave_id, .. }
-        | Event::ForgePrChecks { wave_id, .. }
-        | Event::ForgeIssueRead { wave_id, .. }
-        | Event::ForgeIssueClosed { wave_id, .. } => {
-            vec![format!("wave:{}", wave_id), "*".into()]
+        Event::ForgePrMerged { track_id, .. }
+        | Event::ReviewRound { track_id, .. }
+        | Event::RatifyRequested { track_id, .. }
+        | Event::RatifyResolved { track_id, .. }
+        | Event::ForgeScanCompleted { track_id, .. }
+        | Event::ForgePrOpened { track_id, .. }
+        | Event::ForgePrDiffRead { track_id, .. }
+        | Event::ForgePrChecks { track_id, .. }
+        | Event::ForgeIssueRead { track_id, .. }
+        | Event::ForgeIssueClosed { track_id, .. } => {
+            vec![format!("track:{}", track_id), "*".into()]
         }
 
-        // Issue #955 — proposal events fan out to the wave timeline AND
+        // Issue #955 — proposal events fan out to the track timeline AND
         // the submitting plugin's topic so a plugin can observe its own
         // resolutions via the existing subscribe surface (design §5.5).
         Event::ProposalSubmitted {
-            wave_id, plugin_id, ..
+            track_id,
+            plugin_id,
+            ..
         }
         | Event::ProposalResolved {
-            wave_id, plugin_id, ..
+            track_id,
+            plugin_id,
+            ..
         } => vec![
-            format!("wave:{}", wave_id),
+            format!("track:{}", track_id),
             format!("plugin:{}", plugin_id),
             "plugin:*".into(),
             "*".into(),
         ],
 
         Event::WorktreeProvisioned {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         }
         | Event::WorktreeCommitted {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         }
         | Event::WorktreeRemoved {
-            wave_id, card_id, ..
+            track_id, card_id, ..
         } => vec![
             format!("card:{}", card_id),
-            format!("wave:{}", wave_id),
+            format!("track:{}", track_id),
             "*".into(),
         ],
 
-        // Issue #644 — plan revisions are wave-scoped on the payload, so
-        // wave subscribers (future UI task list) can filter without the
+        // Issue #644 — plan revisions are track-scoped on the payload, so
+        // track subscribers (future UI task list) can filter without the
         // firehose. No area id on the payload; the BroadcastEnvelope's
         // EventScope carries the full ancestor chain.
-        Event::PlanUpdated { wave_id, .. } => vec![format!("wave:{}", wave_id), "*".into()],
+        Event::PlanUpdated { track_id, .. } => vec![format!("track:{}", track_id), "*".into()],
     }
 }
 #[cfg(test)]
@@ -1583,7 +1594,7 @@ mod scope_tests {
     #[test]
     fn task_context_ref_from_3a_defaults_missing_root_marker_with_nonempty_refs() {
         let refs: Vec<TaskContextRef> = serde_json::from_value(serde_json::json!([{
-            "wave_id": "w-old",
+            "track_id": "w-old",
             "block_id": "b_old",
             "rev": 3,
             "hash": "abc123"
@@ -1606,17 +1617,17 @@ mod scope_tests {
             "area"
         );
         assert_eq!(
-            EventScope::Wave {
-                wave: WaveId::from("w"),
+            EventScope::Track {
+                track: TrackId::from("w"),
                 area: AreaId::from("c"),
             }
             .kind(),
-            "wave"
+            "track"
         );
         assert_eq!(
             EventScope::Card {
                 card: CardId::from("k"),
-                wave: WaveId::from("w"),
+                track: TrackId::from("w"),
                 area: AreaId::from("c"),
             }
             .kind(),
@@ -1628,29 +1639,29 @@ mod scope_tests {
     fn ancestor_accessors_return_chain() {
         let s = EventScope::Card {
             card: CardId::from("k"),
-            wave: WaveId::from("w"),
+            track: TrackId::from("w"),
             area: AreaId::from("c"),
         };
         assert_eq!(s.card_id().map(|x| x.as_str()), Some("k"));
-        assert_eq!(s.wave_id().map(|x| x.as_str()), Some("w"));
+        assert_eq!(s.track_id().map(|x| x.as_str()), Some("w"));
         assert_eq!(s.area_id().map(|x| x.as_str()), Some("c"));
 
-        let s = EventScope::Wave {
-            wave: WaveId::from("w"),
+        let s = EventScope::Track {
+            track: TrackId::from("w"),
             area: AreaId::from("c"),
         };
         assert_eq!(s.card_id(), None);
-        assert_eq!(s.wave_id().map(|x| x.as_str()), Some("w"));
+        assert_eq!(s.track_id().map(|x| x.as_str()), Some("w"));
         assert_eq!(s.area_id().map(|x| x.as_str()), Some("c"));
 
         let s = EventScope::Area {
             area: AreaId::from("c"),
         };
-        assert!(s.card_id().is_none() && s.wave_id().is_none());
+        assert!(s.card_id().is_none() && s.track_id().is_none());
         assert_eq!(s.area_id().map(|x| x.as_str()), Some("c"));
 
         let s = EventScope::System;
-        assert!(s.card_id().is_none() && s.wave_id().is_none() && s.area_id().is_none());
+        assert!(s.card_id().is_none() && s.track_id().is_none() && s.area_id().is_none());
     }
 
     #[test]
@@ -1660,13 +1671,13 @@ mod scope_tests {
             EventScope::Area {
                 area: AreaId::from("c"),
             },
-            EventScope::Wave {
-                wave: WaveId::from("w"),
+            EventScope::Track {
+                track: TrackId::from("w"),
                 area: AreaId::from("c"),
             },
             EventScope::Card {
                 card: CardId::from("k"),
-                wave: WaveId::from("w"),
+                track: TrackId::from("w"),
                 area: AreaId::from("c"),
             },
         ] {
@@ -1684,13 +1695,13 @@ mod scope_tests {
         // `id` carries the struct fields.
         let s = EventScope::Card {
             card: CardId::from("k"),
-            wave: WaveId::from("w"),
+            track: TrackId::from("w"),
             area: AreaId::from("c"),
         };
         let v: serde_json::Value = serde_json::to_value(&s).unwrap();
         assert_eq!(v["kind"], "Card");
         assert_eq!(v["id"]["card"], "k");
-        assert_eq!(v["id"]["wave"], "w");
+        assert_eq!(v["id"]["track"], "w");
         assert_eq!(v["id"]["area"], "c");
 
         // `System` unit variant: just the `kind` discriminator, no `id`.
@@ -1711,9 +1722,9 @@ mod scope_tests {
             },
         );
         assert_eq!(
-            EventScope::from_row(Some("wave"), Some("c"), Some("w"), None),
-            EventScope::Wave {
-                wave: WaveId::from("w"),
+            EventScope::from_row(Some("track"), Some("c"), Some("w"), None),
+            EventScope::Track {
+                track: TrackId::from("w"),
                 area: AreaId::from("c"),
             },
         );
@@ -1721,7 +1732,7 @@ mod scope_tests {
             EventScope::from_row(Some("card"), Some("c"), Some("w"), Some("k")),
             EventScope::Card {
                 card: CardId::from("k"),
-                wave: WaveId::from("w"),
+                track: TrackId::from("w"),
                 area: AreaId::from("c"),
             },
         );
@@ -1746,7 +1757,7 @@ mod scope_tests {
             EventScope::System,
         );
         assert_eq!(
-            EventScope::from_row(Some("wave"), Some("c"), None, None),
+            EventScope::from_row(Some("track"), Some("c"), None, None),
             EventScope::System,
         );
     }
@@ -1807,36 +1818,36 @@ mod scope_tests {
         assert_eq!(failed.kind_tag(), "task.failed");
 
         let plan_updated = Event::PlanUpdated {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             changed_keys: vec!["impl-parser".into()],
             agent_message: None,
         };
         assert_eq!(plan_updated.kind_tag(), "plan.updated");
 
         let task_dispatched = Event::TaskDispatched {
-            idempotency_key: "wave-1:impl-parser".into(),
+            idempotency_key: "track-1:impl-parser".into(),
             kind: "codex".into(),
             agent_message: None,
         };
         assert_eq!(task_dispatched.kind_tag(), "task.dispatched");
 
         let workspace_leased = Event::WorkspaceLeased {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             lease_id: "lease-1".into(),
-            path: ".claude/worktrees/wave-1/card-1".into(),
+            path: ".claude/worktrees/track-1/card-1".into(),
         };
         assert_eq!(workspace_leased.kind_tag(), "workspace.leased");
 
         let workspace_released = Event::WorkspaceReleased {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             lease_id: "lease-1".into(),
         };
         assert_eq!(workspace_released.kind_tag(), "workspace.released");
 
         let forge_pr_merged = Event::ForgePrMerged {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             subject: ForgeMergeSubject {
                 phase: "impl".into(),
                 slice_id: "6".into(),
@@ -1848,7 +1859,7 @@ mod scope_tests {
         assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
 
         let review_round = Event::ReviewRound {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             subject: ReviewSubject {
                 phase: "impl".into(),
                 slice_id: "5b".into(),
@@ -1863,37 +1874,37 @@ mod scope_tests {
                 verdict: ChannelVerdictKind::ChangesRequested,
             }],
             root_cause: Some("tests failing".into()),
-            idempotency_key: "review.round:wave-1:impl:5b:760:1".into(),
+            idempotency_key: "review.round:track-1:impl:5b:760:1".into(),
         };
         assert_eq!(review_round.kind_tag(), "review.round");
 
         let ratify_requested = Event::RatifyRequested {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             reason: "cap_exhausted".into(),
         };
         assert_eq!(ratify_requested.kind_tag(), "ratify.requested");
 
         let ratify_resolved = Event::RatifyResolved {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             decision: RatifyDecision::Grant,
         };
         assert_eq!(ratify_resolved.kind_tag(), "ratify.resolved");
 
         let forge_scan_completed = Event::ForgeScanCompleted {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             overlapping_prs: vec![1, 2],
         };
         assert_eq!(forge_scan_completed.kind_tag(), "forge.scan.completed");
 
         let forge_pr_opened = Event::ForgePrOpened {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             pr_number: 1,
             head_sha: "head-sha".into(),
         };
         assert_eq!(forge_pr_opened.kind_tag(), "forge.pr.opened");
 
         let forge_pr_diff_read = Event::ForgePrDiffRead {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             pr_number: 1,
             base_sha: "base-sha".into(),
             head_sha: "head-sha".into(),
@@ -1902,42 +1913,42 @@ mod scope_tests {
         assert_eq!(forge_pr_diff_read.kind_tag(), "forge.pr.diff.read");
 
         let forge_pr_checks = Event::ForgePrChecks {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             pr_number: 1,
             conclusion: "success".into(),
         };
         assert_eq!(forge_pr_checks.kind_tag(), "forge.pr.checks");
 
         let forge_issue_read = Event::ForgeIssueRead {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             issue_number: 1,
             artifact_path: "/tmp/neige/issue-body.md".into(),
         };
         assert_eq!(forge_issue_read.kind_tag(), "forge.issue.read");
 
         let forge_issue_closed = Event::ForgeIssueClosed {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             issue_number: 1,
         };
         assert_eq!(forge_issue_closed.kind_tag(), "forge.issue.closed");
 
         let worktree_provisioned = Event::WorktreeProvisioned {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             path: "/tmp/worktree".into(),
         };
         assert_eq!(worktree_provisioned.kind_tag(), "worktree.provisioned");
 
         let worktree_committed = Event::WorktreeCommitted {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
-            branch: "neige/wave-1/card-1".into(),
+            branch: "neige/track-1/card-1".into(),
         };
         assert_eq!(worktree_committed.kind_tag(), "worktree.committed");
 
         let worktree_removed = Event::WorktreeRemoved {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             path: "/tmp/worktree".into(),
         };
@@ -1978,7 +1989,7 @@ mod scope_tests {
         let transcript_cleared = Event::HarnessTranscriptCleared {
             runtime_id: "runtime-1".into(),
             card_id: CardId::from("card-1"),
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             cleared_item_count: Some(12),
             cleared_params_bytes: Some(3_400),
             card_age_ms_at_clear: Some(86_400_000),
@@ -1988,7 +1999,7 @@ mod scope_tests {
         let user_message_enqueued = Event::HarnessUserMessageEnqueued {
             runtime_id: "runtime-1".into(),
             card_id: CardId::from("card-1"),
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             char_count: 5,
         };
         assert_eq!(
@@ -2355,31 +2366,31 @@ mod scope_tests {
     #[test]
     fn workspace_lease_events_serde_round_trip_and_topics() {
         let leased = Event::WorkspaceLeased {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             lease_id: "lease-1".into(),
-            path: ".claude/worktrees/wave-1/card-1".into(),
+            path: ".claude/worktrees/track-1/card-1".into(),
         };
         let json = serde_json::to_value(&leased).unwrap();
         assert_eq!(json["ev"], "workspace.leased");
-        assert_eq!(json["data"]["wave_id"], "wave-1");
+        assert_eq!(json["data"]["track_id"], "track-1");
         assert_eq!(json["data"]["card_id"], "card-1");
         assert_eq!(json["data"]["lease_id"], "lease-1");
-        assert_eq!(json["data"]["path"], ".claude/worktrees/wave-1/card-1");
+        assert_eq!(json["data"]["path"], ".claude/worktrees/track-1/card-1");
 
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back.kind_tag(), "workspace.leased");
         assert_eq!(
             topics(&back),
-            vec!["card:card-1", "wave:wave-1", "*"],
-            "workspace lease events route by card and wave"
+            vec!["card:card-1", "track:track-1", "*"],
+            "workspace lease events route by card and track"
         );
         let meta = back.metadata();
         assert_eq!(meta.entity_kind.as_deref(), Some("card"));
         assert_eq!(meta.entity_id.as_deref(), Some("card-1"));
 
         let released = Event::WorkspaceReleased {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             card_id: CardId::from("card-1"),
             lease_id: "lease-1".into(),
         };
@@ -2392,15 +2403,15 @@ mod scope_tests {
         assert_eq!(back.kind_tag(), "workspace.released");
         assert_eq!(
             topics(&back),
-            vec!["card:card-1", "wave:wave-1", "*"],
-            "workspace release events route by card and wave"
+            vec!["card:card-1", "track:track-1", "*"],
+            "workspace release events route by card and track"
         );
     }
 
     #[test]
     fn forge_pr_merged_serde_round_trip_metadata_and_topics() {
         let merged = Event::ForgePrMerged {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             subject: ForgeMergeSubject {
                 phase: "impl".into(),
                 slice_id: "6".into(),
@@ -2411,7 +2422,7 @@ mod scope_tests {
         };
         let json = serde_json::to_value(&merged).unwrap();
         assert_eq!(json["ev"], "forge.pr.merged");
-        assert_eq!(json["data"]["wave_id"], "wave-1");
+        assert_eq!(json["data"]["track_id"], "track-1");
         assert_eq!(json["data"]["subject"]["phase"], "impl");
         assert_eq!(json["data"]["subject"]["slice_id"], "6");
         assert_eq!(json["data"]["subject"]["pr_number"], 760);
@@ -2422,13 +2433,13 @@ mod scope_tests {
         assert_eq!(back.kind_tag(), "forge.pr.merged");
         assert_eq!(
             topics(&back),
-            vec!["wave:wave-1", "*"],
-            "forge PR merge events route by wave"
+            vec!["track:track-1", "*"],
+            "forge PR merge events route by track"
         );
         let meta = back.metadata();
         assert_eq!(meta.plugin_id, None);
-        assert_eq!(meta.entity_kind.as_deref(), Some("wave"));
-        assert_eq!(meta.entity_id.as_deref(), Some("wave-1"));
+        assert_eq!(meta.entity_kind.as_deref(), Some("track"));
+        assert_eq!(meta.entity_id.as_deref(), Some("track-1"));
     }
 
     #[test]
@@ -2534,7 +2545,7 @@ mod scope_tests {
         assert!(payload.is_empty());
     }
 
-    // ----- PR2 of #247: EditAuthor + WaveReportEdited -------------------
+    // ----- PR2 of #247: EditAuthor + TrackReportEdited -------------------
     //
     // Pin the wire shape of the structured edit-log variant + its
     // sub-enum. PR4 (web UI) and PR5 (spec agent) both depend on this
@@ -2577,21 +2588,21 @@ mod scope_tests {
     }
 
     #[test]
-    fn wave_report_edited_kind_tag_pinned() {
+    fn track_report_edited_kind_tag_pinned() {
         // Persisted in `events.kind` + surfaced on the wire as the `ev`
         // discriminator. Changing the string is a wire break.
-        let ev = wave_report_edited_sample();
-        assert_eq!(ev.kind_tag(), "wave.report_edited");
+        let ev = track_report_edited_sample();
+        assert_eq!(ev.kind_tag(), "track.report_edited");
     }
 
     #[test]
-    fn wave_report_edited_serde_round_trip() {
-        let ev = wave_report_edited_sample();
+    fn track_report_edited_serde_round_trip() {
+        let ev = track_report_edited_sample();
         let json = serde_json::to_value(&ev).unwrap();
         // Envelope shape: `{ ev, data }` per the enum's
         // `#[serde(tag = "ev", content = "data")]`.
-        assert_eq!(json["ev"], "wave.report_edited");
-        assert_eq!(json["data"]["wave_id"], "w-1");
+        assert_eq!(json["ev"], "track.report_edited");
+        assert_eq!(json["data"]["track_id"], "w-1");
         assert_eq!(json["data"]["card_id"], "card-1");
         assert_eq!(json["data"]["author"], "spec");
         assert_eq!(json["data"]["edit_id"], "edit-uuid-1");
@@ -2602,10 +2613,10 @@ mod scope_tests {
 
         // Round-trip via the Event enum.
         let back: Event = serde_json::from_value(json).unwrap();
-        assert_eq!(back.kind_tag(), "wave.report_edited");
+        assert_eq!(back.kind_tag(), "track.report_edited");
         match back {
-            Event::WaveReportEdited {
-                wave_id,
+            Event::TrackReportEdited {
+                track_id,
                 card_id,
                 author,
                 edit_id,
@@ -2615,7 +2626,7 @@ mod scope_tests {
                 body_after,
                 ..
             } => {
-                assert_eq!(wave_id.as_str(), "w-1");
+                assert_eq!(track_id.as_str(), "w-1");
                 assert_eq!(card_id.as_str(), "card-1");
                 assert_eq!(author, EditAuthor::Spec);
                 assert_eq!(edit_id, "edit-uuid-1");
@@ -2624,19 +2635,19 @@ mod scope_tests {
                 assert_eq!(body_before, "old body");
                 assert_eq!(body_after, "new body");
             }
-            other => panic!("expected WaveReportEdited after round-trip, got {other:?}"),
+            other => panic!("expected TrackReportEdited after round-trip, got {other:?}"),
         }
     }
 
     #[test]
-    fn wave_report_edited_replay_via_from_kind_and_payload() {
+    fn track_report_edited_replay_via_from_kind_and_payload() {
         // Replay path — pin that `from_kind_and_payload` reconstitutes
         // the variant the same way the sync-engine replay does for
         // every other variant. Cover every `EditAuthor` arm so a
         // future serde tweak that breaks one of them surfaces here.
         for author_str in ["spec", "user", "kernel", "plugin"] {
             let payload = serde_json::json!({
-                "wave_id": "w-1",
+                "track_id": "w-1",
                 "card_id": "card-1",
                 "author": author_str,
                 "edit_id": "edit-uuid-1",
@@ -2645,11 +2656,11 @@ mod scope_tests {
                 "body_before": "b0",
                 "body_after": "b1",
             });
-            let ev = Event::from_kind_and_payload("wave.report_edited", payload)
+            let ev = Event::from_kind_and_payload("track.report_edited", payload)
                 .unwrap_or_else(|e| panic!("replay decode failed for author={author_str}: {e}"));
-            assert_eq!(ev.kind_tag(), "wave.report_edited");
+            assert_eq!(ev.kind_tag(), "track.report_edited");
             match ev {
-                Event::WaveReportEdited { author, .. } => match (author_str, author) {
+                Event::TrackReportEdited { author, .. } => match (author_str, author) {
                     ("spec", EditAuthor::Spec)
                     | ("user", EditAuthor::User)
                     | ("kernel", EditAuthor::Kernel)
@@ -2658,20 +2669,20 @@ mod scope_tests {
                         panic!("author mismatch: expected {expected}, deserialized into {actual:?}")
                     }
                 },
-                other => panic!("expected WaveReportEdited, got {other:?}"),
+                other => panic!("expected TrackReportEdited, got {other:?}"),
             }
         }
     }
 
     #[test]
-    fn wave_report_edited_topics_card_and_wave() {
+    fn track_report_edited_topics_card_and_track() {
         // Topic mapping — same shape as `Card*` so a subscriber
-        // listening on the card or its wave sees the structured edit
+        // listening on the card or its track sees the structured edit
         // alongside the generic `card.updated`.
-        let ev = wave_report_edited_sample();
+        let ev = track_report_edited_sample();
         let t = topics(&ev);
         assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
-        assert!(t.iter().any(|s| s == "wave:w-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "track:w-1"), "topics={t:?}");
         assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
     }
 
@@ -2689,8 +2700,8 @@ mod scope_tests {
         assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
         assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
         assert!(
-            !t.iter().any(|s| s.starts_with("wave:")),
-            "topics must not include wave: scope; topics={t:?}"
+            !t.iter().any(|s| s.starts_with("track:")),
+            "topics must not include track: scope; topics={t:?}"
         );
     }
 
@@ -2707,8 +2718,8 @@ mod scope_tests {
         assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
         assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
         assert!(
-            !t.iter().any(|s| s.starts_with("wave:")),
-            "topics must not include wave: scope; topics={t:?}"
+            !t.iter().any(|s| s.starts_with("track:")),
+            "topics must not include track: scope; topics={t:?}"
         );
     }
 
@@ -2724,14 +2735,14 @@ mod scope_tests {
         assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
         assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
         assert!(
-            !t.iter().any(|s| s.starts_with("wave:")),
-            "topics must not include wave: scope; topics={t:?}"
+            !t.iter().any(|s| s.starts_with("track:")),
+            "topics must not include track: scope; topics={t:?}"
         );
     }
 
-    fn wave_report_edited_sample() -> Event {
-        Event::WaveReportEdited {
-            wave_id: WaveId::from("w-1"),
+    fn track_report_edited_sample() -> Event {
+        Event::TrackReportEdited {
+            track_id: TrackId::from("w-1"),
             card_id: CardId::from("card-1"),
             author: EditAuthor::Spec,
             author_plugin_id: None,
@@ -2750,26 +2761,26 @@ mod scope_tests {
             Event::AreaDeleted {
                 id: AreaId::from("area-deleted"),
             },
-            Event::WaveUpdated(WaveUpdatedPayload::new(
-                wave_sample("wave-updated", "area-1"),
+            Event::TrackUpdated(TrackUpdatedPayload::new(
+                track_sample("track-updated", "area-1"),
                 None,
             )),
-            Event::WaveDeleted {
-                id: WaveId::from("wave-deleted"),
+            Event::TrackDeleted {
+                id: TrackId::from("track-deleted"),
                 area_id: AreaId::from("area-1"),
             },
-            Event::WaveLifecycleChanged {
-                id: WaveId::from("wave-lifecycle"),
+            Event::TrackLifecycleChanged {
+                id: TrackId::from("track-lifecycle"),
                 area_id: AreaId::from("area-1"),
-                from: WaveLifecycle::Draft,
-                to: WaveLifecycle::Planning,
+                from: TrackLifecycle::Draft,
+                to: TrackLifecycle::Planning,
                 agent_message: None,
             },
-            Event::CardAdded(card_sample("card-added", "wave-1")),
-            Event::CardUpdated(card_sample("card-updated", "wave-1")),
+            Event::CardAdded(card_sample("card-added", "track-1")),
+            Event::CardUpdated(card_sample("card-updated", "track-1")),
             Event::CardDeleted {
                 id: CardId::from("card-deleted"),
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
             },
             Event::RuntimeStarted {
                 runtime_id: "runtime-started".into(),
@@ -2792,7 +2803,7 @@ mod scope_tests {
             Event::HarnessTranscriptCleared {
                 runtime_id: "runtime-transcript".into(),
                 card_id: CardId::from("card-runtime"),
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 cleared_item_count: Some(12),
                 cleared_params_bytes: Some(3_400),
                 card_age_ms_at_clear: Some(86_400_000),
@@ -2800,10 +2811,10 @@ mod scope_tests {
             Event::HarnessUserMessageEnqueued {
                 runtime_id: "runtime-user-message".into(),
                 card_id: CardId::from("card-runtime"),
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 char_count: 5,
             },
-            wave_report_edited_sample(),
+            track_report_edited_sample(),
             Event::OverlaySet(overlay_sample("plugin-1", "card", "card-1", "status")),
             Event::OverlayDeleted {
                 plugin_id: "plugin-1".into(),
@@ -2861,28 +2872,28 @@ mod scope_tests {
                 agent_message: None,
             },
             Event::PlanUpdated {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 changed_keys: vec!["impl-parser".into()],
                 agent_message: None,
             },
             Event::TaskDispatched {
-                idempotency_key: "wave-1:impl-parser".into(),
+                idempotency_key: "track-1:impl-parser".into(),
                 kind: "codex".into(),
                 agent_message: None,
             },
             Event::WorkspaceLeased {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 card_id: CardId::from("card-workspace"),
                 lease_id: "lease-1".into(),
-                path: ".claude/worktrees/wave-1/card-workspace".into(),
+                path: ".claude/worktrees/track-1/card-workspace".into(),
             },
             Event::WorkspaceReleased {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 card_id: CardId::from("card-workspace"),
                 lease_id: "lease-1".into(),
             },
             Event::ForgePrMerged {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 subject: ForgeMergeSubject {
                     phase: "impl".into(),
                     slice_id: "6".into(),
@@ -2892,7 +2903,7 @@ mod scope_tests {
                 merge_sha: "merge-sha".into(),
             },
             Event::ReviewRound {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: "5b".into(),
@@ -2907,18 +2918,18 @@ mod scope_tests {
                     verdict: ChannelVerdictKind::ChangesRequested,
                 }],
                 root_cause: Some("tests failing".into()),
-                idempotency_key: "review.round:wave-1:impl:5b:760:1".into(),
+                idempotency_key: "review.round:track-1:impl:5b:760:1".into(),
             },
             Event::RatifyRequested {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 reason: "cap_exhausted".into(),
             },
             Event::RatifyResolved {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 decision: RatifyDecision::Grant,
             },
             Event::ProposalSubmitted {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 proposal_id: "pp-1".into(),
                 plugin_id: "dev.neige.invest".into(),
                 subject_kind: "report".into(),
@@ -2931,54 +2942,54 @@ mod scope_tests {
                 idem_key: "idem-1".into(),
             },
             Event::ProposalResolved {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 proposal_id: "pp-1".into(),
                 plugin_id: "dev.neige.invest".into(),
                 decision: ProposalDecision::Accepted,
             },
             Event::ForgeScanCompleted {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 overlapping_prs: vec![1, 2],
             },
             Event::ForgePrOpened {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 pr_number: 1,
                 head_sha: "head-sha".into(),
             },
             Event::ForgePrDiffRead {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 pr_number: 1,
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
                 artifact_path: "/tmp/neige/forge-diff.patch".into(),
             },
             Event::ForgePrChecks {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 pr_number: 1,
                 conclusion: "success".into(),
             },
             Event::ForgeIssueRead {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 issue_number: 1,
                 artifact_path: "/tmp/neige/issue-body.md".into(),
             },
             Event::ForgeIssueClosed {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 issue_number: 1,
             },
             Event::WorktreeProvisioned {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 card_id: CardId::from("card-worktree"),
                 path: "/tmp/worktree".into(),
             },
             Event::WorktreeCommitted {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 card_id: CardId::from("card-worktree"),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
-                branch: "neige/wave-1/card-worktree".into(),
+                branch: "neige/track-1/card-worktree".into(),
             },
             Event::WorktreeRemoved {
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 card_id: CardId::from("card-worktree"),
                 path: "/tmp/worktree".into(),
             },
@@ -2997,15 +3008,15 @@ mod scope_tests {
         }
     }
 
-    fn wave_sample(id: &str, area_id: &str) -> Wave {
-        Wave {
-            id: WaveId::from(id),
+    fn track_sample(id: &str, area_id: &str) -> Track {
+        Track {
+            id: TrackId::from(id),
             area_id: AreaId::from(area_id),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
             pinned_at: None,
-            lifecycle: WaveLifecycle::Draft,
+            lifecycle: TrackLifecycle::Draft,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
@@ -3018,10 +3029,10 @@ mod scope_tests {
         }
     }
 
-    fn card_sample(id: &str, wave_id: &str) -> Card {
+    fn card_sample(id: &str, track_id: &str) -> Card {
         Card {
             id: CardId::from(id),
-            wave_id: WaveId::from(wave_id),
+            track_id: TrackId::from(track_id),
             kind: "terminal".into(),
             sort: 1.0,
             payload: serde_json::json!({}),
@@ -3137,17 +3148,17 @@ mod scope_tests {
                 "workspace.leased",
                 "workspace.leased",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "card_id": "card-1",
                     "lease_id": "lease-1",
-                    "path": ".claude/worktrees/wave-1/card-1",
+                    "path": ".claude/worktrees/track-1/card-1",
                 }),
             ),
             (
                 "workspace.released",
                 "workspace.released",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "card_id": "card-1",
                     "lease_id": "lease-1",
                 }),
@@ -3156,7 +3167,7 @@ mod scope_tests {
                 "forge.pr.merged",
                 "forge.pr.merged",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "subject": {
                         "phase": "impl",
                         "slice_id": "6",
@@ -3170,7 +3181,7 @@ mod scope_tests {
                 "review.round",
                 "review.round",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "subject": {
                         "phase": "impl",
                         "slice_id": "5b",
@@ -3185,14 +3196,14 @@ mod scope_tests {
                         { "role": "failure-path", "verdict": "approved" },
                     ],
                     "root_cause": "tests failing",
-                    "idempotency_key": "review.round:wave-1:impl:5b:760:1",
+                    "idempotency_key": "review.round:track-1:impl:5b:760:1",
                 }),
             ),
             (
                 "ratify.requested",
                 "ratify.requested",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "reason": "cap_exhausted",
                 }),
             ),
@@ -3200,7 +3211,7 @@ mod scope_tests {
                 "ratify.resolved",
                 "ratify.resolved",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "decision": "grant",
                 }),
             ),
@@ -3208,7 +3219,7 @@ mod scope_tests {
                 "forge.scan.completed",
                 "forge.scan.completed",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "overlapping_prs": [1, 2],
                 }),
             ),
@@ -3216,7 +3227,7 @@ mod scope_tests {
                 "forge.pr.opened",
                 "forge.pr.opened",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "pr_number": 1,
                     "head_sha": "head-sha",
                 }),
@@ -3225,7 +3236,7 @@ mod scope_tests {
                 "forge.pr.diff.read",
                 "forge.pr.diff.read",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "pr_number": 1,
                     "base_sha": "base-sha",
                     "head_sha": "head-sha",
@@ -3236,7 +3247,7 @@ mod scope_tests {
                 "forge.pr.checks",
                 "forge.pr.checks",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "pr_number": 1,
                     "conclusion": "success",
                 }),
@@ -3245,7 +3256,7 @@ mod scope_tests {
                 "forge.issue.read",
                 "forge.issue.read",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "issue_number": 1,
                     "artifact_path": "/tmp/neige/issue-body.md",
                 }),
@@ -3254,7 +3265,7 @@ mod scope_tests {
                 "forge.issue.closed",
                 "forge.issue.closed",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "issue_number": 1,
                 }),
             ),
@@ -3262,7 +3273,7 @@ mod scope_tests {
                 "worktree.provisioned",
                 "worktree.provisioned",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "card_id": "card-1",
                     "path": "/tmp/worktree",
                 }),
@@ -3271,17 +3282,17 @@ mod scope_tests {
                 "worktree.committed",
                 "worktree.committed",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "card_id": "card-1",
                     "commit_sha": "0123456789abcdef0123456789abcdef01234567",
-                    "branch": "neige/wave-1/card-1",
+                    "branch": "neige/track-1/card-1",
                 }),
             ),
             (
                 "worktree.removed",
                 "worktree.removed",
                 serde_json::json!({
-                    "wave_id": "wave-1",
+                    "track_id": "track-1",
                     "card_id": "card-1",
                     "path": "/tmp/worktree",
                 }),

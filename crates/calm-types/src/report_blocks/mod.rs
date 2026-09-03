@@ -27,7 +27,7 @@ pub use kinds::{
     TASK_FIELDS, is_data_kind, scannable_text_fields, validate_payload,
 };
 
-use crate::wave_report::ReportBlock;
+use crate::track_report::ReportBlock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSlice {

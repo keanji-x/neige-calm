@@ -7,7 +7,7 @@ import { CardHead } from '../CardHead';
 import { useCardSlotValue, type CardEntry } from '../registry';
 
 declare module '../../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     iframe: IframeCardData;
   }
 }

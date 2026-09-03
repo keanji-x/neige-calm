@@ -24,7 +24,7 @@ import {
 } from '../app/router';
 import { TerminalEntry } from './builtins/terminal';
 import { ClaudeEntry, CodexEntry } from './builtins/codex';
-import type { WaveCardData } from '../types';
+import type { TrackCardData } from '../types';
 import {
   __resetRegistryForTest,
   adaptKernelCard,
@@ -43,7 +43,7 @@ import {
 } from './resolver';
 
 declare module '../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     'test-exact': TestExactCardData;
     'test-prefix': TestPrefixCardData;
     'test-prefix-long': TestPrefixLongCardData;
@@ -126,7 +126,7 @@ interface TestControllerRebuildCardData {
 function card(over: Partial<KernelCard> = {}): KernelCard {
   return {
     id: 'k1',
-    wave_id: 'w1',
+    track_id: 'w1',
     kind: 'test-kind',
     sort: 0,
     payload: {},
@@ -137,7 +137,7 @@ function card(over: Partial<KernelCard> = {}): KernelCard {
   };
 }
 
-function entry<T extends WaveCardData>(
+function entry<T extends TrackCardData>(
   over: Partial<CardEntry<T>> & Pick<CardEntry<T>, 'type'>,
 ): CardEntry<T> {
   return {
@@ -731,7 +731,7 @@ describe('router AddPanel create runtime failures', () => {
     await expect(
       addCardWithValues(
         qc,
-        'wave_1',
+        'track_1',
         'test-schema-parse',
         { url: 'https://example.test' },
         'dark',
@@ -755,7 +755,7 @@ describe('router AddPanel create runtime failures', () => {
     const qc = queryClientStub();
 
     await expect(
-      addCardWithValues(qc, 'wave_1', 'terminal', {}, 'dark'),
+      addCardWithValues(qc, 'track_1', 'terminal', {}, 'dark'),
     ).rejects.toBe(err);
 
     expect(api.createTerminalCard).toHaveBeenCalled();
@@ -777,7 +777,7 @@ describe('router AddPanel create runtime failures', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(
-      addCardWithValues(queryClientStub(), 'wave_1', 'test-catalog', {}, 'dark'),
+      addCardWithValues(queryClientStub(), 'track_1', 'test-catalog', {}, 'dark'),
     ).rejects.toThrow(CatalogCreateNotImplemented);
 
     expect(warnSpy).not.toHaveBeenCalled();
@@ -801,12 +801,12 @@ describe('built-in atomic create entries', () => {
     }
 
     await expect(
-      TerminalEntry.create.submit('wave_1', {}, { themeRgb }),
+      TerminalEntry.create.submit('track_1', {}, { themeRgb }),
     ).resolves.toEqual({
       cardId: 'card_terminal',
       raw: { id: 'card_terminal' },
     });
-    expect(api.createTerminalCard).toHaveBeenCalledWith('wave_1', {
+    expect(api.createTerminalCard).toHaveBeenCalledWith('track_1', {
       theme: themeRgb,
     });
   });
@@ -822,12 +822,12 @@ describe('built-in atomic create entries', () => {
     }
 
     await expect(
-      CodexEntry.create.submit('wave_1', { cwd: '' }, { themeRgb }),
+      CodexEntry.create.submit('track_1', { cwd: '' }, { themeRgb }),
     ).resolves.toEqual({
       cardId: 'card_codex',
       raw: { id: 'card_codex' },
     });
-    expect(api.createCodexCard).toHaveBeenCalledWith('wave_1', {
+    expect(api.createCodexCard).toHaveBeenCalledWith('track_1', {
       cwd: undefined,
       prompt: undefined,
       theme: themeRgb,
@@ -846,7 +846,7 @@ describe('built-in atomic create entries', () => {
 
     await expect(
       ClaudeEntry.create.submit(
-        'wave_1',
+        'track_1',
         { cwd: '/repo', prompt: 'ship it' },
         { themeRgb },
       ),
@@ -854,7 +854,7 @@ describe('built-in atomic create entries', () => {
       cardId: 'card_claude',
       raw: { id: 'card_claude' },
     });
-    expect(api.createClaudeCard).toHaveBeenCalledWith('wave_1', {
+    expect(api.createClaudeCard).toHaveBeenCalledWith('track_1', {
       cwd: '/repo',
       prompt: 'ship it',
       theme: themeRgb,
@@ -862,12 +862,12 @@ describe('built-in atomic create entries', () => {
   });
 });
 
-describe('WaveCardDataMap type contract', () => {
-  it('keeps WaveCardData as a discriminated union of registered map values', () => {
-    const cardData: WaveCardData = { type: 'test-exact', id: 'c1' };
+describe('TrackCardDataMap type contract', () => {
+  it('keeps TrackCardData as a discriminated union of registered map values', () => {
+    const cardData: TrackCardData = { type: 'test-exact', id: 'c1' };
     expect(cardData.type).toBe('test-exact');
 
-    // @ts-expect-error nonexistent is not a valid WaveCardData discriminant.
+    // @ts-expect-error nonexistent is not a valid TrackCardData discriminant.
     if (cardData.type === 'nonexistent') {
       expect(cardData).toBe(cardData);
     }

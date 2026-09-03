@@ -59,7 +59,7 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
             events.clone(),
             calm_server::state::WriteContext::new(
                 CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -89,7 +89,7 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
 async fn seed_legacy_overlay(repo: &SqlxRepo, bus: &EventBus) -> i64 {
     let legacy = NewOverlay {
         plugin_id: "p-legacy".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-legacy".into(),
         kind: "status".into(),
         // Deliberately no `schemaVersion` field — the absent-as-v1 case.
@@ -103,7 +103,7 @@ async fn seed_legacy_overlay(repo: &SqlxRepo, bus: &EventBus) -> i64 {
         bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -183,7 +183,7 @@ async fn replay_mixes_legacy_pass_through_with_future_drop() {
 
     let future = NewOverlay {
         plugin_id: "p-future".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-future".into(),
         kind: "status".into(),
         payload: json!({ "schemaVersion": 999, "state": "from-future" }),
@@ -196,7 +196,7 @@ async fn replay_mixes_legacy_pass_through_with_future_drop() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {

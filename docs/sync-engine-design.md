@@ -18,12 +18,12 @@ BEGIN IMMEDIATE
 → 生成 typed Event
 → 在事务内执行 role/decision gate
 → 插入 event row
-→ 必要时写 Wave VCS commit
+→ 必要时写 Track VCS commit
 → COMMIT
 → broadcast
 ```
 
-实体修改、event 和同次 Wave VCS commit 要么一起提交，要么一起回滚。Broadcast 只能发生在 commit 之后。
+实体修改、event 和同次 Track VCS commit 要么一起提交，要么一起回滚。Broadcast 只能发生在 commit 之后。
 
 一次事务产生多个事实时使用批量事件入口，不能拆成多个独立提交制造中间状态。只记录事件、不修改实体的事实使用 pure-event 入口，但遵守同样的授权与 commit-before-broadcast 规则。
 
@@ -39,7 +39,7 @@ Raw `*_tx` helper 只用于组合进上述事务。生产代码不得直接插�
 - actor；
 - wall-clock 时间；
 - 可选 correlation；
-- system/area/wave/card scope。
+- system/area/track/card scope。
 
 `id` 负责顺序，时间只用于展示和诊断。事件不对实体表建外键，因为删除事件需要比实体行活得更久。
 
@@ -52,7 +52,7 @@ Scope 决定：
 - WebSocket 客户端能收到哪些事件；
 - dispatcher/scheduler 等内核消费者的过滤范围；
 - role gate 检查所需的领域上下文；
-- Wave VCS 是否参与同次提交。
+- Track VCS 是否参与同次提交。
 
 事件 kind 和 scope 是不同轴：kind 表示发生了什么，scope 表示它属于哪里。不得通过解析 payload 临时推导订阅范围。
 
@@ -101,7 +101,7 @@ Pruner 可以删除保留期外事件，并推进 durable watermark。删除事�
 需要永久保留或可重建的内容必须落在：
 
 - 当前实体/投影表；
-- Wave VCS；
+- Track VCS；
 - operation/session 等专用持久状态；
 - 或明确的外部备份。
 

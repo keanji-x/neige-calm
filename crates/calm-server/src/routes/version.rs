@@ -17,14 +17,14 @@ use utoipa::ToSchema;
 
 /// Diagnostic only; clients gate on web and sync-event compatibility instead.
 ///
-/// #1209 PR-2 bumped `"1"` -> `"2"`: the `POST /api/waves` request body renamed
+/// #1209 PR-2 bumped `"1"` -> `"2"`: the `POST /api/tracks` request body renamed
 /// its two template fields to `template_id` / `template_input`. Despite
 /// the "diagnostic only" wording above, `neige-app`'s `compute_verdict` really
 /// does compare this string against the installed release (it is one of the
 /// nine compatibility fields), so leaving it at `"1"` across a REST body rename
 /// would be a contract constant contradicted by behaviour.
 ///
-/// #1300 S1 bumped `"2"` -> `"3"`: `PUT /api/wave-templates/{id}` is **gone**,
+/// #1300 S1 bumped `"2"` -> `"3"`: `PUT /api/track-templates/{id}` is **gone**,
 /// not renamed. That is strictly a larger break than #1209's field rename — a
 /// client holding the old contract gets a 404 with no field to correct — so
 /// leaving this at `"2"` would repeat exactly the contradiction the paragraph
@@ -40,7 +40,7 @@ pub const API_VERSION: &str = "3";
 /// Before that gate existed all three drift directions were CI-green.
 ///
 /// #1209 PR-2 bumped 16 -> 17 so cached bundles at 16 get the hard refresh
-/// curtain instead of sending the pre-rename wave-create field spellings and
+/// curtain instead of sending the pre-rename track-create field spellings and
 /// taking a 400 on every attempt.
 ///
 /// #1300 S1 bumped 17 -> 18 for the same reason in a new shape: a cached bundle
@@ -54,7 +54,7 @@ pub const API_VERSION: &str = "3";
 /// and gates its event stream on `cove.updated` / `cove.deleted` discriminators
 /// that migration 0080 rewrote. Any one of those alone would justify the bump;
 /// together they would produce a bundle that renders an empty, silent shell.
-pub const WEB_COMPAT_VERSION: u32 = 19;
+pub const WEB_COMPAT_VERSION: u32 = 20;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

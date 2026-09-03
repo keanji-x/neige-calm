@@ -7,7 +7,7 @@ use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{NewArea, NewCard, NewWave};
+use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -24,8 +24,8 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -40,7 +40,7 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -49,9 +49,9 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
         .await
         .unwrap();
     let cache = calm_server::card_role_cache::CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -65,11 +65,11 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     let app = axum::Router::new()
         .merge(routes::router())

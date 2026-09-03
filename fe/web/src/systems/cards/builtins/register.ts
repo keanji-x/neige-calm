@@ -5,7 +5,7 @@ import { CODEX_CARD_ENTRY } from './codex.js';
 import { FILE_VIEWER_CARD_ENTRY } from './file-viewer.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { TERMINAL_CARD_ENTRY } from './terminal.js';
-import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
+import { TRACK_REPORT_CARD_ENTRY } from './track-report.js';
 
 export const BUILTIN_CARD_ORDER = Object.freeze([
   'terminal',
@@ -16,7 +16,7 @@ export const BUILTIN_CARD_ORDER = Object.freeze([
      both — refusing their markers explicitly (`codex.ts`). */
   'assistant',
   'claude',
-  'wave-report',
+  'track-report',
   'file-viewer',
   'iframe',
   'plugin-iframe',
@@ -64,7 +64,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
     assistant: BuiltinRegistrar.of(ASSISTANT_CARD_ENTRY),
     claude: BuiltinRegistrar.of(CLAUDE_CARD_ENTRY),
-    'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
+    'track-report': BuiltinRegistrar.of(TRACK_REPORT_CARD_ENTRY),
     'file-viewer': BuiltinRegistrar.of(FILE_VIEWER_CARD_ENTRY),
   };
   for (const type of BUILTIN_CARD_ORDER) {

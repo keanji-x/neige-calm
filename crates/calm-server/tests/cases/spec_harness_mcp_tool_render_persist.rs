@@ -8,7 +8,7 @@ use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams,
 };
-use calm_server::model::{NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -27,8 +27,8 @@ async fn seed_harness(
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "items persist".into(),
@@ -43,7 +43,7 @@ async fn seed_harness(
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -81,17 +81,17 @@ async fn seed_harness(
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    wave_area_cache.insert(wave.id.clone(), area.id);
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    track_area_cache.insert(track.id.clone(), area.id);
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id,
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache,
+        track_area_cache,
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -105,7 +105,7 @@ async fn seed_harness(
         harness,
         daemon,
         card.id.to_string(),
-        card.wave_id.to_string(),
+        card.track_id.to_string(),
     )
 }
 
@@ -150,7 +150,7 @@ async fn wait_for_notification_receiver(daemon: &SharedCodexAppServer) {
 async fn mcp_tool_call_notifications_persist_with_camelcase_status_round_trip() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
-    let (harness, daemon, card_id, _wave_id) = seed_harness(repo.clone(), events).await;
+    let (harness, daemon, card_id, _track_id) = seed_harness(repo.clone(), events).await;
     wait_for_notification_receiver(&daemon).await;
 
     daemon.emit_notification_for_test(Notification::Item {
@@ -162,7 +162,7 @@ async fn mcp_tool_call_notifications_persist_with_camelcase_status_round_trip() 
                 "id": "mcp-1",
                 "type": "mcpToolCall",
                 "server": "neige",
-                "tool": "calm.wave.cat",
+                "tool": "calm.track.cat",
                 "status": "inProgress",
                 "arguments": { "path": "report.md" }
             }
@@ -185,7 +185,7 @@ async fn mcp_tool_call_notifications_persist_with_camelcase_status_round_trip() 
                 "id": "mcp-1",
                 "type": "mcpToolCall",
                 "server": "neige",
-                "tool": "calm.wave.cat",
+                "tool": "calm.track.cat",
                 "status": "completed",
                 "result": { "content": [{ "type": "text", "text": "ok" }] },
                 "durationMs": 42

@@ -4,13 +4,13 @@
 //! land where it should, does GC date entries the way it claims). The tests
 //! that prove the mechanism is actually wired into deletion — and that a
 //! refusal really means "the bytes are still there, byte for byte" — live in
-//! `crates/calm-server/tests/cases/wave_workspace_recycle.rs`, driven through
+//! `crates/calm-server/tests/cases/track_workspace_recycle.rs`, driven through
 //! the real REST routes.
 
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::model::{WaveWorkspace, WaveWorkspaceKind};
+use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 use crate::workspace_materialize::materialize_managed_workspace;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -67,26 +67,26 @@ impl Fixture {
     /// A real managed workspace, built by the *production* materializer — so
     /// the ownership marker under test is the one production writes, not a
     /// re-implementation that could drift away from it.
-    fn managed(&self, area_id: &str, wave_id: &str) -> PathBuf {
+    fn managed(&self, area_id: &str, track_id: &str) -> PathBuf {
         let path =
-            crate::workspace_materialize::managed_workspace_path(&self.root, area_id, wave_id);
-        materialize_managed_workspace(&self.root, &path, wave_id).unwrap();
+            crate::workspace_materialize::managed_workspace_path(&self.root, area_id, track_id);
+        materialize_managed_workspace(&self.root, &path, track_id).unwrap();
         path
     }
 
-    fn workspace(path: &Path, kind: WaveWorkspaceKind) -> WaveWorkspace {
-        WaveWorkspace {
+    fn workspace(path: &Path, kind: TrackWorkspaceKind) -> TrackWorkspace {
+        TrackWorkspace {
             kind,
             path: path.to_string_lossy().into_owned(),
             frozen_at: Some(1),
         }
     }
 
-    fn recycle(&self, wave_id: &str, workspace: &WaveWorkspace) -> RecycleDecision {
-        recycle_wave_workspace(
+    fn recycle(&self, track_id: &str, workspace: &TrackWorkspace) -> RecycleDecision {
+        recycle_track_workspace(
             &self.root,
             Some(AreaKind::User),
-            wave_id,
+            track_id,
             workspace,
             1_000_000,
         )
@@ -97,12 +97,12 @@ impl Fixture {
 #[test]
 fn a_managed_workspace_moves_into_the_trash_and_is_not_deleted() {
     let f = Fixture::new();
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     std::fs::write(path.join("work.txt"), b"precious").unwrap();
 
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
     );
 
     let to = decision.trashed_path().expect("should have been trashed");
@@ -120,8 +120,8 @@ fn a_managed_workspace_moves_into_the_trash_and_is_not_deleted() {
     );
     assert_eq!(
         to.file_name().unwrap().to_str().unwrap(),
-        "wave-1-1000000",
-        "the name must be <wave_id>-<ts> so the GC can date it"
+        "track-1-1000000",
+        "the name must be <track_id>-<ts> so the GC can date it"
     );
 }
 
@@ -131,10 +131,10 @@ fn an_attached_workspace_is_refused() {
     // Deliberately *inside* the root and carrying a valid marker: the only
     // thing making this refuse is the typed kind. That is the design's point —
     // deletion permission comes from the column, never from the path.
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Attached),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Attached),
     );
     assert_eq!(decision.refusal(), Some(&RecycleRefusal::NotManaged));
     assert!(path.is_dir());
@@ -143,12 +143,12 @@ fn an_attached_workspace_is_refused() {
 #[test]
 fn a_system_area_workspace_is_refused() {
     let f = Fixture::new();
-    let path = f.managed("area-sys", "launchpad-wave");
-    let decision = recycle_wave_workspace(
+    let path = f.managed("area-sys", "launchpad-track");
+    let decision = recycle_track_workspace(
         &f.root,
         Some(AreaKind::System),
-        "launchpad-wave",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "launchpad-track",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
         1_000_000,
     )
     .unwrap();
@@ -159,12 +159,12 @@ fn a_system_area_workspace_is_refused() {
 #[test]
 fn an_unknown_area_is_refused_rather_than_assumed_user() {
     let f = Fixture::new();
-    let path = f.managed("area-1", "wave-1");
-    let decision = recycle_wave_workspace(
+    let path = f.managed("area-1", "track-1");
+    let decision = recycle_track_workspace(
         &f.root,
         None,
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
         1_000_000,
     )
     .unwrap();
@@ -175,28 +175,28 @@ fn an_unknown_area_is_refused_rather_than_assumed_user() {
 #[test]
 fn a_missing_marker_is_refused() {
     let f = Fixture::new();
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     std::fs::remove_file(path.join(".git").join("neige-workspace")).unwrap();
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
     );
     assert_eq!(decision.refusal(), Some(&RecycleRefusal::MarkerMissing));
     assert!(path.join(".git").is_dir());
 }
 
 #[test]
-fn a_marker_naming_another_wave_is_refused() {
+fn a_marker_naming_another_track_is_refused() {
     let f = Fixture::new();
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     let decision = f.recycle(
-        "wave-2",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-2",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
     );
     assert_eq!(
         decision.refusal(),
         Some(&RecycleRefusal::MarkerMismatch {
-            found: "wave-1".into()
+            found: "track-1".into()
         })
     );
     assert!(path.join(".git").is_dir());
@@ -208,22 +208,22 @@ fn a_symlink_that_resolves_outside_the_root_is_refused() {
     // A real repository outside the managed root, with a *matching* marker —
     // so the only guard standing between it and deletion is the canonical
     // containment check.
-    let outside = f._tmp.path().join("elsewhere").join("wave-1");
+    let outside = f._tmp.path().join("elsewhere").join("track-1");
     std::fs::create_dir_all(&outside).unwrap();
     std::fs::create_dir_all(outside.join(".git")).unwrap();
-    std::fs::write(outside.join(".git").join("neige-workspace"), "wave-1\n").unwrap();
+    std::fs::write(outside.join(".git").join("neige-workspace"), "track-1\n").unwrap();
     std::fs::write(outside.join("user-file.txt"), b"not ours").unwrap();
 
     let area_dir = f.root.join("area-1");
     std::fs::create_dir_all(&area_dir).unwrap();
-    let link = area_dir.join("wave-1");
+    let link = area_dir.join("track-1");
     std::os::unix::fs::symlink(&outside, &link).unwrap();
     // Lexically the stored path is squarely under the root.
     assert!(link.starts_with(&f.root));
 
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&link, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&link, TrackWorkspaceKind::Managed),
     );
     assert!(
         matches!(decision.refusal(), Some(RecycleRefusal::OutsideRoot { .. })),
@@ -239,29 +239,29 @@ fn a_symlink_that_resolves_outside_the_root_is_refused() {
 fn a_symlinked_parent_that_resolves_outside_the_root_is_refused() {
     let f = Fixture::new();
     // The subtler shape of the same bug: the *area* level is the link, so the
-    // wave directory itself is a perfectly ordinary directory.
+    // track directory itself is a perfectly ordinary directory.
     let outside_area = f._tmp.path().join("elsewhere-area");
-    std::fs::create_dir_all(outside_area.join("wave-1").join(".git")).unwrap();
+    std::fs::create_dir_all(outside_area.join("track-1").join(".git")).unwrap();
     std::fs::write(
         outside_area
-            .join("wave-1")
+            .join("track-1")
             .join(".git")
             .join("neige-workspace"),
-        "wave-1\n",
+        "track-1\n",
     )
     .unwrap();
     std::os::unix::fs::symlink(&outside_area, f.root.join("area-1")).unwrap();
 
-    let stored = f.root.join("area-1").join("wave-1");
+    let stored = f.root.join("area-1").join("track-1");
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&stored, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&stored, TrackWorkspaceKind::Managed),
     );
     assert!(
         matches!(decision.refusal(), Some(RecycleRefusal::OutsideRoot { .. })),
         "{decision:?}"
     );
-    assert!(outside_area.join("wave-1").join(".git").is_dir());
+    assert!(outside_area.join("track-1").join(".git").is_dir());
 }
 
 // --------------------------------------------------------------------------
@@ -269,24 +269,24 @@ fn a_symlinked_parent_that_resolves_outside_the_root_is_refused() {
 // --------------------------------------------------------------------------
 
 /// A valid ownership marker on the **area layer** must not make the area
-/// directory recyclable: renaming it takes every sibling wave's repository
+/// directory recyclable: renaming it takes every sibling track's repository
 /// with it. Executable, not a decision assertion — the sibling's bytes are
 /// what the test reads.
 #[test]
 fn a_marker_on_the_area_layer_does_not_take_the_siblings_with_it() {
     let f = Fixture::new();
-    let sibling = f.managed("area-1", "wave-2");
+    let sibling = f.managed("area-1", "track-2");
     std::fs::write(sibling.join("sibling-work.txt"), b"do not lose me").unwrap();
 
     // Someone (a restore, a future PATCH writing an arbitrary path, a bug)
-    // leaves our marker one level up and points a wave row at it.
+    // leaves our marker one level up and points a track row at it.
     let area_dir = f.root.join("area-1");
     std::fs::create_dir_all(area_dir.join(".git")).unwrap();
-    std::fs::write(area_dir.join(".git").join("neige-workspace"), "wave-1\n").unwrap();
+    std::fs::write(area_dir.join(".git").join("neige-workspace"), "track-1\n").unwrap();
 
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&area_dir, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&area_dir, TrackWorkspaceKind::Managed),
     );
     assert!(
         matches!(decision.refusal(), Some(RecycleRefusal::WrongDepth { .. })),
@@ -296,23 +296,23 @@ fn a_marker_on_the_area_layer_does_not_take_the_siblings_with_it() {
     assert_eq!(
         std::fs::read(sibling.join("sibling-work.txt")).unwrap(),
         b"do not lose me",
-        "a sibling wave's repository was moved into the trash"
+        "a sibling track's repository was moved into the trash"
     );
 }
 
 /// The same rule from below: a marked directory *deeper* than
-/// `<root>/<area_id>/<wave_id>` is not a workspace either.
+/// `<root>/<area_id>/<track_id>` is not a workspace either.
 #[test]
-fn a_marker_deeper_than_a_wave_directory_is_refused() {
+fn a_marker_deeper_than_a_track_directory_is_refused() {
     let f = Fixture::new();
-    let wave = f.managed("area-1", "wave-1");
-    let nested = wave.join("nested").join("deeper");
+    let track = f.managed("area-1", "track-1");
+    let nested = track.join("nested").join("deeper");
     std::fs::create_dir_all(nested.join(".git")).unwrap();
-    std::fs::write(nested.join(".git").join("neige-workspace"), "wave-1\n").unwrap();
+    std::fs::write(nested.join(".git").join("neige-workspace"), "track-1\n").unwrap();
 
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&nested, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&nested, TrackWorkspaceKind::Managed),
     );
     assert!(
         matches!(decision.refusal(), Some(RecycleRefusal::WrongDepth { .. })),
@@ -327,17 +327,17 @@ fn a_marker_deeper_than_a_wave_directory_is_refused() {
 #[test]
 fn a_path_already_inside_the_trash_is_refused() {
     let f = Fixture::new();
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
     );
     let trashed = decision.trashed_path().unwrap().to_path_buf();
-    // The trashed copy still carries a valid marker for this wave, so guards 1,
+    // The trashed copy still carries a valid marker for this track, so guards 1,
     // 3 and 4 all hold; only "not already in the trash" refuses.
     let again = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&trashed, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&trashed, TrackWorkspaceKind::Managed),
     );
     assert!(
         matches!(again.refusal(), Some(RecycleRefusal::OutsideRoot { .. })),
@@ -367,13 +367,13 @@ fn a_symlinked_trash_directory_is_a_hard_error_not_a_silent_leak() {
     let elsewhere = f._tmp.path().join("trash-elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, f.root.join(TRASH_DIR_NAME)).unwrap();
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
 
-    let error = recycle_wave_workspace(
+    let error = recycle_track_workspace(
         &f.root,
         Some(AreaKind::User),
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
         1_000_000,
     )
     .expect_err("a trash directory outside the root must be fatal");
@@ -389,14 +389,14 @@ fn a_symlinked_trash_directory_is_a_hard_error_not_a_silent_leak() {
     );
 }
 
-/// `wave_id` is interpolated into the trash entry name. An id that is not a
+/// `track_id` is interpolated into the trash entry name. An id that is not a
 /// single path segment must not be able to steer the `rename` above the root.
 /// Closed by coincidence today (ids are uuid-simple); this pins it.
 #[test]
-fn a_wave_id_that_escapes_its_path_segment_is_a_hard_error() {
+fn a_track_id_that_escapes_its_path_segment_is_a_hard_error() {
     let f = Fixture::new();
     let escaping_id = "../escaped";
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     // Marker must match the (hostile) id, so guard 3 holds and the destination
     // check is the only thing left.
     std::fs::write(
@@ -405,14 +405,14 @@ fn a_wave_id_that_escapes_its_path_segment_is_a_hard_error() {
     )
     .unwrap();
 
-    let error = recycle_wave_workspace(
+    let error = recycle_track_workspace(
         &f.root,
         Some(AreaKind::User),
         escaping_id,
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
         1_000_000,
     )
-    .expect_err("a wave id containing `..` must be fatal");
+    .expect_err("a track id containing `..` must be fatal");
     assert!(
         format!("{error}").contains("does not form a single path segment"),
         "{error}"
@@ -446,7 +446,7 @@ fn a_wave_id_that_escapes_its_path_segment_is_a_hard_error() {
 #[test]
 fn a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success() {
     let f = Fixture::new();
-    let path = f.managed("area-1", "wave-1");
+    let path = f.managed("area-1", "track-1");
     std::fs::write(path.join("work.txt"), b"precious").unwrap();
     let elsewhere = f._tmp.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
@@ -463,11 +463,11 @@ fn a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success() 
             std::os::unix::fs::symlink(&swap_target, trash_root).unwrap();
         },
         || {
-            recycle_wave_workspace(
+            recycle_track_workspace(
                 &f.root,
                 Some(AreaKind::User),
-                "wave-1",
-                &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+                "track-1",
+                &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
                 1_000_000,
             )
         },
@@ -504,10 +504,10 @@ fn a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success() 
 fn the_root_itself_is_never_recycled() {
     let f = Fixture::new();
     std::fs::create_dir_all(f.root.join(".git")).unwrap();
-    std::fs::write(f.root.join(".git").join("neige-workspace"), "wave-1\n").unwrap();
+    std::fs::write(f.root.join(".git").join("neige-workspace"), "track-1\n").unwrap();
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&f.root, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&f.root, TrackWorkspaceKind::Managed),
     );
     assert!(
         matches!(decision.refusal(), Some(RecycleRefusal::OutsideRoot { .. })),
@@ -519,28 +519,28 @@ fn the_root_itself_is_never_recycled() {
 #[test]
 fn a_missing_directory_is_a_no_op_not_an_error() {
     let f = Fixture::new();
-    let path = f.root.join("area-1").join("wave-1");
+    let path = f.root.join("area-1").join("track-1");
     let decision = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
     );
     assert_eq!(decision.refusal(), Some(&RecycleRefusal::PathMissing));
 }
 
 #[test]
-fn recycling_the_same_wave_twice_does_not_clobber_the_first_entry() {
+fn recycling_the_same_track_twice_does_not_clobber_the_first_entry() {
     let f = Fixture::new();
-    let first_path = f.managed("area-1", "wave-1");
+    let first_path = f.managed("area-1", "track-1");
     std::fs::write(first_path.join("gen.txt"), b"one").unwrap();
     let first = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&first_path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&first_path, TrackWorkspaceKind::Managed),
     );
-    let second_path = f.managed("area-1", "wave-1");
+    let second_path = f.managed("area-1", "track-1");
     std::fs::write(second_path.join("gen.txt"), b"two").unwrap();
     let second = f.recycle(
-        "wave-1",
-        &Fixture::workspace(&second_path, WaveWorkspaceKind::Managed),
+        "track-1",
+        &Fixture::workspace(&second_path, TrackWorkspaceKind::Managed),
     );
 
     let a = first.trashed_path().unwrap();
@@ -556,10 +556,10 @@ fn recycling_the_same_wave_twice_does_not_clobber_the_first_entry() {
 #[test]
 fn the_area_directory_is_removed_only_once_it_is_empty() {
     let f = Fixture::new();
-    let one = f.managed("area-1", "wave-1");
-    let two = f.managed("area-1", "wave-2");
-    let ws_one = Fixture::workspace(&one, WaveWorkspaceKind::Managed);
-    let ws_two = Fixture::workspace(&two, WaveWorkspaceKind::Managed);
+    let one = f.managed("area-1", "track-1");
+    let two = f.managed("area-1", "track-2");
+    let ws_one = Fixture::workspace(&one, TrackWorkspaceKind::Managed);
+    let ws_two = Fixture::workspace(&two, TrackWorkspaceKind::Managed);
 
     // Only one of the two recycled: the area layer must survive.
     let partial = recycle_area_workspaces(
@@ -567,7 +567,7 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
         "area-1",
         Some(AreaKind::User),
         &[RecycleTarget {
-            wave_id: "wave-1",
+            track_id: "track-1",
             workspace: &ws_one,
         }],
         1_000_000,
@@ -582,7 +582,7 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
         "area-1",
         Some(AreaKind::User),
         &[RecycleTarget {
-            wave_id: "wave-2",
+            track_id: "track-2",
             workspace: &ws_two,
         }],
         1_000_001,
@@ -593,16 +593,16 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
 }
 
 #[test]
-fn a_area_directory_holding_an_unrecycled_wave_is_kept() {
+fn a_area_directory_holding_an_unrecycled_track_is_kept() {
     let f = Fixture::new();
-    let attached_shaped = f.managed("area-1", "wave-1");
-    let ws = Fixture::workspace(&attached_shaped, WaveWorkspaceKind::Attached);
+    let attached_shaped = f.managed("area-1", "track-1");
+    let ws = Fixture::workspace(&attached_shaped, TrackWorkspaceKind::Attached);
     let report = recycle_area_workspaces(
         &f.root,
         "area-1",
         Some(AreaKind::User),
         &[RecycleTarget {
-            wave_id: "wave-1",
+            track_id: "track-1",
             workspace: &ws,
         }],
         1_000_000,
@@ -627,10 +627,10 @@ fn seed_trash_entry(root: &Path, name: &str) -> PathBuf {
 fn gc_removes_entries_past_the_retention_window_and_keeps_the_rest() {
     let f = Fixture::new();
     let now = 100 * DAY_MS;
-    let old = seed_trash_entry(&f.root, &format!("wave-old-{}", now - 8 * DAY_MS));
-    let fresh = seed_trash_entry(&f.root, &format!("wave-fresh-{}", now - 6 * DAY_MS));
+    let old = seed_trash_entry(&f.root, &format!("track-old-{}", now - 8 * DAY_MS));
+    let fresh = seed_trash_entry(&f.root, &format!("track-fresh-{}", now - 6 * DAY_MS));
     // Exactly at the boundary: retention is "younger than", so this goes.
-    let boundary = seed_trash_entry(&f.root, &format!("wave-edge-{}", now - TRASH_RETENTION_MS));
+    let boundary = seed_trash_entry(&f.root, &format!("track-edge-{}", now - TRASH_RETENTION_MS));
 
     let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();
 
@@ -649,7 +649,7 @@ fn gc_dates_entries_by_name_not_by_mtime() {
     // most worth keeping.
     let f = Fixture::new();
     let now = 100 * DAY_MS;
-    let entry = seed_trash_entry(&f.root, &format!("wave-1-{now}"));
+    let entry = seed_trash_entry(&f.root, &format!("track-1-{now}"));
     // 1970-01-01 + 1000s, i.e. as stale as an mtime gets.
     let status = std::process::Command::new("touch")
         .args(["-d", "@1000"])
@@ -673,7 +673,7 @@ fn gc_keeps_anything_it_cannot_date() {
     let f = Fixture::new();
     let now = 100 * DAY_MS;
     let undateable = seed_trash_entry(&f.root, "no-timestamp-here");
-    let not_a_number = seed_trash_entry(&f.root, "wave-1-notanumber");
+    let not_a_number = seed_trash_entry(&f.root, "track-1-notanumber");
     let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();
     assert!(removed.is_empty(), "removed={removed:?}");
     assert!(undateable.exists());
@@ -691,7 +691,7 @@ fn gc_does_not_follow_a_symlink_planted_in_the_trash() {
     let link = f
         .root
         .join(TRASH_DIR_NAME)
-        .join(format!("wave-1-{}", now - 30 * DAY_MS));
+        .join(format!("track-1-{}", now - 30 * DAY_MS));
     std::os::unix::fs::symlink(&victim, &link).unwrap();
 
     let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();

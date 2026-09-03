@@ -6,10 +6,10 @@ import {
   invalidationPlanFor,
   noop,
   taskVerdictInvalidatingKinds,
-  WAVE_FILES_DERIVED_KINDS,
+  TRACK_FILES_DERIVED_KINDS,
   type EventKind,
   type InvalidationPolicy,
-  type WaveFilesDerivedKind,
+  type TrackFilesDerivedKind,
 } from './invalidation-plan.js';
 
 describe('invalidation plan contract', () => {
@@ -22,14 +22,14 @@ describe('invalidation plan contract', () => {
   });
 
   it('pins ordinary query-key literals independently from production definitions', () => {
-    const event = { ev: 'wave.report_edited', data: { wave_id: 'wave-7' } } as Extract<
+    const event = { ev: 'track.report_edited', data: { track_id: 'track-7' } } as Extract<
       WireEvent,
-      { ev: 'wave.report_edited' }
+      { ev: 'track.report_edited' }
     >;
     expect(invalidationPlanFor(event)).toEqual({
       invalidate: [
-        ['wave-files', 'wave-7'], ['wave-report', 'wave-7'], ['wave-backlinks'],
-        ['today-launchpad'], ['wave', 'wave-7'],
+        ['track-files', 'track-7'], ['track-report', 'track-7'], ['track-backlinks'],
+        ['today-launchpad'], ['track', 'track-7'],
       ],
       remove: [],
       writeThrough: [],
@@ -48,29 +48,29 @@ describe('invalidation plan contract', () => {
    * keys. Deleting either line from the policy turns this red and nothing else.
    */
   it('refreshes the Today document and its resolve when a report is edited', () => {
-    const event = { ev: 'wave.report_edited', data: { wave_id: 'lp' } } as Extract<
+    const event = { ev: 'track.report_edited', data: { track_id: 'lp' } } as Extract<
       WireEvent,
-      { ev: 'wave.report_edited' }
+      { ev: 'track.report_edited' }
     >;
     const keys = invalidationPlanFor(event).invalidate;
     expect(keys).toContainEqual(['today-launchpad']);
-    expect(keys).toContainEqual(['wave', 'lp']);
+    expect(keys).toContainEqual(['track', 'lp']);
   });
 
-  it('pins wave-report invalidation to exactly the derived kinds plus report edits', () => {
+  it('pins track-report invalidation to exactly the derived kinds plus report edits', () => {
     const allEventKinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(
       { ev: kind, data: {} } as WireEvent,
-    ).invalidate.some((key) => key[0] === 'wave-report')));
+    ).invalidate.some((key) => key[0] === 'track-report')));
     expect(actual).toEqual(new Set(taskVerdictInvalidatingKinds()));
-    expectTypeOf<typeof WAVE_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<WaveFilesDerivedKind>();
+    expectTypeOf<typeof TRACK_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<TrackFilesDerivedKind>();
   });
 
   /*
    * The exclusion, asserted from both sides so neither can drift silently.
    *
    * A hook fires roughly twice per tool call per running worker and writes no
-   * `tasks` row; `['wave-report', …]` is a live query on the whole-document
+   * `tasks` row; `['track-report', …]` is a live query on the whole-document
    * report projection. It must keep its workspace key (the files really did
    * change) and must not have the verdict one.
    */
@@ -78,9 +78,9 @@ describe('invalidation plan contract', () => {
     'invalidates the workspace but never the task verdicts for %s',
     (ev) => {
       const plan = invalidationPlanFor(
-        { ev, data: { wave_id: 'wave-7' } } as unknown as WireEvent,
+        { ev, data: { track_id: 'track-7' } } as unknown as WireEvent,
       );
-      expect(plan.invalidate).toEqual([['wave-files', 'wave-7']]);
+      expect(plan.invalidate).toEqual([['track-files', 'track-7']]);
       expect(taskVerdictInvalidatingKinds()).not.toContain(ev);
     },
   );

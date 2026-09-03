@@ -1063,7 +1063,7 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         card_id: &str,
         _role: CardRole,
-        _wave_id: Option<&str>,
+        _track_id: Option<&str>,
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
@@ -1794,7 +1794,7 @@ impl SharedCodexAppServer {
     /// (unbound child consuming the full window, then the full grace, then
     /// a slow cold start). Queued behind it: thread-start
     /// settings drains, crash restarts, heal rounds (their backoff happens
-    /// before acquiring), boot; wave preflights observe non-Running and
+    /// before acquiring), boot; track preflights observe non-Running and
     /// fail fast rather than queue. All of those already tolerate the 120s
     /// cold start; settings PUT / status snapshots never take the serial.
     pub(crate) async fn transition_replace(

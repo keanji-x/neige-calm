@@ -9,7 +9,7 @@
 //   3. On miss / 404 / network fail: bootstrap a fresh one inside the
 //      kernel-owned **system area** (issue #175 — hidden from the
 //      sidebar, lookup via `POST /api/areas/system`), hosting a single
-//      internal "Today" wave + terminal card.
+//      internal "Today" track + terminal card.
 //
 // Browser-scoped (not per-user) by design — auth and per-user state come
 // with M3. Clearing site data costs you the binding; the underlying
@@ -18,7 +18,7 @@
 // This hook is the one place in the app that performs an imperative
 // bootstrap sequence rather than a single mutation. We could decompose
 // it into `useCreateAreaMutation` etc., but the "ensureSystemArea → ensure
-// TodayWave → ensureTerminalCard" chain is read-then-write three times
+// TodayTrack → ensureTerminalCard" chain is read-then-write three times
 // over, and modeling it as a single async resolver keeps the idempotency
 // invariants in one place. After mutating, we invalidate the affected
 // query keys so other consumers (Sidebar, Area page) see the new rows.
@@ -31,12 +31,12 @@ import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
 import { queryKeys } from '../api/queries';
 
 const STORAGE_KEY = 'calm.todayCardId';
-// Internal wave title inside the system area. The user never sees this —
+// Internal track title inside the system area. The user never sees this —
 // `GET /api/areas` filters the system area out by default (kind='system'),
-// so the only consumer is this hook's `ensureTodayWave` lookup. The label
+// so the only consumer is this hook's `ensureTodayTrack` lookup. The label
 // can stay human-readable for debugging without colliding with anything
-// the user names a wave (different area, no name collision possible).
-const TODAY_WAVE_TITLE = 'Today';
+// the user names a track (different area, no name collision possible).
+const TODAY_TRACK_TITLE = 'Today';
 
 export interface TodayTerminal {
   cardId: string;
@@ -85,7 +85,7 @@ export function useTodayTerminal(): UseTodayTerminalResult {
 
       // 2. Bootstrap path. Reuse existing infra where possible:
       //    same system area (singleton enforced by the kernel — issue
-      //    #175), same Today wave, same first terminal card (across
+      //    #175), same Today track, same first terminal card (across
       //    browsers / cleared-storage cycles) so the kernel doesn't
       //    accumulate orphan cards.
       //
@@ -96,11 +96,11 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       //    not worth the round-trip parsing to gate.
       const area = await api.getOrCreateSystemArea();
       void qc.invalidateQueries({ queryKey: queryKeys.areas() });
-      const { wave, created: waveCreated } = await ensureTodayWave(area.id);
-      if (waveCreated) {
-        void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(area.id) });
+      const { track, created: trackCreated } = await ensureTodayTrack(area.id);
+      if (trackCreated) {
+        void qc.invalidateQueries({ queryKey: queryKeys.tracksInArea(area.id) });
       }
-      const detail = await api.getWaveDetail(wave.id);
+      const detail = await api.getTrackDetail(track.id);
       const existingCard = detail.cards.find((c) => {
         if (c.kind !== 'terminal') return false;
         const p = c.payload as { terminal_id?: string } | null;
@@ -129,7 +129,7 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       // `<html data-theme>` (the ThemeProvider's synchronous mirror)
       // rather than via `useTheme()` so this hook stays cheap and
       // doesn't re-render on theme toggle.
-      const card = await api.createTerminalCard(wave.id, {
+      const card = await api.createTerminalCard(track.id, {
         theme: readHostThemeRgb(),
       });
       const terminalId = (card.payload as { terminal_id: string }).terminal_id;
@@ -163,28 +163,28 @@ export function useTodayTerminal(): UseTodayTerminalResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Look up the single "Today" wave inside the kernel-owned system area,
- * minting it if absent. Identifying the wave by `title === 'Today'`
+ * Look up the single "Today" track inside the kernel-owned system area,
+ * minting it if absent. Identifying the track by `title === 'Today'`
  * inside the system area is safe because the user can't reach this area
  * — `GET /api/areas` filters it out by default (issue #175) and the
- * sidebar's "+ New wave" affordance always targets a user-visible area.
- * No collision risk with whatever a user names their own waves.
+ * sidebar's "+ New track" affordance always targets a user-visible area.
+ * No collision risk with whatever a user names their own tracks.
  */
-async function ensureTodayWave(areaId: string) {
-  const waves = await api.wavesInArea(areaId);
-  const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
-  if (existing) return { wave: existing, created: false };
+async function ensureTodayTrack(areaId: string) {
+  const tracks = await api.tracksInArea(areaId);
+  const existing = tracks.find((w) => w.title === TODAY_TRACK_TITLE);
+  if (existing) return { track: existing, created: false };
   // #1147 S3 — `cwd` is OMITTED, and that is the fix, not a shortcut.
   //
   // This used to send `cwd: '/'` as a placeholder, on the reasoning that a
-  // kernel-internal wave's spec daemon "doesn't need a meaningful project
+  // kernel-internal track's spec daemon "doesn't need a meaningful project
   // cwd". Two things have changed since:
   //
   //  * Since #1131/S2 an omitted `cwd` is the *managed* branch: the kernel
-  //    allocates `<workspace-root>/<area>/<wave>`, creates it, `git init`s it
+  //    allocates `<workspace-root>/<area>/<track>`, creates it, `git init`s it
   //    and owns it. That is a directory a worker can actually lease — `/` was
-  //    never one, so any `kind: codex` task on this wave died in
-  //    `git_repo_root_for_wave_cwd` with nothing but `spawn-failed`. That is
+  //    never one, so any `kind: codex` task on this track died in
+  //    `git_repo_root_for_track_cwd` with nothing but `spawn-failed`. That is
   //    the defect #1147 was opened on, and this placeholder was one of its
   //    live sources.
   //  * S3 makes an explicit `cwd` mean "attach this existing repository", and
@@ -194,17 +194,17 @@ async function ensureTodayWave(areaId: string) {
   //
   // `attach_folder` goes with it: with no cwd there is nothing to claim, and
   // the system area was exempt from the `area_folders` namespace anyway.
-  // A subsequent call into this helper finds the existing wave and never
+  // A subsequent call into this helper finds the existing track and never
   // re-mints (the `existing` short-circuit above).
-  const wave = await api.createWave({
+  const track = await api.createTrack({
     area_id: areaId,
-    title: TODAY_WAVE_TITLE,
+    title: TODAY_TRACK_TITLE,
     // #177 — same `readHostThemeRgb()` source as the terminal-card
-    // create below. The spec daemon that the wave-create txn spawns
+    // create below. The spec daemon that the track-create txn spawns
     // gets matching colors on its first paint.
     theme: readHostThemeRgb(),
   });
-  return { wave, created: true };
+  return { track, created: true };
 }
 
 /**

@@ -96,7 +96,7 @@ afterEach(() => {
 });
 
 describe('BoardHost react-grid-layout wiring', () => {
-  it('packs a terminal at the WaveGrid default 6×10 and enables SE resize plus header drag', () => {
+  it('packs a terminal at the TrackGrid default 6×10 and enables SE resize plus header drag', () => {
     renderBoard();
     expect(grid.layout).toEqual([
       { i: 'card-a', x: 0, y: 0, w: 6, h: 10, minW: 4, minH: 6 },

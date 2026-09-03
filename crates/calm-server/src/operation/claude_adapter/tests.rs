@@ -13,7 +13,7 @@ use std::sync::Arc;
 struct ClaudeWorkerHarness {
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     adapter: ClaudeWorkerAdapter,
-    wave_id: String,
+    track_id: String,
     events: EventBus,
 }
 
@@ -33,9 +33,9 @@ async fn claude_worker_harness() -> ClaudeWorkerHarness {
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         repo.as_ref(),
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "claude workspace leases".into(),
@@ -56,19 +56,19 @@ async fn claude_worker_harness() -> ClaudeWorkerHarness {
             Arc::new(CodexClient::new_stub()),
             None,
             CardRoleCache::new(),
-            WaveAreaCache::new(),
+            TrackAreaCache::new(),
         ),
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         events: EventBus::new(),
     }
 }
 
-fn claude_worker_payload(wave_id: &str, key: &str) -> Value {
+fn claude_worker_payload(track_id: &str, key: &str) -> Value {
     serde_json::to_value(ClaudeWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: wave_id.to_string(),
-        idempotency_key: format!("{wave_id}:{key}"),
+        track_id: track_id.to_string(),
+        idempotency_key: format!("{track_id}:{key}"),
         goal: format!("do {key}"),
         cwd: None,
         context: Value::Null,
@@ -106,15 +106,15 @@ async fn prepare_claude_worker(
     harness: &ClaudeWorkerHarness,
     key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>, String) {
-    let payload = claude_worker_payload(&harness.wave_id, key);
-    let task_id = format!("{}:{key}", harness.wave_id);
+    let payload = claude_worker_payload(&harness.track_id, key);
+    let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
         "INSERT OR IGNORE INTO tasks \
-         (id, wave_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
+         (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, 'claude', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
-    .bind(&harness.wave_id)
+    .bind(&harness.track_id)
     .bind(key)
     .execute(harness.repo.pool())
     .await
@@ -157,7 +157,7 @@ fn claude_worker_command_line_uses_appended_system_prompt_not_mcp_tools() {
         "claude",
         Path::new("/tmp/claude-worker/settings.json"),
         "session-1",
-        "wave-1",
+        "track-1",
         "Goal:\ndo the work",
     );
 
@@ -180,19 +180,22 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     let lease_id = output.output_string("lease_id", "test").unwrap();
     let cwd = output.output_string("cwd", "test").unwrap();
 
-    let wave_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id = ?1")
-        .bind(&harness.wave_id)
+    let track_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
+        .bind(&harness.track_id)
         .fetch_one(harness.repo.pool())
         .await
         .unwrap();
-    assert_eq!(wave_cwd, "", "regression guard: wave cwd is not a git repo");
+    assert_eq!(
+        track_cwd, "",
+        "regression guard: track cwd is not a git repo"
+    );
     assert_eq!(
         cwd,
-        format!(".claude/worktrees/{}/{}", harness.wave_id, card_id)
+        format!(".claude/worktrees/{}/{}", harness.track_id, card_id)
     );
     assert!(std::path::Path::new(&cwd).is_dir(), "leased cwd exists");
     let lease = sqlx::query(
-        "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE lease_id = ?1",
+        "SELECT state, path, card_id, track_id FROM workspace_leases WHERE lease_id = ?1",
     )
     .bind(&lease_id)
     .fetch_one(harness.repo.pool())
@@ -201,7 +204,7 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     assert_eq!(lease.get::<String, _>("state"), "held");
     assert_eq!(lease.get::<String, _>("path"), cwd);
     assert_eq!(lease.get::<String, _>("card_id"), card_id);
-    assert_eq!(lease.get::<String, _>("wave_id"), harness.wave_id);
+    assert_eq!(lease.get::<String, _>("track_id"), harness.track_id);
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
     assert!(
@@ -254,7 +257,7 @@ async fn claude_worker_prepare_stores_idempotency_key_in_card_payload() {
 
     assert_eq!(
         card.payload.get("idempotency_key").and_then(Value::as_str),
-        Some(format!("{}:payload", harness.wave_id).as_str())
+        Some(format!("{}:payload", harness.track_id).as_str())
     );
     assert_eq!(
         card.payload.get("role_request").and_then(Value::as_str),
@@ -298,7 +301,7 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         Arc::new(CodexClient::new_stub()),
         Some(mcp_server),
         CardRoleCache::new(),
-        WaveAreaCache::new(),
+        TrackAreaCache::new(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -583,7 +586,7 @@ async fn claude_worker_recovery_already_live_returns_noop_without_respawn_or_tok
         Arc::new(CodexClient::new_stub()),
         Some(mcp_server),
         CardRoleCache::new(),
-        WaveAreaCache::new(),
+        TrackAreaCache::new(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -695,7 +698,7 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
         Arc::new(CodexClient::new_stub()),
         Some(mcp_server),
         CardRoleCache::new(),
-        WaveAreaCache::new(),
+        TrackAreaCache::new(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =

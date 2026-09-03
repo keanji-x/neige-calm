@@ -6,7 +6,7 @@
 // registry: the claim under test is about what *this build* offers, and a
 // fixture registry would only prove that the filter works on rows the fixture
 // chose. The kinds a kernel-minted-only entry must never surface (`spec`,
-// `wave-report`) are real entries here, not stand-ins.
+// `track-report`) are real entries here, not stand-ins.
 
 import { describe, expect, it } from 'vitest';
 
@@ -40,7 +40,7 @@ describe('cardAddMenuEntries', () => {
   it('never offers a kind only the kernel may mint', () => {
     const types = builtinMenu().map((entry) => entry.type);
     expect(types).not.toContain('spec');
-    expect(types).not.toContain('wave-report');
+    expect(types).not.toContain('track-report');
   });
 
   /*
@@ -48,7 +48,7 @@ describe('cardAddMenuEntries', () => {
    * gets a single-violation fixture: an entry that declares an `addPanel` and
    * would be offered but for its create strategy. Without these, deleting
    * either arm of the `mode` check stays green — the built-ins that exercise
-   * them (`spec`, `wave-report`) declare no `addPanel` at all, so they are
+   * them (`spec`, `track-report`) declare no `addPanel` at all, so they are
    * filtered a step earlier and prove nothing about this check.
    */
   const declaring = (mode: 'kernel-minted-only' | 'catalog' | 'generic'): CardEntry => ({

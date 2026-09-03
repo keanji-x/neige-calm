@@ -5,7 +5,7 @@
 //! ### Client → server (text frame, JSON)
 //!
 //! ```json
-//! { "sub": ["wave:w-001", "area:c-001", "plugin:*"], "since": 1729 }
+//! { "sub": ["track:w-001", "area:c-001", "plugin:*"], "since": 1729 }
 //! ```
 //!
 //! Replaces the subscription set. Send `{"sub": ["*"]}` for firehose
@@ -30,7 +30,7 @@
 //! per design doc §2.4:
 //!
 //! ```json
-//! { "_id": 1729, "ev": "wave.updated", "data": { "id":"w-001", ... } }
+//! { "_id": 1729, "ev": "track.updated", "data": { "id":"w-001", ... } }
 //! ```
 //!
 //! Forwarded only if `event::topics(ev)` intersects the client's `sub` set.
@@ -648,8 +648,8 @@ where
             continue;
         }
         // Topic filter applies to replayed frames too: a cursor-aware
-        // client that just changed waves shouldn't suddenly see history
-        // for a wave it didn't subscribe to.
+        // client that just changed tracks shouldn't suddenly see history
+        // for a track it didn't subscribe to.
         if !event::topics(&ev).iter().any(|t| subs.contains(t)) {
             // Skipped, but still advance the cursor — the client's next
             // reconnect should resume from here, not re-receive this id.
@@ -1268,8 +1268,8 @@ mod tests {
 
         // New shape with cursor.
         let m: SubMessage =
-            serde_json::from_str(r#"{"sub":["wave:w-1"], "since": 17}"#).expect("parse new");
+            serde_json::from_str(r#"{"sub":["track:w-1"], "since": 17}"#).expect("parse new");
         assert_eq!(m.since, Some(17));
-        assert_eq!(m.sub, vec!["wave:w-1".to_string()]);
+        assert_eq!(m.sub, vec!["track:w-1".to_string()]);
     }
 }

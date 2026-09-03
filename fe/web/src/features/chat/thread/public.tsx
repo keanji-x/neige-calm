@@ -1596,7 +1596,7 @@ function jumpToExchange(frame: HTMLElement | null, id: string): boolean {
  *  3. **It splits the text into `<span>`s while it plays** (`wrapTextWithFade`),
  *     so the reply is not one text node until the animation ends. Measured:
  *     `wave-conversation.test.tsx`'s `[G5]` — an upstream case this file never
- *     touches — fails on `findByText('it runs waves')` with Testing Library's
+ *     touches — fails on `findByText('it runs tracks')` with Testing Library's
  *     "the text is broken up by multiple elements" hint.
  *
  * The fade is a real feature for a consumer holding a token stream. We are not
@@ -1664,7 +1664,7 @@ function formatActivityDuration(durationMs: number): string {
 /**
  * One action, one line.
  *
- * The dot is the same 6px accent pulse a running wave row wears, and it is here
+ * The dot is the same 6px accent pulse a running track row wears, and it is here
  * for the same reason it is there: it is the one place in the app that says
  * "this is happening right now". A running action is the honest place for it in
  * a transcript — before this existed, a four-minute turn spent entirely in
@@ -1836,7 +1836,7 @@ export function ChatComposer({
    * the same composer is still mounted gets nothing: the caret stays where it
    * is. **One mount per intent is the caller's job.** The one production caller
    * satisfies it by construction — the intent is stated by a create, so the
-   * wave (and therefore the drawer and this composer) is always new — which is
+   * track (and therefore the drawer and this composer) is always new — which is
    * why this is documented rather than defended in code; a component that
    * watched the prop would be the second focus policy the note above rejects.
    * Pinned by "ignores the flag being raised again on a composer that is

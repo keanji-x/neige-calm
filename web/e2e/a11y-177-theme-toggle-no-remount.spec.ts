@@ -26,7 +26,7 @@
 // `integration/theme-toggle-no-remount.test.tsx`) couldn't reproduce
 // this in jsdom — the gap is some real-browser-only factor (RGL +
 // ResizeObserver, real Suspense / lazy-chunk resolve timing, the real
-// query persister, the real wave-detail fetch on the wire). Playwright
+// query persister, the real track-detail fetch on the wire). Playwright
 // + real Chromium is our last lever before stapling instrumentation
 // directly into prod.
 //
@@ -38,13 +38,13 @@
 //        decrements on unmount. The signal we watch.
 //      - `theme.tsx` exposes `window.__calmSetTheme(mode)` so we can
 //        flip the theme WITHOUT navigating to the Settings page
-//        (navigation would unmount any wave-page XtermView and defeat
+//        (navigation would unmount any track-page XtermView and defeat
 //        the whole observation).
 //
-//  * We create a real area + wave via the replay binary's REST surface
+//  * We create a real area + track via the replay binary's REST surface
 //    (same pattern as `a11y-keyboard.spec.ts`), then rely on the
 //    sync-spawn spec-card path (#136 PR6) to mint an XtermView when
-//    the wave page renders. No `+ Add → terminal` step needed.
+//    the track page renders. No `+ Add → terminal` step needed.
 //
 // Outcome shapes
 // --------------
@@ -62,7 +62,7 @@ import { readFileSync } from 'node:fs';
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import {
   createUserArea,
-  createWaveInArea,
+  createTrackInArea,
   resetReplayServer,
 } from './helpers/reset';
 import { CODEX_BIN_FILE, CODEX_MISSING_SENTINEL } from './_setup/replay-server.shared';
@@ -106,22 +106,22 @@ test('#177 XtermView does not remount on app theme toggle', async ({
   // Step 1 — boot with the `?testMounts=1` instrumentation flag.
   await page.goto('?testMounts=1', { waitUntil: 'domcontentloaded' });
 
-  // Step 2 — mint a user-facing area + wave via the replay REST API.
+  // Step 2 — mint a user-facing area + track via the replay REST API.
   const area = await createUserArea(request_(page), `E2E #177 ${Date.now()}`, '#6a8');
-  const wave = await createWaveInArea(
+  const track = await createTrackInArea(
     request_(page),
     area.id,
-    `E2E #177 wave ${Date.now()}`,
+    `E2E #177 track ${Date.now()}`,
   );
 
-  // Step 3 — navigate into the wave. Keep `?testMounts=1` on every
+  // Step 3 — navigate into the track. Keep `?testMounts=1` on every
   // navigation so the instrumentation survives route changes.
-  await page.goto(`wave/${wave.id}?testMounts=1`, {
+  await page.goto(`track/${track.id}?testMounts=1`, {
     waitUntil: 'domcontentloaded',
   });
-  await expect(page).toHaveURL(/\/calm\/wave\/[^/?]+\?testMounts=1$/);
+  await expect(page).toHaveURL(/\/calm\/track\/[^/?]+\?testMounts=1$/);
 
-  // Step 4 — the wave-create path mints a spec card synchronously
+  // Step 4 — the track-create path mints a spec card synchronously
   // (#136 PR6 / #182), which mounts XtermView. We wait for the
   // `.xterm-view` element + the `__xtermMounts__` counter to settle.
   await expect(page.locator('.xterm-view').first()).toBeVisible({

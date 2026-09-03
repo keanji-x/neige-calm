@@ -15,12 +15,12 @@ spec_dormant_create_area() {
   printf '%s\n' "$area_id"
 }
 
-spec_dormant_create_wave() {
-  local area_id=$1 body wave_id
+spec_dormant_create_track() {
+  local area_id=$1 body track_id
   body="$(AREA_ID="$area_id" WORKSPACE="$WORKSPACE" \
     node -e 'process.stdout.write(JSON.stringify({area_id:process.env.AREA_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[216,219,226],bg:[15,20,24]},title:"Tier 1 dormant spec regression"}))')"
-  wave_id="$(post_id /api/waves "$body")"
-  printf '%s\n' "$wave_id"
+  track_id="$(post_id /api/tracks "$body")"
+  printf '%s\n' "$track_id"
 }
 
 spec_dormant_card_id() {
@@ -34,7 +34,7 @@ if (!Array.isArray(cards)) {
 }
 const spec = cards.find((c) => c.kind === "codex" && c.payload?.spec_harness === true);
 if (typeof spec?.id !== "string") {
-  console.error("spec card missing from wave cards");
+  console.error("spec card missing from track cards");
   process.exit(2);
 }
 process.stdout.write(`${spec.id}\n`);
@@ -57,7 +57,7 @@ if (typeof value === "string" && value.length > 0) process.stdout.write(value);
 }
 
 case_run() {
-  local auth_probe_status area_id wave_id spec_card_id body status code runtime_id
+  local auth_probe_status area_id track_id spec_card_id body status code runtime_id
 
   autologin_probe
   auth_probe_status="$AUTH_PROBE_STATUS"
@@ -65,11 +65,11 @@ case_run() {
   login_unless_autologin "$auth_probe_status"
 
   area_id="$(spec_dormant_create_area)"
-  wave_id="$(spec_dormant_create_wave "$area_id")"
+  track_id="$(spec_dormant_create_track "$area_id")"
 
-  expect_2xx GET "/api/waves/$wave_id/cards" -
+  expect_2xx GET "/api/tracks/$track_id/cards" -
   spec_card_id="$(spec_dormant_card_id "$API_BODY")" \
-    || fail "wave $wave_id did not contain a spec card"
+    || fail "track $track_id did not contain a spec card"
 
   body="$(node -e 'process.stdout.write(JSON.stringify({text:"wake dormant spec"}))')"
   api POST "/api/cards/$spec_card_id/spec/input" "$body" \
@@ -87,8 +87,8 @@ case_run() {
     409)
       [[ "$code" == "spec_harness_dormant" ]] \
         || fail "POST spec/input returned 409 with code=$code: $(body_preview "$API_BODY")"
-      printf 'Dormant OK wave=%s spec_card=%s status=%s code=%s\n' \
-        "$wave_id" "$spec_card_id" "$status" "$code"
+      printf 'Dormant OK track=%s spec_card=%s status=%s code=%s\n' \
+        "$track_id" "$spec_card_id" "$status" "$code"
       ;;
     503)
       [[ "$code" == "service_unavailable" ]] \

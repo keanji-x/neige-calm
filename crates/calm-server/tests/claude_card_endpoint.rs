@@ -11,7 +11,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewTrack, new_id, now_ms};
 use calm_server::operation::claude_adapter::ClaudeAdapter;
 use calm_server::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use calm_server::operation::codex_adapter::CodexAdapter;
@@ -60,7 +60,7 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     events: EventBus,
     spawn_count: Arc<AtomicUsize>,
     _tmp: TempDir,
@@ -91,8 +91,8 @@ where
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "claude-endpoint".into(),
@@ -127,7 +127,7 @@ where
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -149,7 +149,7 @@ where
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
@@ -159,21 +159,21 @@ where
         state.pending_codex_threads.clone(),
         state.pending_codex_threads_spawn_serial.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let claude_adapter = Arc::new(ClaudeAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         hook.clone(),
     ));
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex,
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -207,7 +207,7 @@ where
         app,
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         events,
         spawn_count,
         _tmp: tmp,
@@ -398,14 +398,14 @@ fn restart_failing_spawn_hook() -> (Arc<AtomicUsize>, TestSpawnHook) {
 
 async fn post(
     app: axum::Router,
-    wave_id: &str,
+    track_id: &str,
     body: Value,
     idempotency_key: Option<&str>,
     actor: Option<&str>,
 ) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{wave_id}/claude-cards"))
+        .uri(format!("/api/tracks/{track_id}/claude-cards"))
         .header("content-type", "application/json");
     if let Some(key) = idempotency_key {
         req = req.header("Idempotency-Key", key);
@@ -482,7 +482,7 @@ async fn post_claude_card_no_prompt_succeeds_through_saga() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
-    let (status, card) = post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    let (status, card) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
     assert_eq!(card["kind"], "claude");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
@@ -521,7 +521,7 @@ async fn post_claude_card_with_prompt_succeeds_through_saga() {
 
     let (status, card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(Some("--help")),
         None,
         None,
@@ -556,7 +556,7 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
 
     let (create_status, created) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(Some("first prompt")),
         None,
         None,
@@ -633,7 +633,7 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
         boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
 
     let (create_status, created) =
-        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -702,12 +702,12 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
 }
 
 /// #1147 S6 — the restart path recreates a `terminals` row, which now freezes
-/// the wave's workspace inside the same transaction. That makes this the one
-/// production flow where a transaction holds SQLite's write lock on `waves` and
+/// the track's workspace inside the same transaction. That makes this the one
+/// production flow where a transaction holds SQLite's write lock on `tracks` and
 /// then goes on to resolve an event scope.
 ///
 /// Measured: with the freeze in `terminal_create_tx` and the scope still
-/// resolved through `card_scope` (which reads `waves` off the **pool**, i.e. a
+/// resolved through `card_scope` (which reads `tracks` off the **pool**, i.e. a
 /// second connection), this flow hangs forever — the probes logged `UPDATE ok`
 /// and then `about to card_scope`, and nothing after it; the task waits on a
 /// lock only it can release, in `sqlx_sqlite::statement::unlock_notify::wait`.
@@ -725,7 +725,7 @@ async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
     .await;
 
     let (create_status, created) =
-        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap().to_string();
     let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -742,24 +742,24 @@ async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
     })
     .await;
     let (restart_status, restarted) = restart.expect(
-        "#1147 S6: the claude restart transaction freezes the wave workspace, so it must \
-         resolve its event scope with `card_scope_tx`. `card_scope` reads `waves` off the \
+        "#1147 S6: the claude restart transaction freezes the track workspace, so it must \
+         resolve its event scope with `card_scope_tx`. `card_scope` reads `tracks` off the \
          pool and deadlocks against this transaction's own write lock.",
     );
     assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
-    // No `frozen_at` assertion here on purpose: this fixture's wave is
+    // No `frozen_at` assertion here on purpose: this fixture's track is
     // `attached`, so it is frozen from creation and the assertion would hold
     // with the freeze deleted. What this test is for is the deadlock — the
     // freeze DOES run on this path (it is why the hang exists at all), and
     // whether it lands is asserted where it can fail, in
-    // `wave_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`.
+    // `track_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`.
 }
 
 /// #1147 S6 — a claude card whose payload carries no `cwd` must fall back to
-/// the **wave's workspace**, never to `$HOME`.
+/// the **track's workspace**, never to `$HOME`.
 ///
 /// This is the last path in the tree that could persist the server's own
-/// environment into a `terminals.cwd`, and since S6 that row freezes the wave's
+/// environment into a `terminals.cwd`, and since S6 that row freezes the track's
 /// workspace in the same transaction — so a wrong directory here is permanent,
 /// not just wrong once.
 ///
@@ -770,10 +770,10 @@ async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
 /// not of this function.
 ///
 /// The assertion is not vacuous: the fixture's card payload has had `cwd`
-/// REMOVED, so `/workspace` can only come from `waves.workspace_path`. With the
+/// REMOVED, so `/workspace` can only come from `tracks.workspace_path`. With the
 /// old `default_cwd()` fallback the row would name `$HOME`.
 #[tokio::test]
-async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_wave_workspace() {
+async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_track_workspace() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_with_spawn_hook_factory(move |_, _| {
         recording_spawn_hook(Arc::new(tokio::sync::Mutex::new(Vec::new())))
@@ -781,7 +781,7 @@ async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_wave_worksp
     .await;
 
     let (create_status, created) =
-        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap().to_string();
     let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -814,7 +814,7 @@ async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_wave_worksp
     assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
 
     let workspace: String = sqlx::query_scalar(
-        "SELECT w.workspace_path FROM waves w JOIN cards c ON c.wave_id = w.id WHERE c.id = ?1",
+        "SELECT w.workspace_path FROM tracks w JOIN cards c ON c.track_id = w.id WHERE c.id = ?1",
     )
     .bind(&card_id)
     .fetch_one(boot.repo.pool())
@@ -828,7 +828,7 @@ async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_wave_worksp
         .expect("restart recreates the terminal row");
     assert_eq!(
         recreated.cwd, workspace,
-        "#1147 S6 — the fallback is the wave's workspace, not $HOME"
+        "#1147 S6 — the fallback is the track's workspace, not $HOME"
     );
     let home = std::env::var("HOME").unwrap_or_default();
     assert!(
@@ -848,7 +848,7 @@ async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
     .await;
 
     let (create_status, created) =
-        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -888,7 +888,7 @@ async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runt
     let boot = boot_with_spawn_hook_factory(|_, _| restart_failing_spawn_hook()).await;
 
     let (create_status, created) =
-        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -937,7 +937,7 @@ async fn post_claude_restart_returns_409_when_runtime_is_active() {
     let boot = boot_success().await;
 
     let (create_status, created) =
-        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
 
@@ -960,7 +960,7 @@ async fn post_claude_restart_returns_403_for_non_claude_card() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone().into(),
+            track_id: boot.track_id.clone().into(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -980,7 +980,7 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone().into(),
+            track_id: boot.track_id.clone().into(),
             title: None,
             kind: "claude".into(),
             sort: None,
@@ -1056,7 +1056,7 @@ async fn post_claude_card_idempotency_same_key_same_normalized_payload_reuses_op
 
     let (first_status, first_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         first_body,
         Some("claude-same-normalized"),
         None,
@@ -1064,7 +1064,7 @@ async fn post_claude_card_idempotency_same_key_same_normalized_payload_reuses_op
     .await;
     let (second_status, second_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         second_body,
         Some("claude-same-normalized"),
         None,
@@ -1083,7 +1083,7 @@ async fn post_claude_card_idempotency_same_key_different_payload_returns_409() {
 
     let (first_status, first_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(None),
         Some("claude-different-payload"),
         None,
@@ -1092,7 +1092,7 @@ async fn post_claude_card_idempotency_same_key_different_payload_returns_409() {
     assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
     let (second_status, second_body) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(Some("now prompted")),
         Some("claude-different-payload"),
         None,
@@ -1119,7 +1119,7 @@ async fn post_claude_card_idempotency_trims_cwd_and_prompt_for_hash_equivalence(
 
     let (first_status, first_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         first_body,
         Some("claude-trimmed-normalized"),
         None,
@@ -1127,7 +1127,7 @@ async fn post_claude_card_idempotency_trims_cwd_and_prompt_for_hash_equivalence(
     .await;
     let (second_status, second_card) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         second_body,
         Some("claude-trimmed-normalized"),
         None,
@@ -1148,7 +1148,7 @@ async fn post_claude_card_spawn_failure_reaps_pty_deletes_settings_dir_marks_run
     let boot = boot_with_spawn_hook_factory(failing_spawn_hook).await;
     let mut rx = boot.events.subscribe();
 
-    let (status, response) = post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    let (status, response) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1208,7 +1208,7 @@ async fn post_claude_card_validate_forbidden_returns_403_phase_failed() {
 
     let (status, response) = post(
         boot.app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body(None),
         None,
         Some("ai:codex"),
@@ -1220,7 +1220,7 @@ async fn post_claude_card_validate_forbidden_returns_403_phase_failed() {
     assert_eq!(detail["last_error_class"], "forbidden");
     assert!(
         boot.repo
-            .cards_by_wave(&boot.wave_id)
+            .cards_by_track(&boot.track_id)
             .await
             .unwrap()
             .is_empty()
@@ -1233,7 +1233,7 @@ async fn post_claude_card_invalid_idempotency_key_header_returns_400() {
     let boot = boot_success().await;
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{}/claude-cards", boot.wave_id))
+        .uri(format!("/api/tracks/{}/claude-cards", boot.track_id))
         .header("content-type", "application/json")
         .body(Body::from(body(None).to_string()))
         .unwrap();
@@ -1261,19 +1261,26 @@ async fn post_claude_card_idempotency_key_reused_by_other_kind_uses_fresh_operat
                phase, created_at_ms, updated_at_ms, completed_at_ms
            )
            VALUES (?1, ?2, 'terminal-create', ?3, 'terminal-hash',
-                   'wave', ?4, ?5, '{}', 'succeeded', ?6, ?6, ?6)"#,
+                   'track', ?4, ?5, '{}', 'succeeded', ?6, ?6, ?6)"#,
     )
     .bind(&terminal_op_id)
     .bind(key)
     .bind(key)
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(&boot.track_id)
+    .bind(serde_json::to_string(&json!({ "type": "track", "id": boot.track_id })).unwrap())
     .bind(now)
     .execute(boot.repo.pool())
     .await
     .unwrap();
 
-    let (status, card) = post(boot.app.clone(), &boot.wave_id, body(None), Some(key), None).await;
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(None),
+        Some(key),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
 
     let rows = sqlx::query(

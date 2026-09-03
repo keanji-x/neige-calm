@@ -1,9 +1,9 @@
-// Reading a wave's report out of its cards.
+// Reading a track's report out of its cards.
 //
-// The report is not a thing this frontend invents: `WaveReportPayload` is a
-// Tier-A persisted payload in the kernel (`crates/calm-types/src/wave_report.rs`,
+// The report is not a thing this frontend invents: `TrackReportPayload` is a
+// Tier-A persisted payload in the kernel (`crates/calm-types/src/track_report.rs`,
 // mirrored into `core/api/generated/wire.ts`), carried in the `payload` column
-// of the wave's one `wave-report` card.
+// of the track's one `track-report` card.
 //
 // A report is a **sequence of typed blocks**, not a Markdown string (§8.3).
 // `body` is the kernel's lossless flat projection of those blocks, and it is
@@ -14,7 +14,7 @@
 // the other way round.
 //
 // Everything here is fail-soft. A card payload is `unknown` on the wire and a
-// wave whose report has never been written carries `{}`; neither is an error,
+// track whose report has never been written carries `{}`; neither is an error,
 // both are "no report yet". A block whose payload does not match its kind is
 // kept as an opaque block so the renderer can degrade that one block — a
 // report is written by an agent, so it will eventually contain something this
@@ -26,10 +26,10 @@ import type { ApiOperation } from '../api/types.js';
 import {
   extractOutline, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy,
 } from '../markdown/public.js';
-import type { CardWire } from './wave.js';
+import type { CardWire } from './track.js';
 
-/** The card kind the kernel reserves for the report. One per wave, undeletable. */
-export const WAVE_REPORT_CARD_KIND = 'wave-report';
+/** The card kind the kernel reserves for the report. One per track, undeletable. */
+export const TRACK_REPORT_CARD_KIND = 'track-report';
 
 /* ── Per-kind block payloads ────────────────────────────────────────────
    Each `kind` selects a typed payload. The bounds mirror the kernel's own
@@ -198,20 +198,20 @@ function toReportBlock(wire: z.infer<typeof blockWireSchema>): ReportBlock {
 }
 
 /**
- * A deliberately *narrow* read of `WaveReportPayload`.
+ * A deliberately *narrow* read of `TrackReportPayload`.
  *
  * `schemaVersion` and `docRev` stay unparsed — the persistence layer's
  * business, and reading them would make a v4 payload unreadable to a viewer
  * that does not care what changed. Block ids and kinds are not version fields;
  * they are the content, which is why they are read.
  */
-export const waveReportPayloadSchema = z.object({
+export const trackReportPayloadSchema = z.object({
   summary: z.string().default(''),
   body: z.string().default(''),
   blocks: z.unknown().nullish(),
 });
 
-export type WaveReport = Readonly<{
+export type TrackReport = Readonly<{
   summary: string;
   /** Markdown source — the flat projection, and the only content a v1 row has. */
   body: string;
@@ -220,17 +220,17 @@ export type WaveReport = Readonly<{
 }>;
 
 /**
- * The wave's report, or `null` when it has none.
+ * The track's report, or `null` when it has none.
  *
  * "None" covers three cases that are the same to a reader: no report card, a
  * payload that does not parse, and a payload that is empty in both projections.
- * A wave that has been created but never worked on is in the third case, which
+ * A track that has been created but never worked on is in the third case, which
  * is the common one — so it must not look like a failure.
  */
-export function readWaveReport(cards: readonly CardWire[]): WaveReport | null {
-  const card = cards.find((candidate) => candidate.kind === WAVE_REPORT_CARD_KIND);
+export function readTrackReport(cards: readonly CardWire[]): TrackReport | null {
+  const card = cards.find((candidate) => candidate.kind === TRACK_REPORT_CARD_KIND);
   if (card === undefined) return null;
-  const parsed = waveReportPayloadSchema.safeParse(card.payload);
+  const parsed = trackReportPayloadSchema.safeParse(card.payload);
   if (!parsed.success) return null;
   const summary = parsed.data.summary.trim();
   const body = parsed.data.body.trim();
@@ -321,7 +321,7 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
      * `features/report/document` lifts every one of them out of the document
      * and into the collapsed `Reference` appendix at the end, so hanging them
      * under the prose section they used to follow would point the outline at a
-     * place they are no longer drawn — and on a real wave that was eight rows
+     * place they are no longer drawn — and on a real track that was eight rows
      * of machinery in a map of eight rows of argument.
      *
      * They stay reachable, by the two routes that are actually about tasks: the
@@ -341,11 +341,11 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
 
 /* ── Tasks, as an inventory ─────────────────────────────────────────────
 
-   A wave's tasks are report blocks (#229), which is the right place to *store*
+   A track's tasks are report blocks (#229), which is the right place to *store*
    them and the wrong place to read them as a list: they sit wherever in the
    prose the agent happened to declare them, each one carrying the worker prompt
    and the gate commands that were written for a machine. Measured on a real
-   wave: 8141 characters of report body, of which the prose a reader is meant to
+   track: 8141 characters of report body, of which the prose a reader is meant to
    take away was ~700 and seven task blocks were the rest.
 
    So the panel gets the inventory and the document keeps the declarations. This
@@ -361,7 +361,7 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
    running or which worker was on which.
 
    It is no longer. The kernel projects the run (`task_projection`) and `GET
-   /api/waves/{id}/report` exposes it as `taskDiagnostics`, so the second half
+   /api/tracks/{id}/report` exposes it as `taskDiagnostics`, so the second half
    arrives as a *decoration* on this list rather than as a second list — see
    `deriveReportTasks` below, which stays a pure join over the two. */
 
@@ -394,7 +394,7 @@ export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn' | 'unreadable'
 
    The paragraph above says a block cannot say whether a task has run, and that
    a status column would be a backend slice. That slice exists: `GET
-   /api/waves/{id}/report` answers with `taskDiagnostics`, the kernel's own
+   /api/tracks/{id}/report` answers with `taskDiagnostics`, the kernel's own
    `BlockVerdict[]` — one entry per declared task, carrying `schedulable` from
    the projection and, when the `tasks` table has a row for that key, its
    `status` and the `workerCardId` the work was dispatched onto.
@@ -427,7 +427,7 @@ export const taskVerdictSchema = z.object({
    * every ordinary status, so this is `nullish` for the same reason `status` is
    * and not because a missing one is a defect.
    *
-   * Free-form prose, not an enum: it is the kernel's message verbatim (`wave …
+   * Free-form prose, not an enum: it is the kernel's message verbatim (`track …
    * is not a git repository`), which is the entire value — `spawn-failed` was
    * already knowable from `failed`.
    */
@@ -441,7 +441,7 @@ export type TaskVerdict = z.infer<typeof taskVerdictSchema>;
 /** Only `taskDiagnostics` is read. The rest of the response duplicates the
  *  report card this page already holds, and reading it twice would give the
  *  document two sources that can disagree. */
-const waveReportReadSchema = z.object({ taskDiagnostics: z.array(z.unknown()).default([]) })
+const trackReportReadSchema = z.object({ taskDiagnostics: z.array(z.unknown()).default([]) })
   .transform((response) => response.taskDiagnostics.flatMap((candidate) => {
     // One malformed verdict costs only that row's runtime word, exactly as one
     // malformed block costs only that block.
@@ -483,8 +483,8 @@ const waveReportReadSchema = z.object({ taskDiagnostics: z.array(z.unknown()).de
  *    `taskVerdictInvalidatingKinds` (`core/events/invalidation-plan`). A timer
  *    buys nothing there — and it costs without limit, because nothing moves a
  *    pending row on a schedule. A task behind a zero task budget, behind a
- *    dependency that failed, or left pending by a canceled wave stays pending
- *    for as long as the wave exists, and the wave page would refetch the whole
+ *    dependency that failed, or left pending by a canceled track stays pending
+ *    for as long as the track exists, and the track page would refetch the whole
  *    document projection every 3 s for as long as it is open.
  *  - **`verifying`** is excluded because it is evented on both sides. It is
  *    only ever *entered* by `task_report_success_from_worker_tx`, whose two
@@ -499,7 +499,7 @@ const waveReportReadSchema = z.object({ taskDiagnostics: z.array(z.unknown()).de
  * Written as an **allowlist**, not as "anything that is not done/failed/
  * canceled", and the difference is the failure mode. A status this build has
  * not heard of is either a new in-flight word or a new terminal one; under a
- * denylist a new terminal word would leave every finished wave refreshing
+ * denylist a new terminal word would leave every finished track refreshing
  * forever, while under this allowlist a new in-flight word only costs the
  * liveness this build already lacked. The unknown case must degrade toward
  * silence, because the caller is a timer.
@@ -559,13 +559,13 @@ export function hasLiveTaskRun(rows: readonly ReportTaskRow[] | undefined): bool
   return rows.some((row) => row.status !== null && live.has(row.status));
 }
 
-/** The wave's task verdicts. Named for what it reads, not for the route: the
+/** The track's task verdicts. Named for what it reads, not for the route: the
  *  route also answers with the report, which this deliberately discards. */
-export function waveTaskVerdictsOperation(waveId: string): ApiOperation<TaskVerdict[]> {
+export function trackTaskVerdictsOperation(trackId: string): ApiOperation<TaskVerdict[]> {
   return {
     method: 'GET',
-    path: `/api/waves/${encodeURIComponent(waveId)}/report`,
-    responseSchema: waveReportReadSchema,
+    path: `/api/tracks/${encodeURIComponent(trackId)}/report`,
+    responseSchema: trackReportReadSchema,
   };
 }
 
@@ -613,7 +613,7 @@ export type ReportTaskRow = Readonly<{
   status: string | null;
   /**
    * The kernel's reason for that status, or `null`. Only ever set alongside a
-   * `status`: it *qualifies* the status word (`failed — wave … is not a git
+   * `status`: it *qualifies* the status word (`failed — track … is not a git
    * repository`), and a reason with no state to attach it to would be a claim
    * about a run this row is not allowed to report at all.
    *
@@ -647,7 +647,7 @@ export type ReportTaskRow = Readonly<{
  * announced on every row visit, which is worse than not carrying it.
  *
  * 160 is a sentence: long enough for every message the kernel writes today
- * (`wave <uuid> is not a git repository` is 45), short enough that the tail is
+ * (`track <uuid> is not a git repository` is 45), short enough that the tail is
  * still a tooltip. The report block is where an untruncated reason belongs, and
  * the row already reveals it on click.
  */
@@ -714,10 +714,10 @@ function declarationWord(state: ReportTaskState): string | null {
  * split `pending` on `verdict.schedulable`, printing `blocked` when it was
  * false and reserving that word for "waiting on a dependency". `schedulable`
  * does not mean that — `evaluate_schedulability_with_tree_term` clears the flag
- * for *every* candidate past the spec ceiling or the wave-tree budget
+ * for *every* candidate past the spec ceiling or the track-tree budget
  * (`task_projection.rs`, the `verdicts[index].schedulable = false` that follows
  * the `spec_task_ceiling` diagnostic) — so an ordinary queue behind capacity
- * rendered as `blocked` and made a healthy wave look stuck. The status the
+ * rendered as `blocked` and made a healthy track look stuck. The status the
  * kernel gave is the status the row carries, unedited.
  */
 
@@ -739,8 +739,8 @@ function declarationWord(state: ReportTaskState): string | null {
  * several verdicts.** The projection emits one per declaration, so a tombstone
  * and its live re-declaration both arrive carrying the same key, and only one
  * of them carries the run. On top of that, the two halves of this join are two
- * different reads of two different snapshots — the blocks come with the wave
- * detail, the verdicts from `['wave-report', waveId]` — and `block_id` is not
+ * different reads of two different snapshots — the blocks come with the track
+ * detail, the verdicts from `['track-report', trackId]` — and `block_id` is not
  * a durable identity: it is minted by FNV-1a with linear probing and
  * re-inherited heuristically on a rewrite (`report_blocks/align.rs`), so a
  * hard-deleted block's id can be re-issued to a different declaration. A
@@ -1053,8 +1053,8 @@ export function deriveReportTasks(
 }
 
 /* ── Backlinks ──────────────────────────────────────────────────────────
-   Who cites this wave. The kernel resolves `neige://wave/<id>#<block>` links
-   found in other waves' reports and hands back a bounded page. */
+   Who cites this track. The kernel resolves `neige://wave/<id>#<block>` links
+   found in other tracks' reports and hands back a bounded page. */
 
 export const backlinkQuoteSchema = z.object({
   before: z.string(),
@@ -1064,9 +1064,9 @@ export const backlinkQuoteSchema = z.object({
   tail_elided: z.boolean(),
 });
 
-export const waveBacklinkSchema = z.object({
-  src_wave_id: z.string(),
-  src_wave_title: z.string(),
+export const trackBacklinkSchema = z.object({
+  src_track_id: z.string(),
+  src_track_title: z.string(),
   src_block_id: z.string(),
   dst_block_id: z.string().nullish(),
   label: z.string(),
@@ -1077,42 +1077,42 @@ export const waveBacklinkSchema = z.object({
 /** `truncated` and `skipped_sources` are read, not dropped: a backlink list
  *  that is knowingly incomplete must say so (§8.3) — silently short is the one
  *  failure mode a citation list may not have. */
-export const waveBacklinksSchema = z.object({
-  backlinks: z.array(waveBacklinkSchema),
+export const trackBacklinksSchema = z.object({
+  backlinks: z.array(trackBacklinkSchema),
   truncated: z.boolean().default(false),
   skipped_sources: z.number().default(0),
 });
 
 export type BacklinkQuote = z.infer<typeof backlinkQuoteSchema>;
-export type WaveBacklink = z.infer<typeof waveBacklinkSchema>;
-export type WaveBacklinks = z.infer<typeof waveBacklinksSchema>;
+export type TrackBacklink = z.infer<typeof trackBacklinkSchema>;
+export type TrackBacklinks = z.infer<typeof trackBacklinksSchema>;
 
-export function waveBacklinksOperation(waveId: string): ApiOperation<WaveBacklinks> {
+export function trackBacklinksOperation(trackId: string): ApiOperation<TrackBacklinks> {
   return {
     method: 'GET',
-    path: `/api/waves/${encodeURIComponent(waveId)}/backlinks`,
-    responseSchema: waveBacklinksSchema,
+    path: `/api/tracks/${encodeURIComponent(trackId)}/backlinks`,
+    responseSchema: trackBacklinksSchema,
   };
 }
 
-/** Group by source wave, preserving server order — the panel prints one
- *  heading per citing wave, not one per citation. */
+/** Group by source track, preserving server order — the panel prints one
+ *  heading per citing track, not one per citation. */
 export function groupBacklinks(
-  backlinks: readonly WaveBacklink[],
-  currentWaveId: string,
-): readonly Readonly<{ waveId: string; title: string; entries: readonly WaveBacklink[] }>[] {
-  const groups = new Map<string, { waveId: string; title: string; entries: WaveBacklink[] }>();
+  backlinks: readonly TrackBacklink[],
+  currentTrackId: string,
+): readonly Readonly<{ trackId: string; title: string; entries: readonly TrackBacklink[] }>[] {
+  const groups = new Map<string, { trackId: string; title: string; entries: TrackBacklink[] }>();
   for (const backlink of backlinks) {
-    const group = groups.get(backlink.src_wave_id);
+    const group = groups.get(backlink.src_track_id);
     if (group !== undefined) {
       group.entries.push(backlink);
       continue;
     }
-    groups.set(backlink.src_wave_id, {
-      waveId: backlink.src_wave_id,
-      title: backlink.src_wave_id === currentWaveId
-        ? 'This wave (self-reference)'
-        : backlink.src_wave_title,
+    groups.set(backlink.src_track_id, {
+      trackId: backlink.src_track_id,
+      title: backlink.src_track_id === currentTrackId
+        ? 'This track (self-reference)'
+        : backlink.src_track_title,
       entries: [backlink],
     });
   }
@@ -1121,7 +1121,7 @@ export function groupBacklinks(
 
 /** How many backlinks land on each block, for the sidenote markers (§8.3). */
 export function backlinkCountsByBlock(
-  backlinks: readonly WaveBacklink[],
+  backlinks: readonly TrackBacklink[],
 ): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const backlink of backlinks) {
@@ -1133,33 +1133,33 @@ export function backlinkCountsByBlock(
 }
 
 /* ── `neige://` links ───────────────────────────────────────────────────
-   A report cites another wave with `neige://wave/<id>[#<block id>]`. The
+   A report cites another track with `neige://wave/<id>[#<block id>]`. The
    destination is resolved here, in core, so the renderer never has to hold a
-   URL: it gets a wave id and an optional block id, or nothing. */
+   URL: it gets a track id and an optional block id, or nothing. */
 
 const NEIGE_WAVE_LINK = /^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/;
 
 /** Block ids the kernel mints. A link whose fragment is not one of these keeps
- *  the wave and drops the fragment: landing at the top of the right report
+ *  the track and drops the fragment: landing at the top of the right report
  *  beats a dead link. */
 const BLOCK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-export type ReportLinkTarget = Readonly<{ waveId: string; blockId: string | null }>;
+export type ReportLinkTarget = Readonly<{ trackId: string; blockId: string | null }>;
 
 export function parseReportLink(destination: string): ReportLinkTarget | null {
   const match = NEIGE_WAVE_LINK.exec(destination);
   if (match === null) return null;
-  const waveId = match[1] ?? '';
+  const trackId = match[1] ?? '';
   const blockId = match[2];
-  if (waveId === '') return null;
-  let decodedWaveId = waveId;
+  if (trackId === '') return null;
+  let decodedTrackId = trackId;
   try {
-    decodedWaveId = decodeURIComponent(waveId);
+    decodedTrackId = decodeURIComponent(trackId);
   } catch {
     // Agent-written links must remain navigable even when an escape is malformed.
   }
   return {
-    waveId: decodedWaveId,
+    trackId: decodedTrackId,
     blockId: blockId !== undefined && BLOCK_ID_PATTERN.test(blockId) ? blockId : null,
   };
 }

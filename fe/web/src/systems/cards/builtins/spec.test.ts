@@ -21,7 +21,7 @@ describe('spec card entry', () => {
   it('[INV-CARD-182] refuses an ordinary codex card, so widening the predicate to kind alone is red', () => {
     // This is the whole reason the predicate is two clauses. If `fromKernel`
     // were `kind === 'codex'`, every ordinary codex card in production would
-    // resolve to a headless spec and disappear from the wave.
+    // resolve to a headless spec and disappear from the track.
     for (const payload of [{}, { spec_harness: false }, { spec_harness: 'true' }, { spec_harness: 1 }]) {
       expect(SPEC_CARD_ENTRY.fromKernel?.({ id: 'c', kind: 'codex', payload }), JSON.stringify(payload)).toBeNull();
     }

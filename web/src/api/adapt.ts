@@ -1,16 +1,16 @@
 // Kernel-wire → UI-shape adapters.
 //
-// The kernel deliberately stores only structural facts (Area/Wave/Card).
+// The kernel deliberately stores only structural facts (Area/Track/Card).
 // Status, progress, ETA — everything semantic — comes from plugin
 // overlays. Until the plugin host lands (M3), we fall back to sane
 // "no plugin" defaults so the UI still has something to render.
 
-import type { Area, Wave, WaveCardData, WaveLifecycle } from '../types';
+import type { Area, Track, TrackCardData, TrackLifecycle } from '../types';
 import type {
   KernelCard,
   KernelArea,
   KernelOverlay,
-  KernelWave,
+  KernelTrack,
 } from './wire';
 import { adaptKernelCard } from '../cards/registry';
 import { isRunning } from '../shared/lifecycle';
@@ -21,7 +21,7 @@ import { isRunning } from '../shared/lifecycle';
  * The mockup carried a `subtitle` ("Personal site", "Client · e-commerce"),
  * which the kernel does not store. Rather than adding a column for it, we
  * leave the field present but blank — the page can derive a secondary
- * (wave count, running count) when it wants something in the eyebrow.
+ * (track count, running count) when it wants something in the eyebrow.
  */
 export function adaptArea(k: KernelArea): Area {
   return { id: k.id, name: k.name, subtitle: '', color: k.color };
@@ -29,30 +29,30 @@ export function adaptArea(k: KernelArea): Area {
 
 /**
  * Derive a small text summary suitable for an area's secondary line, e.g.
- * `"3 waves · 1 running"`. Returns an empty string for an empty area so
+ * `"3 tracks · 1 running"`. Returns an empty string for an empty area so
  * the renderer can drop the line entirely.
  */
-export function areaSummary(waves: Wave[]): string {
-  if (waves.length === 0) return '';
-  const running = waves.filter((w) => isRunning(w.lifecycle)).length;
-  const noun = waves.length === 1 ? 'wave' : 'waves';
-  if (running === 0) return `${waves.length} ${noun}`;
-  return `${waves.length} ${noun} · ${running} running`;
+export function areaSummary(tracks: Track[]): string {
+  if (tracks.length === 0) return '';
+  const running = tracks.filter((w) => isRunning(w.lifecycle)).length;
+  const noun = tracks.length === 1 ? 'track' : 'tracks';
+  if (running === 0) return `${tracks.length} ${noun}`;
+  return `${tracks.length} ${noun} · ${running} running`;
 }
 
 /**
- * Folds the wave's own overlays into the UI shape. Recognized overlay kinds:
+ * Folds the track's own overlays into the UI shape. Recognized overlay kinds:
  *   - `"progress"` payload: `{ value: number }`  (0..1)
  *   - `"eta"`      payload: `{ text: string }`
  *   - `"now"`      payload: `{ text: string }`
  *   - `"any_card_needs_input"` payload: `{ value: boolean }` (issue #254 —
  *     written by the kernel `card_fsm` projector; OR'd with lifecycle at
- *     `shared/lifecycle.ts::waveNeedsUserAttention` for the sidebar
+ *     `shared/lifecycle.ts::trackNeedsUserAttention` for the sidebar
  *     "Waiting on you" grouping).
  *
- * Anything else is ignored. Wave-level lifecycle lives on the
- * `WaveLifecycle` field stamped on the kernel `Wave` row — not on
- * overlays — so this adapter does NOT read `kind:"status"` for waves.
+ * Anything else is ignored. Track-level lifecycle lives on the
+ * `TrackLifecycle` field stamped on the kernel `Track` row — not on
+ * overlays — so this adapter does NOT read `kind:"status"` for tracks.
  * The per-card FSM still writes card-scoped status overlays, which the
  * codex card head consumes directly.
  *
@@ -60,14 +60,14 @@ export function areaSummary(waves: Wave[]): string {
  * order — once a real plugin model exists we'll pick by `plugin_id`
  * priority.
  */
-export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
+export function adaptTrack(k: KernelTrack, overlays: KernelOverlay[] = []): Track {
   let progress = 0;
   let eta = '';
   let now = '';
   let anyCardNeedsInput = false;
 
   for (const o of overlays) {
-    if (o.entity_kind !== 'wave' || o.entity_id !== k.id) continue;
+    if (o.entity_kind !== 'track' || o.entity_id !== k.id) continue;
     const p = o.payload as Record<string, unknown> | null;
     if (!p) continue;
     if (o.kind === 'progress' && typeof p.value === 'number') {
@@ -85,18 +85,18 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     id: k.id,
     areaId: k.area_id,
     title: k.title,
-    // Issue #145 — the kernel always stamps a lifecycle on wave rows
+    // Issue #145 — the kernel always stamps a lifecycle on track rows
     // (defaults to 'draft' on create, advanced explicitly by the Spec
     // Agent). Wire payloads from pre-#145 servers may omit the field;
     // mirror the zod schema's default and fall back to 'draft'.
-    lifecycle: (k.lifecycle as WaveLifecycle | undefined) ?? 'draft',
+    lifecycle: (k.lifecycle as TrackLifecycle | undefined) ?? 'draft',
     anyCardNeedsInput,
     progress,
     eta,
     now,
     // Issue #250 PR 5 — preserve the kernel timestamps so the Today
     // calendar rail can derive "active on day D" without a second
-    // fetch. `terminal_at` is nullable on the wire (open waves);
+    // fetch. `terminal_at` is nullable on the wire (open tracks);
     // normalize `undefined` from optional zod fields to `null` so the
     // UI side never has to distinguish.
     createdAt: k.created_at,
@@ -114,8 +114,8 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
  * non-null match. Plugin cards accept only the canonical `ui://<plugin>/<view>`
  * URI — M4's hard cut deleted the legacy `plugin:<id>:<view>` parser; the
  * hello-world demo (its last consumer) was deleted alongside the
- * WaveLifecycle unification.
+ * TrackLifecycle unification.
  */
-export function adaptCard(k: KernelCard): WaveCardData | null {
+export function adaptCard(k: KernelCard): TrackCardData | null {
   return adaptKernelCard(k);
 }

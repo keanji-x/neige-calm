@@ -4,12 +4,12 @@ use std::sync::Arc;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::operation::OperationKey;
 use calm_server::operation::forge_action_adapter::FORGE_ACTION_KIND;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -30,7 +30,7 @@ async fn app_state(repo: Arc<SqlxRepo>) -> AppState {
             EventBus::new(),
             WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                WaveAreaCache::new(),
+                TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -50,8 +50,8 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "boot invariant".into(),
@@ -70,7 +70,7 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
         &mut tx,
         WorkerSession {
             id: WorkerSessionId::from("ws-null-active"),
-            wave_id: wave.id,
+            track_id: track.id,
             provider: WorkerProviderKind::Codex,
             mode: SessionMode::Resumable,
             contract: WorkerContract::Executor,

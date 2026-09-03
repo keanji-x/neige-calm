@@ -7,7 +7,7 @@
 #   core/     api · domain · schemas · keys · state · markdown · events-protocol
 #   ui/       dialog · menu · focus · roving · directory-browser · atoms · …
 #   systems/  cards · terminal · wheel · fs-viewers · editor · events-transport
-#   features/ wave · area · today · report · spec · settings · auth
+#   features/ track · area · today · report · spec · settings · auth
 #   app/      router · providers · theme · shell · events-glue · di
 #   styles/   全局样式层（tokens / layer-rules / focus-visible / motion / 排版）
 #   none/     非运行时层（lint 规则 · CI 闸门 · 构建配置 · e2e 基础设施 · 纯文档政策）
@@ -86,28 +86,28 @@ aliases:
   "terminal/a11y": "systems/terminal/a11y"
   "input/wheel": "systems/wheel"
   "cards/file-viewer": "systems/fs-viewers/file-viewer"
-  "cards/wave-file-tree": "systems/fs-viewers/wave-file-tree"
-  "wave-fs-viewers/registry": "systems/fs-viewers/registry"
-  "wave-fs-viewers/schemas": "systems/fs-viewers/schemas"
+  "cards/track-file-tree": "systems/fs-viewers/track-file-tree"
+  "track-fs-viewers/registry": "systems/fs-viewers/registry"
+  "track-fs-viewers/schemas": "systems/fs-viewers/schemas"
   "editor": "systems/editor"
 
   # ── features/ ────────────────────────────────────────────
-  "pages/wave": "features/wave/page"
-  "web/pages/wave": "features/wave/page"
-  "wave/grid": "features/wave/grid"
-  "web/wave-grid": "features/wave/grid"
-  "wave/list": "features/wave/list"
-  "web/wave-list": "features/wave/list"
-  "wave/list-view": "features/wave/list"
-  "wave/scroll": "features/wave/scroll"
-  "wave/view-mode": "features/wave/view-mode"
-  "wave/lifecycle": "features/wave/lifecycle"
-  "shared/lifecycle-badge": "features/wave/lifecycle-badge"
-  "shared/wave-row": "features/wave/row"
-  "web/components/wave-row": "features/wave/row"
-  "wave/create": "features/wave/create"
-  "shared/new-task-form": "features/wave/create"
-  "web/components/new-task-form": "features/wave/create"
+  "pages/track": "features/track/page"
+  "web/pages/track": "features/track/page"
+  "track/grid": "features/track/grid"
+  "web/track-grid": "features/track/grid"
+  "track/list": "features/track/list"
+  "web/track-list": "features/track/list"
+  "track/list-view": "features/track/list"
+  "track/scroll": "features/track/scroll"
+  "track/view-mode": "features/track/view-mode"
+  "track/lifecycle": "features/track/lifecycle"
+  "shared/lifecycle-badge": "features/track/lifecycle-badge"
+  "shared/track-row": "features/track/row"
+  "web/components/track-row": "features/track/row"
+  "track/create": "features/track/create"
+  "shared/new-task-form": "features/track/create"
+  "web/components/new-task-form": "features/track/create"
   "pages/area": "features/area/page"
   "web/pages/area": "features/area/page"
   "area/folders": "features/area/folders"
@@ -115,18 +115,18 @@ aliases:
   "shared/area-palette": "features/area/palette"
   "pages/today": "features/today/page"
   "hooks/today-terminal": "features/today/terminal"
-  "pages/wave-report": "features/report/page"
-  "web/pages/wave-report": "features/report/page"
+  "pages/track-report": "features/report/page"
+  "web/pages/track-report": "features/report/page"
   "pages/report-shell": "features/report/shell"
   "pages/report-blocks": "features/report/blocks"
-  "cards/wave-report": "features/report/card"
+  "cards/track-report": "features/report/card"
   "cards/report": "features/report/exclude-cards"
   "pages/report-layout": "features/report/layout"
   "report/layout": "features/report/layout"
   "report/activity": "features/report/activity"
   "report/outline": "features/report/outline"
-  "wave/report": "features/report/write"
-  "wave/backlinks": "features/report/backlinks"
+  "track/report": "features/report/write"
+  "track/backlinks": "features/report/backlinks"
   "spec-chat": "features/spec/chat"
   "pages/spec-conversation": "features/spec/conversation"
   "pages/spec-chat-history": "features/spec/chat-history"
@@ -172,7 +172,7 @@ aliases:
   "web/e2e": "none/e2e/infra"
   "web/e2e/setup": "none/e2e/infra"
   "web/e2e/trace": "none/e2e/infra"
-  "web/e2e/wave-create": "none/e2e/infra"
+  "web/e2e/track-create": "none/e2e/infra"
   "a11y/axe": "none/e2e/a11y-axe"
   "a11y/keyboard": "none/e2e/a11y-keyboard"
   "e2e/color-anchor": "none/e2e/color-anchor"
@@ -184,7 +184,7 @@ aliases:
 
 # 别名表无法表达的逐条覆盖（原始值同名但归属不同）
 per_entry:
-  INV-DEAD-001: "features/wave/page"           # WaveContext 死代码（Wave.tsx）
+  INV-DEAD-001: "features/track/page"           # TrackContext 死代码（Track.tsx）
   INV-DEAD-002: "features/spec/current-run"    # useSpecCurrentRun.latestTool 死字段
   E2E-CAP-KEYBOARD-003: "app/shell/sidebar"    # 是产品能力（侧栏 Tab+Enter），不是 e2e 基建
 
@@ -219,7 +219,7 @@ split_owners:
 #    同上：`X-Calm-Actor` 的接受规则由服务端 middleware 强制，前端只是遵守方。
 #    候选: (a) features/auth/actor；(b) core/api/actor-header；(c) 移出。
 #
-# 3. "wave/report" (1) / "wave/backlinks" (1) / "ws/terminal" (2)
+# 3. "track/report" (1) / "track/backlinks" (1) / "ws/terminal" (2)
 #    临时归属: features/report/write · features/report/backlinks · systems/terminal/protocol
 #    这四条描述的是 **REST / WS 协议**本身而非前端实现。若后续把「协议契约」独立成
 #    core/api 与 core/events-protocol 的子集，应整体搬过去。
@@ -232,12 +232,12 @@ split_owners:
 #
 # 5. "web/components" (1 条，INV-A11Y-059「能用真实 button 就用真实 button」)
 #    临时归属: ui/activation
-#    它是跨切面 a11y 政策，实现散落在 features/wave/row 与 ui/editable-title。
+#    它是跨切面 a11y 政策，实现散落在 features/track/row 与 ui/editable-title。
 #    候选: (a) ui/activation（新建横切 slice）；(b) none/policy/a11y-doc（当政策文档处理）。
 #
 # 6. "cards/report" (1 条，INV-CARD-226 excludeReportCards) —— 已定案 (#1091 S1)
 #    归属: systems/cards/builtins（runtime_layer=systems），不再是临时。
 #    原临时归属 features/report/exclude-cards 出自 legacy 代码位置 web/src/cards/；
 #    S1 把过滤实现落在 systems/cards/builtins/headless-filter.ts，与 spec /
-#    wave-report 两个 entry 同住，谓词也是 entry 自己的，语义因此归 cards 而非 report。
+#    track-report 两个 entry 同住，谓词也是 entry 自己的，语义因此归 cards 而非 report。
 #    同批把 INV-CARD-181/182/201 一并收敛到同一 owner_slice。

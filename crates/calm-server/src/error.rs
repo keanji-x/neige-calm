@@ -172,7 +172,7 @@ pub enum CalmError {
 
     /// 409 — `/spec/input` hit a spec card whose harness session is dormant
     /// and not lazily recoverable: no active runtime row exists (the
-    /// `spec-harness-start` operation failed at wave creation), or the active
+    /// `spec-harness-start` operation failed at track creation), or the active
     /// row is unusable (NULL/empty `thread_id` from a half-failed start, or a
     /// corrupt/unknown snapshot shape). Distinct from the generic
     /// [`CalmError::Conflict`] 409 ("runtime shutting down") so the web client
@@ -335,8 +335,8 @@ impl From<calm_truth::card_kind::CardKindError> for CalmError {
     }
 }
 
-impl From<calm_truth::wave_fs_view::WaveFsError> for CalmError {
-    fn from(err: calm_truth::wave_fs_view::WaveFsError) -> Self {
+impl From<calm_truth::track_fs_view::TrackFsError> for CalmError {
+    fn from(err: calm_truth::track_fs_view::TrackFsError) -> Self {
         calm_truth::TruthError::from(err).into()
     }
 }

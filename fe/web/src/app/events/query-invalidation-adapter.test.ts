@@ -33,19 +33,19 @@ function recordingClient(initialAreas?: readonly ReturnType<typeof import('../..
 describe('query invalidation adapter', () => {
   it('maps every planned key shape onto a queryKeys key and drops the rest', () => {
     expect(mapPlannedQueryKey(['areas'])).toEqual(queryKeys.areas());
-    expect(mapPlannedQueryKey(['waves', 'area', 'c1'])).toEqual(queryKeys.wavesInArea('c1'));
-    expect(mapPlannedQueryKey(['wave', 'w1'])).toEqual(queryKeys.waveDetail('w1'));
-    expect(mapPlannedQueryKey(['overlays', 'wave'])).toEqual(queryKeys.overlaysByKind('wave'));
+    expect(mapPlannedQueryKey(['tracks', 'area', 'c1'])).toEqual(queryKeys.tracksInArea('c1'));
+    expect(mapPlannedQueryKey(['track', 'w1'])).toEqual(queryKeys.trackDetail('w1'));
+    expect(mapPlannedQueryKey(['overlays', 'track'])).toEqual(queryKeys.overlaysByKind('track'));
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
     expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
     expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
-    expect(mapPlannedQueryKey(['wave-report', 'w1'])).toEqual(queryKeys.waveReport('w1'));
-    expect(mapPlannedQueryKey(['wave-report'])).toEqual(queryKeys.waveReportPrefix());
+    expect(mapPlannedQueryKey(['track-report', 'w1'])).toEqual(queryKeys.trackReport('w1'));
+    expect(mapPlannedQueryKey(['track-report'])).toEqual(queryKeys.trackReportPrefix());
     expect(mapPlannedQueryKey(['area-conversations'])).toEqual(queryKeys.areaConversationsPrefix());
-    expect(mapPlannedQueryKey(['wave-conversations'])).toEqual(queryKeys.waveConversationsPrefix());
-    expect(mapPlannedQueryKey(['wave-conversations', 'w1'])).toEqual(queryKeys.waveConversations('w1'));
+    expect(mapPlannedQueryKey(['track-conversations'])).toEqual(queryKeys.trackConversationsPrefix());
+    expect(mapPlannedQueryKey(['track-conversations', 'w1'])).toEqual(queryKeys.trackConversations('w1'));
     expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
-    for (const dropped of [['wave-files'], ['wave-files', 'w1'], ['waves-range'], ['wave-backlinks'], ['nope']]) {
+    for (const dropped of [['track-files'], ['track-files', 'w1'], ['tracks-range'], ['track-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
   });
@@ -55,7 +55,7 @@ describe('query invalidation adapter', () => {
    * redraws", asserted end to end through the pure plan and this adapter.
    *
    * Two links, and each is silent when it breaks. The plan has to emit
-   * `['today-launchpad']` and `['wave', id]` for `wave.report_edited`
+   * `['today-launchpad']` and `['track', id]` for `track.report_edited`
    * (`PolicyMap` is exhaustive over event kinds, not query keys, so their
    * absence fails no golden), and this module has to map both rather than drop
    * them — an unmapped key is discarded here without a warning. Either gap
@@ -63,9 +63,9 @@ describe('query invalidation adapter', () => {
    */
   it('turns a report edit into a refresh of the Today document and its resolve', () => {
     const event = wireEventSchema.parse({
-      ev: 'wave.report_edited',
+      ev: 'track.report_edited',
       data: {
-        wave_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
+        track_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
         summary_before: '', summary_after: 'today', body_before: '', body_after: '# today',
       },
     });
@@ -73,21 +73,21 @@ describe('query invalidation adapter', () => {
       .map(mapPlannedQueryKey)
       .filter((key) => key !== null);
     expect(mapped).toContainEqual(queryKeys.todayLaunchpad());
-    expect(mapped).toContainEqual(queryKeys.waveDetail('lp'));
+    expect(mapped).toContainEqual(queryKeys.trackDetail('lp'));
   });
 
   /*
-   * The wave-report key is mapped in BOTH arities, and the bare one is the
+   * The track-report key is mapped in BOTH arities, and the bare one is the
    * point: dropping it — the treatment every other bare key gets — would leave
    * the TASKS panel dead for exactly the four events that change it.
    *
    * These four payloads are the ones the kernel actually emits, and they go
    * through `wireEventSchema` rather than a cast so a hand-written shape cannot
    * stand in for the wire. Note what they carry: `idempotency_key` is the task
-   * id, and a task id is `"{wave_id}:{key}"`. The wave id is therefore present
-   * in the bytes — the plan's `derivedWaveId` reads named fields only and does
+   * id, and a task id is `"{track_id}:{key}"`. The track id is therefore present
+   * in the bytes — the plan's `derivedTrackId` reads named fields only and does
    * not take an opaque id apart, which is why the *plan* cannot key these by
-   * wave. "Carries no wave id at all" would be the wrong reason.
+   * track. "Carries no track id at all" would be the wrong reason.
    */
   it.each([
     ['task.dispatched', { idempotency_key: 'w-7:alpha', kind: 'codex' }],
@@ -97,27 +97,27 @@ describe('query invalidation adapter', () => {
       task_id: 'w-7:alpha', idempotency_key: 'w-7:alpha', passed: false,
       log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
     }],
-  ] as const)('reaches the task-verdict cache for %s, whose wave id is only inside its task id', (ev, data) => {
+  ] as const)('reaches the task-verdict cache for %s, whose track id is only inside its task id', (ev, data) => {
     const event = wireEventSchema.parse({ ev, data });
     expect(event.data).toMatchObject({ idempotency_key: 'w-7:alpha' });
     const plan = invalidationPlanFor(event);
     const mapped = plan.invalidate.map(mapPlannedQueryKey).filter((key) => key !== null);
-    expect(mapped).toContainEqual(queryKeys.waveReportPrefix());
+    expect(mapped).toContainEqual(queryKeys.trackReportPrefix());
   });
 
   it('never emits a key the built surface does not define', () => {
     // The mapped area-list key must be the very key the area query registers,
     // otherwise an invalidation silently refreshes nothing.
     expect(mapPlannedQueryKey(['areas'])).toEqual(['areas']);
-    expect(mapPlannedQueryKey(['waves', 'area', 'c1'])).toEqual(['waves', 'c1']);
+    expect(mapPlannedQueryKey(['tracks', 'area', 'c1'])).toEqual(['tracks', 'c1']);
   });
 
   it('invalidates each mapped key of an invalidate effect', () => {
     const { calls, client } = recordingClient();
-    applyEventEffects(client, [{ type: 'invalidate', keys: [['areas'], ['wave', 'w1'], ['wave-files', 'w1']] }]);
+    applyEventEffects(client, [{ type: 'invalidate', keys: [['areas'], ['track', 'w1'], ['track-files', 'w1']] }]);
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: ['areas'] },
-      { op: 'invalidate', queryKey: ['wave', 'w1'] },
+      { op: 'invalidate', queryKey: ['track', 'w1'] },
     ]);
   });
 
@@ -135,8 +135,8 @@ describe('query invalidation adapter', () => {
 
   it('removes mapped keys for a remove effect', () => {
     const { calls, client } = recordingClient();
-    applyEventEffects(client, [{ type: 'remove', keys: [['wave', 'w1'], ['waves-range']] }]);
-    expect(calls).toEqual([{ op: 'remove', queryKey: ['wave', 'w1'] }]);
+    applyEventEffects(client, [{ type: 'remove', keys: [['track', 'w1'], ['tracks-range']] }]);
+    expect(calls).toEqual([{ op: 'remove', queryKey: ['track', 'w1'] }]);
   });
 
   it('ignores lifecycle effects, which are not cache work', () => {
@@ -181,7 +181,7 @@ describe('query invalidation adapter', () => {
     applyEventEffects(client, [
       { type: 'clear-cache' },
       { type: 'invalidate', keys: [['areas']] },
-      { type: 'remove', keys: [['wave', 'w1']] },
+      { type: 'remove', keys: [['track', 'w1']] },
     ]);
     expect(calls.map((call) => call.op)).toEqual(['clear', 'invalidate', 'remove']);
   });
@@ -198,14 +198,14 @@ describe('query invalidation adapter', () => {
    * The harness kinds, end to end and by exact list.
    *
    * The payloads go through `wireEventSchema` rather than a cast, and that is
-   * load-bearing here: `wave_id` is a *required* field on all four of these on
+   * load-bearing here: `track_id` is a *required* field on all four of these on
    * the wire, and an earlier version of this test cast a `{ card_id }` stub
-   * instead — which planned `['wave-conversations', undefined]`, mapped to
+   * instead — which planned `['track-conversations', undefined]`, mapped to
    * nothing, and froze the missing conversation arms into the expectation as if
    * a bare `spec-run` were the correct answer for `harness.phase.changed`.
    */
   it('turns each real harness plan into its exact live query invalidations', () => {
-    const base = { runtime_id: 'r-1', card_id: 'card-1', wave_id: 'wave-1' } as const;
+    const base = { runtime_id: 'r-1', card_id: 'card-1', track_id: 'track-1' } as const;
     const expected = [
       [
         { ...base, item_db_id: 1, item_uuid: null, item_type: null, turn_id: null, method: 'x' },
@@ -214,7 +214,7 @@ describe('query invalidation adapter', () => {
       [
         { ...base, old_phase: 'idle', new_phase: 'turn_running' },
         'harness.phase.changed',
-        [queryKeys.specRun('card-1'), queryKeys.areaConversationsPrefix(), queryKeys.waveConversations('wave-1')],
+        [queryKeys.specRun('card-1'), queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1')],
       ],
       [
         { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
@@ -225,7 +225,7 @@ describe('query invalidation adapter', () => {
         { ...base, char_count: 3 }, 'harness.user_message.enqueued',
         [
           queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1'),
-          queryKeys.areaConversationsPrefix(), queryKeys.waveConversations('wave-1'),
+          queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1'),
         ],
       ],
     ] as const;
@@ -260,43 +260,43 @@ describe('query invalidation adapter', () => {
         agent_provider: 'codex', status: 'starting',
       },
     });
-    const plan = invalidationPlanFor(event, { findWaveOwningCard: () => 'wave-1' });
+    const plan = invalidationPlanFor(event, { findTrackOwningCard: () => 'track-1' });
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
     expect(calls).toEqual([
-      { op: 'invalidate', queryKey: queryKeys.waveDetail('wave-1') },
+      { op: 'invalidate', queryKey: queryKeys.trackDetail('track-1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
-      { op: 'invalidate', queryKey: queryKeys.waveReport('wave-1') },
+      { op: 'invalidate', queryKey: queryKeys.trackReport('track-1') },
       { op: 'invalidate', queryKey: queryKeys.areaConversationsPrefix() },
-      { op: 'invalidate', queryKey: queryKeys.waveConversations('wave-1') },
+      { op: 'invalidate', queryKey: queryKeys.trackConversations('track-1') },
     ]);
   });
 
   /*
    * The unresolvable-card fallback, also end to end. A `runtime.*` event whose
-   * card belongs to no cached wave detail plans the bare `wave-conversations`
+   * card belongs to no cached track detail plans the bare `track-conversations`
    * prefix, and that arity must reach the client too — dropping it would leave
    * an open list stale for exactly the transitions that move a row's `state`.
    */
-  it('drives the bare wave-conversations prefix onto the client when no wave resolves', () => {
+  it('drives the bare track-conversations prefix onto the client when no track resolves', () => {
     const event = wireEventSchema.parse({
       ev: 'runtime.status_changed',
       data: { runtime_id: 'r-1', card_id: 'card-1', old_status: 'starting', new_status: 'running' },
     });
-    const plan = invalidationPlanFor(event, { findWaveOwningCard: () => null });
+    const plan = invalidationPlanFor(event, { findTrackOwningCard: () => null });
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
-      { op: 'invalidate', queryKey: queryKeys.waveReportPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
       { op: 'invalidate', queryKey: queryKeys.areaConversationsPrefix() },
-      { op: 'invalidate', queryKey: queryKeys.waveConversationsPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.trackConversationsPrefix() },
     ]);
   });
 
-  it('turns a real wave.deleted plan into area-list plus overlay invalidation and a detail removal', () => {
+  it('turns a real track.deleted plan into area-list plus overlay invalidation and a detail removal', () => {
     const plan = invalidationPlanFor({
-      ev: 'wave.deleted',
+      ev: 'track.deleted',
       data: { id: 'w1', area_id: 'c1' },
     });
     const { calls, client } = recordingClient();
@@ -305,9 +305,9 @@ describe('query invalidation adapter', () => {
       { type: 'remove', keys: plan.remove },
     ]);
     expect(calls).toEqual([
-      { op: 'invalidate', queryKey: queryKeys.wavesInArea('c1') },
-      { op: 'invalidate', queryKey: queryKeys.overlaysByKind('wave') },
-      { op: 'remove', queryKey: queryKeys.waveDetail('w1') },
+      { op: 'invalidate', queryKey: queryKeys.tracksInArea('c1') },
+      { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
+      { op: 'remove', queryKey: queryKeys.trackDetail('w1') },
     ]);
   });
 });

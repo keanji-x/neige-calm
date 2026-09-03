@@ -13,10 +13,10 @@ import { useCallback, useMemo } from 'react';
  * card is not offered on this viewport at all.)
  */
 export type MobilePanel = 'outline' | 'cards' | 'tasks' | 'conversations';
-export type WaveSource = 'pages' | 'area';
+export type TrackSource = 'pages' | 'area';
 
 /**
- * History state written by {@link useWavePanelNavigation} when opening a panel
+ * History state written by {@link useTrackPanelNavigation} when opening a panel
  * pushed a new entry. Closing reads it back to decide between `back()` (no
  * duplicate entry) and `replace()` (cold-start deep link, where `back()` would
  * leave the app entirely). See #1191 §0.3 for the replace-only variant that was
@@ -38,7 +38,7 @@ export type NavTarget =
   | Readonly<{ name: 'today' }>
   | Readonly<{ name: 'area'; areaId: string }>
   /**
-   * #1211 — starting a wave is a **place**, not a dialog.
+   * #1211 — starting a track is a **place**, not a dialog.
    *
    * The `+` used to open a modal over whatever you were looking at. It is now
    * a route: a page whose whole content is one composer, with the template and
@@ -46,31 +46,31 @@ export type NavTarget =
    * in the product — you say what you want — and unlike a modal it survives a
    * refresh, can be linked, and has a real Back.
    *
-   * The wave row is minted when the composer is submitted, not when this route
+   * The track row is minted when the composer is submitted, not when this route
    * is entered. Two reasons, one of each kind: **product** — a `+` that mints a
-   * row leaves an unnamed, intent-less wave in the rail every time someone
+   * row leaves an unnamed, intent-less track in the rail every time someone
    * changes their mind; and **mechanical** — picking a template *is* a fork of
    * that template's report inside the create transaction
-   * (`routes/waves.rs`), and `WavePatch` carries no `template_id`, so a
+   * (`routes/tracks.rs`), and `TrackPatch` carries no `template_id`, so a
    * template chosen after the row exists has nowhere to go. Minting late keeps
    * both choices where the kernel can still act on them.
    */
-  | Readonly<{ name: 'new-wave'; areaId: string }>
+  | Readonly<{ name: 'new-track'; areaId: string }>
   /**
-   * `blockId` lands the reader on one block of the wave's report (§8.3).
+   * `blockId` lands the reader on one block of the track's report (§8.3).
    * `cardId` opens the card-grid overlay on that card (`?card=`).
    * `panel` opens the mobile report's secondary panel (`?panel=`), `from`
    * records the surface to return to (`?from=`).
-   * `openSpec` asks the wave being navigated *to* to open its spec
+   * `openSpec` asks the track being navigated *to* to open its spec
    * conversation on arrival — see {@link useSpecOpenIntent}.
    */
   | Readonly<{
-    name: 'wave';
-    waveId: string;
+    name: 'track';
+    trackId: string;
     blockId?: string;
     cardId?: string;
     panel?: MobilePanel;
-    from?: WaveSource;
+    from?: TrackSource;
     openSpec?: boolean;
   }>
   | Readonly<{ name: 'settings' }>
@@ -93,15 +93,15 @@ export type NavTarget =
 
 export type GoOptions = Readonly<{ replace?: boolean }>;
 
-/** The whitelisted wave query string, as the router validates and rebuilds it. */
-export type WaveSearch = Readonly<{ card?: string; panel?: MobilePanel; from?: WaveSource }>;
+/** The whitelisted track query string, as the router validates and rebuilds it. */
+export type TrackSearch = Readonly<{ card?: string; panel?: MobilePanel; from?: TrackSource }>;
 
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
     case 'area': return `/area/${encodeURIComponent(target.areaId)}`;
-    case 'new-wave': return `/area/${encodeURIComponent(target.areaId)}/new`;
-    case 'wave': return `/wave/${encodeURIComponent(target.waveId)}`;
+    case 'new-track': return `/area/${encodeURIComponent(target.areaId)}/new`;
+    case 'track': return `/track/${encodeURIComponent(target.trackId)}`;
     case 'settings': return '/settings';
     case 'settings-plugins': return '/settings/plugins';
     case 'settings-appearance': return '/settings/appearance';
@@ -122,24 +122,24 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
   const navigate = useNavigate();
   return useCallback((target: NavTarget, options?: GoOptions) => {
     // The block anchor rides in the hash rather than in component state,
-    // because it has to survive the navigation that carries it: the wave route
-    // remounts per wave, so state set before `go` would be discarded by the
+    // because it has to survive the navigation that carries it: the track route
+    // remounts per track, so state set before `go` would be discarded by the
     // very move it was describing. A hash also makes the deep link real —
     // pasting one lands on the same paragraph.
-    const hash = target.name === 'wave' ? target.blockId : undefined;
-    // Wave search is always explicit so a card query cannot leak onto today
-    // or a different wave, and so clearing `cardId` actually drops `?card=`.
+    const hash = target.name === 'track' ? target.blockId : undefined;
+    // Track search is always explicit so a card query cannot leak onto today
+    // or a different track, and so clearing `cardId` actually drops `?card=`.
     // All three fields are constructed here, never spread from the previous
     // location: "not passed" means "cleared", for `panel` and `from` exactly as
     // it already meant for `card`. Callers that want a field kept must say so
-    // (`useGoSameWave`, or by passing the value they read off the route).
-    const search: WaveSearch = target.name === 'wave'
-      ? buildWaveSearch({ card: target.cardId, panel: target.panel, from: target.from })
+    // (`useGoSameTrack`, or by passing the value they read off the route).
+    const search: TrackSearch = target.name === 'track'
+      ? buildTrackSearch({ card: target.cardId, panel: target.panel, from: target.from })
       : {};
     // The spec-open intent rides on the history entry this navigation creates,
     // and nowhere else (#1211 S2) — see `useSpecOpenIntent`. Written only when
     // asked for, so an ordinary move leaves `state` alone.
-    const state = target.name === 'wave' && target.openSpec === true
+    const state = target.name === 'track' && target.openSpec === true
       ? { [SPEC_OPEN_STATE_KEY]: true }
       : undefined;
     void navigate({
@@ -153,22 +153,22 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
 }
 
 /**
- * "Open the spec conversation of the wave this navigation is going to."
+ * "Open the spec conversation of the track this navigation is going to."
  *
  * ── Why this is a property of the *navigation* and not a slot somewhere ─────
  *
- * The wave a create answers with has no name and nothing said in it, and the
- * spec card's id does not exist yet — `POST /api/waves` answers with a `Wave`,
- * and the card arrives a route later with the wave detail. So the shell cannot
- * say "open card X"; it can only say "open the spec conversation of wave W",
+ * The track a create answers with has no name and nothing said in it, and the
+ * spec card's id does not exist yet — `POST /api/tracks` answers with a `Track`,
+ * and the card arrives a route later with the track detail. So the shell cannot
+ * say "open card X"; it can only say "open the spec conversation of track W",
  * and something on the other side of the navigation has to redeem that.
  *
  * The first shape put it in a provider above the outlet, as one global
- * `requestedSpecWaveId`, and the review found it broken from both ends at
+ * `requestedSpecTrackId`, and the review found it broken from both ends at
  * once. Whoever redeems it must also clear it, and no single component can own
  * that: a route body that clears what it cannot redeem takes the intent away
- * from the wave it was meant for (the rail's `+` is on screen on every route,
- * so the wave being left is still mounted when the intent is stated), while a
+ * from the track it was meant for (the rail's `+` is on screen on every route,
+ * so the track being left is still mounted when the intent is stated), while a
  * route body that only clears its own leaves a stale intent standing when the
  * landing never happens — the detail read failing is enough — and it springs
  * the drawer open on some unrelated visit later. Tightening either end loosens
@@ -186,34 +186,34 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  * ── What the intent is attached to, stated so it can be checked ─────────────
  *
  * The intent belongs to **that one history entry**. It is consumed the first
- * time the entry's route body mounts at all — that is, the first time the wave
+ * time the entry's route body mounts at all — that is, the first time the track
  * detail lands — and struck off unconditionally at that moment; if the detail
  * in hand has a spec card, the same pass opens it. So "no spec card" is not a
  * reason to keep the mark: the entry has been displayed, the create has been
  * answered as well as it can be, and a card that arrives on a later read of the
- * same entry finds nothing armed (`wave-untitled.test.tsx` pins exactly that).
+ * same entry finds nothing armed (`track-untitled.test.tsx` pins exactly that).
  * The intent is *not* scoped to a span of the reader's attention either: it
  * does not expire because they walked away, because walking away only means
  * they are standing on a different entry.
  *
  * So an entry that never displayed its body still carries the mark. The
- * reachable case is the failed landing — the detail read errors, `WaveRoute`
+ * reachable case is the failed landing — the detail read errors, `TrackRoute`
  * renders the error box, and the body that consumes the mark never mounts —
  * and that entry arms again when it is displayed again, whether a reload, the Retry
  * button, or the Back button. The first two are the point: the create asked for
  * this conversation and the landing finally worked. Back reaches the same entry
  * and gets the same answer, which is what owning the intent per-entry costs.
- * A *fresh* navigation to the same wave is a different entry and carries no
+ * A *fresh* navigation to the same track is a different entry and carries no
  * mark, so an ordinary later visit stays ordinary. Both directions are pinned
- * in `wave-untitled.test.tsx`.
+ * in `track-untitled.test.tsx`.
  *
- * `armed` is additionally gated on the location naming `waveId`. That is a belt
- * over the braces and not the mechanism — what keeps one wave from redeeming
+ * `armed` is additionally gated on the location naming `trackId`. That is a belt
+ * over the braces and not the mechanism — what keeps one track from redeeming
  * another's mark is that the mark lives on an entry only one route body renders
- * — and in the app it cannot be observed false: `WaveRoute` builds the body
- * only once the detail in hand is that wave's, and renders nothing in between.
- * It stays because this hook is exported and takes its wave id from the caller,
- * and a caller asking about a wave the location does not name should be told
+ * — and in the app it cannot be observed false: `TrackRoute` builds the body
+ * only once the detail in hand is that track's, and renders nothing in between.
+ * It stays because this hook is exported and takes its track id from the caller,
+ * and a caller asking about a track the location does not name should be told
  * `false` rather than handed somebody else's marker.
  */
 export type SpecOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
@@ -223,14 +223,14 @@ export function hasSpecOpenMarker(state: unknown): boolean {
   return (state as Record<string, unknown>)[SPEC_OPEN_STATE_KEY] === true;
 }
 
-export function useSpecOpenIntent(waveId: string): SpecOpenIntent {
+export function useSpecOpenIntent(trackId: string): SpecOpenIntent {
   const navigate = useNavigate();
   const location = useRouterState({ select: (state) => state.location });
   const armed = hasSpecOpenMarker(location.state)
-    && routeParamFromPath(location.pathname, '/wave/') === waveId;
+    && routeParamFromPath(location.pathname, '/track/') === trackId;
   const disarm = useCallback(() => {
     void navigate({
-      to: pathFor({ name: 'wave', waveId }),
+      to: pathFor({ name: 'track', trackId }),
       // Everything else about this entry is kept: the disarm is not a
       // navigation the reader asked for, and it must be invisible to them.
       search: true,
@@ -242,7 +242,7 @@ export function useSpecOpenIntent(waveId: string): SpecOpenIntent {
         return next;
       },
     });
-  }, [navigate, waveId]);
+  }, [navigate, trackId]);
   return useMemo(() => ({ armed, disarm }), [armed, disarm]);
 }
 
@@ -254,10 +254,10 @@ export function useSpecOpenIntent(waveId: string): SpecOpenIntent {
  * the mobile panel — so `?panel=cards&card=y` describes two states of one
  * surface. The card wins because it is the older, deep-linkable one.
  */
-function buildWaveSearch(fields: Readonly<{
-  card?: string; panel?: MobilePanel; from?: WaveSource;
-}>): WaveSearch {
-  const search: { card?: string; panel?: MobilePanel; from?: WaveSource } = {};
+function buildTrackSearch(fields: Readonly<{
+  card?: string; panel?: MobilePanel; from?: TrackSource;
+}>): TrackSearch {
+  const search: { card?: string; panel?: MobilePanel; from?: TrackSource } = {};
   if (fields.card !== undefined) search.card = fields.card;
   else if (fields.panel !== undefined) search.panel = fields.panel;
   if (fields.from !== undefined) search.from = fields.from;
@@ -301,16 +301,16 @@ export function panelFromSearchString(searchStr: string): MobilePanel | null {
   return asMobilePanel(rawParamFromSearchString(searchStr, 'panel'));
 }
 
-export function fromFromSearchString(searchStr: string): WaveSource | null {
-  return asWaveSource(rawParamFromSearchString(searchStr, 'from'));
+export function fromFromSearchString(searchStr: string): TrackSource | null {
+  return asTrackSource(rawParamFromSearchString(searchStr, 'from'));
 }
 
 export function panelFromLocation(location: SearchCarrier): MobilePanel | null {
   return asMobilePanel(rawParamFromLocation(location, 'panel'));
 }
 
-export function fromFromLocation(location: SearchCarrier): WaveSource | null {
-  return asWaveSource(rawParamFromLocation(location, 'from'));
+export function fromFromLocation(location: SearchCarrier): TrackSource | null {
+  return asTrackSource(rawParamFromLocation(location, 'from'));
 }
 
 export function asMobilePanel(value: string | null): MobilePanel | null {
@@ -320,7 +320,7 @@ export function asMobilePanel(value: string | null): MobilePanel | null {
   }
 }
 
-export function asWaveSource(value: string | null): WaveSource | null {
+export function asTrackSource(value: string | null): TrackSource | null {
   switch (value) {
     case 'pages': case 'area': return value;
     default: return null;
@@ -365,26 +365,26 @@ export function useRoutePanel(): MobilePanel | null {
 }
 
 /** The surface the reader came from, or `null` (callers default to `pages`). */
-export function useRouteFrom(): WaveSource | null {
+export function useRouteFrom(): TrackSource | null {
   return useRouterState({ select: (state) => fromFromLocation(state.location) });
 }
 
 /**
- * `validateSearch` for `/wave/$waveId`.
+ * `validateSearch` for `/track/$trackId`.
  *
  * TanStack hands over an already-parsed record, where a repeated key arrives as
  * an array — which the `typeof === 'string'` test drops, the same verdict the
  * raw-string parsers above reach. Living here rather than inline in the route
  * lets the tests drive the production validator instead of a copy of it.
  */
-export function validateWaveSearch(search: Record<string, unknown>): WaveSearch {
+export function validateTrackSearch(search: Record<string, unknown>): TrackSearch {
   const card = search.card;
   const panel = search.panel;
   const from = search.from;
-  return buildWaveSearch({
+  return buildTrackSearch({
     card: typeof card === 'string' && card !== '' ? card : undefined,
     panel: asMobilePanel(typeof panel === 'string' ? panel : null) ?? undefined,
-    from: asWaveSource(typeof from === 'string' ? from : null) ?? undefined,
+    from: asTrackSource(typeof from === 'string' ? from : null) ?? undefined,
   });
 }
 
@@ -392,7 +392,7 @@ export function validateWaveSearch(search: Record<string, unknown>): WaveSearch 
  * The panel a *renderer* may open, given what else is true of this visit.
  *
  * `?panel=` is a compact-viewport concept. Above the breakpoint the mobile list
- * is `display: none`, but the surface still counts as open: `WavePage` derives
+ * is `display: none`, but the surface still counts as open: `TrackPage` derives
  * `mobilePanelOpen` from this value alone and puts `inert` + `aria-hidden` on
  * the *desktop* panel, so a shared `?panel=cards` link opened on a laptop drew
  * a panel that was fully visible and unreachable by keyboard or screen reader.
@@ -432,12 +432,12 @@ export function useCurrentPath(): string {
  * a `string` and keeps the prefix table next to `pathFor`, so the two cannot
  * drift apart.
  */
-export function useRouteParam(prefix: '/area/' | '/wave/'): string | undefined {
+export function useRouteParam(prefix: '/area/' | '/track/'): string | undefined {
   const path = useCurrentPath();
   return routeParamFromPath(path, prefix);
 }
 
-export function routeParamFromPath(path: string, prefix: '/area/' | '/wave/'): string | undefined {
+export function routeParamFromPath(path: string, prefix: '/area/' | '/track/'): string | undefined {
   if (!path.startsWith(prefix)) return undefined;
   const segment = path.slice(prefix.length).split('/', 1)[0];
   if (segment === '') return undefined;
@@ -451,18 +451,18 @@ export function routeParamFromPath(path: string, prefix: '/area/' | '/wave/'): s
 /**
  * The whitelisted three fields **exactly as they stand in `location`** — each
  * one parsed and validated on its own, and deliberately *not* run through
- * `buildWaveSearch`.
+ * `buildTrackSearch`.
  *
  * The card/panel exclusion is a rule about the URL a navigation *produces*, not
  * about the one it reads. Enforcing it here dropped `panel` on the way in, so a
  * patch that cleared `card` afterwards had nothing left to keep: the §1.4 row
  * for the illegal-`?card=` bounce ("panel kept, from kept, hash kept") lost the
  * panel whenever both were present, which is precisely the URL that bounce
- * exists to repair. The output of `sameWaveSearch` is still built by
- * `buildWaveSearch`, so the pair can never *leave* here together.
+ * exists to repair. The output of `sameTrackSearch` is still built by
+ * `buildTrackSearch`, so the pair can never *leave* here together.
  */
-export function waveSearchFromLocation(location: SearchCarrier): WaveSearch {
-  const search: { card?: string; panel?: MobilePanel; from?: WaveSource } = {};
+export function trackSearchFromLocation(location: SearchCarrier): TrackSearch {
+  const search: { card?: string; panel?: MobilePanel; from?: TrackSource } = {};
   const card = cardIdFromLocation(location);
   const panel = panelFromLocation(location);
   const from = fromFromLocation(location);
@@ -473,19 +473,19 @@ export function waveSearchFromLocation(location: SearchCarrier): WaveSearch {
 }
 
 /**
- * A patch for {@link useGoSameWave}. A key that is *present* with `undefined`
+ * A patch for {@link useGoSameTrack}. A key that is *present* with `undefined`
  * clears that field; a key that is absent keeps whatever the URL holds. The two
  * are distinguished by own-property, never by value.
  */
-export type WaveSearchPatch = Readonly<{
+export type TrackSearchPatch = Readonly<{
   card?: string | undefined;
   panel?: MobilePanel | undefined;
-  from?: WaveSource | undefined;
+  from?: TrackSource | undefined;
 }>;
 
 /**
- * The search `useGoSameWave` would navigate to, or `null` when `location` is
- * not on `expectedWaveId`.
+ * The search `useGoSameTrack` would navigate to, or `null` when `location` is
+ * not on `expectedTrackId`.
  *
  * Rebuilt field by field from the *raw* location, never `{ ...prev, ...patch }`
  * (#1191 §1.3): spreading the previous search would carry unknown parameters,
@@ -493,51 +493,51 @@ export type WaveSearchPatch = Readonly<{
  * navigation this function is not supposed to be deciding about. The whitelist
  * is the point.
  */
-export function sameWaveSearch(
+export function sameTrackSearch(
   location: SearchCarrier & Readonly<{ pathname: string }>,
-  expectedWaveId: string,
-  patch: WaveSearchPatch,
-): WaveSearch | null {
-  if (routeParamFromPath(location.pathname, '/wave/') !== expectedWaveId) return null;
-  const current = waveSearchFromLocation(location);
-  return buildWaveSearch({
+  expectedTrackId: string,
+  patch: TrackSearchPatch,
+): TrackSearch | null {
+  if (routeParamFromPath(location.pathname, '/track/') !== expectedTrackId) return null;
+  const current = trackSearchFromLocation(location);
+  return buildTrackSearch({
     card: Object.hasOwn(patch, 'card') ? patch.card : current.card,
     panel: Object.hasOwn(patch, 'panel') ? patch.panel : current.panel,
     from: Object.hasOwn(patch, 'from') ? patch.from : current.from,
   });
 }
 
-export type GoSameWave = (
-  expectedWaveId: string,
-  patch: WaveSearchPatch,
+export type GoSameTrack = (
+  expectedTrackId: string,
+  patch: TrackSearchPatch,
   options?: GoOptions,
 ) => void;
 
 /**
- * The *keeping* exit: edit one whitelisted field of the current wave's URL and
+ * The *keeping* exit: edit one whitelisted field of the current track's URL and
  * leave the others — including the block anchor — where they are.
  *
- * It carries `expectedWaveId` rather than reading the route's own id so that
- * "am I still on that wave?" is a real, testable branch: a caller whose wave
+ * It carries `expectedTrackId` rather than reading the route's own id so that
+ * "am I still on that track?" is a real, testable branch: a caller whose track
  * has already changed under it falls back to {@link useGo}, which clears
- * everything, and a mutant that drops the check leaks the previous wave's
+ * everything, and a mutant that drops the check leaks the previous track's
  * parameters onto the next one.
  */
-export function useGoSameWave(): GoSameWave {
+export function useGoSameTrack(): GoSameTrack {
   const navigate = useNavigate();
   const go = useGo();
   const location = useRouterState({ select: (state) => state.location });
-  return useCallback((expectedWaveId, patch, options) => {
-    const search = sameWaveSearch(location, expectedWaveId, patch);
+  return useCallback((expectedTrackId, patch, options) => {
+    const search = sameTrackSearch(location, expectedTrackId, patch);
     if (search === null) {
       go(
-        { name: 'wave', waveId: expectedWaveId, cardId: patch.card, panel: patch.panel, from: patch.from },
+        { name: 'track', trackId: expectedTrackId, cardId: patch.card, panel: patch.panel, from: patch.from },
         options,
       );
       return;
     }
     void navigate({
-      to: pathFor({ name: 'wave', waveId: expectedWaveId }),
+      to: pathFor({ name: 'track', trackId: expectedTrackId }),
       search,
       // `true` keeps the current value; `undefined` would clear it, which is
       // how the illegal-card bounce used to lose the reader's anchor.
@@ -553,9 +553,9 @@ export function hasPanelPushedMarker(state: unknown): boolean {
   return (state as Record<string, unknown>)[PANEL_PUSHED_STATE_KEY] === true;
 }
 
-export type WavePanelNavigation = Readonly<{
-  openPanel: (expectedWaveId: string, panel: MobilePanel) => void;
-  closePanel: (expectedWaveId: string) => void;
+export type TrackPanelNavigation = Readonly<{
+  openPanel: (expectedTrackId: string, panel: MobilePanel) => void;
+  closePanel: (expectedTrackId: string) => void;
 }>;
 
 /**
@@ -571,7 +571,7 @@ export type WavePanelNavigation = Readonly<{
  * what makes a shared `?panel=` deep link closable at all. An unconditional
  * `back()` on a cold start would walk out of the application.
  */
-export function useWavePanelNavigation(): WavePanelNavigation {
+export function useTrackPanelNavigation(): TrackPanelNavigation {
   // `useRouter()` is registered as `AnyRouter`, so its `history` widens to
   // `any`; naming the type back is what keeps `canGoBack`/`back` checked.
   const history = useRouter().history as RouterHistory;
@@ -579,15 +579,15 @@ export function useWavePanelNavigation(): WavePanelNavigation {
   const go = useGo();
   const location = useRouterState({ select: (state) => state.location });
 
-  const openPanel = useCallback((expectedWaveId: string, panel: MobilePanel) => {
-    const search = sameWaveSearch(location, expectedWaveId, { panel, card: undefined });
+  const openPanel = useCallback((expectedTrackId: string, panel: MobilePanel) => {
+    const search = sameTrackSearch(location, expectedTrackId, { panel, card: undefined });
     if (search === null) {
-      go({ name: 'wave', waveId: expectedWaveId, panel });
+      go({ name: 'track', trackId: expectedTrackId, panel });
       return;
     }
     const switching = panelFromLocation(location) !== null;
     void navigate({
-      to: pathFor({ name: 'wave', waveId: expectedWaveId }),
+      to: pathFor({ name: 'track', trackId: expectedTrackId }),
       search,
       hash: true,
       replace: switching,
@@ -597,18 +597,18 @@ export function useWavePanelNavigation(): WavePanelNavigation {
     });
   }, [go, location, navigate]);
 
-  const closePanel = useCallback((expectedWaveId: string) => {
+  const closePanel = useCallback((expectedTrackId: string) => {
     if (hasPanelPushedMarker(location.state) && history.canGoBack()) {
       history.back();
       return;
     }
-    const search = sameWaveSearch(location, expectedWaveId, { panel: undefined });
+    const search = sameTrackSearch(location, expectedTrackId, { panel: undefined });
     if (search === null) {
-      go({ name: 'wave', waveId: expectedWaveId }, { replace: true });
+      go({ name: 'track', trackId: expectedTrackId }, { replace: true });
       return;
     }
     void navigate({
-      to: pathFor({ name: 'wave', waveId: expectedWaveId }),
+      to: pathFor({ name: 'track', trackId: expectedTrackId }),
       search,
       hash: true,
       replace: true,

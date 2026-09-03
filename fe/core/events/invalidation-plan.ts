@@ -11,7 +11,7 @@ export type InvalidationPlan = Readonly<{
   writeThrough: readonly CacheWrite[];
 }>;
 export type InvalidationContext = Readonly<{
-  findWaveOwningCard(cardId: string): string | null;
+  findTrackOwningCard(cardId: string): string | null;
 }>;
 
 type PlannedPolicy<K extends EventKind = EventKind> = Readonly<{
@@ -22,7 +22,7 @@ type NoopPolicy = Readonly<{ type: 'noop'; reason: string }>;
 export type InvalidationPolicy<K extends EventKind = EventKind> = PlannedPolicy<K> | NoopPolicy;
 type PolicyMap = { readonly [K in EventKind]: InvalidationPolicy<K> };
 
-const emptyContext: InvalidationContext = Object.freeze({ findWaveOwningCard: () => null });
+const emptyContext: InvalidationContext = Object.freeze({ findTrackOwningCard: () => null });
 
 export function noop(reason: string): NoopPolicy {
   if (reason.length === 0) throw new TypeError('A no-op invalidation policy requires a reason');
@@ -43,27 +43,27 @@ function result(
   return { invalidate, remove, writeThrough };
 }
 
-function waveFiles(waveId: string | null): QueryKey {
-  return waveId === null ? ['wave-files'] : ['wave-files', waveId];
+function trackFiles(trackId: string | null): QueryKey {
+  return trackId === null ? ['track-files'] : ['track-files', trackId];
 }
 
-function waveFilesDerived(waveId: string | null): readonly QueryKey[] {
-  return [waveFiles(waveId), waveId === null ? ['wave-report'] : ['wave-report', waveId]];
+function trackFilesDerived(trackId: string | null): readonly QueryKey[] {
+  return [trackFiles(trackId), trackId === null ? ['track-report'] : ['track-report', trackId]];
 }
 
-export type WaveFilesDerivedKind =
+export type TrackFilesDerivedKind =
   | 'runtime.started' | 'runtime.status_changed' | 'runtime.superseded'
   | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
   | 'codex.worker_requested' | 'terminal.worker_requested'
   | 'task.completed' | 'task.failed' | 'task.dispatched' | 'task.gate_result';
 
 /**
- * Every kind that can change what a wave's workspace looks like.
+ * Every kind that can change what a track's workspace looks like.
  *
  * NOT the same set as the task-verdict one below — see
  * `taskVerdictInvalidatingKinds`, which is this list minus the two hooks.
  */
-export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
+export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
   'runtime.started', 'runtime.status_changed', 'runtime.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
   'codex.worker_requested', 'terminal.worker_requested',
@@ -74,8 +74,8 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
  * The area conversation list, invalidated without an area id (#1098 §5.5).
  *
  * The id is not omitted for convenience — it is not derivable here.
- * `InvalidationContext` can resolve a card to its wave and nothing further, and
- * an area chat wave's detail is never fetched (the wave is hidden), so there is
+ * `InvalidationContext` can resolve a card to its track and nothing further, and
+ * an area chat track's detail is never fetched (the track is hidden), so there is
  * no cached row to read an area id out of either. A prefix key is the honest
  * shape for "some area's list may have changed"; it also costs nothing when no
  * area route is mounted, because an invalidated key with no active query only
@@ -90,24 +90,24 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
 export const AREA_CONVERSATIONS: QueryKey = Object.freeze(['area-conversations']);
 
 /**
- * The wave conversation list (#1189 §5.5), keyed by the wave it belongs to.
+ * The track conversation list (#1189 §5.5), keyed by the track it belongs to.
  *
  * Unlike the area list above, the id is NOT omitted, because here it *is*
- * derivable: every event this key hangs off carries either a `wave_id` or a
+ * derivable: every event this key hangs off carries either a `track_id` or a
  * `card_id` an `InvalidationContext` can resolve, and the endpoint itself is
- * per-wave (`GET /api/waves/{wave_id}/conversations`, §4.1). The area list's
+ * per-track (`GET /api/tracks/{track_id}/conversations`, §4.1). The area list's
  * prefix shape is a concession to an area id that cannot be recovered, not a
- * house style to copy — invalidating `['wave-conversations']` wholesale on
- * every runtime tick would refetch the list of every wave the user has open.
+ * house style to copy — invalidating `['track-conversations']` wholesale on
+ * every runtime tick would refetch the list of every track the user has open.
  *
- * The prefix is still what comes back when the wave genuinely cannot be
- * resolved (a `runtime.*` event for a card no cached wave owns). That is the
- * honest answer to "some wave's list may have changed", and it costs nothing
+ * The prefix is still what comes back when the track genuinely cannot be
+ * resolved (a `runtime.*` event for a card no cached track owns). That is the
+ * honest answer to "some track's list may have changed", and it costs nothing
  * when no wave-conversation query is mounted: invalidating a key with no
  * active observer only marks cache entries stale.
  */
-function waveConversations(waveId: string | null): QueryKey {
-  return waveId === null ? ['wave-conversations'] : ['wave-conversations', waveId];
+function trackConversations(trackId: string | null): QueryKey {
+  return trackId === null ? ['track-conversations'] : ['track-conversations', trackId];
 }
 
 /**
@@ -115,16 +115,16 @@ function waveConversations(waveId: string | null): QueryKey {
  *
  * They are one key set because they were one defect (#1189 §5.5). A row's
  * `state` in either list is read from `worker_sessions.state` — the area query
- * in `area_conversations.rs`, the wave one mirroring it — and until this slice
+ * in `area_conversations.rs`, the track one mirroring it — and until this slice
  * both lists hung off card and harness events only. The three `runtime.*`
  * kinds are what actually move that column, `runtime.started` being the
  * `null → starting` transition that turns the dot on at all, so a session
  * could start, change status and be superseded with the list still showing
- * whatever it had. Adding the wave list without fixing the area one would have
+ * whatever it had. Adding the track list without fixing the area one would have
  * left the older list with the same stale `state`.
  *
- * `wave.lifecycle_changed` is deliberately NOT a caller. It does not write
- * `worker_sessions.state`; a wave reaching a terminal lifecycle ends its
+ * `track.lifecycle_changed` is deliberately NOT a caller. It does not write
+ * `worker_sessions.state`; a track reaching a terminal lifecycle ends its
  * sessions by superseding their runtimes, which emits `runtime.superseded` —
  * already here. A second trigger for one change buys a duplicate refetch of a
  * wholesale list and makes it impossible to prove either one does the work.
@@ -136,35 +136,35 @@ function waveConversations(waveId: string | null): QueryKey {
  * against a list kept by hand there, so neither a missing nor an extra caller
  * can land silently.
  */
-function conversationLists(waveId: string | null): readonly QueryKey[] {
-  return [AREA_CONVERSATIONS, waveConversations(waveId)];
+function conversationLists(trackId: string | null): readonly QueryKey[] {
+  return [AREA_CONVERSATIONS, trackConversations(trackId)];
 }
 
-function derivedWaveId(data: unknown, context: InvalidationContext): string | null {
+function derivedTrackId(data: unknown, context: InvalidationContext): string | null {
   if (typeof data !== 'object' || data === null) return null;
-  const value = data as { wave_id?: unknown; card_id?: unknown };
-  if (typeof value.wave_id === 'string' && value.wave_id.length > 0) return value.wave_id;
+  const value = data as { track_id?: unknown; card_id?: unknown };
+  if (typeof value.track_id === 'string' && value.track_id.length > 0) return value.track_id;
   if (typeof value.card_id === 'string' && value.card_id.length > 0) {
-    return context.findWaveOwningCard(value.card_id);
+    return context.findTrackOwningCard(value.card_id);
   }
   return null;
 }
 
 /**
- * The kinds that invalidate a wave's task verdicts (`['wave-report', …]`).
+ * The kinds that invalidate a track's task verdicts (`['track-report', …]`).
  *
  * A function, not a frozen const, only because `no-module-runtime-state` will
  * not accept a module-level binding whose initializer is a call.
  *
- * Derived from `WAVE_FILES_DERIVED_KINDS` rather than typed out again, minus
+ * Derived from `TRACK_FILES_DERIVED_KINDS` rather than typed out again, minus
  * the two hooks — and the difference is the whole point. `codex.hook` fires per
  * CLI hook, roughly twice per tool call per running worker, and it writes no
  * `tasks` row: a hook is the agent telling the kernel what it just did, not the
  * scheduler moving a task. It does change the workspace, so it keeps its
- * `wave-files` key.
+ * `track-files` key.
  *
- * Invalidation is not free here. `['wave-report', …]` resolves to a live query
- * on `GET /api/waves/{id}/report`, which loads the wave's CRDT, projects the
+ * Invalidation is not free here. `['track-report', …]` resolves to a live query
+ * on `GET /api/tracks/{id}/report`, which loads the track's CRDT, projects the
  * whole document and runs `task_diagnostics` — a predicate that issues a
  * data-dependent lookup per reference per declaration (see its comment in
  * `read.rs`). The frontend then throws away everything but `taskDiagnostics`.
@@ -177,8 +177,8 @@ function derivedWaveId(data: unknown, context: InvalidationContext): string | nu
  */
 export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   return [
-    ...WAVE_FILES_DERIVED_KINDS.filter((kind) => kind !== 'codex.hook' && kind !== 'claude.hook'),
-    'wave.report_edited',
+    ...TRACK_FILES_DERIVED_KINDS.filter((kind) => kind !== 'codex.hook' && kind !== 'claude.hook'),
+    'track.report_edited',
   ];
 }
 
@@ -189,12 +189,12 @@ export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
  * would silently drop a list from one transition only.
  */
 function runtimePlan(cardId: string, context: InvalidationContext): InvalidationPlan {
-  const waveId = context.findWaveOwningCard(cardId);
+  const trackId = context.findTrackOwningCard(cardId);
   return result([
-    ...(waveId === null ? [] : [['wave', waveId]]),
+    ...(trackId === null ? [] : [['track', trackId]]),
     ['overlays', 'card'],
-    ...waveFilesDerived(waveId),
-    ...conversationLists(waveId),
+    ...trackFilesDerived(trackId),
+    ...conversationLists(trackId),
   ]);
 }
 
@@ -209,43 +209,43 @@ function policies(): PolicyMap {
     [],
     [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
   )),
-  'area.deleted': plan(() => result([['areas'], ['overlays', 'wave']])),
-  'wave.updated': plan((event) => result([
-    ['waves', 'area', event.data.area_id], ['wave', event.data.id],
-    ['wave-files', event.data.id], ['waves-range'],
+  'area.deleted': plan(() => result([['areas'], ['overlays', 'track']])),
+  'track.updated': plan((event) => result([
+    ['tracks', 'area', event.data.area_id], ['track', event.data.id],
+    ['track-files', event.data.id], ['tracks-range'],
   ])),
-  'wave.deleted': plan((event) => result(
-    [['waves', 'area', event.data.area_id], ['overlays', 'wave'], ['waves-range']],
-    [['wave', event.data.id]],
+  'track.deleted': plan((event) => result(
+    [['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range']],
+    [['track', event.data.id]],
   )),
-  'wave.lifecycle_changed': plan((event) => result([
-    ['waves', 'area', event.data.area_id], ['wave', event.data.id],
-    ['wave-files', event.data.id], ['waves-range'],
+  'track.lifecycle_changed': plan((event) => result([
+    ['tracks', 'area', event.data.area_id], ['track', event.data.id],
+    ['track-files', event.data.id], ['tracks-range'],
   ])),
   'card.added': plan((event) => result([
-    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id],
-    ...conversationLists(event.data.wave_id),
+    ['track', event.data.track_id], ['track-files', event.data.track_id],
+    ...conversationLists(event.data.track_id),
   ])),
   'card.updated': plan((event) => result([
-    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id],
-    ...conversationLists(event.data.wave_id),
+    ['track', event.data.track_id], ['track-files', event.data.track_id],
+    ...conversationLists(event.data.track_id),
   ])),
   /* No conversation key, on either list, and not an oversight — see the note on
      `conversationLists`. Dropping the deleted row is #1140's. */
-  'card.deleted': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
+  'card.deleted': plan((event) => result([['track', event.data.track_id], ['track-files', event.data.track_id]])),
   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
   'harness.phase.changed': plan((event) => result([
-    ['spec-run', event.data.card_id], ...conversationLists(event.data.wave_id),
+    ['spec-run', event.data.card_id], ...conversationLists(event.data.track_id),
   ])),
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
   ])),
   'harness.user_message.enqueued': plan((event) => result([
     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
-    ...conversationLists(event.data.wave_id),
+    ...conversationLists(event.data.track_id),
   ])),
   /*
    * #1253 §6 — four keys, and the last two are why the Today trigger visibly
@@ -254,8 +254,8 @@ function policies(): PolicyMap {
    * `['today-launchpad']` carries `report_has_noninitial_content`, which is the
    * server-side predicate Today decides its empty state with: without it the
    * first summary an agent ever writes leaves the page reading "Nothing written
-   * today yet." until a reload. `['wave', id]` is the wave detail the document
-   * is read out of (`readWaveReport` locates the report card by kind), so
+   * today yet." until a reload. `['track', id]` is the track detail the document
+   * is read out of (`readTrackReport` locates the report card by kind), so
    * without it the region keeps drawing the previous body.
    *
    * **Nothing generated protects either line.** `PolicyMap` is exhaustive over
@@ -263,43 +263,43 @@ function policies(): PolicyMap {
    * and no golden notices. The literal key list in
    * `invalidation-plan.contract.test.ts` is the only guard there is.
    */
-  'wave.report_edited': plan((event) => result([
-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],
-    ['today-launchpad'], ['wave', event.data.wave_id],
+  'track.report_edited': plan((event) => result([
+    ['track-files', event.data.track_id], ['track-report', event.data.track_id], ['track-backlinks'],
+    ['today-launchpad'], ['track', event.data.track_id],
   ])),
   'overlay.set': plan((event, context) => {
     const keys: QueryKey[] = [];
-    if (event.data.entity_kind === 'wave' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
-    if (event.data.entity_kind === 'wave') keys.push(['wave', event.data.entity_id]);
+    if (event.data.entity_kind === 'track' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
+    if (event.data.entity_kind === 'track') keys.push(['track', event.data.entity_id]);
     if (event.data.entity_kind === 'card') {
-      const waveId = context.findWaveOwningCard(event.data.entity_id);
-      if (waveId !== null) keys.push(['wave', waveId]);
+      const trackId = context.findTrackOwningCard(event.data.entity_id);
+      if (trackId !== null) keys.push(['track', trackId]);
     }
     return result(keys);
   }),
   'overlay.deleted': plan((event, context) => {
     const keys: QueryKey[] = [];
-    if (event.data.entity_kind === 'wave' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
-    if (event.data.entity_kind === 'wave') keys.push(['wave', event.data.entity_id]);
+    if (event.data.entity_kind === 'track' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
+    if (event.data.entity_kind === 'track') keys.push(['track', event.data.entity_id]);
     if (event.data.entity_kind === 'card') {
-      const waveId = context.findWaveOwningCard(event.data.entity_id);
-      if (waveId !== null) keys.push(['wave', waveId]);
+      const trackId = context.findTrackOwningCard(event.data.entity_id);
+      if (trackId !== null) keys.push(['track', trackId]);
     }
     return result(keys);
   }),
-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'plugin.state': noop('No plugin list query exists.'),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.
      See `taskVerdictInvalidatingKinds` for what that key would have cost. */
-  'codex.hook': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'claude.hook': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'codex.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
-  'terminal.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
-  'task.completed': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
-  'task.failed': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'codex.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
+  'claude.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
+  'codex.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'terminal.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'task.completed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'task.failed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'plan.updated': noop('No task-plan query exists.'),
-  'task.dispatched': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'task.dispatched': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.context_frozen': noop('Frozen task context has no query consumer.'),
   'task.context_advanced': noop('Context advancement has no query consumer.'),
   'workspace.leased': noop('Workspace leases have no query consumer.'),
@@ -319,7 +319,7 @@ function policies(): PolicyMap {
   'worktree.provisioned': noop('Worktree rows have no query consumer.'),
   'worktree.committed': noop('Worktree rows have no query consumer.'),
   'worktree.removed': noop('Worktree rows have no query consumer.'),
-  'task.gate_result': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'task.gate_result': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   });
 }
 

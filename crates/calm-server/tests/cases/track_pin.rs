@@ -1,0 +1,116 @@
+//! Integration tests for `pinned_at` on track rows.
+//!
+//! Covers the repo-level round-trip (pin → GET → unpin → GET) and checks that
+//! the column survives an unrelated title-only patch without being cleared.
+
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::model::*;
+
+async fn fresh_repo() -> SqlxRepo {
+    SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open in-memory sqlite repo")
+}
+
+async fn make_area(repo: &SqlxRepo, name: &str) -> Area {
+    repo.area_create(NewArea {
+        name: name.into(),
+        color: "#abcdef".into(),
+        sort: None,
+    })
+    .await
+    .expect("create area")
+}
+
+async fn make_track(repo: &SqlxRepo, area_id: &str, title: &str) -> Track {
+    repo.track_create(NewTrack {
+        template_input: None,
+        area_id: area_id.into(),
+        title: title.into(),
+        sort: None,
+        cwd: String::new(),
+        template_id: None,
+        plugin_scope: None,
+        attach_folder: false,
+        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+    })
+    .await
+    .expect("create track")
+}
+
+#[tokio::test]
+async fn pinned_at_round_trips_through_patch() {
+    let repo = fresh_repo().await;
+    let c = make_area(&repo, "C").await;
+    let w = make_track(&repo, c.id.as_str(), "pin-test").await;
+
+    assert!(w.pinned_at.is_none(), "new track has no pin");
+
+    let pinned = repo
+        .track_update(
+            w.id.as_str(),
+            TrackPatch {
+                pinned_at: Some(Some(12345)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(pinned.pinned_at, Some(12345));
+
+    let re_read = repo.track_get(w.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(re_read.pinned_at, Some(12345));
+
+    let unpinned = repo
+        .track_update(
+            w.id.as_str(),
+            TrackPatch {
+                pinned_at: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(unpinned.pinned_at, None);
+
+    let re_read2 = repo.track_get(w.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(re_read2.pinned_at, None);
+}
+
+#[tokio::test]
+async fn omitting_pinned_at_from_patch_leaves_it_alone() {
+    let repo = fresh_repo().await;
+    let c = make_area(&repo, "C").await;
+    let w = make_track(&repo, c.id.as_str(), "leave-alone").await;
+
+    let pinned = repo
+        .track_update(
+            w.id.as_str(),
+            TrackPatch {
+                pinned_at: Some(Some(99999)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(pinned.pinned_at, Some(99999));
+
+    // Patch title only — pinned_at must be unchanged.
+    let title_only = repo
+        .track_update(
+            w.id.as_str(),
+            TrackPatch {
+                title: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(title_only.title, "renamed");
+    assert_eq!(
+        title_only.pinned_at,
+        Some(99999),
+        "pinned_at must survive an unrelated title-only patch"
+    );
+}

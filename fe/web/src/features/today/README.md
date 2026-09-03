@@ -12,7 +12,7 @@ value that arrives as inline `style` — it is per-row data, not a variant.
 
 ## Accessibility contract
 
-- Every navigable row is a `<button>`; the accessible name carries the wave
+- Every navigable row is a `<button>`; the accessible name carries the track
   title, the attention/running state, the lifecycle phrase, and the area name.
   Dot flags are `aria-hidden` decoration for fast scanning only.
 - Day cells are buttons with `aria-pressed` and a full-date accessible name.
@@ -49,11 +49,11 @@ Running and Recent are ambience and live in the panel.
   Routine absence is data; anomalous absence (a launchpad with no report card)
   is still a 404, and correctly so.
 
-  This covers the wave detail as well as the resolve, and the two document
+  This covers the track detail as well as the resolve, and the two document
   reads have **three** failure-shaped states that must not be collapsed:
   in flight (which is every page load, because the detail query cannot start
-  until the resolve returns a wave id), detail read failed, and payload
-  undecodable. `readWaveReport() === null` is true in all three, so a single
+  until the resolve returns a track id), detail read failed, and payload
+  undecodable. `readTrackReport() === null` is true in all three, so a single
   `ReportDocument` `empty` for all of them once told a reader whose server was
   unreachable that their build was too old, with no retry. `app/router` splits
   them; `app/router/today-document.test.tsx` owns the coverage, because this
@@ -62,12 +62,12 @@ Running and Recent are ambience and live in the panel.
   `report_has_noninitial_content` and by nothing else. **Never null-check the
   report, and never read its text.** The kernel's freshly-minted report is a
   well-formed document — a maintenance-contract comment plus four empty H1s —
-  so `readWaveReport` returns non-null for it and a null-check renders four
+  so `readTrackReport` returns non-null for it and a null-check renders four
   empty headings where the empty state belongs. Reading the body would be
   mirror code for text the kernel owns besides. The predicate is an
   approximation, and the shape of the approximation matters for PR2: it is a
   statement about the report's **current content**, not about its history. It
-  consults no history (`WaveReportPayload::report_startup_read_required` is a
+  consults no history (`TrackReportPayload::report_startup_read_required` is a
   pure comparison against the canonical pair), so it flips on a human edit as
   readily as on an agent's, and **it flips back** — restore `summary`/`body`
   byte-for-byte to canonical and it reads `false` again, `doc_rev` and `blocks`
@@ -95,13 +95,13 @@ Running and Recent are ambience and live in the panel.
   RECENT both exclude anything already counted as waiting.
 - **The first-run page owns a document too.** `areas` is the *user-visible*
   list — #175 filters the system area out of `GET /api/areas` and the launchpad
-  lives there — so "no waves, no areas" is an ordinary state for a workspace
+  lives there — so "no tracks, no areas" is an ordinary state for a workspace
   whose only content is the day's report.
 
 ### The refresh chain, and why nothing generated protects it
 
-`core/events/invalidation-plan.ts`'s `wave.report_edited` policy now carries
-**four** keys. Two of them exist only for this page: `['wave', id]` is what the
+`core/events/invalidation-plan.ts`'s `track.report_edited` policy now carries
+**four** keys. Two of them exist only for this page: `['track', id]` is what the
 document is read through, and `['today-launchpad']` is what the empty-state
 predicate is read through. Without either, pressing the trigger leaves the page
 unchanged until a reload — the first bug report this feature would have got.
@@ -116,7 +116,7 @@ link — a planned key with no adapter arm is silently dropped.
 ## Deliberate gaps (do not "fix" these by accident)
 
 - **INV-TODAY-002** — `scheduledEvents` is permanently empty in production and
-  that is a *seam*, not dead code. Scheduled events and live wave activity must
+  that is a *seam*, not dead code. Scheduled events and live track activity must
   co-exist in one agenda; a scheduling plugin fills the prop later. Deleting the
   branch deletes the seam.
 - **The Today terminal is not wired here yet** (`features/today/terminal`). When
@@ -124,15 +124,15 @@ link — a planned key with no adapter arm is silently dropped.
   → verify the card still has a terminal row → bootstrap **only** on 404. Any
   other error must surface as an error, never a silent rebuild (INV-TODAYTERM-001),
   the whole chain runs in one in-flight-guarded async resolver
-  (INV-TODAYTERM-003), the Today wave **omits `cwd` and `attach_folder`**
+  (INV-TODAYTERM-003), the Today track **omits `cwd` and `attach_folder`**
   entirely (INV-TODAYTERM-005), and the 404 check is duck-typed on
   `status` rather than `instanceof` (INV-TODAYTERM-006).
 
   INV-TODAYTERM-005 used to read "passes `cwd: '/'` with `attach_folder: false`".
   #1147 S3 inverted it: an omitted `cwd` is the *managed* branch, so the kernel
-  allocates and `git init`s a real directory the wave's workers can lease, while
-  `/` was never a workspace at all — a `kind: codex` task on that wave died in
-  `git_repo_root_for_wave_cwd` with nothing but `spawn-failed`, which is the
+  allocates and `git init`s a real directory the track's workers can lease, while
+  `/` was never a workspace at all — a `kind: codex` task on that track died in
+  `git_repo_root_for_track_cwd` with nothing but `spawn-failed`, which is the
   defect #1147 was opened on. An explicit `cwd` now means "attach this existing
   repository" and is validated, so `/` would be a 400.
 - Attention counting is lifecycle-only for now. The kernel's card-FSM signal
