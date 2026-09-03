@@ -26,7 +26,6 @@ use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
-use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
@@ -987,7 +986,6 @@ async fn complete_forge_op_succeeded(
                 let scope = frozen.event_scope_for(event.kind_tag());
                 let event_id = append_decision_event_in_tx(
                     &mut tx,
-                    &PermissiveGate,
                     &ActorId::KernelDispatcher,
                     &scope,
                     None,

@@ -40,7 +40,6 @@ use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParam
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
-use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -666,24 +665,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
             let event = Event::CardAdded(created);
-            if let Err(violation) = crate::role_gate::enforce_role(
-                &payload.actor,
-                &event,
-                &scope,
-                &self.card_role_cache,
-                &self.track_area_cache,
-            ) {
-                return Err(CalmError::Forbidden(violation.to_string()));
-            }
-            let event_id = append_decision_event_in_tx(
-                tx,
-                &PermissiveGate,
-                &payload.actor,
-                &scope,
-                None,
-                &event,
-            )
-            .await?;
+            let event_id =
+                append_decision_event_in_tx(tx, &payload.actor, &scope, None, &event).await?;
             post_commit_events.push(BroadcastEnvelope {
                 id: event_id,
                 event_version: SYNC_EVENT_VERSION,

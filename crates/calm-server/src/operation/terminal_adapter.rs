@@ -23,7 +23,6 @@ use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
-use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -311,36 +310,10 @@ impl ProviderAdapter for TerminalAdapter {
             agent_provider: None,
             status: WorkerSessionState::Starting,
         };
-        if let Err(violation) = crate::role_gate::enforce_role(
-            &payload.actor,
-            &event,
-            &scope,
-            &self.card_role_cache,
-            &self.track_area_cache,
-        ) {
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
-        if let Err(violation) = crate::role_gate::enforce_role(
-            &payload.actor,
-            &runtime_event,
-            &scope,
-            &self.card_role_cache,
-            &self.track_area_cache,
-        ) {
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
         let event_id =
-            append_decision_event_in_tx(tx, &PermissiveGate, &payload.actor, &scope, None, &event)
-                .await?;
-        let runtime_event_id = append_decision_event_in_tx(
-            tx,
-            &PermissiveGate,
-            &payload.actor,
-            &scope,
-            None,
-            &runtime_event,
-        )
-        .await?;
+            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &event).await?;
+        let runtime_event_id =
+            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
         let projected_card = project_terminal_id_for_response(&card, &term.id);
         let mut output = TxOutput::new(

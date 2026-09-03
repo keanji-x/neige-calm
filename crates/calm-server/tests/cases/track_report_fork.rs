@@ -2316,3 +2316,113 @@ async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
         "the fork left a reference that does not resolve against the copy: {dangling:#?}"
     );
 }
+
+/// #1252 S3′ — the negative nail.
+///
+/// #1252 and #1362 both asked for a test of "the S2 × S3′ intersection": once
+/// S2 routed fork / template / recipe creation through a unified apply, fork's
+/// events were supposed to start flowing through the
+/// `append_decision_event*_in_tx` seam.
+///
+/// **That intersection does not exist.** Fork goes `routes::tracks` →
+/// `write_with_actor_events_typed` → `write_with_actor_events` →
+/// `enforce_role_resolving_session`, one of the four `RepoEventWrite` wrappers
+/// gated since #136 PR3; S2's structured creation door lands on the same
+/// wrapper. Neither touches `append_decision_event_in_tx`. Writing the
+/// requested test would have meant asserting a fiction, so this pins the true
+/// statement — and it is a real regression guard: if a refactor ever reroutes a
+/// report/fork write through the seam, this goes red.
+///
+/// `calm_truth::db::sqlite::append_probe` is a process-global recorder, which
+/// is sound only because the gate command runs tests under `cargo nextest`
+/// (one process per test).
+#[tokio::test]
+async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
+    use calm_truth::db::sqlite::append_probe;
+
+    /// Kinds that would mean a report/track body write had started arriving at
+    /// the seam. `workspace.*` deliberately is not here: track creation leases
+    /// a workspace, and the workspace-lease adapter is one of the fifteen
+    /// legitimate seam call sites.
+    /// `track.report_edited` is the one this nail is really about: it is the
+    /// kind #1252 / #1363 name throughout, and `role_gate` has no rule for it.
+    /// It is named explicitly rather than relied on being caught by the
+    /// `card.updated` it is emitted alongside today.
+    const REPORT_SHAPED_KINDS: &[&str] = &[
+        "card.updated",
+        "card.added",
+        "track.updated",
+        "track.report_edited",
+    ];
+
+    let boot = boot().await;
+
+    // Only the fork request is under observation.
+    append_probe::reset();
+    let (status, target_track) = request_json(
+        &boot.app,
+        "POST",
+        "/api/tracks".into(),
+        &boot.cookie,
+        Some(json!({
+            "area_id": boot.area_id,
+            "title": "seam nail target",
+            "sort": null,
+            "cwd": target_cwd("-seam-nail"),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_track_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_track}");
+    let observed = append_probe::kinds();
+
+    // Today `observed` is empty. It is deliberately *not* asserted empty:
+    // track creation also leases a workspace, and the workspace-lease adapter
+    // is a legitimate seam call site whose events may land in this window. The
+    // nail is about report/card-shaped traffic, so it is written as a denylist
+    // over kinds rather than as "the seam stayed silent".
+    for kind in &observed {
+        assert!(
+            !REPORT_SHAPED_KINDS.contains(kind),
+            "a report/card-shaped event crossed the append_decision seam during a \
+             fork: {kind} (full trace: {observed:?}). Fork is supposed to go through \
+             write_with_actor_events, which is gated by enforce_role_resolving_session. \
+             If it moved on purpose, replace this nail with a positive test of the \
+             seam's verdict on fork's actor."
+        );
+    }
+
+    // The loop above is vacuous unless the probe actually records. Prove it
+    // does, in this same process, by driving the seam directly: a `Kernel`
+    // actor appending a system-scoped event is exactly the shape seven of the
+    // fifteen production call sites use, and it must show up in the trace.
+    let side_repo = calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open probe-liveness repo");
+    append_probe::reset();
+    let liveness_event = calm_server::event::Event::TaskDispatched {
+        idempotency_key: "s3-seam-probe-liveness".into(),
+        kind: "codex".into(),
+        agent_message: None,
+    };
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(side_repo.pool())
+        .await
+        .expect("begin probe-liveness tx");
+    calm_server::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::Kernel,
+        &calm_server::event::EventScope::System,
+        None,
+        &liveness_event,
+    )
+    .await
+    .expect("kernel/system append must be admitted");
+    tx.commit().await.expect("commit probe-liveness tx");
+    assert_eq!(
+        append_probe::kinds(),
+        vec!["task.dispatched"],
+        "the append probe is not wired, so the fork assertion above proved nothing"
+    );
+}

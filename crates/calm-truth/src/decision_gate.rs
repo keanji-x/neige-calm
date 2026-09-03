@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use sqlx::{Sqlite, Transaction};
-use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
@@ -10,6 +9,7 @@ use crate::model::CardRole;
 use crate::role_gate::{RoleViolation, enforce_role};
 use crate::track_area_cache::TrackAreaCache;
 use crate::worker::{Principal, WorkerSession, WorkerSessionId};
+#[cfg(any(test, feature = "test-helpers"))]
 use std::sync::Arc;
 
 pub type WorkerSessionRow = WorkerSession;
@@ -127,6 +127,230 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
     enforce_role(&synthetic, event, scope, cache, track_area_cache)
 }
 
+/// Same policy as [`enforce_role_resolving_session`], with `card → {role,
+/// home track}` and `track → area` read live from the caller's write
+/// transaction instead of from the write-through
+/// [`CardRoleCache`] / [`TrackAreaCache`] pair.
+///
+/// ## Why a transaction read instead of the caches
+///
+/// The caches are a *performance* substrate, not a *correctness* substrate:
+/// [`WriteTx::read_card_role`] already runs `SELECT role FROM cards WHERE
+/// id = ?1` inside the caller's transaction, so a role written earlier in the
+/// same transaction (e.g. by `card_create_with_id_tx`) is visible to it — the
+/// transaction read is at least as fresh as the write-through cache. It is
+/// also immune to the two `CardRoleCache` instances in the tree (`SqlxRepo`
+/// holds one, `AppState::new` allocates another) drifting apart, which a
+/// seam that grabbed whichever cache was nearest would silently suffer.
+///
+/// Cost, inside the write lock: at most nine primary-key `SELECT`s per event.
+/// The bound is `2` session reads (one here to find the hydration key, one
+/// authoritative read in `enforce_role_resolving_session`) + `2 cards × 2`
+/// (`role` and `track_id`, for the actor-or-session card and a distinct
+/// `scope.card`) + `3 tracks × 1` (`scope.track` plus each card's home track).
+/// The common shapes are far cheaper: a cardless actor (`User`, `Kernel`,
+/// `KernelDispatcher`) with a card scope costs at most four, and the same
+/// actor with a system scope costs none.
+///
+/// ## Why this is a substitution and not a re-implementation
+///
+/// This function does not restate any of the gate's branches. It hydrates two
+/// throwaway cache instances from the transaction and then calls
+/// [`enforce_role_resolving_session`] — the original — to make the decision.
+/// See [`hydrate_role_caches_from_tx`] for why the hydrated key set is
+/// complete by construction rather than by mirroring the gate's logic.
+pub async fn enforce_role_resolving_session_from_tx<T: WriteTx + ?Sized + Send>(
+    tx: &mut T,
+    actor: &ActorId,
+    event: &Event,
+    scope: &EventScope,
+) -> std::result::Result<(), RoleViolation> {
+    // A session actor resolves to a card that the syntactic closure of
+    // `(actor, scope)` cannot see, so look it up first and hand it to the
+    // hydrator as an extra key. Errors and absences are deliberately
+    // *not* interpreted here: `enforce_role_resolving_session` below does
+    // the authoritative session read and owns every deny reason for it.
+    // Reading it twice costs one extra `SELECT` and keeps the decision in
+    // exactly one place.
+    let session_card = match actor {
+        ActorId::AiPlannerSession(session)
+        | ActorId::AiCodexSession(session)
+        | ActorId::AiClaudeSession(session)
+            if !session.as_str().is_empty() =>
+        {
+            tx.read_worker_session(session)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|row| row.card_id)
+        }
+        _ => None,
+    };
+    let (cache, track_area_cache) =
+        hydrate_role_caches_from_tx(tx, actor, scope, session_card.as_ref()).await?;
+    enforce_role_resolving_session(tx, actor, event, scope, &cache, &track_area_cache).await
+}
+
+/// The `CardId` an actor carries, if its variant carries one.
+///
+/// Session variants carry a `WorkerSessionId`, not a card; their card is
+/// resolved from `worker_sessions` and passed to
+/// [`hydrate_role_caches_from_tx`] as `extra_card`.
+fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
+    match actor {
+        ActorId::AiCodex(card) | ActorId::AiClaude(card) | ActorId::AiPlanner(card) => Some(card),
+        ActorId::User
+        | ActorId::Kernel
+        | ActorId::KernelDispatcher
+        | ActorId::Plugin(_)
+        | ActorId::AiPlannerSession(_)
+        | ActorId::AiCodexSession(_)
+        | ActorId::AiClaudeSession(_) => None,
+    }
+}
+
+/// Fill throwaway [`CardRoleCache`] / [`TrackAreaCache`] instances from the
+/// caller's transaction with every row [`enforce_role`] can key on.
+///
+/// ## Completeness (why this is not a mirror of the gate's branches)
+///
+/// [`enforce_role`] is a pure function of `(actor, event, scope, cache,
+/// track_area_cache)`, and the only cache keys it can name are identifiers it
+/// can *reach*:
+///
+///   * `cache.get(card)` / `cache.track_of(card)` are only ever called with
+///     the `CardId` carried by `actor` or the `CardId` carried by `scope`
+///     (`EventScope::Card { card, .. }`, via `enforce_card_scope`'s `target`);
+///   * `track_area_cache.area_of(track)` is only ever called with a home track
+///     that came out of `cache.track_of(..)`;
+///   * no cache key is ever derived from the event payload.
+///
+/// So the syntactic closure of `actor ∪ scope ∪ {resolved session card}` under
+/// `card → home track → area` is a superset of the gate's key set for *any*
+/// branch it takes, present or future-added, as long as the gate keeps keying
+/// only on identifiers reachable from its arguments. `scope`'s own track is
+/// hydrated too, which costs one `SELECT` and removes the need to reason about
+/// which side of a `scope.track` comparison is read from where.
+///
+/// A row that is absent from the transaction is left absent from the cache,
+/// and `enforce_role` denies on that miss for AI worker actors.
+///
+/// ## Why reading the transaction is safe: **the verdict and the event share
+/// one transaction**
+///
+/// Every row this function reads comes out of the caller's `tx` — the three
+/// reads below are `tx.read_card_role`, `tx.read_card_track` and
+/// `tx.read_track_area`. On the production entrance that is the *same*
+/// transaction the event is inserted into: `append_decision_event_in_tx` and
+/// its batch form (`db/sqlite/events.rs`) pass one `&mut Transaction` first to
+/// `gated::authorize` — which calls
+/// [`enforce_role_resolving_session_from_tx`], hence this hydrator — and then
+/// to `SqlxRepo::event_append_in_tx`.
+///
+/// So the verdict is computed from the same view of `cards` / `tracks` that
+/// the `events` row is written into: the committed tables as amended by this
+/// transaction's own pending writes. Every row the gate read was therefore
+/// either already committed, or a pending write of this same transaction — and
+/// in the second case it commits exactly when the event commits and rolls back
+/// exactly when the event rolls back. **The event can never be committed on
+/// the strength of a row state that never committed. That is the entire safety
+/// argument, and it does not appeal to any direction of disagreement with the
+/// write-through caches.**
+///
+/// ## Evidence that the caches lack this property: they diverge **both** ways
+///
+/// "Absent from the DB ⇒ absent from the cache" is *not* true of
+/// `CardRoleCache` / `TrackAreaCache`, so this substrate is not equivalent to
+/// them on every possible state — and the disagreement is not one-directional:
+///
+///   * **Rolled-back create ⇒ the cache is the more permissive side.**
+///     `card_create_with_id_tx` (`db/sqlite/card.rs`) inserts into
+///     `CardRoleCache` before commit, and its comment records that "a txn
+///     rollback leaves a stale entry". The cached gate can then admit an
+///     `AiCodex` / `AiClaude` actor for a card that has no row, while this
+///     hydrator finds no row, leaves the card out, and that same arm of
+///     `enforce_role` (`role_gate.rs`) returns `UnknownCard`.
+///   * **Rolled-back delete ⇒ the cache is the more restrictive side.**
+///     `card_delete_tx` (`db/sqlite/card.rs`) calls `card_role_cache.remove`
+///     before commit, and its comment records that "a txn rollback would leave
+///     the cache temporarily missing an entry". In that state the cached gate
+///     denies an `AiCodex` / `AiClaude` actor with `UnknownCard` although the
+///     card's row is still there, while this hydrator reads that row, so the
+///     miss-deny never fires here. `track_delete_tx` (`db/sqlite/track.rs`)
+///     removes from `TrackAreaCache` before commit in the same shape one level
+///     up; there the miss is not a deny at all — `enforce_card_self_scope`
+///     reaches it through `area_of(..).expect(..)` (`role_gate.rs`), which
+///     treats a missing entry under a known card as a hard invariant break.
+///
+/// These two are recorded as *evidence*, not as the argument: because the
+/// caches can drift either way, "the transaction read is always the stricter
+/// side" would be false, which is exactly why the safety argument above is
+/// stated against the transaction's own view of the tables instead. The
+/// equivalence matrix in this file's tests can see neither case — both of its
+/// substrates are projected from one consistent `World` — so they are recorded
+/// here rather than asserted there.
+async fn hydrate_role_caches_from_tx<T: WriteTx + ?Sized + Send>(
+    tx: &mut T,
+    actor: &ActorId,
+    scope: &EventScope,
+    extra_card: Option<&CardId>,
+) -> std::result::Result<(CardRoleCache, TrackAreaCache), RoleViolation> {
+    let cache = CardRoleCache::new();
+    let track_area_cache = TrackAreaCache::new();
+
+    let mut cards: Vec<CardId> = Vec::new();
+    for card in actor_card_id(actor)
+        .into_iter()
+        .chain(scope.card_id())
+        .chain(extra_card)
+    {
+        if card.as_str().is_empty() || cards.contains(card) {
+            continue;
+        }
+        cards.push(card.clone());
+    }
+
+    let mut tracks: Vec<TrackId> = scope.track_id().cloned().into_iter().collect();
+    for card in &cards {
+        let role = tx
+            .read_card_role(card)
+            .await
+            .map_err(|_| RoleViolation::RoleLookupFailed {
+                subject: format!("cards.role({card})"),
+            })?;
+        let home_track =
+            tx.read_card_track(card)
+                .await
+                .map_err(|_| RoleViolation::RoleLookupFailed {
+                    subject: format!("cards.track_id({card})"),
+                })?;
+        // Both halves or neither: the write-through cache stores role and home
+        // track as one entry, so a half-populated read is not a state the
+        // cached gate can observe. Fail closed by leaving the card unknown.
+        let (Some(role), Some(home_track)) = (role, home_track) else {
+            continue;
+        };
+        if !tracks.contains(&home_track) {
+            tracks.push(home_track.clone());
+        }
+        cache.insert(card.clone(), role, home_track);
+    }
+
+    for track in tracks {
+        let area =
+            tx.read_track_area(&track)
+                .await
+                .map_err(|_| RoleViolation::RoleLookupFailed {
+                    subject: format!("tracks.area_id({track})"),
+                })?;
+        if let Some(area) = area {
+            track_area_cache.insert(track, area);
+        }
+    }
+
+    Ok((cache, track_area_cache))
+}
+
 impl<'a> sealed::Sealed for Transaction<'a, Sqlite> {}
 
 #[async_trait]
@@ -194,6 +418,19 @@ impl GateDecision {
     }
 }
 
+/// Pluggable "should this write be allowed" policy.
+///
+/// **Test-only abstraction.** After #1252 S3′ there is no production
+/// implementor and no production consumer: the event-append seam takes its
+/// decision from [`enforce_role_resolving_session_from_tx`] instead of from an
+/// injected gate, and the only implementors left in the tree
+/// (`PermissiveGate` here, `DenyGate` / `DenyOnRoot` / `RootOnlyGate` in
+/// `calm-truth-test-harness`) exist to drive invariant fixtures. It is kept
+/// behind `cfg(any(test, feature = "test-helpers"))` so a permissive stub
+/// cannot be handed to a production write path again — a seam you *cannot*
+/// pass "no policy" to is stronger than a seam whose default policy is a real
+/// gate.
+#[cfg(any(test, feature = "test-helpers"))]
 #[async_trait]
 pub trait DecisionGate: Send + Sync {
     async fn decide<T>(
@@ -207,9 +444,13 @@ pub trait DecisionGate: Send + Sync {
         T: WriteTx + ?Sized + Send;
 }
 
+/// Allow-everything [`DecisionGate`]. Test scaffolding only — see the trait's
+/// note. Gated for the same reason.
+#[cfg(any(test, feature = "test-helpers"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PermissiveGate;
 
+#[cfg(any(test, feature = "test-helpers"))]
 #[async_trait]
 impl DecisionGate for PermissiveGate {
     async fn decide<T>(
@@ -342,6 +583,12 @@ impl PrincipalDecisionGate {
     }
 }
 
+/// Run `f` inside one write transaction behind a [`DecisionGate`].
+///
+/// Test-only, and gated for the same reason as the trait: it has no production
+/// call site — the invariant fixtures in `calm-truth-test-harness` are its only
+/// consumers.
+#[cfg(any(test, feature = "test-helpers"))]
 #[allow(clippy::too_many_arguments)]
 pub async fn commit_decision<R, G, F>(
     repo: &dyn crate::db::RepoEventWrite,
@@ -363,6 +610,8 @@ where
         + Send
         + 'static,
 {
+    use tokio::sync::Mutex;
+
     let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let captured_inner = Arc::clone(&captured);
     let decision_actor = actor.clone();
@@ -410,6 +659,8 @@ mod tests {
         worker_session_read_error: bool,
         /// `cards` rows this fake knows about: id → (role, home track).
         cards: Vec<(CardId, CardRole, TrackId)>,
+        /// `tracks` rows this fake knows about: id → area.
+        tracks: Vec<(TrackId, AreaId)>,
     }
 
     impl FakeWriteTx {
@@ -420,12 +671,18 @@ mod tests {
                 worker_session_reads: 0,
                 worker_session_read_error: false,
                 cards: Vec::new(),
+                tracks: Vec::new(),
             }
         }
 
         fn with_card(mut self, card: &str, role: CardRole, track: &str) -> Self {
             self.cards
                 .push((CardId::from(card), role, TrackId::from(track)));
+            self
+        }
+
+        fn with_track(mut self, track: &str, area: &str) -> Self {
+            self.tracks.push((TrackId::from(track), AreaId::from(area)));
             self
         }
 
@@ -488,8 +745,12 @@ mod tests {
                 .map(|(_, _, track)| track.clone()))
         }
 
-        async fn read_track_area(&mut self, _track: &TrackId) -> Result<Option<AreaId>> {
-            Ok(None)
+        async fn read_track_area(&mut self, track: &TrackId) -> Result<Option<AreaId>> {
+            Ok(self
+                .tracks
+                .iter()
+                .find(|(id, _)| id == track)
+                .map(|(_, area)| area.clone()))
         }
     }
 
@@ -1193,5 +1454,239 @@ mod tests {
         assert!(direct.is_ok(), "direct sync gate should allow: {direct:?}");
         assert!(routed.is_ok(), "async passthrough should allow: {routed:?}");
         assert_eq!(tx.worker_session_reads, 0);
+    }
+    // -----------------------------------------------------------------
+    // #1252 S3′ — equivalence matrix.
+    //
+    // `enforce_role_resolving_session_from_tx` replaces the write-through
+    // caches with live reads from the caller's transaction. That swap is only
+    // legitimate if the two substrates produce the *same verdict* on every
+    // input **whose two substrates agree**, so this matrix walks
+    // (actor × event × scope) and asserts the two functions agree exactly —
+    // including on the violation text, so a same-shape-different-reason
+    // divergence is caught too.
+    //
+    // Both substrates are projected from one `World` description, which is
+    // what makes this an equivalence test rather than two hand-written
+    // expectations that could drift together. Mutating either substrate — the
+    // hydrator's key set, the fake's rows, the cache seeding — must turn this
+    // red.
+    //
+    // What it therefore does *not* cover: states where the cache and the DB
+    // disagree. Two such states are documented and reachable — a rolled-back
+    // `card_create_with_id_tx` leaves a stale `CardRoleCache` entry, and a
+    // rolled-back `card_delete_tx` leaves that cache missing one — and the two
+    // gates genuinely differ on both, in *opposite* directions: the cache is
+    // the permissive side on the first and the restrictive side on the second.
+    // Neither direction is what makes the swap legitimate: the
+    // transaction read is safe because the verdict and the `events` insert
+    // share one transaction. See `hydrate_role_caches_from_tx`'s doc comment
+    // for both halves. A single consistent `World` cannot express either
+    // state, so the divergences live there as prose, not here as rows.
+    // -----------------------------------------------------------------
+
+    /// The rows both substrates are built from.
+    struct World {
+        cards: Vec<(&'static str, CardRole, &'static str)>,
+        tracks: Vec<(&'static str, &'static str)>,
+        session: Option<WorkerSessionRow>,
+    }
+
+    impl World {
+        fn tx(&self) -> FakeWriteTx {
+            let mut tx = match &self.session {
+                Some(session) => FakeWriteTx::with_worker_session(session.clone()),
+                None => FakeWriteTx::new(),
+            };
+            for (card, role, track) in &self.cards {
+                tx = tx.with_card(card, *role, track);
+            }
+            for (track, area) in &self.tracks {
+                tx = tx.with_track(track, area);
+            }
+            tx
+        }
+
+        fn caches(&self) -> (CardRoleCache, TrackAreaCache) {
+            let cache = CardRoleCache::new();
+            for (card, role, track) in &self.cards {
+                cache.insert(CardId::from(*card), *role, TrackId::from(*track));
+            }
+            let area_cache = TrackAreaCache::new();
+            for (track, area) in &self.tracks {
+                area_cache.insert(TrackId::from(*track), AreaId::from(*area));
+            }
+            (cache, area_cache)
+        }
+    }
+
+    fn matrix_world() -> World {
+        World {
+            cards: vec![
+                ("planner", CardRole::Planner, "w"),
+                ("worker", CardRole::Worker, "w"),
+                ("report", CardRole::ReportCard, "w"),
+                ("assistant", CardRole::Assistant, "w"),
+                ("foreign-worker", CardRole::Worker, "w2"),
+            ],
+            tracks: vec![("w", "c"), ("w2", "c2")],
+            session: Some(worker_session("s-live", Some(CardId::from("planner")))),
+        }
+    }
+
+    fn matrix_actors() -> Vec<ActorId> {
+        vec![
+            ActorId::User,
+            ActorId::Kernel,
+            ActorId::KernelDispatcher,
+            ActorId::Plugin("p".into()),
+            ActorId::AiPlanner(CardId::from("planner")),
+            ActorId::AiPlanner(CardId::from("worker")),
+            ActorId::AiPlanner(CardId::from("")),
+            ActorId::AiCodex(CardId::from("worker")),
+            ActorId::AiCodex(CardId::from("planner")),
+            ActorId::AiCodex(CardId::from("report")),
+            ActorId::AiCodex(CardId::from("assistant")),
+            ActorId::AiCodex(CardId::from("foreign-worker")),
+            ActorId::AiCodex(CardId::from("ghost")),
+            ActorId::AiCodex(CardId::from("")),
+            ActorId::AiClaude(CardId::from("worker")),
+            // Session actors: live (resolves to the planner card), unknown
+            // (no row), and empty (unresolvable).
+            ActorId::AiCodexSession(WorkerSessionId::from("s-live")),
+            ActorId::AiPlannerSession(WorkerSessionId::from("s-live")),
+            ActorId::AiClaudeSession(WorkerSessionId::from("s-live")),
+            ActorId::AiCodexSession(WorkerSessionId::from("s-ghost")),
+            ActorId::AiCodexSession(WorkerSessionId::from("")),
+        ]
+    }
+
+    fn matrix_scopes() -> Vec<EventScope> {
+        vec![
+            EventScope::System,
+            EventScope::Area {
+                area: AreaId::from("c"),
+            },
+            track_scope("w", "c"),
+            track_scope("w2", "c2"),
+            card_scope("worker", "w", "c"),
+            card_scope("report", "w", "c"),
+            card_scope("assistant", "w", "c"),
+            card_scope("planner", "w", "c"),
+            // #232 / #234 spoof shapes: right card, wrong track / wrong area.
+            card_scope("worker", "w2", "c2"),
+            card_scope("worker", "w", "c2"),
+            card_scope("foreign-worker", "w2", "c2"),
+            card_scope("ghost", "w", "c"),
+        ]
+    }
+
+    fn matrix_events() -> Vec<(&'static str, Event)> {
+        vec![
+            ("track.updated", track_updated()),
+            ("area.updated", area_updated()),
+            (
+                "plan.updated",
+                Event::PlanUpdated {
+                    track_id: TrackId::from("w"),
+                    changed_keys: Vec::new(),
+                    agent_message: None,
+                },
+            ),
+            (
+                "task.dispatched",
+                Event::TaskDispatched {
+                    idempotency_key: "k".into(),
+                    kind: "codex".into(),
+                    agent_message: None,
+                },
+            ),
+            (
+                "task.context_frozen",
+                Event::TaskContextFrozen {
+                    track_id: TrackId::from("w"),
+                    task_key: "k".into(),
+                    idempotency_key: "k".into(),
+                    task_id: "t".into(),
+                    refs: Vec::new(),
+                    doc_revs: Default::default(),
+                    truncated: false,
+                },
+            ),
+            (
+                "ratify.resolved",
+                Event::RatifyResolved {
+                    track_id: TrackId::from("w"),
+                    decision: crate::event::RatifyDecision::Grant,
+                },
+            ),
+            (
+                "hook.codex",
+                Event::CodexHook {
+                    card_id: CardId::from("worker"),
+                    kind: "hook.codex.pre_tool_use".into(),
+                    hook_idempotency_key: "k".into(),
+                    payload: serde_json::json!({}),
+                },
+            ),
+        ]
+    }
+
+    /// Format a verdict so "allowed" and every distinct denial reason are
+    /// separate strings — comparing `is_err()` alone would let a divergence in
+    /// *why* a write was refused slip through.
+    fn verdict(result: std::result::Result<(), RoleViolation>) -> String {
+        match result {
+            Ok(()) => "allow".to_string(),
+            Err(violation) => format!("deny: {violation}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tx_read_gate_agrees_with_cache_gate_on_the_whole_matrix() {
+        let world = matrix_world();
+        let (cache, area_cache) = world.caches();
+        let mut compared = 0usize;
+        let mut denials = 0usize;
+
+        for actor in matrix_actors() {
+            for (event_label, event) in matrix_events() {
+                for scope in matrix_scopes() {
+                    let mut tx_a = world.tx();
+                    let from_tx = verdict(
+                        enforce_role_resolving_session_from_tx(&mut tx_a, &actor, &event, &scope)
+                            .await,
+                    );
+                    let mut tx_b = world.tx();
+                    let from_cache = verdict(
+                        enforce_role_resolving_session(
+                            &mut tx_b,
+                            &actor,
+                            &event,
+                            &scope,
+                            &cache,
+                            &area_cache,
+                        )
+                        .await,
+                    );
+                    assert_eq!(
+                        from_tx, from_cache,
+                        "substrate divergence for actor={actor:?} event={event_label} scope={scope:?}"
+                    );
+                    compared += 1;
+                    if from_tx.starts_with("deny") {
+                        denials += 1;
+                    }
+                }
+            }
+        }
+
+        // Guard against the matrix silently collapsing to nothing (an empty
+        // or all-allow matrix would agree trivially and prove nothing).
+        assert_eq!(compared, 20 * 7 * 12, "matrix size changed unexpectedly");
+        assert!(
+            denials > compared / 4,
+            "matrix is too permissive to be evidence: only {denials} of {compared} rows deny"
+        );
     }
 }

@@ -486,7 +486,6 @@ async fn operation_event_append_creates_track_vcs_commit() {
     use crate::model::{CardRole, NewArea, NewCard, NewTrack};
     use crate::routes::theme::RequestTheme;
     use crate::track_report::TrackReportPayload;
-    use calm_truth::decision_gate::PermissiveGate;
 
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
@@ -538,16 +537,9 @@ async fn operation_event_append_creates_track_vcs_commit() {
         area: area.id.clone(),
     };
     let event = Event::CardAdded(report);
-    let event_id = append_decision_event_in_tx(
-        &mut tx,
-        &PermissiveGate,
-        &ActorId::Kernel,
-        &scope,
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
+    let event_id = append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let head = crate::track_vcs::head(sqlx_repo.pool(), &track.id)

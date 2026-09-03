@@ -172,6 +172,14 @@ pub enum RoleViolation {
          card was likely deleted or never minted; denying by default"
     )]
     UnknownCard { card: CardId },
+
+    /// A role/track/area lookup the gate needs could not be read at all
+    /// (transaction-backed lookup only — see
+    /// `decision_gate::hydrate_role_caches_from_tx`). "Cannot prove" is a
+    /// denial: the in-memory caches have no failure mode, so this variant is
+    /// unreachable on the cached path.
+    #[error("role lookup failed for {subject}; denying by default")]
+    RoleLookupFailed { subject: String },
 }
 
 /// Run the role gate. Returns `Ok(())` on success, `Err(RoleViolation)`
