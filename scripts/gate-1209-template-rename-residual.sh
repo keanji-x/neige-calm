@@ -218,6 +218,11 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #         buys a 17-shard mutation sweep.
 1   fe/tools/mutation/runner.ts
 1   docker-compose.yml
+# --- 14. GitHub Actions' manual-dispatch event name. `workflow_dispatch` is a
+#         platform-owned schema key and event value, not the retired neige
+#         template vocabulary. One line declares the trigger; two expressions
+#         route manual runs to the durable full-mutation scope/concurrency group.
+3   .github/workflows/ci.yml
 EOF
 
 # This script names the pattern it scans for and quotes several allowlisted

@@ -9,11 +9,12 @@ import {
   failureDetailMessageHeadFraction,
   failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
   failureDetailTestLimit, infrastructureDiagnosticBytes, judgeMutation,
-  manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
-  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
-  selectedEntries, shardEntries,
-  shardPlan, trackedFixtureSetMatches, truncateFailureMessage, unexpectedFailureDetails, validateManifest,
-  type MutationEntry, type MutationRunResult,
+  manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, mutationShardMatrix,
+  mutationWitnessNeedsBrowser, mutationWitnessTestPaths, oracleIdsFromDocuments,
+  parseFailedTestIds, parseMutationTestScope, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
+  selectedEntries, shardEntries, shardPlan, trackedFixtureSetMatches, truncateFailureMessage,
+  unexpectedFailureDetails, validateManifest, validateWitnessCatalog, witnessEntriesPerShard,
+  type MutationEntry, type MutationRunResult, type MutationWitnessCatalog,
 } from './runner';
 
 const fixtureRoot = resolve(import.meta.dirname, 'fixtures');
@@ -71,11 +72,14 @@ describe('tracked fixture inventory', () => {
 });
 
 describe('selection and manifest judgments', () => {
-  it('selects independently by target, selection path, and runner code', () => {
-    expect(selectedEntries([baseEntry], [`fe/${baseEntry.target}`], [baseEntry])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], [`fe/${baseEntry.selection_paths[0]}`], [baseEntry])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], ['fe/tools/mutation/run.mjs'], [baseEntry])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], ['fe/unrelated.ts'], [baseEntry])).toEqual([]);
+  it('selects independently by target, selection path, witness path, and runner code', () => {
+    const entry = { ...baseEntry };
+    const catalog = { [entry.mutation_id]: ['tools/architecture/witness.test.ts'] };
+    expect(selectedEntries([entry], [`fe/${entry.target}`], [entry])).toEqual([entry]);
+    expect(selectedEntries([entry], [`fe/${entry.selection_paths[0]}`], [entry])).toEqual([entry]);
+    expect(selectedEntries([entry], [`fe/${catalog[entry.mutation_id][0]}`], [entry], catalog)).toEqual([entry]);
+    expect(selectedEntries([entry], ['fe/tools/mutation/run.mjs'], [entry])).toEqual([entry]);
+    expect(selectedEntries([entry], ['fe/unrelated.ts'], [entry])).toEqual([]);
   });
   const structuredEntry = { ...baseEntry, patch: readFileSync(resolve(fixtureRoot, 'valid/mutation.diff'), 'utf8'),
     target: 'tools/mutation/fixtures/valid/source.ts' };
@@ -95,8 +99,8 @@ describe('selection and manifest judgments', () => {
   });
   it('rejects empty manifests and untracked target or selection paths', () => {
     expect(() => validateManifest([], namespaces, tracked)).toThrow('manifest must contain');
-    expect(() => validateManifest([{ ...structuredEntry, selection_paths: ['tools/missing.ts'] }], namespaces, tracked))
-      .toThrow('path is not tracked: tools/missing.ts');
+    expect(() => validateManifest([{ ...structuredEntry, selection_paths: ['tools/missing.test.ts'] }], namespaces, tracked))
+      .toThrow('path is not tracked: tools/missing.test.ts');
   });
   // The manifest is JSON.parse'd: the declared types are erased at runtime, so these are load-bearing.
   it.each([
@@ -272,7 +276,7 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
     'fe/package.json', 'fe/package-lock.json', 'fe/tsconfig.json', 'fe/tsconfig.app.json',
     'fe/tools/architecture/plugin.mjs',
     // Repo-root-relative, i.e. dropped by the `fe/` filter unless it is matched before it.
-    '.github/workflows/ci.yml',
+    '.github/workflows/ci.yml', 'scripts/ci/mutation-witness-extra-paths.json',
   ])('selects the full manifest when %s changes', (path) => {
     const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
     expect(selectedEntries(entries, [path], entries)).toEqual(entries);
@@ -284,7 +288,8 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
     'fe/tools/architecture/other.mjs',
     // Only ci.yml governs how vitest runs; sibling GitHub config does not, and neither does an
     // arbitrary repo-root path — all three must stay a no-op, not become a free full sweep.
-    '.github/workflows/other.yml', '.github/dependabot.yml', 'calm-server/src/main.rs',
+    '.github/workflows/other.yml', '.github/dependabot.yml',
+    'scripts/ci/mutation-witness-other.json', 'calm-server/src/main.rs',
   ])('does not sweep the manifest when the neighbouring path %s changes', (path) => {
     const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
     expect(selectedEntries(entries, [path], entries)).toEqual([]);
@@ -299,9 +304,10 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
       .map(({ mutation_id }) => mutation_id)).toEqual(['beta']);
     expect(selectedEntries(entries, ['fe/fe/web/src/beta.ts'], entries)).toEqual([]);
   });
-  it.each(['.github/workflows/ci.yml'])('treats the repo-root path %s as evidence-invalidating', (path) => {
-    expect(evidenceInvalidatingRepoPathChanged([path])).toBe(true);
-  });
+  it.each(['.github/workflows/ci.yml', 'scripts/ci/mutation-witness-extra-paths.json'])(
+    'treats the repo-root path %s as evidence-invalidating', (path) => {
+      expect(evidenceInvalidatingRepoPathChanged([path])).toBe(true);
+    });
   it.each(['.github/workflows/other.yml', '.github/dependabot.yml', 'fe/.github/workflows/ci.yml',
     'docs/.github/workflows/ci.yml', 'workflows/ci.yml'])(
     'does not treat the repo-root path %s as evidence-invalidating', (path) => {
@@ -314,8 +320,11 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
 // them can flip the recorded expected_red of an entry whose own files did not move.
 describe('shared test-harness dependencies reach the entries that need them', () => {
   const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8')) as MutationEntry[];
+  const witnessCatalog = JSON.parse(readFileSync(
+    resolve(import.meta.dirname, '../../../scripts/ci/mutation-witness-extra-paths.json'), 'utf8',
+  )) as MutationWitnessCatalog;
   const select = (path: string): string[] =>
-    selectedEntries(manifest, [`fe/${path}`], manifest).map(({ mutation_id }) => mutation_id);
+    selectedEntries(manifest, [`fe/${path}`], manifest, witnessCatalog).map(({ mutation_id }) => mutation_id);
 
   it.each([
     ['web/src/app/router/test-card-runtime.ts',
@@ -353,6 +362,15 @@ describe('shared test-harness dependencies reach the entries that need them', ()
     expect(select('tools/architecture/plugin.mjs')).toHaveLength(manifest.length);
   });
 
+  it('an extra witness path selects every entry whose expected red it carries', () => {
+    expect(select('tools/oracle/oracle.test.ts').sort()).toEqual([
+      'app-cursor-clear-allows-stale-flush',
+      'app-cursor-ignore-database-stamp',
+      'app-cursor-let-flush-storage-error-escape',
+      'events-driver-drop-all-epoch-protection',
+    ]);
+  });
+
   // Negative control for the pair above: a third file in that directory is neither, so it is a
   // no-op — the demotion must not have widened the directory into selection_paths wholesale.
   it('an unrelated architecture module selects nothing', () => {
@@ -383,6 +401,64 @@ describe('dynamic shard plan', () => {
     for (let selectedCount = 0; selectedCount <= maxShards * entriesPerShard; selectedCount += 1) {
       expect(shardPlan(selectedCount).clamped).toBe(false);
     }
+  });
+
+  it.each([[0, 1], [1, 1], [12, 1], [13, 2], [66, 6], [384, 32]])(
+    '%i witness entries plan %i lower-fanout shards', (selectedCount, total) => {
+      expect(shardPlan(selectedCount, 'witness'))
+        .toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1), clamped: false });
+    });
+  it('keeps full scope as the safe default and rejects unknown CLI scope values', () => {
+    expect(entriesPerShard).toBe(4);
+    expect(witnessEntriesPerShard).toBe(12);
+    expect(shardPlan(65)).toEqual(shardPlan(65, 'full'));
+    expect(parseMutationTestScope('full')).toBe('full');
+    expect(parseMutationTestScope('witness')).toBe('witness');
+    expect(() => parseMutationTestScope('fast')).toThrow('invalid mutation test scope: fast');
+  });
+});
+
+describe('witness test scope', () => {
+  const unit = { ...baseEntry, mutation_id: 'unit', selection_paths: ['web/src/unit.test.tsx'] };
+  const browser = { ...baseEntry, mutation_id: 'browser', selection_paths: ['web/src/browser-fixture.ts'] };
+  const catalog: MutationWitnessCatalog = {
+    unit: ['web/src/extra.test.tsx', 'web/src/extra.test.tsx'],
+    browser: ['web/src/browser.browser.test.tsx'],
+  };
+
+  it('combines selection tests with deduplicated extra witnesses', () => {
+    expect(mutationWitnessTestPaths(unit, catalog)).toEqual(['web/src/unit.test.tsx', 'web/src/extra.test.tsx']);
+    expect(mutationWitnessNeedsBrowser(unit, catalog)).toBe(false);
+    expect(mutationWitnessTestPaths(browser, catalog)).toEqual(['web/src/browser.browser.test.tsx']);
+    expect(mutationWitnessNeedsBrowser(browser, catalog)).toBe(true);
+  });
+
+  it('marks every full-scope shard for Chromium but only witness shards that own browser tests', () => {
+    const entries = [unit, browser, unit, unit, unit, unit, browser];
+    const plan = { total: 3, shards: [1, 2, 3] };
+    expect(mutationShardMatrix(entries, plan, 'full', catalog)).toEqual([
+      { shard: 1, browser: true }, { shard: 2, browser: true }, { shard: 3, browser: true },
+    ]);
+    expect(mutationShardMatrix(entries, plan, 'witness', catalog)).toEqual([
+      { shard: 1, browser: true }, { shard: 2, browser: true }, { shard: 3, browser: false },
+    ]);
+    expect(mutationShardMatrix([], { total: 1, shards: [1] }, 'witness', catalog))
+      .toEqual([{ shard: 1, browser: false }]);
+  });
+
+  it('rejects one malformed extra-witness boundary at a time', () => {
+    const tracked = new Set([unit.target, ...unit.selection_paths, 'web/src/extra.test.tsx']);
+    expect(() => validateWitnessCatalog([unit], { missing: ['web/src/extra.test.tsx'] }, tracked))
+      .toThrow('witness catalog names unknown mutation_id');
+    expect(() => validateWitnessCatalog([unit], { unit: ['web/src/support.ts'] }, tracked))
+      .toThrow('witness catalog contains a non-test path');
+    expect(() => validateWitnessCatalog([unit], { unit: ['web/src/unit.test.tsx'] }, tracked))
+      .toThrow('witness catalog redundantly repeats selection path');
+    expect(() => validateWitnessCatalog([unit], { unit: ['web/src/missing.test.tsx'] }, tracked))
+      .toThrow('witness path is not tracked');
+    expect(() => validateWitnessCatalog(
+      [{ ...unit, selection_paths: ['web/src/support.ts'] }], {}, new Set([unit.target, 'web/src/support.ts']),
+    )).toThrow('mutation has no Vitest witness path');
   });
 });
 

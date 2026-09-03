@@ -1,0 +1,41 @@
+{
+  "test-tier-allow-browser-overlap": [
+    "tools/test-tier/layout.browser.test.ts"
+  ],
+  "app-providers-bust-first-visit": [
+    "web/src/app/events/event-bridge.contract.test.tsx",
+    "web/src/app/providers/providers.browser.test.tsx"
+  ],
+  "app-providers-drop-bridge-data-guard": [
+    "web/src/app/events/event-bridge.contract.test.tsx"
+  ],
+  "app-cursor-clear-allows-stale-flush": [
+    "tools/oracle/oracle.test.ts"
+  ],
+  "app-cursor-ignore-database-stamp": [
+    "tools/oracle/oracle.test.ts"
+  ],
+  "app-cursor-let-flush-storage-error-escape": [
+    "tools/oracle/oracle.test.ts"
+  ],
+  "events-driver-drop-subscription": [
+    "web/src/app/composition.test.tsx"
+  ],
+  "events-driver-subscribe-first-open-only": [
+    "web/src/app/composition.test.tsx"
+  ],
+  "events-driver-handmade-subscription": [
+    "web/src/app/composition.test.tsx"
+  ],
+  "app-adapter-drop-wave-invalidation": [
+    "web/src/app/events/event-bridge.contract.test.tsx",
+    "web/src/app/events/query-invalidation-adapter.test.ts",
+    "web/src/app/router/today-document.test.tsx"
+  ],
+  "events-driver-drop-all-epoch-protection": [
+    "tools/oracle/oracle.test.ts"
+  ],
+  "events-reducer-reconnect-before-persist": [
+    "core/events/reducer.test.ts"
+  ]
+}
