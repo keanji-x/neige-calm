@@ -1616,7 +1616,7 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
             .collect();
         let roster_ids: Vec<&str> = calm_server::templates::TEMPLATES
             .iter()
-            .map(|template| template.key)
+            .map(|template| template.key())
             .collect();
         assert_eq!(
             listed_ids, roster_ids,
@@ -1661,10 +1661,26 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
 // ---------------------------------------------------------------------------
 
 /// Shared body of the legs below — the two pre-rename spellings (#1209) and
-/// the retired `as_template` (#1318 S2). Asserts the request is rejected at the
+/// the retired `as_template` (#1318 S2). The mechanism under test is the
 /// **serde extractor**: `CreateTrackRequest` carries
 /// `#[serde(deny_unknown_fields)]`, so a key it does not declare is an unknown
-/// field and the handler is never entered — `admit_template` does not run.
+/// field.
+///
+/// What the assertions below actually establish, and nothing wider
+/// (#1318 S2 第二轮评审 MINOR-2): the response is serde's own unknown-field
+/// rejection naming the retired key, it does **not** carry the admission
+/// wording, and the persisted database is byte-identical before and after. An
+/// earlier version of this comment went on to claim the handler "is never
+/// entered" and that `admit_template` "does not run" — that is a statement
+/// about control flow, and neither a response body nor a database snapshot
+/// observes control flow. It also would not have been safe to widen from the
+/// snapshot even if it were about writes: `calm_truth::db::sqlite::track::
+/// track_create_tx` writes `TrackAreaCache` *before* its transaction commits,
+/// and its own doc admits a rolled-back create leaves a stale in-memory entry
+/// behind, so "the database is unchanged" does not mean "no path wrote
+/// anything". The absent admission wording is the strongest evidence here
+/// about the handler, and it is evidence about the *rejection's shape*, not a
+/// proof of non-entry.
 ///
 /// **Status is 422, not 400.** The #1209 design predicted 400; the observed
 /// behaviour is axum's `JsonRejection::JsonDataError`, which is
@@ -1698,13 +1714,13 @@ async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, un
     );
     assert!(
         !text.contains("known track template"),
-        "{leg}: the old spelling must not reach `admit_template` — reaching it \
-         means `CreateTrackRequest` declares the old key again, body={text}"
+        "{leg}: an admission-flavoured rejection would mean \
+         `CreateTrackRequest` declares the old key again, body={text}"
     );
     assert_eq!(
         db_snapshot(&boot.repo).await,
         before,
-        "{leg}: a rejected create must not write"
+        "{leg}: a rejected create must not leave a persisted row behind"
     );
 }
 

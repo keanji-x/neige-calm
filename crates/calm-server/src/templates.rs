@@ -25,9 +25,45 @@ pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 
+/// One roster entry. **Constructible only inside this module.**
+///
+/// #1318 S2 (第二轮评审 MAJOR) — both fields are private and there is no
+/// constructor, no `Clone`, no `Copy` and no `Default`, so a struct literal
+/// written anywhere else is `E0451` and `*template` cannot be moved out of a
+/// borrow either. That is what makes "a `&'static Template` came from
+/// [`TEMPLATES`]" a fact the compiler checks rather than a review convention:
+/// outside this module the only way to name a `Template` value at all is to
+/// borrow one of the three roster entries.
+///
+/// This is load-bearing, not tidiness. While the fields were `pub`, the
+/// sentence "a `&'static Template` can only come from `TEMPLATES`" was simply
+/// false — `Box::leak(Box::new(Template { key: String::leak(caller.to_owned()),
+/// title: t.title }))` compiled and produced one from the caller's own
+/// spelling. Two independent review channels built exactly that value and the
+/// whole suite stayed green, because `routes::tracks` used the false sentence
+/// to *excuse* the plugin-binding consumer from any test. The claim is now
+/// true, so the excuse is now valid; see
+/// [`crate::routes::tracks::resolve_template_binding`].
+///
+/// The accessors hand back `&'static str`, not `&'a str` tied to `&self`: the
+/// bytes live in the `static`, and downstream (`TemplateAdmission::key`,
+/// `TrackInit::Template`, the `tracks.template_id` column) depends on carrying
+/// the roster's own buffer rather than a copy of it.
 pub struct Template {
-    pub key: &'static str,
-    pub title: &'static str,
+    key: &'static str,
+    title: &'static str,
+}
+
+impl Template {
+    /// The roster's own `&'static str`, never a value derived from a caller.
+    pub fn key(&self) -> &'static str {
+        self.key
+    }
+
+    /// The picker's display title.
+    pub fn title(&self) -> &'static str {
+        self.title
+    }
 }
 
 /// The template roster. `static`, not `const`, so [`template_by_key`] can
@@ -708,6 +744,12 @@ mod tests {
     /// mutation that rebuilds the entry has to leak it to compile at all. The
     /// shorter `.map(|_| Template { .. })` spelling in an earlier draft of this
     /// comment did not type-check.)
+    ///
+    /// Since #1318 S2 (第二轮评审) that mutation is only *writable inside this
+    /// module*: [`Template`]'s fields are private, so the same expression in
+    /// any other module is `E0451`. This test is therefore the guard for the
+    /// one place the forgery is still expressible — which is precisely why it
+    /// has to stay, and why it is not redundant with the type-level closure.
     #[test]
     fn template_by_key_returns_the_rosters_own_borrow() {
         for template in &TEMPLATES {

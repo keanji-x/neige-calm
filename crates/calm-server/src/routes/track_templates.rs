@@ -144,9 +144,9 @@ pub(crate) async fn list_track_templates(
         let input_schema = resolve_template_binding(&s, template)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
-        let definition = current_definition(template.key);
+        let definition = current_definition(template.key());
         templates.push(TrackTemplate {
-            id: template.key.to_string(),
+            id: template.key().to_string(),
             title: definition.title,
             input_schema,
             // Tombstoned blocks are dropped by the projection, not by the read:
@@ -195,8 +195,8 @@ fn current_definition(key: &str) -> Definition {
     Definition {
         title: TEMPLATES
             .iter()
-            .find(|template| template.key == key)
-            .map(|template| template.title.to_string())
+            .find(|template| template.key() == key)
+            .map(|template| template.title().to_string())
             .unwrap_or_default(),
         tasks: template_task_payloads(key).unwrap_or_default(),
     }
