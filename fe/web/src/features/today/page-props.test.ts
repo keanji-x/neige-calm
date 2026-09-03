@@ -5,9 +5,6 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type {
-  Assert, Exactly, TodayCompactProps, TodayPageProps,
-} from './page-props.ts';
 import { TODAY_VIEWPORT_LEDGER } from './page-props.ts';
 import type { TodayCompactSignature, TodayPageSignature } from './public.tsx';
 
@@ -21,17 +18,28 @@ import type { TodayCompactSignature, TodayPageSignature } from './public.tsx';
  * and a `TodayCompact` re-typed with an inline props literal that renders
  * `launchpadDocument`. Neither changes the ledger, and neither was red.
  *
- * The assertions live *here*, not in `public.tsx`, and that is the point of the
- * file boundary: a local `type TodayPageProps = …` shadowing the import
- * satisfies any assertion written inside that module — the third bypass review
- * measured. This module imports the signatures from `public.tsx` and the
- * canonical types from `page-props.ts`, so the two names cannot both be
- * captured by editing one file. They are types, so what enforces them is
- * `tsc -b` (which compiles `web/src` including this file), not the test run —
- * a suite file is simply the honest home for a contract nothing imports.
+ * **Every name below is written as a qualified `import(…)` type, and that is
+ * the load-bearing part rather than the file this sits in.** A third bypass
+ * works by declaring a local `type TodayPageProps = …` in the module under
+ * attack: any assertion written against the bare name then compares the clone
+ * with itself and passes. A qualified `import('./page-props.ts').TodayPageProps`
+ * has no local name to capture — there is no import statement to delete and no
+ * identifier to shadow — so these assertions keep their teeth wherever they
+ * live. Measured both ways: moved into `public.tsx` alongside the clone, the
+ * bare-name form goes green and the qualified form stays red.
+ *
+ * They are types, so what enforces them is `tsc -b` (which compiles `web/src`,
+ * this file included), not the test run — a suite file is simply the honest
+ * home for a contract nothing imports.
  */
-export type PageEntryTakesTheLedgeredProps = Assert<Exactly<TodayPageSignature, TodayPageProps>>;
-export type CompactEntryTakesTheRenderedProps = Assert<Exactly<TodayCompactSignature, TodayCompactProps>>;
+export type PageEntryTakesTheLedgeredProps =
+  import('./page-props.ts').Assert<
+    import('./page-props.ts').Exactly<TodayPageSignature, import('./page-props.ts').TodayPageProps>
+  >;
+export type CompactEntryTakesTheRenderedProps =
+  import('./page-props.ts').Assert<
+    import('./page-props.ts').Exactly<TodayCompactSignature, import('./page-props.ts').TodayCompactProps>
+  >;
 
 describe('the Today viewport ledger', () => {
   it('is frozen, not merely `as const`', () => {

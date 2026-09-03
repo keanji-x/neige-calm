@@ -171,10 +171,11 @@ export type Disposition =
  *
  * The `as const`s are **not** in that list, and an earlier version of this
  * comment wrongly said they were. Measured on TypeScript 5.9.3: removing the
- * inner ones, or the outer one, leaves everything green, because
- * `Object.freeze`'s overload plus `satisfies`'s contextual typing already keep
- * the literals. They are kept as belt-and-braces against a future inference
- * change, not because anything here depends on them today.
+ * inner ones, or the outer one, leaves everything green. Precisely: the
+ * literals are preserved by the current `Object.freeze` overload on its own,
+ * while `satisfies` carries the shape and exhaustiveness constraint. The
+ * `as const`s are kept as belt-and-braces against a future inference change,
+ * not because anything here depends on them today.
  *
  * The `Object.freeze` calls **are** required, and by a lint rule rather than by
  * the type system: `fe/AGENTS.md` mandates freezing module-level static data,
@@ -189,9 +190,12 @@ export type Disposition =
  * compact renderer may name this prop"; nothing here proves a rendered prop
  * reaches the DOM, which is a liveness property the type system does not carry.
  * `render: false` is the strong half: the key is absent from the compact
- * renderer's props type, so touching it does not compile — and since
- * `ViewportDispatch` holds the viewport bit, there is no other place the phone
- * gets rendered from.
+ * renderer's props type, so touching it does not compile. That the phone has
+ * no *other* renderer is carried by a gate, not by this sentence: the viewport
+ * bit lives in `viewport-dispatch.tsx`, and the dependency-cruiser rule
+ * `today-viewport-bit-in-dispatcher-only` is what stops any other module here
+ * from importing `ui/viewport` and branching on it again (it has its own
+ * positive/negative fixture under `tools/architecture/fixtures/`).
  */
 export const TODAY_VIEWPORT_LEDGER = Object.freeze({
   tracks: Object.freeze({
@@ -302,15 +306,28 @@ export type TodayCompactProps = Pick<TodayPageProps, CompactRenderedKeys>;
  * `Record<string, Disposition>`, and giving `TodayPageProps` a string index
  * signature so that "every key" becomes trivially satisfiable.
  *
- * The two sets are asserted equal in both directions, and both sides are
- * required to have literal keys. Each assertion is exported so `noUnusedLocals`
- * cannot quietly delete it, and each was mutation-checked: removing it turns
- * its own bypass back to green.
+ * Two assertions, and they are **not** independent — measured, and worth
+ * writing down because the obvious phrasing ("each one carries its own case")
+ * is false. Against the index-signature bypass, either one alone still goes
+ * red: exact key-set equality plus a literal key set on one side already
+ * implies the other side is literal too. It takes deleting both to get back to
+ * green. `PropsKeysAreLiteral` is kept anyway, for the diagnostic — it names
+ * the index signature, where `LedgerCoversTheProps` only reports two key sets
+ * that failed to match. Its mirror image on the ledger side is deleted rather
+ * than kept as a third way of saying the same thing.
+ *
+ * These are **mechanism** assertions: they constrain how the ledger may be
+ * written. The exactness assertions on the two entry signatures
+ * (`page-props.test.ts`) are **outcome** assertions: they check what the
+ * components actually take. Both are needed — a well-formed ledger bound to
+ * nothing proves nothing, and a bound-but-weakened ledger proves nothing
+ * either.
+ *
+ * Everything here is exported so `noUnusedLocals` cannot quietly delete it.
  */
 
-/** Neither side may grow an index signature: `string extends keyof X` means it has one. */
+/** Names an index signature directly: `string extends keyof X` means `X` has one. */
 export type PropsKeysAreLiteral = Assert<string extends keyof TodayPageProps ? false : true>;
-export type LedgerKeysAreLiteral = Assert<string extends keyof Ledger ? false : true>;
 
-/** …and, both being literal, they must be the same set — in both directions. */
+/** The ledger's keys and the props' keys are the same set, in both directions. */
 export type LedgerCoversTheProps = Assert<Exactly<keyof Ledger, keyof TodayPageProps>>;
