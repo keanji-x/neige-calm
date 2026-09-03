@@ -190,6 +190,21 @@ export type NewTrackBody = Readonly<{
    * `input_schema` for it. Sending it otherwise is a 400.
    */
   template_input?: Readonly<Record<string, unknown>>;
+  /**
+   * Issue #1299 — the sentence the user typed on the synthesiser page,
+   * delivered to the planner agent **with** the create instead of having to be
+   * retyped on the track.
+   *
+   * Sending it makes `Idempotency-Key` required (pass it to
+   * {@link createTrackOperation}); omitting it leaves this endpoint's behaviour
+   * byte-for-byte unchanged, header included — the kernel does not read the
+   * header at all on that branch. Validated exactly like a planner input:
+   * non-blank after trim, at most 32768 **characters**.
+   *
+   * S1 only wires the type and the operation. The synthesiser page starts
+   * actually sending it in S3.
+   */
+  first_message?: string;
 }>;
 
 /**
@@ -244,8 +259,24 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
   return { method: 'GET', path: `/api/tracks/${encodeURIComponent(trackId)}`, responseSchema: trackDetailSchema };
 }
 
-export function createTrackOperation(body: NewTrackBody): ApiOperation<TrackWire> {
-  return { method: 'POST', path: '/api/tracks', body, responseSchema: trackWireSchema };
+/**
+ * `POST /api/tracks`.
+ *
+ * `idempotencyKey` is optional here and required by the kernel **iff**
+ * `body.first_message` is set (#1299). It is not defaulted on this side: a
+ * client-invented key would make the caller believe a retry is safe when the
+ * caller never chose a stable one, and every existing call site deliberately
+ * sends none — the kernel ignores the header entirely without a first message,
+ * so nothing changes for them.
+ */
+export function createTrackOperation(body: NewTrackBody, idempotencyKey?: string): ApiOperation<TrackWire> {
+  return {
+    method: 'POST',
+    path: '/api/tracks',
+    body,
+    responseSchema: trackWireSchema,
+    ...(idempotencyKey === undefined ? {} : { headers: { 'Idempotency-Key': idempotencyKey } }),
+  };
 }
 
 export function updateTrackOperation(trackId: string, body: TrackPatchBody): ApiOperation<TrackWire> {

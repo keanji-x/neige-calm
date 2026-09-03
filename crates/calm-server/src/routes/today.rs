@@ -744,6 +744,7 @@ pub(crate) async fn ensure_today_launchpad(
         profile: Default::default(),
         create_card: None,
         first_message_sha256: None,
+        first_message: None,
     };
     let start_mode = if out.created || out.adopted_legacy {
         "bootstrap"

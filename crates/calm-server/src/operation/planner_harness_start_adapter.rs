@@ -19,8 +19,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::{
-    HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, PlannerHarness,
-    PlannerHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
+    HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
+    PlannerHarness, PlannerHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
@@ -32,7 +32,7 @@ use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
-use crate::routes::cards::card_scope;
+use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -300,6 +300,35 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `abandoned_running_operations_on_boot` re-drives old payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_message_sha256: Option<String>,
+    /// #1299 S1 — the track's first user message, delivered **inside this
+    /// operation's transaction**.
+    ///
+    /// Unlike [`Self::first_message_sha256`] (which exists only to move the
+    /// body into `payload_hash`) this field IS read: `prepare_tx` pushes an
+    /// `Observation::UserMessage { text }` onto the harness snapshot's
+    /// `pending_queue` and writes `harness.user_message.enqueued` in the same
+    /// transaction, so the mint and the delivery commit together. That is the
+    /// structural fix `routes/area_conversations.rs` documents for its two
+    /// known gaps; #1299 S1 puts `POST /api/tracks` on it, and #1314 migrates
+    /// the two conversation routes.
+    ///
+    /// It is `Observation::UserMessage`, never `TrackGoal`: the two are
+    /// different semantic slots (`TrackGoal` renders bare and does not
+    /// hard-fire; `UserMessage` renders `"User says:\n…"`, hard-fires, and is
+    /// attributed to the human who typed it). `goal` stays reserved for the
+    /// machine-written child-track bootstrap.
+    ///
+    /// The text — not a hash — has to travel here because the adapter has to
+    /// enqueue the actual bytes. That does copy one user message into
+    /// `operations.payload_json`; it is the price of an atomic delivery, and
+    /// it is bounded by `validate_first_message`'s 32768-character ceiling.
+    ///
+    /// `skip_serializing_if` keeps every caller that does not set it writing
+    /// byte-identical payload JSON, so adding the field cannot move an
+    /// existing `payload_hash`. `#[serde(default)]` because
+    /// `abandoned_running_operations_on_boot` re-drives old payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<String>,
 }
 
 /// The user-supplied part of a lazily minted conversation card — an area chat
@@ -732,6 +761,33 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
             snapshot.align_pending_envelope_ids();
         }
+        // #1299 S1 — the track's first user message ships INSIDE this
+        // transaction, after the inherited queue (if any) is folded in, so it
+        // is the newest entry rather than being overwritten by the inherit
+        // above.
+        //
+        // `UserMessage`, not `TrackGoal`, and the difference is not cosmetic:
+        // `TrackGoal` renders as bare text and does not hard-fire, while
+        // `UserMessage` renders `"User says:\n{text}"`, hard-fires (so the turn
+        // issues without waiting out the debounce) and cannot be evicted under
+        // backpressure. `run_loop`'s `UserMessage must not fold into TrackGoal`
+        // assertion is the other end of the same rule.
+        //
+        // Empty / blank text is refused rather than silently dropped: the only
+        // producer validates with `validate_first_message` before anything is
+        // minted, so a blank string reaching here means the payload was written
+        // by something that skipped that gate.
+        if let Some(text) = payload.first_message.as_deref() {
+            if text.trim().is_empty() {
+                return Err(CalmError::BadRequest(
+                    "first_message must not be empty".into(),
+                ));
+            }
+            snapshot.pending_queue.push(Observation::UserMessage {
+                text: text.to_string(),
+            });
+            snapshot.align_pending_envelope_ids();
+        }
 
         let runtime_id = new_id();
         let mut old_runtime_id = None;
@@ -766,6 +822,70 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             } else {
                 session_start_runtime_tx(tx, runtime_init).await?;
             }
+        }
+
+        // #1299 S1 — the audit row for the seeded first message, written in the
+        // SAME transaction as the queue that carries it. `send_planner_input`
+        // writes this row *after* a non-transactional `harness.observe`, which
+        // is the "non-transactional evidence" half of the two gaps
+        // `area_conversations.rs` documents; here the observation and its
+        // evidence commit or roll back together, so neither a re-send nor a
+        // silently unrecorded send is reachable on this path.
+        //
+        // The actor is `payload.actor` verbatim — the human who submitted the
+        // create. `send_planner_input`'s `planner_input_audit_actor` rebind exists
+        // only to give an *AI* actor with an empty placeholder card id a card
+        // to point at; a `User` actor falls through it unchanged, and this
+        // path's only producer is a human REST create. Rebinding here would
+        // therefore change nothing for the reachable actor and would silently
+        // launder a non-human one, so the actor is passed through and the
+        // role gate below is what refuses anything it should not accept.
+        if payload.first_message.is_some() {
+            let char_count = payload
+                .first_message
+                .as_deref()
+                .map(|text| text.chars().count())
+                .unwrap_or(0) as u32;
+            // `card_scope_tx`, NOT the pool-reading `card_scope` the mint
+            // branch above uses. The rule is stated at `card_scope_tx`'s own
+            // definition: a transaction must not read off the pool any table it
+            // has itself written. By this point the session writes above have
+            // touched `tracks` (a live `SharedPlanner` session is repointed into the
+            // track's `root_session_id`), so the pool read blocks on a lock only
+            // this transaction can release — the task waits on itself forever.
+            // The mint branch is safe only because it runs before any write.
+            let scope = card_scope_tx(tx, card.id.clone(), card.track_id.clone()).await?;
+            let event = Event::HarnessUserMessageEnqueued {
+                runtime_id: runtime_id.clone(),
+                card_id: card.id.clone(),
+                track_id: card.track_id.clone(),
+                char_count,
+            };
+            if let Err(violation) = crate::role_gate::enforce_role(
+                &payload.actor,
+                &event,
+                &scope,
+                &self.card_role_cache,
+                &self.track_area_cache,
+            ) {
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+            let event_id = append_decision_event_in_tx(
+                tx,
+                &PermissiveGate,
+                &payload.actor,
+                &scope,
+                None,
+                &event,
+            )
+            .await?;
+            post_commit_events.push(BroadcastEnvelope {
+                id: event_id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: payload.actor.clone(),
+                scope,
+                event,
+            });
         }
 
         let mut output = TxOutput::new(
@@ -1562,6 +1682,7 @@ mod tests {
             profile: HarnessProfile::Planner,
             create_card: None,
             first_message_sha256: None,
+            first_message: None,
         };
         let json = serde_json::to_value(&payload).expect("serialize");
         let object = json.as_object().expect("object");
@@ -2213,6 +2334,7 @@ mod tests {
             profile: HarnessProfile::PlainChat,
             create_card: create_card.then(LazyMintCardSeed::default),
             first_message_sha256: None,
+            first_message: None,
         })
         .expect("payload serializes");
         adapter

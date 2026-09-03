@@ -1451,6 +1451,23 @@ export interface components {
              */
             cwd?: string | null;
             /**
+             * @description Issue #1299 S1 — the sentence the user typed on the synthesiser page,
+             *     delivered to the planner agent **with** this create instead of having to be
+             *     retyped after landing on the track.
+             *
+             *     It becomes an `Observation::UserMessage` seeded into the harness
+             *     snapshot inside the `planner-harness-start` transaction — not a
+             *     `TrackGoal`, which is a different semantic slot (see
+             *     `routes/tracks/create.rs`). Validated exactly like
+             *     `POST /api/cards/{id}/planner/input` (non-blank after trim, at most 32768
+             *     **characters**) and validated before anything is minted.
+             *
+             *     Sending it makes `Idempotency-Key` required; omitting it leaves this
+             *     endpoint's behaviour byte-for-byte unchanged, header included (it is not
+             *     read at all).
+             */
+            first_message?: string | null;
+            /**
              * @description One-time creation instruction: copy this track's report snapshot into
              *     the new report inside the track-create transaction.
              */
@@ -5609,7 +5626,14 @@ export interface operations {
     create_track: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description **Required if and only if the body carries `first_message`**; ignored entirely otherwise, so every existing caller is unaffected. It scopes the `planner-harness-start` operation that delivers the message, which is what makes a retried create land on the same track instead of minting a second one.
+                 *
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, the same four-arm contract as `POST /api/areas/{area_id}/conversations`: (a) same key after a **success** returns the same track and does **not** re-deliver the first message — and it does so *without* re-running the create path's request validation, because it mints nothing, so a replay still succeeds after the workspace it attached was deleted or repointed; the one case it cannot answer is a track that has since been **deleted**, where it fails closed with 500 rather than minting a different track under a key that already names one; (b) same key after a **terminally failed** attempt genuinely RETRIES under a `#N` operation key against the track that attempt already created, so it may return 201 where the first call returned 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted` — use a new key; (e) same key with a **different `first_message`** is 409 `conflict`, because the message is bound into the operation payload — except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited message resent after a terminal failure is **not** rejected *for the old hash*; that attempt genuinely re-executes against the track the failed attempt already created, and its final status is whatever the execution produces (201 on success). Arms (b) and (e) are the same rule read from two sides, not a contradiction.
+                 */
+                "Idempotency-Key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -5619,7 +5643,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Track created */
+            /** @description Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -5628,7 +5652,34 @@ export interface operations {
                     "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Internal error */
+            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — a missing/blank `Idempotency-Key`, an empty/over-long message, or `first_message` combined with `as_template` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Folder-claim conflict (structured `FolderConflict` body), or — with `first_message` — `conflict` when this `Idempotency-Key` was already used with a different message (exception, deliberate: if the previous attempt under this key ended terminally `Failed`, the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited message resent after that failure is **not** rejected for the old hash — it really re-executes, and its outcome is decided by that execution), or `idempotency_key_exhausted` when the key used up its 64 retry slots */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. With `first_message` a failed harness start is reported instead of swallowed, because the request also promised to deliver the message; the track itself may already exist (this handler is not compensating and never was — see its doc comment), and retrying under the same key re-executes against that track. */
             500: {
                 headers: {
                     [name: string]: unknown;

@@ -5151,6 +5151,14 @@
     displaying that same entry again (a reload, the error box's Retry, or the Back button) arms it
     again, while any fresh navigation to the track is a new entry and carries no mark.
   why: >
+    #1299 S1 changed one premise of this entry and it is recorded here rather than left to be
+    rediscovered: `POST /api/tracks` now ACCEPTS a `first_message`, delivered to the planner agent
+    inside the harness-start transaction, so "the create cannot carry the reader's sentence" is no
+    longer true of the request. It stays true of the *response*, which is what this entry's
+    navigation mark actually turns on, and it stays true of the FE: S1 wired the type and the
+    operation only, and the synthesiser page does not send the field until S3. Until it does, the
+    paragraph below still describes what happens; when S3 lands, "nothing said in it" is the clause
+    to revisit.
     The track arrives with no name and nothing said in it, so a shut drawer is a blank page with no
     visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
     card id — `POST /api/tracks` answers with a Track and the planner card's id only exists once the

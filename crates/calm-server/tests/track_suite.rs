@@ -7,6 +7,8 @@ mod http_track_file;
 mod plugin_scope;
 #[path = "cases/rest_track_report.rs"]
 mod rest_track_report;
+#[path = "cases/track_create_first_message.rs"]
+mod track_create_first_message;
 #[path = "cases/track_create_sync_daemon.rs"]
 mod track_create_sync_daemon;
 #[path = "cases/track_create_with_theme.rs"]

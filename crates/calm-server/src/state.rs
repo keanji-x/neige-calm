@@ -142,23 +142,36 @@ pub struct RouteState {
     ///    this lock. Multi-instance would need a DB-level claim, not a bigger
     ///    map.
     /// 2. *One permitted lock order:* `conversation_first_message_locks` →
-    ///    `planner_recovery_locks`, and never the reverse. The only nesting in
-    ///    the tree is `create_track_conversation` holding this claim across
-    ///    `send_planner_input` → `ensure_live_planner_harness`. Two distinct facts,
+    ///    `planner_recovery_locks`, and never the reverse. Every nesting in the
+    ///    tree is a holder of this claim calling `send_planner_input` →
+    ///    `ensure_live_planner_harness` (see the exhaustive holder list
+    ///    below). Two distinct facts,
     ///    kept apart because round 3 caught them conflated:
     ///    * *Sharing ONE map* for both purposes self-deadlocks a single
     ///      request outright: it would re-enter the same `tokio::sync::Mutex`
     ///      for the same card while still holding its guard, and
     ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
     ///      maps.
-    ///    * *There are two forward-order nestings.*
-    ///      `create_track_conversation` (#1189) and `routes::today_summary`'s
-    ///      bootstrap recovery (#1253 PR2) both hold this claim across
-    ///      `send_planner_input` → `ensure_live_planner_harness`. The Today path also
-    ///      holds it across a `planner-harness-start` operation on its dormant
-    ///      branch, which blocks on a codex RPC; that submits no per-card lock
-    ///      of its own (the adapter's mint map is private and is taken and
-    ///      released inside the operation), so it closes no cycle.
+    ///    * *There are now THREE holders, all taking this map OUTER.* The
+    ///      exhaustive list — grep `conversation_first_message_locks` and it is
+    ///      these and no others:
+    ///      `create_track_conversation` (#1189),
+    ///      `routes::today_summary`'s bootstrap recovery (#1253 PR2), and
+    ///      `routes::tracks::create::plan_first_message` (#1299 S1).
+    ///      The first two hold the claim across `send_planner_input` →
+    ///      `ensure_live_planner_harness`, which is the forward-order nesting.
+    ///      The Today path *also* holds it across a `planner-harness-start`
+    ///      operation on its dormant branch, which blocks on a codex RPC;
+    ///      `routes::tracks::create` holds it across `create_track_structure`
+    ///      and that same operation, and across nothing else — it never calls
+    ///      `send_planner_input`, so it takes no inner map at all. That operation
+    ///      submits no per-card lock of its own (the adapter's mint map is
+    ///      private and is taken and released inside the operation), so
+    ///      neither closes a cycle.
+    ///      `routes::tracks::create` is also the one holder keyed by something
+    ///      other than a card id — it uses its `track-create-{sha256}`
+    ///      operation key, which no card id can spell, so it cannot collide
+    ///      with the other two.
     ///    * *Taking the two maps in the reverse order* does NOT self-deadlock
     ///      — they are different mutexes, so one task alone completes fine.
     ///      It deadlocks only when it runs concurrently with a

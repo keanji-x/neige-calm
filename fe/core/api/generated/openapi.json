@@ -3156,6 +3156,20 @@
           "tracks"
         ],
         "operationId": "create_track",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "**Required if and only if the body carries `first_message`**; ignored entirely otherwise, so every existing caller is unaffected. It scopes the `planner-harness-start` operation that delivers the message, which is what makes a retried create land on the same track instead of minting a second one.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**, the same four-arm contract as `POST /api/areas/{area_id}/conversations`: (a) same key after a **success** returns the same track and does **not** re-deliver the first message — and it does so *without* re-running the create path's request validation, because it mints nothing, so a replay still succeeds after the workspace it attached was deleted or repointed; the one case it cannot answer is a track that has since been **deleted**, where it fails closed with 500 rather than minting a different track under a key that already names one; (b) same key after a **terminally failed** attempt genuinely RETRIES under a `#N` operation key against the track that attempt already created, so it may return 201 where the first call returned 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted` — use a new key; (e) same key with a **different `first_message`** is 409 `conflict`, because the message is bound into the operation payload — except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited message resent after a terminal failure is **not** rejected *for the old hash*; that attempt genuinely re-executes against the track the failed attempt already created, and its final status is whatever the execution produces (201 on success). Arms (b) and (e) are the same rule read from two sides, not a contradiction.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3168,7 +3182,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created",
+            "description": "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3177,8 +3191,38 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — a missing/blank `Idempotency-Key`, an empty/over-long message, or `first_message` combined with `as_template`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Area not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Folder-claim conflict (structured `FolderConflict` body), or — with `first_message` — `conflict` when this `Idempotency-Key` was already used with a different message (exception, deliberate: if the previous attempt under this key ended terminally `Failed`, the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited message resent after that failure is **not** rejected for the old hash — it really re-executes, and its outcome is decided by that execution), or `idempotency_key_exhausted` when the key used up its 64 retry slots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
-            "description": "Internal error",
+            "description": "Internal error. With `first_message` a failed harness start is reported instead of swallowed, because the request also promised to deliver the message; the track itself may already exist (this handler is not compensating and never was — see its doc comment), and retrying under the same key re-executes against that track.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5222,6 +5266,13 @@
               "null"
             ],
             "description": "Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else\nprocess cwd) on the track row and skip `area_folders`. Present values\n(including the empty string) keep the pre-#1131 absolute-path + claim\nrules. The SQLite column stays NOT NULL; only the request field is\noptional."
+          },
+          "first_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Issue #1299 S1 — the sentence the user typed on the synthesiser page,\ndelivered to the planner agent **with** this create instead of having to be\nretyped after landing on the track.\n\nIt becomes an `Observation::UserMessage` seeded into the harness\nsnapshot inside the `planner-harness-start` transaction — not a\n`TrackGoal`, which is a different semantic slot (see\n`routes/tracks/create.rs`). Validated exactly like\n`POST /api/cards/{id}/planner/input` (non-blank after trim, at most 32768\n**characters**) and validated before anything is minted.\n\nSending it makes `Idempotency-Key` required; omitting it leaves this\nendpoint's behaviour byte-for-byte unchanged, header included (it is not\nread at all)."
           },
           "fork_report_from": {
             "type": [
