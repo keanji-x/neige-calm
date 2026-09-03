@@ -936,6 +936,37 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
 }
 
 /**
+ * The only notification methods the transcript knows how to render.
+ *
+ * Second line of defence, not the first: as of #1255 the server narrows
+ * `GET /api/cards/:id/harness/items` to the same two methods, because the page
+ * `limit` this module sends (`HARNESS_ITEMS_PAGE_LIMIT`) has to be a budget of
+ * renderable rows — dropping rows here, after they were counted against the
+ * page, pushes real transcript rows behind "Load earlier". This gate stays for
+ * the case where a row reaches `buildTranscript` from somewhere else.
+ *
+ * An allowlist rather than a skip-list of the one method that prompted it
+ * (`turn/plan/updated`, codex's per-turn TODO checklist, which #1255 started
+ * writing into `harness_items` so its real shape can be read out of production
+ * before any UI is designed for it). Every *other* method — anything upstream
+ * adds tomorrow, not just today's plan — is then inert by construction here,
+ * instead of by two unrelated converters each independently happening to
+ * reject it.
+ *
+ * Honest about what this does and does not buy: `harnessItemToTurn` and
+ * `harnessItemToActivity` check the method themselves, and must keep doing so
+ * (they are exported and called directly — `harnessItemToTurn` from
+ * `web/src/app/router/public.tsx`). So this gate cannot change the output of
+ * `buildTranscript` today and no test can make it load-bearing; deleting it
+ * leaves the suite green. It is a fail-closed backstop, and stating the
+ * allowlist in the loop is what makes "the transcript renders `item/*` and
+ * nothing else" readable in one place rather than inferable from two callees.
+ */
+function isTranscriptMethod(method: string): boolean {
+  return method === 'item/started' || method === 'item/completed';
+}
+
+/**
  * The transcript: messages and actions in one list, in the order they happened.
  *
  * Three collapses, all of them there because the raw list is unreadable without
@@ -958,6 +989,9 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
   const byKey = new Map<string, TranscriptEntry>();
 
   for (const item of [...items].sort((left, right) => left.id - right.id)) {
+    // Only methods the transcript understands get past here — see
+    // `isTranscriptMethod` for what this backstop is and is not worth.
+    if (!isTranscriptMethod(item.method)) continue;
     const turn = harnessItemToTurn(item);
     if (turn !== null) {
       const key = `turn-${item.id}`;

@@ -23,7 +23,9 @@ through the `/upgrade/apply` admin endpoint.
 ├── calm.db                                    (auto-created when child.db_url omitted)
 ├── mcp/kernel.sock
 ├── proc-supervisor.sock
-├── backups/<release_id>/calm.db{,-wal,-shm}   (one per preserving apply)
+├── backups/<release_id>/calm.db{,-wal,-shm}   (written by every apply that
+│                                                changes calm-server, breaking
+│                                                or preserving — see §8.1)
 └── state/
     ├── installed.json                         (what's installed now)
     ├── supervisor-identity.json               (live proc-supervisor's binary identity)
@@ -69,7 +71,10 @@ cargo build --release \
 
 Inspect `releases/rel-1/manifest.json`:
 - `schemaVersion: 2`
-- `productMajor: 0` (override at package time with `NEIGE_PRODUCT_MAJOR=N`)
+- `productMajor: 1` (the compiled-in default; override at package time with
+  `NEIGE_PRODUCT_MAJOR=N`). It is deliberately a source constant, not an
+  environment-only knob: a forgotten export would silently downgrade a
+  breaking release to a `preserving` verdict.
 - `compatibility { ... }` (9 fields sourced from
   `calm-server --emit-kernel-compatibility-json` of the just-built binary)
 - `units` map covering all 7 crates with `version` + `binarySha256` (or
@@ -345,11 +350,191 @@ breaking upgrade was a mistake.
 
 1. `dryRun` against the target ref → confirm verdict is `preserving`,
    `requiresDbBackup` matches expectation, no breaking surprises.
+   **Caveat for breaking verdicts, see §8.1**: `requiresDbBackup` is
+   hardcoded `false` for `breaking`, which is not the same as "no backup
+   is taken".
 2. Read `/upgrade/history` to confirm the prior install is the rollback
    target you expect.
 3. Confirm `/api/version` matches the release you think you're on.
-4. If applying breaking: confirm with the team, then pass
-   `allowBreaking: true`; expect PTYs to die.
+
+### 8.1 Database backup and manual restore (read this before `allowBreaking`)
+
+**The product does take a backup, and you cannot roll it back through the
+API.** Both halves matter:
+
+- `apply_breaking` calls `backup_db` whenever the `calmServer` unit changes,
+  which every real upgrade does. `backup_db` stops the child, copies
+  `calm.db` plus its `-wal` / `-shm` sidecars, and resumes — so the files
+  under `<data_dir>/backups/<release_id>/` are consistent.
+- `POST /upgrade/rollback` reverse-replays the most recent committed
+  non-rollback **preserving** apply, and rejects anything else. After a
+  breaking apply the backup is on disk with **no API that puts it back**.
+- The breaking path also has no healthcheck window, so there is no
+  automatic revert if the new binary is bad.
+- `dryRun` reports `requiresDbBackup: false` for a breaking verdict
+  regardless. Do not read that as "nothing was backed up".
+
+**Before applying breaking:**
+
+1. Confirm `<data_dir>/backups/` is writable and has room for a copy of
+   `calm.db`.
+2. Record the release id you are on:
+
+   ```bash
+   curl -s http://127.0.0.1:4050/upgrade/history \
+     -H "Authorization: Bearer $TOKEN" | tail -1
+   curl -s http://127.0.0.1:8080/api/version
+   ```
+
+3. Take your own backup. **Do not `cp` the three files while the service is
+   running** — `calm.db`, `calm.db-wal` and `calm.db-shm` are not a snapshot
+   of the same instant, and the copy can restore as a corrupt database.
+   Use one of these instead:
+
+   ```bash
+   # (a) online backup — preferred, no downtime. Produces ONE consistent
+   #     file; do not copy -wal / -shm alongside it.
+   sqlite3 ~/.local/share/neige-calm/calm.db \
+     ".backup '/var/backups/neige/calm-preupgrade.db'"
+
+   # (b) stop first, then copy all three — what the product itself does
+   systemctl --user stop neige-app
+   cp ~/.local/share/neige-calm/calm.db{,-wal,-shm} /var/backups/neige/ 2>/dev/null || \
+     cp ~/.local/share/neige-calm/calm.db /var/backups/neige/
+   systemctl --user start neige-app
+   ```
+
+4. Confirm with the team, then pass `allowBreaking: true`; expect PTYs to
+   die and both calm-server and proc-supervisor to change PID.
+
+**Manual restore** (the only route back from a breaking apply; schema
+migrations are forward-only, so an old binary cannot read the new DB):
+
+```bash
+# 1. stop the unit
+systemctl --user stop neige-app
+
+# 2. put the database back.
+#    From an sqlite3 `.backup` single file — the stale sidecars MUST go,
+#    or SQLite will replay them over the restored database:
+cp /var/backups/neige/calm-preupgrade.db ~/.local/share/neige-calm/calm.db
+rm -f ~/.local/share/neige-calm/calm.db-wal ~/.local/share/neige-calm/calm.db-shm
+#    From the product's own backup dir, restore all three together instead:
+# cp ~/.local/share/neige-calm/backups/<release_id>/calm.db{,-wal,-shm} \
+#    ~/.local/share/neige-calm/
+
+# 3. point the symlinks back at the previous release
+cd ~/.local/share/neige-calm/releases   # or wherever releases/ lives
+ln -sfn "$PWD/rel-N/bin"      ../current-server
+ln -sfn "$PWD/rel-N/web/dist" ../current-web
+ln -sfn "$PWD/rel-N"          ../current-app
+
+# 4. start the unit and confirm the old release answers
+systemctl --user start neige-app
+curl -s http://127.0.0.1:8080/api/version
+```
+
+### 8.2 Plugin compatibility (#1209, #1268)
+
+From #1209 onward, the ids a trusted plugin declares in its manifest
+**must** be keys in the kernel's wave-template roster — today
+`issue-development`, `small-change`, `investigation`.
+
+**#1268 renamed the array itself: `workflows[]` is now `templates[]`.**
+The entries are unchanged (`{ "id": "<kernel template id>" }`); only the
+containing key moved. This *is* a plugin-manifest schema break — #1209
+deliberately avoided one, and #1268 took it only after confirming there are
+no third-party plugins to break (the sole manifest declaring the array is
+the in-repo `plugins/git-forge/manifest.json`, updated in the same commit).
+
+A manifest still spelling the array `workflows` is **rejected at parse
+time**, naming the new key:
+
+```
+manifest validation failed at `workflows`: renamed to `templates` in #1268;
+rename the key (its entries are unchanged: { "id": "<kernel template id>" })
+```
+
+That refusal is deliberate. `Manifest` tolerates unknown top-level keys, so
+the default behaviour would have been *silent*: the plugin would parse, declare
+no binding at all, and the only symptom would be `issue-development` losing its
+`input_schema` — every later `template_input` create failing with a 400 that
+points nowhere near the cause.
+
+**`manifest_version` moved 1 → 2, but only for manifests that declare a
+binding.** The guard above protects you moving *forward*. Moving *backward* it
+cannot help: a `templates[]` manifest handed to a pre-#1268 kernel parses
+clean, because that kernel ignores unknown top-level keys — it binds nothing,
+`issue-development` loses its `input_schema`, and there is no error and no log.
+The one thing an old kernel refuses on its own is a `manifest_version` it does
+not know, so any manifest declaring a non-empty `templates[]` must now say
+`"manifest_version": 2`:
+
+```
+manifest validation failed at `manifest_version`: must be 2 to declare
+`templates` (#1268 renamed the array; a v1 kernel would ignore it and
+silently bind nothing), got 1
+```
+
+A manifest that declares **no** bindings keeps working at version 1 and needs
+no edit. That scoping is intentional: such a file reads identically on both
+kernels (the only thing they disagree about is the name of an array it does not
+have), and forcing it to 2 would refuse every existing connector manifest for
+no benefit — see the boot-path note below for why that would be quiet.
+
+**Boot is lenient; install and reload are strict.** `POST /api/plugins`
+(install) and `/reload` surface a manifest error to the caller. The boot-time
+registry load does not: `registry::load_from_dir` logs
+`manifest load failed — skipping plugin` at WARN and continues, so a plugin
+whose manifest this release refuses simply **does not appear** after a restart
+— no failed startup, no error in the UI. Run the scan below *before* you
+upgrade rather than relying on noticing at boot, and if a plugin goes missing
+after a restart, grep the server log for `manifest load failed`.
+
+What #1209 changed, and #1268 did not, is the *acceptance* semantics:
+declaring an id outside the roster does not let `POST /api/waves` create a
+wave bound to it. That request returns
+
+```
+400  wave create: `template_id` must reference a known wave template; got `<id>`
+```
+
+Also note the request body itself changed in the same release: the two
+wave-create template fields are now spelled `template_id` and
+`template_input`. `CreateWaveRequest` uses `deny_unknown_fields`, so any
+out-of-repo script still sending the previous names is rejected by the JSON
+extractor before the handler runs: `422 Unprocessable Entity`, plain-text body
+`Failed to deserialize the JSON body into the target type: unknown field
+\`workflow_id\``. Deliberately a hard failure rather than a silent partial
+success. Browser bundles are covered by the `minWebCompatVersion`
+floor and will show the refresh curtain instead of issuing such a request.
+
+**Scan your installed plugins before upgrading.** Run this in the plugin
+install root; any output names a plugin this release will break. It reports
+all three failure modes: a manifest still carrying the retired `workflows` key
+(refused at parse time), a manifest declaring `templates[]` while still at
+`manifest_version: 1` (also refused), and a declared id outside the roster
+(parses, but cannot be bound):
+
+```sh
+for m in <plugins_dir>/*/manifest.json; do
+  [ -f "$m" ] || continue      # the plugin root may legitimately be absent or
+                               # empty; the kernel treats that as an empty
+                               # registry, and an unmatched glob would otherwise
+                               # hand jq a literal path and error out
+  jq -r --argjson roster '["issue-development","small-change","investigation"]' \
+    'if has("workflows") then
+       "\(input_filename): retired `workflows` key — rename it to `templates`"
+     else empty end,
+     if ((.templates // []) | length) > 0 and (.manifest_version != 2) then
+       "\(input_filename): declares `templates` at manifest_version \(.manifest_version) — must be 2"
+     else empty end,
+     ((.templates // [])[].id | select(. as $i | $roster | index($i) | not)
+      | "\(input_filename): \(.)")' "$m"
+done
+```
+
+Zero output (and exit 0) means no installed plugin is affected.
 
 ## 9. What's NOT yet supported (open follow-ups)
 

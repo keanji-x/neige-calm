@@ -7,6 +7,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::db::RepoRead;
+use calm_server::routes::today::SystemCoveMintCounters;
+use calm_server::wave_report::WaveReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, RepoOutOfDomain, sqlite::SqlxRepo},
@@ -19,6 +21,7 @@ use calm_server::{
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
+use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -27,6 +30,10 @@ use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
+    /// #1253 — this server's own mint counters. Per instance, so a sibling
+    /// case in the same binary cannot move them (which a process-global let
+    /// happen under a threaded `cargo test`).
+    system_cove_mint: Arc<SystemCoveMintCounters>,
     /// #1147 S2 — the managed workspace root this boot was pinned to.
     workspace_root: PathBuf,
     _tmp: TempDir,
@@ -43,6 +50,17 @@ async fn boot() -> Boot {
 /// `CALM_WORKSPACE_ROOT` change) looks like to the rows already in
 /// `operations`.
 async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
+    boot_with_rendezvous(tmp, repo, root_name, None).await
+}
+
+/// #1253 — `boot_with`, plus the option to arm the system-cove mint
+/// rendezvous. Only the concurrency case passes `Some`.
+async fn boot_with_rendezvous(
+    tmp: TempDir,
+    repo: Arc<SqlxRepo>,
+    root_name: &str,
+    rendezvous: Option<Arc<tokio::sync::Barrier>>,
+) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let waves = WaveCoveCache::new();
@@ -83,6 +101,11 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     // #1147 S2 — keep every managed workspace this test mints inside the
     // sandbox, and make the root's location assertable.
     .with_workspace_root(tmp.path().join(root_name));
+    let state = match rendezvous {
+        Some(barrier) => state.with_system_cove_mint_rendezvous(barrier),
+        None => state,
+    };
+    let system_cove_mint = Arc::clone(&state.system_cove_mint);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -91,6 +114,7 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     Boot {
         app,
         repo,
+        system_cove_mint,
         workspace_root: tmp.path().join(root_name),
         _tmp: tmp,
     }
@@ -1047,5 +1071,426 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     assert!(
         violations[0].1.contains(&first_id) && violations[0].1.contains(&second_id),
         "the report must name both waves: {violations:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #1253 PR1 — the read-only resolve (`GET /api/today/launchpad`) and the
+// `is_unique_constraint` fix.
+// ─────────────────────────────────────────────────────────────────────────
+
+async fn resolve(app: axum::Router) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::get("/api/today/launchpad")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn count(b: &Boot, sql: &str) -> i64 {
+    sqlx::query_scalar(sql)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn report_card_id(b: &Boot, wave_id: &str) -> String {
+    sqlx::query_scalar("SELECT id FROM cards WHERE wave_id=?1 AND kind='wave-report'")
+        .bind(wave_id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
+    sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
+        .bind(card_id)
+        .bind(payload.to_string())
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+}
+
+/// INV-TODAYDOC-001 — the page-load path is a *read*. Before any launchpad
+/// exists it answers `200 null` and leaves the database and the workspace root
+/// exactly as it found them: no cove, no wave, no card, and above all no
+/// `spec-harness-start` operation, because submitting one is what would make
+/// Today's first paint depend on codex being up.
+///
+/// **`200 null`, not `404`, and that is a contract this pins rather than an
+/// incidental detail.** A fresh workspace having no launchpad is the ordinary
+/// state of the landing route; a 404 put a browser console error on every such
+/// session and broke two Playwright specs that assert none. Routine absence is
+/// data. (The anomalous absence — a launchpad with no report card — is still a
+/// 404; see `resolve_404s_when_the_launchpad_has_no_report_card`.)
+#[tokio::test]
+async fn resolve_is_a_pure_read_and_answers_null_before_the_launchpad_exists() {
+    let b = boot().await;
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body,
+        Value::Null,
+        "routine absence must be a null body, not an error status: {body}"
+    );
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM waves").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM coves").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
+    assert!(
+        !b.workspace_root.exists(),
+        "the resolve must not materialize a workspace: {:?}",
+        b.workspace_root
+    );
+}
+
+/// INV-TODAYDOC-003 (positive) — a launchpad whose report is the canonical
+/// freshly-minted one reports `report_has_noninitial_content: false`, so the
+/// page renders an empty state rather than the four empty H1s the initial body
+/// carries. And INV-TODAYDOC-001 again: resolving submits no new operation.
+#[tokio::test]
+async fn resolve_reports_a_freshly_minted_report_as_unwritten() {
+    let b = boot().await;
+    let (status, ensured) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={ensured}");
+    let operations_after_ensure = count(&b, "SELECT COUNT(*) FROM operations").await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["wave_id"], ensured["wave_id"]);
+    assert_eq!(
+        body["report_has_noninitial_content"],
+        Value::Bool(false),
+        "the canonical initial report has not been written by anyone: {body}"
+    );
+    // The narrow DTO is exactly two fields — `report_card_id` deliberately is
+    // not one of them (§5.1), and neither is anything `ensure` returns.
+    let object = body.as_object().unwrap();
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["report_has_noninitial_content", "wave_id"]);
+    assert_eq!(
+        count(&b, "SELECT COUNT(*) FROM operations").await,
+        operations_after_ensure,
+        "the resolve must not submit an operation"
+    );
+}
+
+/// INV-TODAYDOC-003, the **reverse direction** the design calls out by name.
+///
+/// `report_startup_read_required` compares `summary` + `body` and deliberately
+/// ignores `doc_rev` and `blocks`. A canonical initial report that CRDT has
+/// already materialised — non-zero `docRev`, a populated `blocks` array — is
+/// still an unwritten report, and must still yield the empty state. An earlier
+/// revision of this design got exactly this cell wrong.
+#[tokio::test]
+async fn a_crdt_materialized_canonical_report_still_reads_as_unwritten() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    let mut payload = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    payload["docRev"] = serde_json::json!(7);
+    payload["blocks"] = serde_json::json!([
+        {"id": "b1", "kind": "prose", "rev": 3, "payload": {"markdown": "# 概要\n"}}
+    ]);
+    write_report_payload(&b, &card, &payload).await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["report_has_noninitial_content"],
+        Value::Bool(false),
+        "docRev/blocks must not flip the predicate: {body}"
+    );
+}
+
+/// The other half of INV-TODAYDOC-003: once `summary` or `body` differs from
+/// the canonical initial, the document is what the page shows.
+#[tokio::test]
+async fn a_written_report_reads_as_having_content() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    let mut payload = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    payload["body"] = serde_json::json!("# 概要\n\n今天合了两个 PR。\n");
+    write_report_payload(&b, &card, &payload).await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
+
+    // A summary alone is enough, with the body left canonical.
+    let mut summary_only = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    summary_only["summary"] = serde_json::json!("两个 PR");
+    write_report_payload(&b, &card, &summary_only).await;
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
+}
+
+/// §5.1 — a launchpad wave with no report card is a 404.
+///
+/// This state is **not** reachable in production (wave and report card are
+/// created in one transaction), which is why the endpoint gets no repair path:
+/// the test pins the fail-closed answer, not a supported state.
+#[tokio::test]
+async fn resolve_404s_when_the_launchpad_has_no_report_card() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    sqlx::query("DELETE FROM cards WHERE id=?1")
+        .bind(&card)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+}
+
+/// A payload this build cannot parse is not the canonical initial payload, so
+/// it reads as content and the document is shown. The alternative — reading it
+/// as "empty" — would let one bad row silently hide a real report.
+#[tokio::test]
+async fn an_unreadable_report_payload_reads_as_having_content() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    write_report_payload(&b, &card, &serde_json::json!({"schemaVersion": 3})).await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
+}
+
+/// The `is_unique_constraint` fix, exercised on the route path rather than on
+/// the helper.
+///
+/// Both `ensure` calls read `cove_get_system()` — `None` for both — before
+/// either opens a write transaction, so both try to mint the system cove and
+/// the loser hits `idx_coves_one_system`. SQLite words that as
+/// `UNIQUE constraint failed: coves.kind`, so while this module matched on the
+/// *index* name the retry arm was dead code and the loser returned 500. The
+/// assertion is therefore about the losing request's status, not about the
+/// singleton (which the index enforces either way and which was already true
+/// before the fix).
+///
+/// `is_unique_constraint_for_test` deliberately is not used here: feeding a
+/// hand-built `CalmError` to the helper tests the helper, and the helper was
+/// never the defect — the call sites were.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_ensure_retries_the_system_cove_race() {
+    // ── This case asserts the MECHANISM, not just the outcome. ──
+    //
+    // Its previous form checked only that both requests succeeded and that the
+    // singletons held. Every one of those is *also* true when the race never
+    // happens: then only one request mints, the retry arm is never needed, and
+    // a broken arm is never touched. Nothing orders the two requests — A can
+    // reuse a warm pool connection and finish the whole `ensure` while B is
+    // still establishing one, after which B reads `Some` — so "green" on its
+    // own carried no information about whether anything had been exercised.
+    //
+    // Two halves, and both are needed.
+    //
+    // The RENDEZVOUS *creates* the race: armed on this server only, it parks
+    // each request after its `cove_get_system()` has returned `None` and before
+    // it opens a write transaction, so the second request provably cannot read
+    // the first one's committed row. Without it the case merely hoped —
+    // `tokio::join!` imposes no order, and on a CI runner request A finished
+    // the whole mint before B read, so the case went red reporting, correctly,
+    // that the race had not happened. Red-flaky is worse than the vacuous
+    // version it replaced.
+    //
+    // `attempts == 2` then *proves* the rendezvous did its job, and keeps the
+    // status assertion below from being vacuous. A rendezvous with no counter
+    // would be an unchecked assumption; a counter with no rendezvous is what
+    // CI falsified.
+    //
+    // `sqlite::memory:` like every sibling case here, measured on this exact
+    // two-request shape: 8/8 green unmutated with `attempts == 2` holding, and
+    // 8/8 red with the retry arm broken. An earlier revision used an on-disk
+    // WAL database on the theory that in-memory sqlite suppresses the race;
+    // that reading came from a different shape (six barrier-released requests)
+    // and did not survive being re-measured against this one, so the special
+    // case is deleted rather than re-justified.
+    let gate = Arc::new(tokio::sync::Barrier::new(2));
+    let b = boot_with_rendezvous(
+        TempDir::new().unwrap(),
+        Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap()),
+        "workspaces",
+        Some(Arc::clone(&gate)),
+    )
+    .await;
+    // The second request is deliberately SKEWED, and that is what makes this a
+    // gate rather than a coin flip.
+    //
+    // Without the rendezvous, a 250ms head start lets the first request finish
+    // its entire mint before the second one reads, so the second reads `Some`,
+    // never mints, and `attempts` is 1 — measured, this reproduces the CI
+    // failure exactly ("the race did not happen: 1 of the 2 requests found no
+    // system cove"). With the rendezvous the first request is parked before it
+    // can write, so the skew cannot suppress the race and the case passes.
+    //
+    // Keeping the skew permanently means removing the rendezvous fails here
+    // deterministically, on any machine, instead of waiting for a scheduler
+    // unlucky enough to expose it. Our box was green 20/20 on the version CI
+    // then falsified; this is the difference.
+    //
+    // Bounded, because the failure mode of a rendezvous is a hang: if only one
+    // request ever reached it, `wait()` would park forever and CI would report
+    // a timeout instead of a fact. 30s is far above the ~0.5s this takes.
+    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let a = b.app.clone();
+        let c = b.app.clone();
+        tokio::join!(ensure(a), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            ensure(c).await
+        })
+    })
+    .await
+    .expect("both requests must reach the mint rendezvous; a timeout here means only one did");
+    for (status, body) in [&first, &second] {
+        assert!(
+            status.is_success(),
+            "a concurrent first ensure must retry the system-cove race, not 500: {status} {body}"
+        );
+    }
+    // Absolute, not a delta: these counters belong to THIS server instance and
+    // nothing else touched it.
+    let attempts = b.system_cove_mint.attempts.load(Ordering::Relaxed);
+    let retries = b.system_cove_mint.retries.load(Ordering::Relaxed);
+    // Both requests read "no system cove" before either wrote — i.e. the race
+    // this case exists for actually occurred. Without this, every assertion
+    // below is satisfied by a run in which the second request simply read the
+    // first one's committed row and no retry was ever needed.
+    assert_eq!(
+        attempts, 2,
+        "the race did not happen: {attempts} of the 2 requests found no system \
+         cove, so nothing exercised the retry arm and the assertions below \
+         prove nothing"
+    );
+    // …and exactly one of them lost and went through the retry arm.
+    //
+    // Not the carrier for a broken retry arm: that is caught by the STATUS
+    // assertion above, which fires on the loser's 500 before execution reaches
+    // here — measured, that mutation panics at the "not 500" assertion. What
+    // this line does catch is the counting itself going wrong: dropping the
+    // `retries` increment fails here with "got 0 (attempts=2)", measured.
+    assert_eq!(
+        retries, 1,
+        "expected exactly one loser to take the system-cove retry arm, got \
+         {retries} (attempts={attempts})"
+    );
+    assert_eq!(first.1["wave_id"], second.1["wave_id"]);
+    assert_eq!(
+        count(&b, "SELECT COUNT(*) FROM coves WHERE kind='system'").await,
+        1
+    );
+    assert_eq!(
+        count(&b, "SELECT COUNT(*) FROM waves WHERE purpose='launchpad'").await,
+        1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1209 PR-2 test #18 — the two literal-SQL statements in `routes/today.rs`
+// survive the `workflow_id` -> `template_id` column rename.
+// ---------------------------------------------------------------------------
+//
+// This route is the one wave-create path that writes the wave column names as
+// hand-written SQL strings: an `INSERT INTO waves(... template_id, purpose,
+// template_input ...)` on the mint branch and an `UPDATE waves SET ...
+// template_id=NULL ... template_input=NULL` on the adopt branch. Neither goes
+// through `WAVE_SELECT_COLUMNS` or `wave_create_tx`, so a missed rename in
+// either one compiles cleanly, passes clippy, and fails at RUNTIME with
+// `no such column`.
+//
+// Two branches, two independent tests, on purpose: with only one of them the
+// other statement's stale column name is a green build. Mutation evidence: put
+// the old column name back in exactly one of the two statements and exactly one
+// of these two tests goes red.
+
+/// Mint branch — `INSERT INTO waves(...)` on an empty database.
+#[tokio::test]
+async fn today_launchpad_mint_branch_survives_the_column_rename() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["wave_id"].as_str().expect("wave id").to_string();
+
+    // Read the two renamed columns by their new names. If the INSERT still
+    // named the old columns the request above would already have failed; this
+    // read additionally proves the row landed in the columns we think it did.
+    let (template_id, template_input): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT template_id, template_input FROM waves WHERE id=?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .expect("read the renamed columns off the minted launchpad");
+    assert_eq!(template_id, None, "the launchpad binds no template");
+    assert_eq!(
+        template_input, None,
+        "the launchpad carries no template input"
+    );
+}
+
+/// Adopt branch — `UPDATE waves SET ... template_id=NULL ...` over a
+/// pre-existing `purpose IS NULL AND title='Today'` row.
+///
+/// The legacy row is built with raw SQL rather than by calling `ensure` first,
+/// so this leg does NOT depend on the mint branch's INSERT. That independence
+/// is what makes the mutation evidence sharp: leave the old column name in
+/// exactly one of the two statements and exactly one of these two tests
+/// goes red.
+///
+/// The row is seeded with **non-NULL** values in both renamed columns so the
+/// clearing half of that UPDATE is actually exercised: against a row that was
+/// already NULL, an UPDATE that never touched those columns would look
+/// identical.
+#[tokio::test]
+async fn today_launchpad_adopt_branch_survives_the_column_rename() {
+    let b = boot().await;
+
+    // The launchpad lives in the system cove; mint it directly.
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let cove = calm_server::db::sqlite::cove_create_system_tx(&mut tx)
+        .await
+        .expect("system cove");
+    tx.commit().await.unwrap();
+
+    let wave_id = "legacy-today-wave".to_string();
+    sqlx::query(
+        "INSERT INTO waves (id, cove_id, title, sort, lifecycle, template_id, template_input, \
+         created_at, updated_at) \
+         VALUES (?1, ?2, 'Today', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
+    )
+    .bind(&wave_id)
+    .bind(cove.id.as_str())
+    .execute(b.repo.pool())
+    .await
+    .expect("seed a legacy Today row carrying both template columns");
+    let (status, adopted) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={adopted}");
+    assert_eq!(adopted["wave_id"].as_str(), Some(wave_id.as_str()));
+
+    let (purpose, template_id, template_input): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT purpose, template_id, template_input FROM waves WHERE id=?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .expect("read the renamed columns off the adopted launchpad");
+    assert_eq!(purpose.as_deref(), Some("launchpad"));
+    assert_eq!(
+        template_id, None,
+        "adoption must clear the template binding through the renamed column"
+    );
+    assert_eq!(
+        template_input, None,
+        "adoption must clear the template input through the renamed column"
     );
 }

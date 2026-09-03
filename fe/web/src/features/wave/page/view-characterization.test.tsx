@@ -1,46 +1,75 @@
-// Characterization: `deriveWavePageView` against the panel as it stands.
+// Same-source regression: `deriveWavePageView` against the panel that is now
+// rendered *from* it.
 //
-// #1234 S1a derives the wave panel's view model in `core/view` but wires
-// nothing — `public.tsx` is untouched by this slice, deliberately, because this
-// suite uses it as the oracle. If the derivation misread the desktop panel (the
-// `kind` condition, the ownership badge, the `statusDetail` join), S1a would be
-// self-consistent and green and S1b would be the slice that exploded.
+// **This file has lost a property, and the loss is recorded here rather than
+// papered over.** In #1234 S1a this was an **independent oracle**: the
+// derivation was new, `public.tsx` was deliberately untouched, and the page was
+// a second, hand-written expression of the same wording. Comparing them caught
+// a rule that had been *understood wrongly* — the `kind` condition, the
+// ownership badge, the `statusDetail` join — because the two sides could
+// disagree.
 //
-// **What this suite is, and is not.** It checks that the **S1a text and status
-// fields** the derivation produces are present in what the desktop panel
-// actually renders. That is a coarse claim for the text fields, on purpose: it
-// catches a rule that was **understood wrongly**, not a field that was left out
-// and not a field that landed in the wrong carrier.
+// Since S1b-3b they cannot. The page calls `deriveWavePageView` itself and
+// paints the result through `desktop-painter.tsx`, so both sides of every
+// comparison below come from the same derivation. A derivation that misreads
+// the panel now produces a page that misreads it identically, and this suite
+// stays green. That is not a defect in the wiring — it is what wiring the page
+// to one source *means* — but the independence is gone and no comment here may
+// keep claiming it.
 //
-// It is **not** "every observable field". Since S1b-1, `RowAction` carries
-// `label` and `hint` — two more observable fields, in `aria-label` / `title`.
-// Those **are** covered here, but only as *row-scoped membership*: each derived
-// sentence must equal one of the attribute values the row's own subtree
-// carries. Which element carries it is still S1b-2's `checkProjection` against
-// S1b-3's markers; see the exclusions below.
+// **What it still guards, and what now guards the rest.**
+//
+//  - Still here: the derived fields really reach the rendered DOM, in **at
+//    least** the derived multiplicity, inside their own row — a same-source
+//    regression against the *rendering path*. (`expectFieldsPresent` compares
+//    with `>=`, so a field printed more often than the view model says is not
+//    red here; the exact-carrier question is `checkProjection`'s.) A painter or
+//    a page that drops a derived field, prints
+//    it once where the view model says twice, or renders a populated module's
+//    empty text goes red here, because the derivation and the DOM disagree even
+//    though the derivation is shared.
+//  - Not here any more: any check on whether the derivation reads the product
+//    correctly. That is `core/view/wave-page.test.ts` and
+//    `core/view/panel.test.ts`, whose §5.1 / §5.2 mutations have been run.
+//  - Not here: whether the page is a faithful *projection* — each field in its
+//    own carrier, the exact set and order of a row's actions, module order.
+//    That is `desktop-projection.test.tsx`, which runs `checkProjectionIn` over
+//    the real rendered page, with `desktop-entry.test.tsx` holding that the page
+//    goes through the painter at all.
+//  - Not here: what the user can actually do. The three actions' payloads and
+//    callbacks, and the delete control's presence, are behaviour and are
+//    asserted as behaviour in `public.test.tsx`.
+//
+// **What the assertions are, mechanically.** The **S1a text and status fields**
+// the derivation produces must be present in what the desktop panel renders.
+// That is a coarse claim for the text fields, on purpose: it catches a field
+// that never reached the DOM, not a field that landed in the wrong carrier.
+//
+// Since S1b-1, `RowAction` carries `label` and `hint` — two more observable
+// fields, in `aria-label` / `title`. Those **are** covered here, but only as
+// *row-scoped membership*: each derived sentence must equal one of the
+// attribute values the row's own subtree carries. Which element carries it is
+// `checkProjection`'s question, not this file's.
 //
 //  - **A dropped field is not this suite's job.** The text assertions are
 //    occurrence *lower bounds*, and deleting a derived field only removes an
 //    obligation — the page still renders, and every remaining bound still
 //    holds. Fields being present at all is pinned by the unit tests in
-//    `core/view/*.test.ts`, whose §5.1 / §5.2 mutations have been run and go
-//    red there.
+//    `core/view/*.test.ts`.
 //  - **A misplaced field is not this suite's job either.** Whether each field
 //    lands in **its own** carrier — this row's title inside this row's element
 //    and not borrowed from a neighbouring badge — is the faithful-projection
-//    property, and it is `checkProjection`'s job in S1b, against markers this
-//    page does not carry yet. Do not read a green run here as "the projection
-//    is verified".
+//    property, and it is `checkProjectionIn`'s in `desktop-projection.test.tsx`.
+//    Do not read a green run here as "the projection is verified".
 //
 // **Covered.** Five text fields, counted against `textContent` only:
 // `module.title`, `module.empty` (zero-row modules only), `row.title`,
 // `row.kind` (when non-null), `badge.text`.
 //
 // Separately, two fields of `row.status`. These are **not** lower bounds but
-// exact equalities against the carrier the page already marks
-// (`[data-nc-task-status]`, `public.tsx:725-733`):
-// `status.phrase` against that node's `title` (`:731` is the bare phrase) and
-// `status.token` against the `data-nc-task-status` attribute (`:729`). A row
+// exact equalities against the carrier the panel marks — the status dot painted
+// by `desktop-painter.tsx`'s `statusDot`: `status.phrase` against that node's
+// `title`, and `status.token` against its `data-nc-status` attribute. A row
 // whose derived `status` is null must have no such node.
 //
 // **Attributes are not "observable text" here.** An earlier version folded
@@ -54,39 +83,33 @@
 // text fields in `textContent` and pinning the status to its carrier exactly is
 // what closes both.
 //
-// **The principal projectable gaps, and why each is somebody's job.** Read this
-// as the main gaps, **not** as an exhaustive list of everything a green run
-// fails to say — the two paragraphs above name two more (a dropped field only
-// removes an obligation; a field landing in the wrong carrier is unseen), and
-// there are smaller ones called out inline below.
+// **The principal gaps, and whose job each is.** Read this as the main gaps,
+// **not** as an exhaustive list of everything a green run fails to say — the
+// same-source note at the top is the largest one, the two paragraphs above name
+// two more, and there are smaller ones called out inline below.
 //
 //  - **Id-shaped fields — excluded and must stay excluded.** `row.id` (a
 //    `card.id` / `task.blockId`) and every action *payload* reach only React
-//    keys and callbacks (`public.tsx:516,638`), so asserting them would fail
-//    against a correct page.
-//  - **Action wording — covered since S1b-1, as row-scoped membership.** The
-//    page writes four sentences: `Delete card ${…}` (`:536`), `Delete card`
-//    (`:537`), `Show ${task.key} in the report` (`:642`), `Open the worker card
-//    for ${task.key}` (`:747`). As of S1b-1 `RowAction` carries all four in its
-//    `label` / `hint` fields — the wording moved into `core` for the same reason
-//    `taskStatusPhrase` did, so that S1b's two painters do not each re-invent
-//    it. S1b-1 does **not** touch `public.tsx`, so the tree now holds two copies
-//    of each sentence, which is exactly the drift class #1234 exists to remove.
-//    `expectActionWording` below is what keeps the two copies pinned together
-//    until S1b-3 rewrites the page: for every action with a non-null `hint`, the
-//    sentence must be **equal to** one of the `title` values in the row's own
-//    subtree, and likewise `label` against `aria-label`. Three properties of
-//    that check are load-bearing and none of them is decoration:
+//    keys and callbacks, so asserting them against the DOM would fail against a
+//    correct page. That the payloads reach the right callback is
+//    `public.test.tsx`'s, as behaviour.
+//  - **Action wording — covered since S1b-1, as row-scoped membership.** Four
+//    sentences reach the panel: `Delete card ${…}`, `Delete card`, `Show ${key}
+//    in the report`, `Open the worker card for ${key}`. As of S1b-1 `RowAction`
+//    carries all four in its `label` / `hint` fields, and since S1b-3b the
+//    painter is their only writer — the page no longer holds a second copy, so
+//    what `expectActionWording` pins is the derivation against the painter
+//    rather than two hand-written copies against each other. Three properties
+//    of that check are load-bearing and none of them is decoration:
 //      * it is set membership (`toContain` over an **array** of attribute
 //        values), not a substring test on a joined blob — the joined-blob form
 //        is what let two real mutations stay green (see the paragraph above);
 //      * it is scoped to the row's `<li>`, so a sentence rendered for a
 //        *different* row cannot stand in;
-//      * it is *not* an exhaustive projection. The page carries no
-//        `data-nc-row-action` markers yet (S1b-3 adds them), so the check cannot
-//        say *which element* carries which sentence, nor that the row carries no
-//        extra action. That is `checkProjection`'s job in S1b-2/3, and a green
-//        run here must not be read as "the projection is verified".
+//      * it is *not* an exhaustive projection: it cannot say *which element*
+//        carries which sentence, nor that the row carries no extra action.
+//        That is `checkProjectionIn`'s against the painter's markers, in
+//        `desktop-projection.test.tsx`.
 //  - **The null side of `label` / `hint` — not covered, deliberately.** A Cards
 //    row's `open-card` derives `label: null, hint: null` ("the derivation
 //    invented no wording for the row body", `wave-page.ts`'s `cardRow`). No
@@ -95,28 +118,27 @@
 //    dot's), so "no such attribute exists in this row" would be false against a
 //    correct page, and any weaker phrasing would not be checking the null. The
 //    claim that a null wording stays null is `core/view/wave-page.test.ts`'s;
-//    the claim that a painter emits no attribute for it is S1b-2/3's.
-//  - **`badge.struck` — excluded, S1b's.** It is only a class difference
-//    (`taskWithdrawn` vs `taskNote`, `:663-665`); neither `textContent` nor any
-//    marker this page carries distinguishes them.
-//  - **The exact set and order of a row's actions — excluded, S1b's.** There is
-//    no exact-set or order guarantee here: `expectActionWording` iterates
+//    the claim that a painter emits no attribute for it is the projection's.
+//  - **`badge.struck` — excluded.** It is only a class difference
+//    (`taskWithdrawn` vs `taskNote` in `desktop-painter.tsx`); neither
+//    `textContent` nor any marker distinguishes them here.
+//  - **The exact set and order of a row's actions — excluded.** There is no
+//    exact-set or order guarantee here: `expectActionWording` iterates
 //    `row.actions` and checks membership per action, which pins nothing about
 //    the sequence as a whole. Note what that iteration *does* catch, so the gap
 //    is not read as wider than it is — adding an action whose `label` or `hint`
-//    is a sentence the page does not carry goes **red**. The mutations that
+//    is a sentence the panel does not carry goes **red**. The mutations that
 //    survive are the four where no new obligation appears: reordering a row's
 //    actions, deleting an action, adding one with `label` and `hint` both null,
 //    and adding one that reuses wording the row's subtree already renders. That
 //    `actions` is a checked sequence (`core/view/panel.ts`, `PanelRow.actions`)
-//    is a claim only S1b's `checkProjection` carries, against the action markers
-//    this page does not have.
-//  - **The DOM order of the modules — excluded, S1b's.** Each module is located
-//    by its own static selector (`renderedRows`) and asserted independently, so
+//    is `checkProjectionIn`'s claim, against the action markers.
+//  - **The DOM order of the modules — excluded.** Each module is located by its
+//    own static selector (`renderedRows`) and asserted independently, so
 //    swapping the order of `view.rowModules` — or of the two module elements on
 //    the page — is invisible here. "Cards before Tasks is part of the view
-//    model" (`core/view/wave-page.ts`, `deriveWavePageView`) is likewise
-//    S1b's `checkProjection` to hold, once `paintPanel` walks the sequence.
+//    model" (`core/view/wave-page.ts`, `deriveWavePageView`) is
+//    `checkProjectionIn`'s to hold, now that `paintPanel` walks the sequence.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -133,7 +155,10 @@ import { card, renderPage } from './test-fixtures.tsx';
  *  - a titled card **and** an untitled one, so `row.kind` is exercised on both
  *    sides of its condition;
  *  - the titled card is deletable **and** the render passes `onDeleteCard`, so
- *    the page actually paints the × (`public.tsx:514` needs both halves) and
+ *    the panel actually paints the × — `card.deletable` decides whether
+ *    `cardRow` derives a `delete-card` at all and `onDeleteCard !== undefined`
+ *    is the desktop painter's capability table, and both halves are needed —
+ *    and
  *    `delete-card`'s two sentences have a carrier to be found in. Without the
  *    callback the control is not drawn at all and the assertion would be
  *    vacuous;
@@ -259,25 +284,25 @@ function rowFields(row: PanelRow): readonly string[] {
 }
 
 /**
- * The status, against the node the page already marks for it.
+ * The status, against the node the painter marks for it.
  *
- * Exact equality, not an occurrence bound: the phrase's carrier is `title`
- * (`public.tsx:731`), which is the bare phrase, and the token's carrier is the
- * `data-nc-task-status` attribute (`:729`). The dot's `aria-label` (`:730`) is
- * `Status: ${phrase}` and is deliberately **not** asserted — that prefix is
+ * Exact equality, not an occurrence bound. All three carriers are written by
+ * `desktop-painter.tsx`'s `statusDot`: the phrase's is `title`, which is the
+ * bare phrase; the token's is the `data-nc-status` attribute. The dot's
+ * `aria-label` is `Status: ${phrase}` and is deliberately **not** asserted — that prefix is
  * renderer chrome the view model does not own (`core/view/panel.ts`,
  * `RowStatus.phrase`), and asserting the label would license moving the prefix
  * into `core`, which is a mutation this suite has been shown to miss.
  */
 function expectStatus(rowElement: Element, row: PanelRow, where: string): void {
-  const dot = rowElement.querySelector('[data-nc-task-status]');
+  const dot = rowElement.querySelector('[data-nc-status]');
   if (row.status === null) {
     expect(dot, `${where}: derived no status, so the page must paint no dot`).toBeNull();
     return;
   }
   expect(dot, `${where}: status dot`).not.toBeNull();
   expect(dot?.getAttribute('title'), `${where}: phrase`).toBe(row.status.phrase);
-  expect(dot?.getAttribute('data-nc-task-status'), `${where}: token`).toBe(row.status.token);
+  expect(dot?.getAttribute('data-nc-status'), `${where}: token`).toBe(row.status.token);
 }
 
 /**

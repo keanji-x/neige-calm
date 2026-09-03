@@ -581,7 +581,8 @@ export type TaskWorkerKind = 'codex' | 'claude' | 'terminal';
  * This used to be one `note` string that the join formatted — `Withdrawn`, or
  * `running · codex`, or `failed` — and one string was the right shape only
  * while the whole column was one word in one rank. It is not any more (#1149):
- * the status is a shaped, coloured dot at the row's trailing edge, the worker kind
+ * the status is a carrier of its own at the row's trailing edge — a shaped,
+ * coloured dot on the desktop, the bare word on mobile (#1234 S1b-4b) — the worker kind
  * is the *only* control that opens the worker card, and the declaration word is
  * neither of those. A renderer handed `'running · codex'` would have to split
  * that string back apart to give its two halves different behaviour, which is
@@ -1015,7 +1016,7 @@ export function deriveReportTasks(
      * nothing at all), let a `statusDetail` through with no state to qualify —
      * `Status:  — boom`, which both `taskStatusPhrase` and `ReportTaskRow`
      * document as the one shape they may not produce — and render as
-     * `data-nc-task-status=""`, which matches no dot form and so paints the
+     * `data-nc-status=""`, which matches no dot form and so paints the
      * neutral ring while claiming a run exists. Today's kernel serialises
      * `TaskStatus` to a fixed lowercase word and cannot emit this; the wire
      * type is what is being hardened against, not the current writer.

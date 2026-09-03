@@ -55,7 +55,7 @@ use crate::operation::workspace_lease::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
-use crate::plugin_host::workflow_input::validate_workflow_input;
+use crate::plugin_host::template_input::validate_template_input;
 use crate::report_backlinks;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::codex_cards::default_cwd;
@@ -63,6 +63,7 @@ use crate::routes::cove_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
+use crate::templates::{TEMPLATES, template_by_key, template_report};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{
     CODEX_PAYLOAD_SCHEMA_VERSION, OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND,
@@ -77,7 +78,6 @@ use crate::wave_report::{
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
-use crate::workflow_templates::{WORKFLOW_TEMPLATES, workflow_template, workflow_template_report};
 use crate::workspace_recycle;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
@@ -216,10 +216,10 @@ pub struct CreateWaveRequest {
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
-    pub workflow_id: Option<String>,
+    pub template_id: Option<String>,
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
-    pub workflow_input: Option<serde_json::Value>,
+    pub template_input: Option<serde_json::Value>,
     #[serde(default)]
     pub attach_folder: bool,
     pub theme: RequestTheme,
@@ -245,9 +245,9 @@ impl CreateWaveRequest {
                 title: self.title,
                 sort: self.sort,
                 cwd: self.cwd.unwrap_or_else(default_cwd),
-                workflow_id: self.workflow_id,
+                template_id: self.template_id,
                 plugin_scope: None,
-                workflow_input: self.workflow_input,
+                template_input: self.template_input,
                 attach_folder: if cwd_omitted {
                     false
                 } else {
@@ -447,20 +447,20 @@ async fn template_wave_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
 
 /// Serialize first-use seeding. Production is one process per DB; concurrent
 /// matching creates in that process must not mint duplicate template_keys.
-static WORKFLOW_TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Lazy get-or-create of the three system-cove template waves. Called from
 /// matching `POST /api/waves`, not from `AppState::new`, so ordinary boots
 /// and tests that never bind a template key stay unchanged.
-pub(crate) async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
-    let _guard = WORKFLOW_TEMPLATE_SEED_LOCK.lock().await;
+pub(crate) async fn ensure_templates(s: &RouteState) -> Result<()> {
+    let _guard = TEMPLATE_SEED_LOCK.lock().await;
     let system_cove = ensure_system_cove(s).await?;
-    for template in &WORKFLOW_TEMPLATES {
-        if let Some(wave_id) = lookup_workflow_template_wave(s, template.key).await? {
+    for template in &TEMPLATES {
+        if let Some(wave_id) = lookup_template_wave(s, template.key).await? {
             restamp_template_report_if_placeholder(s, &wave_id, template.key).await?;
             continue;
         }
-        seed_workflow_template_wave(s, &system_cove.id, template.key, template.title).await?;
+        seed_template_wave(s, &system_cove.id, template.key, template.title).await?;
     }
     Ok(())
 }
@@ -493,7 +493,7 @@ async fn ensure_system_cove(s: &RouteState) -> Result<crate::model::Cove> {
     }
 }
 
-pub(crate) async fn lookup_workflow_template_wave(
+pub(crate) async fn lookup_template_wave(
     s: &RouteState,
     template_key: &str,
 ) -> Result<Option<String>> {
@@ -523,16 +523,14 @@ pub(crate) async fn lookup_workflow_template_wave(
     Ok(matches.into_iter().next().map(|wave| wave.id.to_string()))
 }
 
-async fn seed_workflow_template_wave(
+async fn seed_template_wave(
     s: &RouteState,
     system_cove_id: &crate::ids::CoveId,
     template_key: &str,
     title: &str,
 ) -> Result<()> {
-    let report = workflow_template_report(template_key).ok_or_else(|| {
-        CalmError::Internal(format!(
-            "wave create: unknown workflow template `{template_key}`"
-        ))
+    let report = template_report(template_key).ok_or_else(|| {
+        CalmError::Internal(format!("wave create: unknown template `{template_key}`"))
     })?;
     let cwd = default_cwd();
     let (wave, _, _, _) = create_wave_structure(
@@ -543,9 +541,9 @@ async fn seed_workflow_template_wave(
             title: title.into(),
             sort: None,
             cwd: cwd.clone(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
@@ -556,7 +554,7 @@ async fn seed_workflow_template_wave(
             fork_report_from: None,
             as_template: true,
             template_key: Some(template_key.to_string()),
-            // #1147 S2 — the seeded workflow templates are ordinary system-cove
+            // #1147 S2 — the seeded templates are ordinary system-cove
             // waves; they get their own managed workspace like anything else
             // the server mints. Pre-S2 they landed on `default_cwd()` (`$HOME`),
             // which is exactly the #1131 defect this slice removes.
@@ -592,10 +590,8 @@ async fn restamp_template_report_if_placeholder(
     wave_id: &str,
     template_key: &str,
 ) -> Result<()> {
-    let report = workflow_template_report(template_key).ok_or_else(|| {
-        CalmError::Internal(format!(
-            "wave create: unknown workflow template `{template_key}`"
-        ))
+    let report = template_report(template_key).ok_or_else(|| {
+        CalmError::Internal(format!("wave create: unknown template `{template_key}`"))
     })?;
     let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), wave_id).await?;
     if current.report_startup_read_required() {
@@ -770,7 +766,7 @@ pub(crate) async fn create_wave(
     //    #1209 — what "short-circuits before any DB write" actually covers.
     //    Every 4xx this handler can decide *before opening the transaction*
     //    (cwd shape, attached-workspace validation, cove 404, unknown
-    //    template, the `workflow_input` binding matrix) lands before any DB
+    //    template, the `template_input` binding matrix) lands before any DB
     //    write. The ones decided later do not: the in-transaction 400s for an
     //    explicit `fork_report_from` (source missing / cross-cove), the
     //    folder-claim 409 and in-transaction 500s all happen after template
@@ -785,10 +781,10 @@ pub(crate) async fn create_wave(
     // attribute of it, not a second way in. Roster membership is the whole
     // admission test: whether some plugin claims the id, and whether that
     // plugin is running and trusted, cannot change the answer.
-    let admission = match p.workflow_id.as_deref() {
-        Some(workflow_id) => Some(admit_template(&s, workflow_id).await.ok_or_else(|| {
+    let admission = match p.template_id.as_deref() {
+        Some(template_id) => Some(admit_template(&s, template_id).await.ok_or_else(|| {
             CalmError::BadRequest(format!(
-                "wave create: `workflow_id` must reference a known wave template; got `{workflow_id}`"
+                "wave create: `template_id` must reference a known wave template; got `{template_id}`"
             ))
         })?),
         None => None,
@@ -796,12 +792,12 @@ pub(crate) async fn create_wave(
     // The binding is read off the admitted template; the route no longer digs
     // through the registry a second time.
     let bound_plugin = admission.as_ref().and_then(|a| a.binding.as_ref());
-    // #891 / #1110 S2 — `workflow_input` is only accepted against a bound
-    // workflow whose owning plugin Manifest declares an `input_schema`;
+    // #891 / #1110 S2 — `template_input` is only accepted against a bound
+    // template whose owning plugin Manifest declares an `input_schema`;
     // validated here, before any DB write, so the inner writer persists
-    // the blob verbatim. Still requires `workflow_id` this slice
-    // (S5 deletes the workflow entity).
-    validate_workflow_input_binding(bound_plugin, p.workflow_input.as_ref())?;
+    // the blob verbatim. Still requires `template_id` this slice
+    // (S5 deletes the template entity).
+    validate_template_input_binding(bound_plugin, p.template_input.as_ref())?;
     // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
     // insert. Unbound create leaves it None. Not a request field.
     p.plugin_scope = bound_plugin.map(|manifest| manifest.id.clone());
@@ -900,18 +896,16 @@ pub(crate) async fn create_wave(
     // comment. Everything below this point is either in the transaction or
     // after it, so this is as late as the seed can go.
     if let Some(admission) = &admission {
-        ensure_workflow_templates(&s).await?;
+        ensure_templates(&s).await?;
         if fork_report_from.is_none() {
-            fork_report_from = Some(
-                lookup_workflow_template_wave(&s, admission.key)
-                    .await?
-                    .ok_or_else(|| {
-                        CalmError::Internal(format!(
-                            "wave create: seeded template `{}` is missing after ensure",
-                            admission.key
-                        ))
-                    })?,
-            );
+            fork_report_from = Some(lookup_template_wave(&s, admission.key).await?.ok_or_else(
+                || {
+                    CalmError::Internal(format!(
+                        "wave create: seeded template `{}` is missing after ensure",
+                        admission.key
+                    ))
+                },
+            )?);
         }
     }
 
@@ -965,7 +959,7 @@ pub(crate) struct TemplateAdmission {
     pub binding: Option<Manifest>,
 }
 
-/// Admit a caller-supplied `workflow_id`.
+/// Admit a caller-supplied `template_id`.
 ///
 /// Roster membership is the only admission test; the binding is resolved
 /// afterwards purely to be carried along. There is deliberately no fallback
@@ -974,47 +968,47 @@ pub(crate) struct TemplateAdmission {
 /// `docs/architecture/1209-template-workflow-unify.md` for why the alternative
 /// (admitting it as a report-less pseudo-template) was rejected.
 pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
-    let template = workflow_template(id)?;
+    let template = template_by_key(id)?;
     Some(TemplateAdmission {
         key: template.key,
-        binding: resolve_trusted_workflow(s, id).await,
+        binding: resolve_template_binding(s, id).await,
     })
 }
 
-/// Resolve `workflow_id` to the owning plugin Manifest iff a running
+/// Resolve `template_id` to the owning plugin Manifest iff a running
 /// **trusted** plugin registers it — same filter as
-/// `bound_workflow_descriptor` on the spec harness side. `None` covers
-/// unknown, stopped, and untrusted workflows alike (the route
+/// `bound_template_descriptor` on the spec harness side. `None` covers
+/// unknown, stopped, and untrusted templates alike (the route
 /// deliberately does not distinguish them in the 400).
-pub(crate) async fn resolve_trusted_workflow(
+pub(crate) async fn resolve_template_binding(
     s: &RouteState,
-    workflow_id: &str,
+    template_id: &str,
 ) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
         running_plugin_ids.contains(&manifest.id)
             && trusted_forge_plugin(&manifest.id)
             && manifest
-                .workflows
+                .templates
                 .iter()
-                .any(|workflow| workflow.id == workflow_id)
+                .any(|template| template.id == template_id)
     })
 }
 
-/// #891 / #1110 S2 — create-time `workflow_input` validation matrix.
+/// #891 / #1110 S2 — create-time `template_input` validation matrix.
 /// Fail-closed: input is only accepted when the bound plugin Manifest
 /// declares an `input_schema`, and a schema with required fields makes
 /// input mandatory. The kernel never applies schema `default`s — the
-/// value persists exactly as the caller sent it. Workflow-level
+/// value persists exactly as the caller sent it. Descriptor-level
 /// `input_schema` is never consulted.
-fn validate_workflow_input_binding(
+fn validate_template_input_binding(
     plugin: Option<&Manifest>,
     input: Option<&serde_json::Value>,
 ) -> Result<()> {
     let Some(plugin) = plugin else {
         if input.is_some() {
             return Err(CalmError::BadRequest(
-                "wave create: `workflow_input` requires `workflow_id`".into(),
+                "wave create: `template_input` requires `template_id`".into(),
             ));
         }
         return Ok(());
@@ -1024,7 +1018,7 @@ fn validate_workflow_input_binding(
         (None, None) => Ok(()),
         (None, Some(_)) => Err(CalmError::BadRequest(format!(
             "wave create: plugin `{plugin_id}` does not declare an input_schema; \
-             `workflow_input` is not accepted"
+             `template_input` is not accepted"
         ))),
         (Some(schema), None) => {
             let required: Vec<&str> = schema
@@ -1036,12 +1030,12 @@ fn validate_workflow_input_binding(
                 Ok(())
             } else {
                 Err(CalmError::BadRequest(format!(
-                    "wave create: plugin `{plugin_id}` requires `workflow_input` \
+                    "wave create: plugin `{plugin_id}` requires `template_input` \
                      (required: {required:?})"
                 )))
             }
         }
-        (Some(schema), Some(input)) => validate_workflow_input(schema, input)
+        (Some(schema), Some(input)) => validate_template_input(schema, input)
             .map_err(|reason| CalmError::BadRequest(format!("wave create: {reason}"))),
     }
 }
@@ -1353,9 +1347,9 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
         title: "Cove chat".into(),
         sort: None,
         cwd: cwd.clone(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
-        workflow_input: None,
+        template_input: None,
         attach_folder: false,
         theme: RequestTheme::default_dark(),
     };
@@ -1848,6 +1842,47 @@ fn prepare_fork_report(
                             .map(|error| (block_id.clone(), "markdown", error)),
                     ),
                 }
+            }
+            // #1252 S0b — this arm `continue`s past the `validate_payload`
+            // call at the bottom of the loop, so before #1252 a prose block
+            // carrying a malformed ```neige-block fence forked through
+            // verbatim and landed as prose in the target wave.
+            //
+            // What `validate_body_fences` actually covers today (#1252 R1/F3
+            // corrects an earlier "every other write end" claim here, which
+            // was false at the time): its production call sites are
+            // `wave_report::apply_report_op`'s two whole-body arms —
+            // `ReportDocOp::Replace` and `::WriteMarkdown` — plus this fork
+            // exit. The prose `UpsertBlock` arm, which this note used to
+            // record as an open *op-layer* gap, is covered since #1269 by a
+            // *different* and stricter check: `wave_report_guard::
+            // validate_prose_block_content`, which forbids any
+            // `neige-block` fence in prose (other fences — a ```rust code
+            // block, say — still land).
+            // `ReportDoc::upsert_block` itself fence-checks only
+            // non-prose content (`if kind != KIND_PROSE`), which is why the
+            // prose case has to be checked in the op arm. To be exact about
+            // the reach of that gap: only a direct `apply_report_op` call
+            // exercises it — no user request can, because the MCP (#971) and
+            // REST (#990) block surfaces both refuse fenced prose at their
+            // own argument. And "fenced prose" there means a fence carried
+            // whole in one block; on the residual that a fence split across
+            // two prose blocks still assembles in the projection, see
+            // `wave_report_guard::validate_prose_block_content`.
+            //
+            // Deliberately only the fence check here: the fork exit does not
+            // additionally run `validate_payload` on the prose block's own
+            // `{"markdown": …}` payload — that is a separate behaviour
+            // change. Nor is this the stricter prose rule the op layer and
+            // the block surfaces apply; tightening fork to refuse
+            // well-formed fences too would reject already-persisted source
+            // waves, so it stays at "malformed / schema-invalid".
+            if let Some(markdown) = block.payload.get("markdown").and_then(|v| v.as_str()) {
+                crate::wave_report_guard::validate_body_fences(markdown).map_err(|error| {
+                    CalmError::BadRequest(format!(
+                        "wave create: invalid forked report block {block_id}: {error}"
+                    ))
+                })?;
             }
             continue;
         }
@@ -3138,8 +3173,8 @@ pub(crate) async fn delete_wave(
     // retire these rows do not come through this handler.
     //
     // **Scope is the whole system cove, not just the launchpad — deliberately.**
-    // The system cove also holds the workflow-template waves
-    // `ensure_workflow_templates` seeds, so those become undeletable through
+    // The system cove also holds the template waves
+    // `ensure_templates` seeds, so those become undeletable through
     // the API too. Accepted, ruled on 2026-09-01: they are kernel-seeded and
     // rebuilt at boot, deleting one has never been a meaningful user action,
     // and the alternative — carving out `purpose = launchpad` — puts an
@@ -3503,6 +3538,56 @@ mod tests {
         assert!(error.to_string().contains("invalid forked report block"));
     }
 
+    /// #1252 S0b — the `KIND_PROSE` arm `continue`s past the loop's
+    /// `validate_payload`, so the fence check has to happen inside that arm.
+    /// A malformed ```` ```neige-block ```` fence in prose is refused by
+    /// `wave_report_guard::validate_body_fences` at the whole-body write
+    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`), and since #1269
+    /// the prose `::UpsertBlock` arm refuses it at the op layer too — via
+    /// the stricter `validate_prose_block_content`, behind MCP/REST
+    /// surfaces that already refused it (#971 / #990). Forking is a write
+    /// end as well.
+    #[test]
+    fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
+        let prose = ReportBlock {
+            id: "b_0002".into(),
+            kind: "prose".into(),
+            rev: 1,
+            payload: json!({"markdown": "# A\n```neige-block app\nnot json\n```\n"}),
+        };
+        let error = prepare_fork_report("summary".into(), vec![prose], "source", "target")
+            .err()
+            .expect("malformed prose fence must abort the fork");
+        assert!(
+            matches!(&error, crate::error::CalmError::BadRequest(_)),
+            "must be a 400, got: {error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("invalid forked report block b_0002"),
+            "error must name the offending block: {rendered}"
+        );
+        assert!(
+            rendered.contains("neige-block"),
+            "error must name the malformed fence: {rendered}"
+        );
+    }
+
+    /// The scope fence for the check above: a prose block whose fences are
+    /// well formed still forks. Without this, "reject the fork" would pass
+    /// just as well as the real rule.
+    #[test]
+    fn fork_keeps_prose_blocks_with_well_formed_fences() {
+        let prose = ReportBlock {
+            id: "b_0003".into(),
+            kind: "prose".into(),
+            rev: 1,
+            payload: json!({"markdown": "# A\n\nplain prose, no fence\n"}),
+        };
+        prepare_fork_report("summary".into(), vec![prose], "source", "target")
+            .expect("well-formed prose must fork");
+    }
+
     #[tokio::test]
     async fn fork_persist_helper_writes_cache_crdt_and_projection_together() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -3520,9 +3605,9 @@ mod tests {
                 title: "fork helper".into(),
                 sort: None,
                 cwd: "/tmp/fork-helper".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
-                workflow_input: None,
+                template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })
@@ -3632,25 +3717,25 @@ mod tests {
         assert!(positions.contains_key("report-1"));
     }
 
-    /// #891 / #1110 S2 — the create-time `workflow_input` validation
+    /// #891 / #1110 S2 — the create-time `template_input` validation
     /// matrix. Schema-conformance details are pinned in
-    /// `plugin_host::workflow_input`; this covers the binding combinations
+    /// `plugin_host::template_input`; this covers the binding combinations
     /// against the owning plugin Manifest.
-    mod workflow_input_binding {
-        use super::super::validate_workflow_input_binding;
+    mod template_input_binding {
+        use super::super::validate_template_input_binding;
         use crate::error::CalmError;
         use crate::plugin_host::manifest::Manifest;
         use serde_json::{Value, json};
 
         fn plugin(input_schema: Option<Value>) -> Manifest {
             let mut v = json!({
-                "manifest_version": 1,
+                "manifest_version": 2,
                 "id": "dev.neige.git-forge",
                 "version": "1.0.0",
                 "min_kernel_version": "0.0.1",
                 "display_name": "Git Forge",
                 "entrypoint": { "command": "bin/x" },
-                "workflows": [{ "id": "issue-development" }]
+                "templates": [{ "id": "issue-development" }]
             });
             if let Some(schema) = input_schema {
                 v["input_schema"] = schema;
@@ -3674,7 +3759,7 @@ mod tests {
         }
 
         fn expect_bad_request(plugin: Option<&Manifest>, input: Option<&Value>, needle: &str) {
-            match validate_workflow_input_binding(plugin, input) {
+            match validate_template_input_binding(plugin, input) {
                 Err(CalmError::BadRequest(message)) => {
                     assert!(message.contains(needle), "message `{message}` ∌ `{needle}`");
                 }
@@ -3683,13 +3768,13 @@ mod tests {
         }
 
         #[test]
-        fn input_without_workflow_id_is_rejected() {
-            expect_bad_request(None, Some(&json!({ "x": 1 })), "requires `workflow_id`");
+        fn input_without_template_id_is_rejected() {
+            expect_bad_request(None, Some(&json!({ "x": 1 })), "requires `template_id`");
         }
 
         #[test]
-        fn no_workflow_no_input_is_ok() {
-            validate_workflow_input_binding(None, None).expect("plain wave create unchanged");
+        fn no_template_no_input_is_ok() {
+            validate_template_input_binding(None, None).expect("plain wave create unchanged");
         }
 
         #[test]
@@ -3702,26 +3787,26 @@ mod tests {
         #[test]
         fn schema_less_binding_without_input_stays_valid() {
             let p = plugin(None);
-            validate_workflow_input_binding(Some(&p), None).expect("bound create unchanged");
+            validate_template_input_binding(Some(&p), None).expect("bound create unchanged");
         }
 
         #[test]
         fn missing_input_with_required_schema_is_rejected() {
             let p = plugin(Some(schema(json!(["issue_url"]))));
-            expect_bad_request(Some(&p), None, "requires `workflow_input`");
+            expect_bad_request(Some(&p), None, "requires `template_input`");
             expect_bad_request(Some(&p), None, "issue_url");
         }
 
         #[test]
         fn missing_input_with_no_required_fields_is_ok() {
             let p = plugin(Some(schema(json!([]))));
-            validate_workflow_input_binding(Some(&p), None).expect("optional input omitted");
+            validate_template_input_binding(Some(&p), None).expect("optional input omitted");
         }
 
         #[test]
         fn input_is_validated_against_the_plugin_schema() {
             let p = plugin(Some(schema(json!(["issue_url"]))));
-            validate_workflow_input_binding(
+            validate_template_input_binding(
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "auto-merge" })),
             )
@@ -3730,17 +3815,17 @@ mod tests {
             expect_bad_request(
                 Some(&p),
                 Some(&json!({ "merge_policy": "auto-merge" })),
-                "workflow_input.issue_url",
+                "template_input.issue_url",
             );
             expect_bad_request(
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "ghost": true })),
-                "workflow_input.ghost",
+                "template_input.ghost",
             );
             expect_bad_request(
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "yolo" })),
-                "workflow_input.merge_policy",
+                "template_input.merge_policy",
             );
         }
     }

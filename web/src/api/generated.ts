@@ -605,6 +605,138 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /**
+         * #1284 §2.2 — a real PATCH with a real validator.
+         * @description What this used to be: `Json<Value>` written to the row wholesale, with the
+         *     name PATCH and the semantics of PUT and no validation of any kind. Three
+         *     things change, all of them observable:
+         *
+         *     1. **No `config_schema` ⇒ 400.** A plugin that declares no configurable
+         *        surface has no key this endpoint could meaningfully store; accepting
+         *        arbitrary JSON there was how "configuration" stayed a field with no
+         *        semantics. This **overturns** the existing assertion in
+         *        `tests/cases/plugin_routes.rs::patch_config_writes_user_config`, which
+         *        pinned the 200; that test now drives a plugin that declares a schema,
+         *        and its sibling pins the 400 for one that does not.
+         *     2. **Patch semantics** per `INV-SETTINGS-001`: absent keys keep their
+         *        stored value, an explicit `null` deletes the key (and thereby restores
+         *        its manifest default — see
+         *        [`effective_config`](crate::plugin_host::effective_config)).
+         *     3. **Validation** against the manifest's `config_schema`, with the byte cap
+         *        `template_input` already uses.
+         *
+         *     ## Every branch that reaches (or refuses) the write, audited
+         *
+         *     Round 2 of the S1 review, and the reason this table is in the source rather
+         *     than in a PR comment. Round 1 introduced two defects **of the class it was
+         *     fixing**: guarding against "an invisible key locks the operator out" it
+         *     added a silent destructive write, and guarding against "a coerced row
+         *     silently loses data" it added a 500 that no API could clear. Patching those
+         *     two cells one at a time would have been the same mistake a third time, so
+         *     the branches are enumerated and each is asked the two questions that
+         *     generated both defects. Any cell answering "yes" is a bug, not a trade-off.
+         *
+         *     * **(a) Can this branch lose configuration the operator did not delete?**
+         *     * **(b) If this branch refuses, is the operator then unable to fix it
+         *       through any API?**
+         *
+         *     | # | branch | writes? | (a) silent loss | (b) locked out | why |
+         *     |---|---|---|---|---|---|
+         *     | 1 | unknown id ⇒ 404 | no | no | n/a | there is no row to lose or repair |
+         *     | 2 | registry has no `Manifest` ⇒ 409 `plugin_manifest_unloaded` | no | no | **no** | `POST /reload` re-reads the manifest; for the durable half (a `manifest.json` that fails to parse) the message names *that* as the thing to fix, because a reload alone would fail again |
+         *     | 3 | stored `user_config` is not an object ⇒ 409 `plugin_config_corrupt` | no | no | **no** | `?reset=true` replaces it with `{}` from the API. This cell was the round-1 defect: a 500 on the only write path for this field *on an installed row* (round 3 P2-3 moved that claim onto its carrier — `plugin_install`'s upsert no longer resets `user_config`, so it no longer rests on the duplicate-id 409), so every later request failed identically and the outs were uninstall/reinstall or a hand-edited DB |
+         *     | 4 | `?reset=true` ⇒ base is `{}` | yes | **no** | n/a | destructive, but only on an explicit query parameter — the operator *is* the deletion. Without a knob like this, cell 3 has no exit |
+         *     | 5 | manifest declares no `config_schema` ⇒ 400 | no | no | no | permanent by construction; there is no configuration to be locked out of |
+         *     | 6 | body is not a JSON object ⇒ 400 | no | no | no | fixed by resending |
+         *     | 7 | request names an undeclared key ⇒ 400 | no | no | no | fixed by dropping that key; the request document is the operator's and fully visible to them |
+         *     | 8 | request key with a non-`null` value | yes | no | n/a | overwrites exactly the key the operator named |
+         *     | 9 | request key with `null` | yes | no | n/a | deletes exactly the key the operator named |
+         *     | 10 | stored keys the current schema no longer declares | yes | **no** | no | they are **kept** in the row and merely excluded from what is validated. Round 1 pruned them *and wrote the pruned map back*, destroying an operator's values on an unrelated PATCH — and if the manifest ever widens back, the setting returns. `effective_config` ignores them either way, so nothing runs with them and the unlock is identical |
+         *     | 11 | merged declared-key document violates the schema ⇒ 400 | no | no | no | the previous row stands; every key named in the error is one the form shows |
+         *     | 12 | byte cap over the merged declared-key document ⇒ 400 | no | no | **no** | the operator shrinks or clears a declared key and the same request succeeds. It is deliberately **not** taken over the residue in cell 10: those bytes are not shrinkable by an ordinary patch, so refusing on them here would be a lockout — and they are not what a consumer reads, since `effective_config` drops them. **This bounds each write, not the row**: cell 12b is what bounds the row |
+         *     | 12b | total cap over the whole stored document, residue included ⇒ 400 | no | no | **no** | round 3 (P1-1). Cell 12's exclusion of residue is right for *that* cap and says nothing about the total: residue only ever grows (nothing prunes it, the write is whole-document, `reload` does not touch `user_config`), so `declare {a}` → fill `a` → narrow to `{b}` → reload → fill `b` → narrow … adds ~8 KiB per turn with every step a legal 200, and the row is echoed in every detail response. The refusal names the exit and the exit is real: `?reset=true` carrying the operator's current keys keeps their configuration and drops exactly the residue, in one request. That is why this is a cap and not the lockout cell 12 avoids |
+         *     | 13 | `plugin_update_user_config` fails ⇒ 500 | no | no | no | genuinely server-side and transient; the row is untouched |
+         *     | 14 | another lifecycle operation holds the id ⇒ 409 `plugin_busy` | no | no | **no** | round 3 (P1-2). The handler is a read-modify-write and used to take no lock while every other lifecycle entry point does, so **(a) was "yes"**: two concurrent PATCHes both read the old row and the loser's key vanished from the winner's write. The other interleaving is PATCH against `reload`: judge against the registry's schema at line N, store for the schema a consumer reads at line N+1 — and `effective_config` type-checks nothing on read, so that value reaches S2/S3a/S3b verbatim. The guard closes both. Retry is the whole remedy: a refused acquisition has done nothing |
+         *     | 15 | the `Query` / `Json` extractors reject (`?reset=x`, malformed JSON, no `application/json`) ⇒ 400 / 415 / 422 | no | no | no | **runs before cell 1** — before the handler exists — so it outranks even the 404, and its body is axum's plain text with no `code`: this row is the one place where a response from this path is *outside* the `ErrorBody` contract the rest of the table assumes. Left as-is deliberately: it is the shape of every extractor in this tree, and a rejection wrapper for one endpoint would make this route the exception rather than the rule. The `utoipa` responses list 415 and 422 so the published contract does not claim they cannot happen |
+         *
+         *     Three further things the S1 review settled, all of which are semantics
+         *     rather than plumbing:
+         *
+         *     4. **The request document is judged first, values second.** A key the
+         *        schema does not declare is refused whatever its value — including
+         *        `null`. The first cut interpreted `null` as "delete" *before* validating
+         *        and so let `{"ghost": null}` through with a 200 on a schema that has no
+         *        `ghost`, which made "the request is validated against the schema" false
+         *        as written. The key-name rule comes from
+         *        [`reject_undeclared_keys`](crate::plugin_host::template_input::reject_undeclared_keys),
+         *        the same function `validate_instance` uses.
+         *     5. **Stored keys the current schema no longer declares are excluded from
+         *        validation, and kept in the row.** They are residue from an older
+         *        manifest; [`effective_config`](crate::plugin_host::effective_config)
+         *        already drops them, so nothing runs with them. Carrying them into
+         *        validation meant that after a schema narrowed, *every* subsequent PATCH
+         *        — however legal — failed with "unknown field `old`" until the operator
+         *        guessed to send `{"old": null}` for a key no UI shows. An operator must
+         *        not be locked out by a key they cannot see. **Round 2 corrected the
+         *        remedy**: round 1 pruned the merged map and wrote the pruned result
+         *        back, which unlocked the write by *deleting the operator's data* on an
+         *        unrelated edit. Validating a pruned copy unlocks it identically and
+         *        keeps the row intact.
+         *     6. **`required` is not enforced here** (design adjudication on the S1
+         *        review). §2.2.5 says a Save carries only the keys the operator edited,
+         *        so enforcing `required` on the write would make the first Save of any
+         *        plugin with two no-default required keys unconditionally 400 — the two
+         *        rules are incompatible and this is the one that gives. `required` is
+         *        enforced at **consumption** (S2/S3 bring-up): a plugin missing required
+         *        configuration does not start, and lands in the `unavailable` +
+         *        `last_error` terminal state §2.4 already defines. This **overturns**
+         *        `patch_config_enforces_required_keys_but_lets_defaults_satisfy_them`.
+         *        With `required` gone, the two validation passes the first cut ran
+         *        collapse into one — the second existed only to enforce it.
+         *
+         *     ## Refusal priority: `404 → 409 → 400`
+         *
+         *     The gates run in that order, and the order is part of the contract. Two
+         *     things sit outside it and are stated rather than hidden:
+         *
+         *     * **The extractors run first** (table cell 15). `Query<ConfigPatchQuery>`
+         *       and `Json<Value>` reject `?reset=x`, malformed JSON and a missing
+         *       `application/json` before this function is entered, with axum's plain-text
+         *       400 / 415 / 422 and no `code`. Those responses are *not* `ErrorBody`s;
+         *       everything the priority list below covers is.
+         *     * **The lifecycle guard is taken before the 404** (cell 14), the same
+         *       ordering `install` uses. It cannot change any answer below — a
+         *       nonexistent id's lock is always free — and it exists so this
+         *       read-modify-write cannot interleave with itself, or with a `reload`.
+         *
+         *     * **404** — an unknown id is an unknown id regardless of what the body
+         *       says. Checking anything else first would leak "this plugin has no config
+         *       schema" for plugins that do not exist.
+         *     * **409** — the two *state* refusals (the registry does not hold this
+         *       manifest; the stored row is corrupt). Both mean "not right now, and here
+         *       is the action that changes that".
+         *     * **400** — everything about this manifest or this request being wrong:
+         *       no `config_schema` at all, a non-object body, an undeclared key, a value
+         *       the schema rejects.
+         *
+         *     The cell that decides the order is **no schema *and* a registry gap**: it
+         *     answers **409**, not 400, because the kernel does not know whether this
+         *     plugin declares a schema — it has not loaded the manifest. Answering 400
+         *     there would tell the operator "this plugin will never be configurable" on
+         *     the strength of a document the kernel never read, which is exactly the
+         *     wrong action (they would stop, rather than reload / fix `manifest.json`).
+         *     That is why the registry lookup precedes the `config_schema` check in the
+         *     body below and not the other way round.
+         *
+         *     Timing is likewise unchanged, but the comment that used to sit in the body
+         *     overstated it: it claimed the new config would be read "on next spawn",
+         *     which was never true of anything — nothing read `user_config` at all.
+         *     §2.4: the write does not touch the running process or connector, and taking
+         *     effect needs an explicit `POST /api/plugins/{id}/reload`. For a `cli-query`
+         *     connector that is not a nicety — its command, PATH and entire env are built
+         *     once at bring-up and cached, so an un-reloaded config change is
+         *     *completely* inert, not partly.
+         */
         patch: operations["patch_plugin_config"];
         trace?: never;
     };
@@ -757,6 +889,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/today/launchpad": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * #1253 §5.1 — the read-only resolve the Today page load uses.
+         * @description **This handler must never reach the harness.** `ensure_today_launchpad`
+         *     materializes a workspace and then submits `spec-harness-start` and
+         *     `.wait()`s on it; putting that on the page-load path would make the whole
+         *     Today route fail hard whenever codex is unavailable, which is strictly
+         *     worse than the Today page this replaces (it needed nothing to render). So
+         *     this endpoint reads two rows and returns. It does not call `ensure`, does
+         *     not materialize a workspace, and submits no operation — `ensure` hangs off
+         *     an explicit user action only (INV-TODAYDOC-001).
+         *
+         *     **Routine absence is data; anomalous absence is an error.** That is the
+         *     whole rule, and the two branches here are the two sides of it.
+         *
+         *     *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+         *     `200` with a `null` body — not a 404. It was a 404 for one revision, on the
+         *     grounds that 404 is "cheap and fail-closed". That reasoning did not survive
+         *     contact with the fact that this is the **landing route**: every session on
+         *     a fresh workspace hit it, and the browser reports every 404 on its console
+         *     error stream, so an expected state was being transported as an error. CI
+         *     found it — two Playwright specs assert zero console errors and both load
+         *     Today; one CI run logged the 404 thirty times, because the query refetches.
+         *     The alternative was allowlisting a 404 in those specs, which buys a
+         *     permanent hole in a "no console errors" gate for a transient condition:
+         *     once #1253 PR2's trigger lands, first use mints a launchpad and the
+         *     exemption outlives its reason.
+         *
+         *     *A launchpad wave with no `wave-report` card* stays a `404`, and that is
+         *     the same rule rather than an exception to it. The wave and its report card
+         *     are created in **one transaction** (`today_launchpad_ensure_tx`), and the
+         *     adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
+         *     commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
+         *     The state is unreachable, so it produces no console noise in practice — and
+         *     if it ever does occur, an error is the correct signal.
+         *
+         *     Deliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence
+         *     idiom. That 404 is **control flow**: its consumer bootstraps on it, so the
+         *     status means "go create one" (INV-TODAYTERM-006 pins that chain). This one
+         *     would mean "render the empty state" — pure data, no action — so borrowing
+         *     the shape would discard the meaning.
+         */
+        get: operations["resolve_today_launchpad"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/today/launchpad/ensure": {
         parameters: {
             query?: never;
@@ -767,6 +956,27 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["ensure_today_launchpad"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/today/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the summary conversation to write today's progress.
+         * @description See the module docs for the shape of the whole path; the comments below only
+         *     say what each step's alternative got wrong.
+         */
+        post: operations["write_today_summary"];
         delete?: never;
         options?: never;
         head?: never;
@@ -798,22 +1008,6 @@ export interface paths {
         };
         get: operations["list_wave_templates"];
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/wave-templates/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["update_wave_template"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1360,6 +1554,8 @@ export interface components {
             fork_report_from?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            template_input?: Record<string, never> | null;
             theme: components["schemas"]["RequestTheme"];
             /**
              * @description Issue #1211 — on this user-driven create path the title is no longer
@@ -1373,8 +1569,6 @@ export interface components {
              *     server applies no non-empty validation.
              */
             title?: string;
-            workflow_id?: string | null;
-            workflow_input?: Record<string, never> | null;
         };
         DeleteReportBlockBody: {
             /** Format: int32 */
@@ -1412,7 +1606,9 @@ export interface components {
              *     `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
-             *     `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
+             *     `plugin_manifest_unloaded`, `plugin_config_corrupt`,
+             *     `spec_harness_dormant`, `today_summary_no_activity`,
+             *     `db_error`, `io_error`, `serde_error`,
              *     `codex_app_server`, `service_unavailable`, `internal`,
              *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
              */
@@ -1454,6 +1650,7 @@ export interface components {
             phase?: null | components["schemas"]["HarnessPhaseTag"];
             /** @description Active runtime id, or null when the harness is dormant. */
             runtime_id?: string | null;
+            token_usage?: null | components["schemas"]["SpecRunTokenUsage"];
         };
         GitChangedFile: {
             /** @description Previous path for renamed files, relative to the repository root. */
@@ -1747,6 +1944,18 @@ export interface components {
             plugin_scope?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            /**
+             * @description Issue #891 / #1110 S2 — JSON input for the bound template. Only
+             *     accepted when `template_id` names a template a running trusted plugin
+             *     binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
+             *     route validates the value against that schema before any DB write. The
+             *     kernel never interprets the blob — it is persisted verbatim and injected
+             *     into the spec harness developer instructions at thread-mint time.
+             *     `#[serde(default)]` keeps the field purely additive under
+             *     `deny_unknown_fields`.
+             */
+            template_input?: Record<string, never> | null;
             /**
              * @description Host browser's current theme RGB (#177). Required end-to-end so
              *     the auto-minted spec card's terminal renderer answers codex's
@@ -1764,18 +1973,6 @@ export interface components {
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
-            workflow_id?: string | null;
-            /**
-             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-             *     accepted when `workflow_id` names a running trusted workflow whose
-             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
-             *     route validates the value against that schema before any DB write. The
-             *     kernel never interprets the blob — it is persisted verbatim and injected
-             *     into the spec harness developer instructions at thread-mint time.
-             *     `#[serde(default)]` keeps the field purely additive under
-             *     `deny_unknown_fields`.
-             */
-            workflow_input?: Record<string, never> | null;
         };
         /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
         NewWaveConversationBody: {
@@ -1835,6 +2032,48 @@ export interface components {
          *     render version/author/views without a separate fetch.
          */
         PluginDetail: {
+            /**
+             * @description #1284 §2.5 / §2.7 — the schema the config form renders from, read from
+             *     the **registry**, i.e. from the same document the PATCH validates
+             *     against and every S2/S3 consumer will read.
+             *
+             *     **Which copy is which, since there are now two.** `manifest` above is
+             *     still the persisted `plugins.manifest` blob, verbatim, as it has always
+             *     been published — it is the row, and rewriting it here would make this
+             *     response a document that exists nowhere. This field is the registry's,
+             *     and for `config_schema` specifically it is the authoritative one; when
+             *     the two disagree (an install by a pre-#1284 kernel dropped the key from
+             *     the blob; a `reload` refreshed the registry) `manifest.config_schema`
+             *     is stale or absent and this field is not.
+             *
+             *     Round 1 left this half-done and the contradiction was pinned by a test
+             *     of its own: `has_config` and `effective_config` had moved to the
+             *     registry while the schema a form needs was still only reachable through
+             *     the blob, so the API could answer "yes, this plugin is configurable"
+             *     and "here is what is in force" while being unable to produce the
+             *     document §2.5 renders controls from.
+             *
+             *     `None` means the same thing `has_config: false` means on the list row:
+             *     no schema is in force — either the manifest declares none, or the
+             *     kernel has not loaded it (see [`registry_manifest`]).
+             */
+            config_schema?: Record<string, never>;
+            /**
+             * @description #1284 §2.3 — `defaults ⊕ user_config`, i.e. what the plugin runs with.
+             *
+             *     Carried **alongside** `user_config` rather than replacing it, and that
+             *     is a contract, not redundancy. §2.2.4 says defaults are applied on read
+             *     and never persisted, and §2.2.5 says a Save may only carry the keys the
+             *     operator edited; a form that could not tell "the operator chose `dark`"
+             *     from "the manifest defaults to `dark`" would have to post the merged
+             *     object back, and its very first Save would materialize every default
+             *     into the DB — killing §2.2.4 outright. `user_config` answers "what did
+             *     the operator choose" (so a default renders as a placeholder and stays
+             *     out of the payload); `effective_config` answers "what is in force".
+             *     Dropping `user_config` would also be a wire break for the field's
+             *     existing readers, for no gain.
+             */
+            effective_config: Record<string, never>;
             enabled: boolean;
             id: string;
             /** Format: int64 */
@@ -1848,6 +2087,10 @@ export interface components {
             state: string;
             /** Format: int64 */
             updated_at: number;
+            /**
+             * @description What the operator has actually **set** — the persisted row, verbatim,
+             *     with no defaults folded in.
+             */
             user_config: Record<string, never>;
             version: string;
         };
@@ -1859,6 +2102,22 @@ export interface components {
          */
         PluginListItem: {
             enabled: boolean;
+            /**
+             * @description #1284 §2.5 — does this plugin declare a `config_schema`?
+             *
+             *     The list deliberately does not carry the manifest (see the struct doc),
+             *     which left "this plugin has nothing to configure" and "the config
+             *     screen isn't built yet" indistinguishable from list data alone — so the
+             *     UI could only guess, and guessing wrong produces exactly the empty
+             *     shell this work exists to remove. This is the one bit that makes the
+             *     question decidable, read from the **registry** — the same source the
+             *     write path validates against, so "the form is offered" and "the write
+             *     is accepted" cannot disagree. A plugin whose row exists but whose
+             *     manifest the kernel has not loaded (see [`registry_manifest`]) reports
+             *     `false`: the kernel knows of no configurable key for it, and its
+             *     `PATCH` says so explicitly rather than 400-ing as "no schema".
+             */
+            has_config: boolean;
             id: string;
             last_error?: string | null;
             manifest_description?: string | null;
@@ -1973,6 +2232,62 @@ export interface components {
                 [key: string]: string | null;
             };
         };
+        /**
+         * @description #1255 S3 — the context-usage half of [`GetSpecRunResponse`].
+         *
+         *     A wire type distinct from the stored [`TokenUsage`], and the differences
+         *     are the point rather than an accident of layering:
+         *
+         *     - **`percent` is computed here, on the server.** One baseline adjustment,
+         *       one over-window rule, one place they can be got wrong. Shipping a
+         *       numerator and a denominator instead would invite the client to divide
+         *       them its own way, and the correct division is not the obvious one.
+         *     - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
+         *       honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
+         *       every response in the thread — unbounded, and measured at 253.8x the
+         *       window in the captured frame this slice's tests run on — and the single
+         *       most likely bug in any future UI is a meter
+         *       drawn from it. Handing the frontend both numbers and trusting it to pick
+         *       the right one is how that bug gets written. It cannot pick wrong if only
+         *       one number crosses the wire.
+         */
+        SpecRunTokenUsage: {
+            /**
+             * Format: int64
+             * @description Wall-clock ms of the codex frame this reading came from.
+             *
+             *     Shipped because the reading survives a reboot: it rides the runtime
+             *     snapshot, so a harness respawned by boot recovery or by lazy recovery
+             *     serves whatever number was last observed — possibly months ago — and
+             *     without this field a rehydrated reading is indistinguishable on the
+             *     wire from a live one. A UI that draws a meter needs to be able to say
+             *     "as of then", or to stop drawing it. The kernel does not pick a
+             *     staleness threshold; it ships the timestamp so a reader can.
+             */
+            at_ms: number;
+            /**
+             * Format: int64
+             * @description The model's context window, or null when codex has never reported one.
+             */
+            context_window?: number | null;
+            /**
+             * Format: double
+             * @description Context occupancy as a whole percentage, `0.0..=100.0`.
+             *
+             *     Null means "no percentage can honestly be stated": no known window, a
+             *     window at or below the 12000-token baseline, or `used_tokens` above
+             *     the window. That last case is deliberately NOT clamped to 100 — see
+             *     `TokenUsage::percent`. Render the raw count with no meter.
+             */
+            percent?: number | null;
+            /**
+             * Format: int64
+             * @description Tokens in the model's context as of the most recent response
+             *     (`tokenUsage.last.totalTokens` upstream). Always present — this is the
+             *     raw evidence, and it ships even when `percent` does not.
+             */
+            used_tokens: number;
+        };
         Terminal: {
             card_id: string;
             /** Format: int64 */
@@ -2039,6 +2354,67 @@ export interface components {
             spec_card_id: string;
             terminal_card_id: string;
             terminal_id: string;
+            wave_id: string;
+        };
+        /**
+         * @description #1253 §5.1 — what the Today **page load** reads.
+         *
+         *     A deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it
+         *     does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
+         *     reader's, and the two answer different questions.
+         *
+         *     There is no `report_card_id` here on purpose. The wave detail already
+         *     returns the wave's cards and the frontend locates the report by
+         *     `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+         *     such a field would have no consumer.
+         */
+        TodayLaunchpadResolved: {
+            /**
+             * @description Whether this report's `summary`/`body` differ **right now** from the
+             *     canonical freshly-minted pair.
+             *
+             *     It is NOT "has anyone ever written it": no history is consulted, so
+             *     none can be reported, and restoring the text to the canonical pair
+             *     turns this back to `false`. Do not build a "the summary has run" marker
+             *     on it — see the first bullet below.
+             *
+             *     It is computed server-side by
+             *     [`WaveReportPayload::report_startup_read_required`], the kernel's one
+             *     canonical "has this been written" predicate. It is deliberately NOT
+             *     named `report_started`, and the difference is not cosmetic (design D7):
+             *
+             *     * **It is a statement about the report's CURRENT content, not about its
+             *       history.** The name says exactly that, and the name is the contract:
+             *       it is `has_noninitial_content`, not `has_ever_been_written`. Restoring
+             *       `summary` and `body` byte-for-byte to the canonical initial pair
+             *       flips it back to `false`, whatever happened in between — no history is
+             *       consulted, so none can be reported.
+             *     * It therefore also answers "has *anyone* written it", not "has today's
+             *       summary run": a user hand-editing the document flips it exactly as a
+             *       summary agent would, and a stale document still reads as content.
+             *       Anything that really needs "did the summary run" needs a durable
+             *       marker or event, not this.
+             *     * It compares `summary + body` only; `doc_rev` and `blocks` are
+             *       deliberately ignored, so a canonical placeholder that CRDT has
+             *       already materialised still reads `false` — and so does a report whose
+             *       text was reverted to canonical while those two stayed non-zero.
+             *
+             *     The frontend must not re-derive this by looking at the report body:
+             *     `readWaveReport` returns non-null for the canonical initial report
+             *     (its body carries the maintenance-contract comment and four H1s), so a
+             *     null-check there renders four empty headings instead of an empty state.
+             */
+            report_has_noninitial_content: boolean;
+            wave_id: string;
+        };
+        /** @description What the caller gets back on success. */
+        TodaySummaryStarted: {
+            /**
+             * @description The summary conversation's card. Stable for the launchpad's lifetime
+             *     (INV-TODAYDOC-011) and openable in Today's Conversations module.
+             */
+            card_id: string;
+            /** @description The launchpad wave, whose report the agent is being asked to rewrite. */
             wave_id: string;
         };
         /**
@@ -2190,12 +2566,25 @@ export interface components {
             lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: int64 */
             pinned_at?: number | null;
-            /** @description Owning plugin copied from the bound workflow. Immutable after creation. */
+            /** @description Owning plugin copied from the bound template. Immutable after creation. */
             plugin_scope?: string | null;
             /** @description Server-owned structural marker. Public wave creation cannot set this. */
             purpose?: string | null;
             /** Format: double */
             sort: number;
+            /**
+             * @description Template this wave was created from.
+             *
+             *     The `serde(alias)` below is a deserialization-only compatibility read
+             *     for pre-#1209 event-log rows; serialization emits only this name.
+             */
+            template_id?: string | null;
+            /**
+             * @description Template input is validated at creation and otherwise remains opaque.
+             *
+             *     Carries the same deserialization-only alias as `template_id`.
+             */
+            template_input?: Record<string, never> | null;
             /**
              * Format: int64
              * @description Issue #250 PR 2 — unix-ms timestamp the wave most recently
@@ -2220,9 +2609,6 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
-            workflow_id?: string | null;
-            /** @description Workflow input is validated at creation and otherwise remains opaque. */
-            workflow_input?: Record<string, never> | null;
             workspace?: components["schemas"]["WaveWorkspace"];
         };
         /** @description A report link from another wave that targets this wave. */
@@ -2536,20 +2922,20 @@ export interface components {
          * @description One selectable starting point for a new wave.
          *
          *     "Blank" is not in this list and never will be: it is the *absence* of a
-         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     template (`POST /api/waves` with no `template_id`), so the client renders it
          *     as its own default option rather than the server minting a pseudo-row for
          *     something that has no key, no title source, and no report to fork.
          */
         WaveTemplate: {
             /**
-             * @description Template key. Passed back verbatim as `workflow_id` on
+             * @description Template key. Passed back verbatim as `template_id` on
              *     `POST /api/waves` — see the seam note on this module.
              */
             id: string;
             /**
-             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             * @description JSON Schema for `template_input`, from the manifest of the running
              *     trusted plugin bound to `id`. Absent means the template takes no input;
-             *     sending `workflow_input` for it is a 400 on create.
+             *     sending `template_input` for it is a 400 on create.
              */
             input_schema?: unknown;
             /**
@@ -2565,22 +2951,6 @@ export interface components {
             title: string;
         };
         /**
-         * @description One `(key, goal)` pair — the only two facts the editor may state about a
-         *     task. Everything else about a task block is the server's.
-         *
-         *     `deny_unknown_fields` is the load-bearing part, not decoration. The whole
-         *     safety argument for this endpoint is "privileged task vocabulary has nowhere
-         *     to go in the request"; without this attribute serde would quietly ignore
-         *     extra keys, the guarantee would rest on nobody ever adding a
-         *     `#[serde(flatten)]` here, and
-         *     `privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing
-         *     while the property it names had stopped holding.
-         */
-        WaveTemplateGoalEdit: {
-            goal: string;
-            key: string;
-        };
-        /**
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
          *
          *     `key` and `goal` only: those are the two facts a person choosing a starting
@@ -2593,50 +2963,6 @@ export interface components {
             goal: string;
             /** @description The task block's `key` in the seeded report. */
             key: string;
-        };
-        /**
-         * @description A template edit from Settings — a **diff**, never a task list.
-         *
-         *     ## Why the client cannot send task payloads (#1230 review round 2)
-         *
-         *     The first two cuts took the whole task list back. Both leaked, in ways that
-         *     were fixed one at a time and kept reappearing in a new shape:
-         *
-         *     * a client that simply **omitted** a task erased it. For a live task the
-         *       guard refused the write, but for a **tombstone** it did not —
-         *       `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`
-         *       — so omitting a tombstone silently reversed a #1179-governed deletion, and
-         *       re-appending the key resurrected it.
-         *     * a client could put privileged vocabulary into a payload the server then
-         *       stored verbatim. Measured, not argued: `released_by_user: true` and
-         *       `spawn: "sub-wave"` were both accepted and persisted.
-         *
-         *     Both are the same root cause — the editor was a second author of task
-         *     blocks on a document whose invariants assume one — and neither is fixable by
-         *     adding checks, because the check list has to anticipate every field the task
-         *     vocabulary will ever grow.
-         *
-         *     So the write side no longer accepts blocks at all. It accepts *what changed*:
-         *     a title, goals for keys that already exist, and tasks to append. The server
-         *     reads the stored payloads, edits them in place and constructs appended ones
-         *     itself. Omission is not expressible, privileged fields are not expressible,
-         *     and a rename is not expressible — all three are structurally impossible
-         *     rather than rejected.
-         */
-        WaveTemplateUpdate: {
-            /** @description Tasks to add, in the order they should appear after the existing ones. */
-            appends?: components["schemas"]["WaveTemplateGoalEdit"][];
-            /**
-             * @description New goals for tasks that already exist, keyed by the task's `key`.
-             *     A key the template does not declare is a 400, not a silent create.
-             */
-            edits?: components["schemas"]["WaveTemplateGoalEdit"][];
-            /**
-             * @description The new title. Trimmed; must not be empty — a template with a blank
-             *     title is unpickable in the New wave dialog, which lists templates by
-             *     title and nothing else.
-             */
-            title: string;
         };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
@@ -4197,6 +4523,15 @@ export interface operations {
                     "application/json": components["schemas"]["Overlay"];
                 };
             };
+            /** @description Reserved kernel namespace (plugin_id or entity_kind) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Internal error */
             500: {
                 headers: {
@@ -4227,6 +4562,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Reserved kernel namespace (plugin_id or entity_kind) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
             /** @description Internal error */
             500: {
@@ -4448,7 +4792,27 @@ export interface operations {
     };
     patch_plugin_config: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Discard the stored `user_config` entirely and apply this patch to an
+                 *     empty object (#1284 S1 review P0-C).
+                 *
+                 *     The recovery action for a row whose `user_config` is not a JSON object,
+                 *     which the kernel otherwise refuses to merge into (409
+                 *     `plugin_config_corrupt`) precisely so it does not silently discard
+                 *     data. Without an explicit knob that refusal is permanent: this endpoint
+                 *     is the only writer of the field on an installed row (`plugin_install`
+                 *     sets it once at row creation and its upsert path leaves it alone —
+                 *     P2-3), so no request could ever restore it.
+                 *
+                 *     It is destructive on purpose and never implicit — that is what makes it
+                 *     compatible with "a write path must never be the thing that loses
+                 *     configuration": the deletion is the operator's, named in the request.
+                 *     It works on a healthy row too, where it means "reset this plugin to its
+                 *     manifest defaults".
+                 */
+                reset?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Plugin id */
@@ -4456,7 +4820,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description Free-form user-config JSON object */
+        /** @description Partial user-config object: only the keys being edited. An explicit `null` deletes a key; absent keys are left alone. Validated against the plugin manifest's `config_schema`. */
         requestBody: {
             content: {
                 "application/json": Record<string, never>;
@@ -4472,6 +4836,15 @@ export interface operations {
                     "application/json": components["schemas"]["PluginDetail"];
                 };
             };
+            /** @description Plugin declares no `config_schema`, or the patched config violates it */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Plugin not found */
             404: {
                 headers: {
@@ -4480,6 +4853,29 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
+            };
+            /** @description Another lifecycle operation holds this plugin (`plugin_busy`); or the plugin row exists but its manifest is not loaded in the kernel registry (`plugin_manifest_unloaded`); or its stored `user_config` is not a JSON object (`plugin_config_corrupt`, clearable with `?reset=true`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Extractor-level rejection (missing/!= `application/json` content type). Raised by axum's `Json` extractor **before** this handler runs, so the body is plain text and carries no `code` — outside the `ErrorBody` contract */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Extractor-level rejection (well-formed JSON that is not deserializable into the request type). Same caveat as 415: plain text, no `code` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Internal error */
             500: {
@@ -4572,7 +4968,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
+            /** @description Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4683,7 +5079,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
+            /** @description Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4983,6 +5379,35 @@ export interface operations {
             };
         };
     };
+    resolve_today_launchpad: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": null | components["schemas"]["TodayLaunchpadResolved"];
+                };
+            };
+            /** @description The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     ensure_today_launchpad: {
         parameters: {
             query?: never;
@@ -5011,6 +5436,57 @@ export interface operations {
                 };
             };
             /** @description Launchpad exists but harness failed to start */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    write_today_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodaySummaryStarted"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).
+             *     * `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5057,60 +5533,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WaveTemplate"][];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    update_wave_template: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Template key */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WaveTemplateUpdate"];
-            };
-        };
-        responses: {
-            /** @description The template as stored after the edit */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WaveTemplate"];
-                };
-            };
-            /** @description Invalid title, unknown key, or duplicate append */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Unknown template key */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */

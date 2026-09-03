@@ -7,10 +7,25 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::mcp_server::tools::plan::key_is_valid;
+use crate::validation::KERNEL_OVERLAY_PLUGIN_ID;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+/// The wire key [`Manifest::config_schema`] serializes to.
+///
+/// It is the **error root path** every `config_schema` violation is reported
+/// under (`config_schema.properties.theme.default: …`), which is a string an
+/// operator reads next to their own `manifest.json`. Pinned to the real serde
+/// output by `config_schema_key_matches_the_serialized_manifest`, so renaming
+/// the field can not leave the diagnostics pointing at a key that no longer
+/// exists on the wire.
+///
+/// (S1 review: nothing reads the schema out of the persisted blob any more —
+/// `has_config` and the PATCH validator both go through the registry's typed
+/// [`Manifest`]. See `routes::plugins::registry_manifest` for why.)
+pub const CONFIG_SCHEMA_KEY: &str = "config_schema";
 
 /// Top-level manifest blob loaded from `<install_path>/manifest.json`.
 ///
@@ -18,7 +33,53 @@ use thiserror::Error;
 /// fields default; missing required fields fail in `parse`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
-    /// Always `1` for M3. Other values are rejected by `parse`.
+    /// Which spelling of the template-binding array this file uses.
+    ///
+    /// * `1` — the array was spelled `workflows`. That spelling is **gone**
+    ///   (see [`Manifest::reject_retired_workflows_key`]), so a v1 file is
+    ///   still accepted only when it declares no bindings at all — nothing
+    ///   about such a file changed in #1268 and it reads identically on either
+    ///   kernel.
+    /// * `2` — the array is spelled `templates` (#1268).
+    /// * `3` — the manifest may declare a [`Self::config_schema`] with a
+    ///   non-empty `required` (#1284). Same rollback argument as `2`, one
+    ///   layer up: a pre-#1284 kernel ignores `config_schema` entirely, so a
+    ///   plugin whose configuration is *mandatory* would come up on that
+    ///   kernel with none of it — silently. Declaring `3` makes that old
+    ///   kernel refuse the file by version instead (it accepts only `1..=2`),
+    ///   which under `registry::load_from_dir` means the plugin **disappears
+    ///   from the list** rather than running mis-configured. A
+    ///   `config_schema` whose keys are all optional loses nothing on that
+    ///   kernel — it degrades to "no configuration", which is precisely what
+    ///   every default already means — so it stays at `2` and keeps loading.
+    ///
+    /// Any other value is rejected by [`Manifest::validate`].
+    ///
+    /// **Why a bump at all**, given the retired-key guard already covers the
+    /// upgrade direction: it is the *rollback* direction that needs it. A
+    /// `templates[]` manifest handed to a pre-#1268 kernel hits a parser that
+    /// ignores unknown top-level keys, so the binding list silently defaults
+    /// to empty and `issue-development` loses its `input_schema` with no error
+    /// and no log. Declaring `2` makes that old kernel's own
+    /// `manifest_version != 1` check refuse the file by version instead —
+    /// which is why [`Manifest::validate`] *requires* `2` from any manifest
+    /// that actually declares a binding.
+    ///
+    /// **And why the requirement is scoped to those manifests rather than to
+    /// all of them.** Requiring `2` everywhere would refuse every existing
+    /// binding-less manifest — and the boot loader turns a parse failure into
+    /// `warn!` + skip (`registry::load_from_dir`), so those plugins would just
+    /// disappear, which is the same silent-loss shape this bump exists to
+    /// remove. A manifest with no bindings has nothing to lose on rollback: it
+    /// reads identically on a pre-#1268 and a post-#1268 kernel, because the
+    /// only thing the two disagree about is the name of an array it does not
+    /// have. Scoping the requirement to manifests that *do* declare a binding
+    /// is therefore what keeps binding-less manifests working across both
+    /// kernels while still closing the rollback hazard completely — every
+    /// manifest that could lose a binding is forced onto `2`, and every
+    /// manifest that could not is left alone. This is not hypothetical: the
+    /// plugin roots on real deployments hold connector manifests
+    /// (`kind: "mcp-http"`, `cli-query`) that never declared one.
     pub manifest_version: u32,
 
     /// Reverse-DNS or slug, see `is_valid_plugin_id`. Stable across versions.
@@ -83,16 +144,41 @@ pub struct Manifest {
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
-    /// Wave `workflow_input` contract (#891 / #1110 S2). One plugin, one
-    /// input shape — sibling of `exposes_tools`, not of a workflow
-    /// descriptor. Same JSON-Schema subset as `plugin_host::workflow_input`.
-    /// Absent: the plugin does not accept `workflow_input`.
+    /// Wave `template_input` contract (#891 / #1110 S2). One plugin, one
+    /// input shape — sibling of `exposes_tools`, not of a template
+    /// descriptor. Same JSON-Schema subset as `plugin_host::template_input`.
+    /// Absent: the plugin does not accept `template_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
 
+    /// #1284 §2.1 — the plugin's **user-configuration** contract: what an
+    /// operator may set in Settings › Plugins, in the same JSON-Schema subset
+    /// as [`Self::input_schema`] (`plugin_host::template_input`, error paths
+    /// rooted at `config_schema…`).
+    ///
+    /// Unlike `input_schema` this is **not** app-only: all three kinds
+    /// (`app` / `mcp-http` / `cli-query`) grow a consumer in S2/S3a/S3b, so
+    /// [`Manifest::reject_app_only_surfaces`] deliberately leaves it alone.
+    ///
+    /// Absent ⇒ the plugin has **no** configurable surface, and
+    /// `PATCH /api/plugins/{id}/config` refuses the write with a 400. "No
+    /// config schema" and "config UI not built yet" must be two different
+    /// things on screen; `PluginListItem::has_config` is the list-side
+    /// projection of exactly this field's presence.
+    ///
+    /// Values declared here are **not** persisted at their defaults — see
+    /// [`super::effective_config`]: `default` is applied on read, so changing
+    /// a default in a later manifest version still reaches plugins whose
+    /// operator never touched that key.
+    ///
+    /// Declaring a schema with a non-empty `required` forces
+    /// `manifest_version >= 3`; see [`Manifest::manifest_version`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<Value>,
+
     /// Trusted forge plugins may claim **kernel wave-template ids**. Wave
-    /// create binds `workflow_id` to one of these so the kernel can copy the
-    /// owning plugin into `plugin_scope` and validate `workflow_input` against
+    /// create binds `template_id` to one of these so the kernel can copy the
+    /// owning plugin into `plugin_scope` and validate `template_input` against
     /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
     /// ids are ignored by the binding layer; the parser still checks id
     /// shape so broken entries fail close to the authoring point.
@@ -100,14 +186,14 @@ pub struct Manifest {
     /// **#1209 narrowed this capability, and this is the contract, not a
     /// note.** Declaring an id is *claiming an existing template*, never
     /// *creating* one. The ids the kernel knows are the wave-template roster
-    /// (`crate::workflow_templates::WORKFLOW_TEMPLATES`: today
+    /// (`crate::templates::TEMPLATES`: today
     /// `issue-development`, `small-change`, `investigation`), and
     /// `POST /api/waves` admits an id **iff it is in that roster** — plugin
     /// declarations do not widen the set. An id outside the roster is
     /// therefore inert: it is parsed, it is not rejected here, and it can
     /// never be bound **through `POST /api/waves`** — the only production
-    /// writer of `waves.workflow_id` — because that create is a 400. The
-    /// repo-layer `wave_create` takes `workflow_id` / `plugin_scope`
+    /// writer of `waves.template_id` — because that create is a 400. The
+    /// repo-layer `wave_create` takes `template_id` / `plugin_scope`
     /// verbatim and enforces nothing; its non-route callers are all test
     /// fixtures passing `None` today, and a future in-process writer that
     /// wanted this guarantee would have to call the admission itself. Before
@@ -117,7 +203,7 @@ pub struct Manifest {
     /// piece of work — see `docs/architecture/1209-template-workflow-unify.md`
     /// §5, option C.
     #[serde(default)]
-    pub workflows: Vec<WorkflowDescriptor>,
+    pub templates: Vec<TemplateDescriptor>,
 
     /// Missing block treated as the most-restrictive permission set.
     #[serde(default)]
@@ -546,13 +632,13 @@ pub struct ExposedTool {
     pub annotations: Option<Value>,
 }
 
-/// Wave-create handle that names a plugin-owned workflow id.
+/// Wave-create handle that names a plugin-owned template id.
 ///
 /// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, spec instructions,
 /// and card kinds left the parser; `input_schema` lives on [`Manifest`].
 /// Extra JSON keys are ignored (same forwards-compat as [`Manifest`]).
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct WorkflowDescriptor {
+pub struct TemplateDescriptor {
     pub id: String,
 }
 
@@ -656,18 +742,86 @@ impl Manifest {
             return Err(ManifestError::invalid("<root>", "manifest is empty"));
         }
         let m: Manifest = serde_json::from_str(s)?;
+        // Raw-text guard first: when a file carries the retired key, "rename it
+        // to `templates`" is the actionable message, not "wrong version".
+        Self::reject_retired_workflows_key(s)?;
         m.validate()?;
         Ok(m)
+    }
+
+    /// #1268 — refuse a manifest that still spells [`Self::templates`] the old
+    /// way (`workflows`).
+    ///
+    /// `Manifest` deliberately tolerates unknown top-level keys, so without
+    /// this the rename would be a **silent** contract break: an old manifest
+    /// would parse, declare zero bindings, and `issue-development` would
+    /// quietly lose its `input_schema` — every `POST /api/waves` carrying
+    /// `template_input` would then 400 with nothing pointing at the cause.
+    /// Naming the new key in the error costs one extra `Value` parse of a file
+    /// that is at most a few KB and is read once per install/reload.
+    ///
+    /// This runs on the *raw text*, not on the deserialized struct, precisely
+    /// because the struct is where the evidence has already been discarded —
+    /// hence an associated fn with no `&self`: there is nothing in the parsed
+    /// value for it to consult, and a `&self` receiver would invite exactly the
+    /// misreading this paragraph exists to prevent.
+    ///
+    /// Deliberately **not** conditioned on `manifest_version`: the retired key
+    /// is refused at every declared version, so "v1 said `workflows`" is never
+    /// a way back in.
+    fn reject_retired_workflows_key(s: &str) -> Result<(), ManifestError> {
+        let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(s) else {
+            // Not an object, or not valid JSON — `serde_json::from_str::<Manifest>`
+            // above already succeeded, so this branch is unreachable in practice;
+            // there is nothing to check either way.
+            return Ok(());
+        };
+        if raw.contains_key("workflows") {
+            return Err(ManifestError::invalid(
+                "workflows",
+                "renamed to `templates` in #1268; rename the key (its entries are \
+                 unchanged: `{ \"id\": \"<kernel template id>\" }`)",
+            ));
+        }
+        Ok(())
     }
 
     /// Validate an already-deserialized manifest. Exposed publicly so callers
     /// holding a `Manifest` (e.g. after editing in-memory) can re-check it.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.manifest_version != 1 {
+        if !(1..=3).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
                 "manifest_version",
                 format!(
-                    "M3 only accepts manifest_version=1, got {}",
+                    "only manifest_version 1, 2 or 3 is accepted, got {}",
+                    self.manifest_version
+                ),
+            ));
+        }
+
+        // #1268 — a manifest that actually declares a binding MUST say 2.
+        //
+        // This is the whole point of the bump, and it is deliberately scoped to
+        // files that have something to lose. The hazard is rollback: a
+        // `templates[]` file read by a pre-#1268 kernel parses clean (unknown
+        // top-level keys are ignored), declares no binding, and silently drops
+        // `issue-development`'s `input_schema`. Declaring 2 turns that into the
+        // old kernel's own `manifest_version != 1` refusal.
+        //
+        // A manifest with no bindings has no such exposure — it reads
+        // identically on both kernels — so it is left alone rather than broken
+        // for symmetry. That matters in practice: the plugin install root on a
+        // real deployment holds connector manifests (`kind: "mcp-http"`,
+        // `cli-query`) that never declared a binding, and the boot loader
+        // treats a parse failure as `warn!` + skip (`registry.rs`), i.e. losing
+        // them would be quiet — the exact failure shape this rule exists to
+        // remove.
+        if !self.templates.is_empty() && self.manifest_version < 2 {
+            return Err(ManifestError::invalid(
+                "manifest_version",
+                format!(
+                    "must be 2 to declare `templates` (#1268 renamed the array; \
+                     a v1 kernel would ignore it and silently bind nothing), got {}",
                     self.manifest_version
                 ),
             ));
@@ -678,6 +832,24 @@ impl Manifest {
                 "id",
                 "must match ^[a-z0-9][a-z0-9.-]{1,63}$ (reverse-DNS or slug, \
                  lowercase, 2–64 chars, alphanumerics plus '.' and '-')",
+            ));
+        }
+
+        // #1297: `kernel` is a reserved writer identity, not merely a naming
+        // convention. `card_fsm` stamps it on the overlay rows the scheduler
+        // and spec-harness admission read back as fact, and the callback path
+        // writes `ctx.plugin_id` verbatim — so a plugin that simply *named
+        // itself* `kernel` would forge that authorship without touching any
+        // of the guards on the REST side. The regex above admits it, so the
+        // refusal has to be explicit and it has to be here, at the only place
+        // a plugin id enters the system.
+        if self.id == KERNEL_OVERLAY_PLUGIN_ID {
+            return Err(ManifestError::invalid(
+                "id",
+                format!(
+                    "`{KERNEL_OVERLAY_PLUGIN_ID}` is reserved for kernel-authored rows \
+                     and cannot be claimed by a plugin",
+                ),
             ));
         }
 
@@ -740,16 +912,48 @@ impl Manifest {
             view.validate(i)?;
         }
 
-        // #1110 S2 — wave `workflow_input` lives on the Manifest, not a
-        // workflow descriptor. Error paths are `input_schema…` (no
-        // `workflows[i].` prefix).
+        // #1110 S2 — wave `template_input` lives on the Manifest, not a
+        // template descriptor. Error paths are `input_schema…` (no
+        // `templates[i].` prefix).
         if let Some(schema) = self.input_schema.as_ref() {
-            crate::plugin_host::workflow_input::validate_input_schema(schema)
+            crate::plugin_host::template_input::validate_input_schema(schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
         }
 
-        for (i, workflow) in self.workflows.iter().enumerate() {
-            workflow.validate(i)?;
+        // #1284 §2.1 — same subset, different Manifest field, and therefore a
+        // different error root: a `config_schema` violation must say
+        // `config_schema…`, never `input_schema…`. That is the whole reason
+        // `validate_object_schema` takes a root path.
+        if let Some(schema) = self.config_schema.as_ref() {
+            crate::plugin_host::template_input::validate_object_schema(CONFIG_SCHEMA_KEY, schema)
+                .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
+
+            // …and the conditional version bump. Scoped to schemas that carry
+            // a non-empty `required` for the reason spelled out on
+            // `manifest_version`: only those lose something real when a
+            // pre-#1284 kernel ignores the key. `required` is already known to
+            // be a non-empty array of declared property names at this point —
+            // the subset validator above ran first.
+            let has_required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|r| !r.is_empty());
+            if has_required && self.manifest_version < 3 {
+                return Err(ManifestError::invalid(
+                    "manifest_version",
+                    format!(
+                        "must be 3 to declare a `config_schema` with `required` \
+                         (#1284: a pre-#1284 kernel ignores `config_schema`, so the \
+                         plugin would run with none of its mandatory configuration \
+                         and no error), got {}",
+                        self.manifest_version
+                    ),
+                ));
+            }
+        }
+
+        for (i, template) in self.templates.iter().enumerate() {
+            template.validate(i)?;
         }
 
         self.permissions.validate()?;
@@ -808,7 +1012,7 @@ impl Manifest {
     /// #1164 §3 — **parse-time** refusal of every `app`-only surface on a
     /// connector manifest.
     ///
-    /// §3 lists "渲染 `ui://` 或绑 `workflows[]`（parse 期拒绝）" as a channel
+    /// §3 lists "渲染 `ui://` 或绑 `templates[]`（parse 期拒绝）" as a channel
     /// that *does not exist* for connectors, and §4's interception table is
     /// only sound if the manifest can never declare one. Enforcing it here —
     /// rather than by hoping no downstream reader ever looks — is what makes
@@ -840,16 +1044,16 @@ impl Manifest {
                 only_app("cannot serve a `ui://` resource, so a view could never render"),
             ));
         }
-        if !self.workflows.is_empty() {
+        if !self.templates.is_empty() {
             return Err(ManifestError::invalid(
-                "workflows",
-                only_app("cannot own a wave workflow"),
+                "templates",
+                only_app("cannot own a wave template"),
             ));
         }
         if self.input_schema.is_some() {
             return Err(ManifestError::invalid(
                 "input_schema",
-                only_app("declares no workflow, so there is no `workflow_input` to shape"),
+                only_app("declares no template, so there is no `template_input` to shape"),
             ));
         }
         if !self.permissions.grants_nothing() {
@@ -1257,11 +1461,11 @@ impl View {
     }
 }
 
-impl WorkflowDescriptor {
+impl TemplateDescriptor {
     fn validate(&self, idx: usize) -> Result<(), ManifestError> {
         if !key_is_valid(&self.id) {
             return Err(ManifestError::invalid(
-                format!("workflows[{idx}].id"),
+                format!("templates[{idx}].id"),
                 "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
             ));
         }
@@ -1497,15 +1701,15 @@ mod tests {
         assert!(m.permissions.overlays_write.is_empty());
     }
 
-    fn workflow_manifest_value() -> Value {
+    fn template_manifest_value() -> Value {
         json!({
-            "manifest_version": 1,
-            "id": "dev.neige.workflow-test",
+            "manifest_version": 2,
+            "id": "dev.neige.template-test",
             "version": "1.0.0",
             "min_kernel_version": "0.0.1",
-            "display_name": "Workflow Test",
-            "entrypoint": { "command": "bin/workflow-test" },
-            "workflows": [
+            "display_name": "Template Test",
+            "entrypoint": { "command": "bin/template-test" },
+            "templates": [
                 { "id": "issue-development" }
             ],
             "permissions": {}
@@ -1517,38 +1721,158 @@ mod tests {
     }
 
     #[test]
-    fn parses_workflow_descriptor() {
-        let m = parse_manifest_value(workflow_manifest_value()).expect("workflow manifest");
-        assert_eq!(m.workflows.len(), 1);
-        assert_eq!(m.workflows[0].id, "issue-development");
+    fn parses_template_descriptor() {
+        let m = parse_manifest_value(template_manifest_value()).expect("template manifest");
+        assert_eq!(m.templates.len(), 1);
+        assert_eq!(m.templates[0].id, "issue-development");
+    }
+
+    /// #1268 — the rename's one silent failure mode, made loud.
+    ///
+    /// `Manifest` tolerates unknown top-level keys (see
+    /// `extra_template_descriptor_fields_are_ignored` for the *descriptor*
+    /// half of the same forwards-compat rule), so a manifest still spelling
+    /// the array `workflows` would otherwise parse into
+    /// `templates: []` — the plugin would declare no binding at all, and the
+    /// only symptom would be `issue-development` losing its `input_schema`
+    /// and every `template_input` create 400-ing far from the cause.
+    ///
+    /// Both halves are asserted: the old key is refused **and** the error
+    /// names the new one, because "invalid manifest" alone would not tell the
+    /// author what to type. Deleting `reject_retired_workflows_key` turns the
+    /// first assertion red; weakening its message turns the second red.
+    #[test]
+    fn a_manifest_still_spelling_the_array_workflows_is_refused_by_name() {
+        let mut v = template_manifest_value();
+        let entries = v["templates"].take();
+        v.as_object_mut()
+            .expect("manifest fixture is an object")
+            .remove("templates");
+        v["workflows"] = entries;
+
+        let err = parse_manifest_value(v).expect_err("the retired key must not parse silently");
+        let ManifestError::Invalid { field, reason } = &err else {
+            panic!("expected a field-level Invalid, got {err:?}");
+        };
+        assert_eq!(field, "workflows");
+        assert!(
+            reason.contains("templates"),
+            "the refusal must name the new key, got {reason:?}"
+        );
+    }
+
+    /// #1268 — the **rollback** direction, which the retired-key guard cannot
+    /// reach.
+    ///
+    /// The guard runs in *this* kernel, so it protects an operator moving
+    /// forward. Moving backward, a `templates[]` manifest is handed to a
+    /// pre-#1268 parser that ignores unknown top-level keys: it parses clean,
+    /// binds nothing, and `issue-development` loses its `input_schema` with no
+    /// error and no log. The only thing an old kernel *will* refuse on its own
+    /// is a `manifest_version` it does not know — so a manifest that declares a
+    /// binding is required to say `2`, and that requirement is what this pins.
+    ///
+    /// The error names the field rather than the array, because the fix is to
+    /// the version line.
+    #[test]
+    fn declaring_templates_at_version_1_is_refused_naming_the_version() {
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(1);
+        let err =
+            parse_manifest_value(v).expect_err("a v1 file must not be allowed to declare bindings");
+        let ManifestError::Invalid { field, reason } = &err else {
+            panic!("expected a field-level Invalid, got {err:?}");
+        };
+        assert_eq!(field, "manifest_version");
+        assert!(
+            reason.contains('2'),
+            "the refusal must say which version to declare, got {reason:?}"
+        );
+    }
+
+    /// The scope of that rule, stated as a test rather than a comment: a
+    /// manifest with **no** bindings is untouched by #1268 and keeps loading at
+    /// version 1.
+    ///
+    /// This is not symmetry for its own sake. The plugin install root on a real
+    /// deployment holds connector manifests that never declared a binding, and
+    /// the boot loader turns a parse failure into `warn!` + skip — so
+    /// tightening the rule to "every manifest must say 2" would silently drop
+    /// working plugins, which is the same failure shape #1268 exists to remove.
+    #[test]
+    fn a_binding_less_manifest_still_loads_at_version_1() {
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(1);
+        v.as_object_mut()
+            .expect("manifest fixture is an object")
+            .remove("templates");
+        let m = parse_manifest_value(v).expect("a v1 manifest without bindings is still valid");
+        assert_eq!(m.manifest_version, 1);
+        assert!(m.templates.is_empty());
+
+        // An explicitly empty array is the same case: nothing to lose on
+        // rollback, so it must not be treated as "declares a binding".
+        let mut empty = template_manifest_value();
+        empty["manifest_version"] = json!(1);
+        empty["templates"] = json!([]);
+        parse_manifest_value(empty).expect("an empty `templates` array declares no binding");
+    }
+
+    /// Version 2 is the current epoch and parses with its bindings intact.
+    #[test]
+    fn version_2_with_templates_parses() {
+        let m = parse_manifest_value(template_manifest_value()).expect("v2 manifest");
+        assert_eq!(m.manifest_version, 2);
+        assert_eq!(m.templates[0].id, "issue-development");
+    }
+
+    /// The shipped plugin is on the current epoch — otherwise the rule above
+    /// would be pinned only by hand-built fixtures while the one manifest that
+    /// actually ships stayed on the retired one.
+    #[test]
+    fn the_shipped_git_forge_manifest_declares_version_2() {
+        let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        assert_eq!(m.manifest_version, 2);
+        assert!(!m.templates.is_empty());
+    }
+
+    /// The other direction: nothing about the check makes an ordinary unknown
+    /// top-level key fatal. Only the one retired spelling is.
+    #[test]
+    fn an_unrelated_unknown_top_level_key_still_parses() {
+        let mut v = template_manifest_value();
+        v["some_future_field"] = json!({ "anything": true });
+        let m = parse_manifest_value(v).expect("unknown top-level keys stay forwards-compatible");
+        assert_eq!(m.templates[0].id, "issue-development");
     }
 
     #[test]
-    fn extra_workflow_descriptor_fields_are_ignored() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"] = json!([]);
-        v["workflows"][0]["gates"] = json!([]);
-        v["workflows"][0]["spec_instructions"] = json!("leftover");
-        v["workflows"][0]["card_kinds"] = json!(["terminal"]);
-        v["workflows"][0]["input_schema"] = json!({"type": "object"});
+    fn extra_template_descriptor_fields_are_ignored() {
+        let mut v = template_manifest_value();
+        v["templates"][0]["plan_template"] = json!([]);
+        v["templates"][0]["gates"] = json!([]);
+        v["templates"][0]["spec_instructions"] = json!("leftover");
+        v["templates"][0]["card_kinds"] = json!(["terminal"]);
+        v["templates"][0]["input_schema"] = json!({"type": "object"});
         let m = parse_manifest_value(v).expect("S5 ignores retired descriptor fields");
-        assert_eq!(m.workflows[0].id, "issue-development");
+        assert_eq!(m.templates[0].id, "issue-development");
     }
 
     #[test]
     fn parses_shipped_issue_development_descriptor() {
         let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
-        let workflow = m
-            .workflows
+        let template = m
+            .templates
             .iter()
-            .find(|workflow| workflow.id == "issue-development")
-            .expect("issue-development workflow");
-        assert_eq!(m.workflows.len(), 1);
-        assert_eq!(workflow.id, "issue-development");
+            .find(|template| template.id == "issue-development")
+            .expect("issue-development template");
+        assert_eq!(m.templates.len(), 1);
+        assert_eq!(template.id, "issue-development");
 
         // #1110 S2 — the shipped plugin's input contract lives on the
-        // Manifest, not the workflow descriptor. Parsing via
+        // Manifest, not the template descriptor. Parsing via
         // `Manifest::parse` already ran `validate()`, so reaching here
         // proves the schema passes the subset validator.
         let schema = m
@@ -1594,13 +1918,13 @@ mod tests {
             descriptor.input_schema
         );
 
-        let workflow = WorkflowDescriptor {
+        let template = TemplateDescriptor {
             id: "issue-development".into(),
         };
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-give-up",
-                Some(&workflow),
+                Some(&template),
                 None,
             );
         crate::spec_card::validate_spec_prompt_contract(&rendered)
@@ -1615,37 +1939,37 @@ mod tests {
     fn shipped_issue_development_rendered_prompt_matches_full_golden() {
         let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
-        let workflow = manifest
-            .workflows
+        let template = manifest
+            .templates
             .iter()
-            .find(|workflow| workflow.id == "issue-development")
-            .expect("issue-development workflow");
+            .find(|template| template.id == "issue-development")
+            .expect("issue-development template");
 
         // The fixed fixture id is the explicit normalization rule for the
         // per-wave substitution performed by the production renderer.
         // This independent, fully populated fixture is a legal final state for
         // the shipped schema and keeps every required and optional field in the
         // full-prompt contract.
-        let workflow_input = json!({
+        let template_input = json!({
             "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
             "repo": "neige-calm/neige-calm",
             "issue_number": 985,
             "merge_policy": "auto-merge",
-            "notes": "Full golden fixture covers every shipped workflow input field."
+            "notes": "Full golden fixture covers every shipped template input field."
         });
-        crate::plugin_host::workflow_input::validate_workflow_input(
+        crate::plugin_host::template_input::validate_template_input(
             manifest
                 .input_schema
                 .as_ref()
                 .expect("shipped git-forge Manifest.input_schema"),
-            &workflow_input,
+            &template_input,
         )
-        .expect("full golden workflow_input satisfies the shipped schema");
+        .expect("full golden template_input satisfies the shipped schema");
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-golden-985",
-                Some(workflow),
-                Some(&workflow_input),
+                Some(template),
+                Some(&template_input),
             );
 
         if std::env::var_os("REGEN_SPEC_PROMPT_GOLDEN").is_some() {
@@ -1667,14 +1991,14 @@ mod tests {
     }
 
     #[test]
-    fn workflow_descriptor_rejects_invalid_shapes() {
+    fn template_descriptor_rejects_invalid_shapes() {
         let cases: Vec<(&str, Value, &str)> = vec![
-            ("empty id", json!(""), "workflows[0].id"),
-            ("bad id", json!("Bad Id"), "workflows[0].id"),
+            ("empty id", json!(""), "templates[0].id"),
+            ("bad id", json!("Bad Id"), "templates[0].id"),
         ];
         for (label, id, field) in cases {
-            let mut v = workflow_manifest_value();
-            v["workflows"][0]["id"] = id;
+            let mut v = template_manifest_value();
+            v["templates"][0]["id"] = id;
             let err = parse_manifest_value(v).expect_err(label);
             assert!(
                 matches!(err, ManifestError::Invalid { field: ref actual, .. } if actual == field),
@@ -1701,10 +2025,10 @@ mod tests {
 
     #[test]
     fn manifest_accepts_subset_input_schema_and_defaults_to_none() {
-        let manifest = parse_manifest_value(workflow_manifest_value()).expect("valid manifest");
+        let manifest = parse_manifest_value(template_manifest_value()).expect("valid manifest");
         assert!(manifest.input_schema.is_none());
 
-        let mut v = workflow_manifest_value();
+        let mut v = template_manifest_value();
         v["input_schema"] = subset_input_schema();
         let manifest = parse_manifest_value(v).expect("subset input_schema accepted");
         assert!(manifest.input_schema.is_some());
@@ -1712,7 +2036,7 @@ mod tests {
 
     /// #891 / #1110 S2 — the subset validator runs at manifest parse;
     /// exhaustive keyword/coherence coverage lives in
-    /// `plugin_host::workflow_input` (this pins the top-level
+    /// `plugin_host::template_input` (this pins the top-level
     /// `input_schema…` field-path wiring).
     #[test]
     fn manifest_rejects_out_of_subset_input_schema() {
@@ -1761,7 +2085,7 @@ mod tests {
             ),
         ];
         for (label, schema, expected_field) in cases {
-            let mut v = workflow_manifest_value();
+            let mut v = template_manifest_value();
             v["input_schema"] = schema;
             let err = parse_manifest_value(v).expect_err(label);
             assert!(
@@ -1769,6 +2093,200 @@ mod tests {
                 "{label}: got {err:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #1284 S1 — `config_schema`
+    // -----------------------------------------------------------------------
+
+    /// All-optional config schema: nothing is lost on a pre-#1284 kernel, so
+    /// it stays legal at `manifest_version: 2`.
+    fn optional_config_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "theme": {
+                    "type": "string",
+                    "enum": ["dark", "light"],
+                    "default": "dark",
+                    "description": "Card chrome"
+                },
+                "retries": { "type": "integer", "default": 3 }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    #[test]
+    fn manifest_accepts_subset_config_schema_and_defaults_to_none() {
+        let manifest = parse_manifest_value(template_manifest_value()).expect("valid manifest");
+        assert!(manifest.config_schema.is_none(), "absent ⇒ None");
+
+        let mut v = template_manifest_value();
+        v["config_schema"] = optional_config_schema();
+        let manifest = parse_manifest_value(v).expect("subset config_schema accepted");
+        assert_eq!(
+            manifest.config_schema.as_ref(),
+            Some(&optional_config_schema())
+        );
+    }
+
+    /// The reason `validate_object_schema` had to take a root path (#1284 §2.1
+    /// / F8): every one of these violations used to be reportable only as
+    /// `input_schema…`, i.e. against a field this manifest does not have.
+    ///
+    /// Paired with `manifest_rejects_out_of_subset_input_schema` above, which
+    /// keeps proving the *other* root still says `input_schema`.
+    #[test]
+    fn manifest_rejects_out_of_subset_config_schema_under_its_own_root() {
+        let cases: [(&str, Value, &str); 6] = [
+            (
+                "hostile $ref keyword",
+                json!({
+                    "type": "object",
+                    "$ref": "#/defs/x",
+                    "additionalProperties": false
+                }),
+                "config_schema.$ref",
+            ),
+            (
+                "hostile property keyword (pattern)",
+                json!({
+                    "type": "object",
+                    "properties": { "u": { "type": "string", "pattern": ".*" } },
+                    "additionalProperties": false
+                }),
+                "config_schema.properties.u.pattern",
+            ),
+            (
+                "missing additionalProperties: false",
+                json!({ "type": "object", "properties": {} }),
+                "config_schema.additionalProperties",
+            ),
+            (
+                "required key not declared",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": ["ghost"],
+                    "additionalProperties": false
+                }),
+                "config_schema.required[0]",
+            ),
+            (
+                "enum riding a non-string type",
+                json!({
+                    "type": "object",
+                    "properties": { "n": { "type": "integer", "enum": [1] } },
+                    "additionalProperties": false
+                }),
+                "config_schema.properties.n.enum",
+            ),
+            (
+                "default outside its own enum",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "theme": { "type": "string", "enum": ["dark"], "default": "neon" }
+                    },
+                    "additionalProperties": false
+                }),
+                "config_schema.properties.theme.default",
+            ),
+        ];
+        for (label, schema, expected_field) in cases {
+            let mut v = template_manifest_value();
+            v["manifest_version"] = json!(3);
+            v["config_schema"] = schema;
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(&err, ManifestError::Invalid { field, .. } if field == expected_field),
+                "{label}: got {err:?}"
+            );
+        }
+    }
+
+    /// #1284 §2.1 — the conditional bump, in all three cells that decide it.
+    ///
+    /// A pre-#1284 kernel ignores `config_schema` outright. For an all-optional
+    /// schema that is a faithful degradation (every key falls back to what its
+    /// default already meant), so `2` keeps working. For a schema with
+    /// `required` it is not: the plugin would run with none of its mandatory
+    /// configuration and say nothing, so `3` is demanded — and on the old
+    /// kernel the file is refused by version and the plugin disappears loudly.
+    #[test]
+    fn config_schema_with_required_demands_manifest_version_3() {
+        let mut required_schema = optional_config_schema();
+        required_schema["required"] = json!(["theme"]);
+
+        // (a) required + version 2 ⇒ rejected, and it is the VERSION that is
+        // named, not the schema.
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(2);
+        v["config_schema"] = required_schema.clone();
+        let err = parse_manifest_value(v).expect_err("required config at v2 must be refused");
+        match &err {
+            ManifestError::Invalid { field, reason } => {
+                assert_eq!(field, "manifest_version");
+                assert!(reason.contains("config_schema"), "got {reason}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // (b) required + version 3 ⇒ accepted.
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(3);
+        v["config_schema"] = required_schema;
+        let m = parse_manifest_value(v).expect("required config at v3 is accepted");
+        assert_eq!(m.manifest_version, 3);
+
+        // (c) all-optional + version 2 ⇒ accepted, i.e. the rule really is
+        // conditional and not "config_schema ⇒ 3".
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(2);
+        v["config_schema"] = optional_config_schema();
+        let m = parse_manifest_value(v).expect("optional-only config at v2 is accepted");
+        assert_eq!(m.manifest_version, 2);
+    }
+
+    /// An empty `required: []` is not a required key. Pinned separately
+    /// because "declares `required`" and "has required keys" are the kind of
+    /// pair that quietly becomes the same predicate.
+    #[test]
+    fn an_empty_required_array_does_not_demand_version_3() {
+        let mut schema = optional_config_schema();
+        schema["required"] = json!([]);
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(2);
+        v["config_schema"] = schema;
+        parse_manifest_value(v).expect("`required: []` has nothing to lose on an old kernel");
+    }
+
+    /// [`CONFIG_SCHEMA_KEY`] is the root every `config_schema` diagnostic is
+    /// reported under, so it has to name a key that really exists on the wire:
+    /// renaming the serde field without renaming the constant would leave
+    /// operators reading error paths for a field their manifest does not have.
+    /// Pinned to what a real `Manifest` actually serializes to — in both
+    /// directions, because `skip_serializing_if` means absence is also
+    /// observable (that is the shape `PluginDetail.manifest` publishes).
+    #[test]
+    fn config_schema_key_matches_the_serialized_manifest() {
+        let mut v = template_manifest_value();
+        v["config_schema"] = optional_config_schema();
+        let blob = parse_manifest_value(v).expect("valid").to_json();
+        assert_eq!(
+            blob.get(CONFIG_SCHEMA_KEY),
+            Some(&optional_config_schema()),
+            "blob keys: {:?}",
+            blob.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+
+        // …and absence really is absence (skip_serializing_if), which is what
+        // `has_config: false` reads.
+        let blob = parse_manifest_value(template_manifest_value())
+            .expect("valid")
+            .to_json();
+        assert!(blob.get(CONFIG_SCHEMA_KEY).is_none());
     }
 
     #[test]
@@ -1813,18 +2331,30 @@ mod tests {
 
     #[test]
     fn bad_manifest_version_fails() {
-        let json = r#"{
-            "manifest_version": 2,
+        // #1268 widened the accepted set to {1, 2} and #1284 to {1, 2, 3}, so
+        // the "unknown epoch" case has to be probed on both sides of it — a
+        // single sample above the range would stay green if the check were
+        // rewritten as `>= 1`. (`3` moved from this list to
+        // `config_schema_with_required_demands_manifest_version_3` when #1284
+        // made it a real version.)
+        for version in ["0", "4", "99"] {
+            let json = format!(
+                r#"{{
+            "manifest_version": {version},
             "id": "a.b",
             "version": "1.0.0",
             "min_kernel_version": "0.1.0",
             "display_name": "X",
-            "entrypoint": { "command": "bin/x" }
-        }"#;
-        let err = Manifest::parse(json).unwrap_err();
-        match err {
-            ManifestError::Invalid { field, .. } => assert_eq!(field, "manifest_version"),
-            other => panic!("wrong variant: {other:?}"),
+            "entrypoint": {{ "command": "bin/x" }}
+        }}"#
+            );
+            let err = Manifest::parse(&json).unwrap_err();
+            match err {
+                ManifestError::Invalid { field, .. } => {
+                    assert_eq!(field, "manifest_version", "version {version}")
+                }
+                other => panic!("version {version}: wrong variant: {other:?}"),
+            }
         }
     }
 
@@ -1851,6 +2381,30 @@ mod tests {
         let json = hello_world().replace("dev.neige.hello-world", "dev_neige");
         let err = Manifest::parse(&json).unwrap_err();
         assert!(matches!(err, ManifestError::Invalid { field, .. } if field == "id"));
+    }
+
+    /// #1297: `kernel` satisfies the id regex, so without an explicit refusal
+    /// a plugin could register under it and — since the callback path writes
+    /// `ctx.plugin_id` verbatim — mint rows indistinguishable from the ones
+    /// `card_fsm` authors. The REST gate cannot see this route at all.
+    #[test]
+    fn reserved_kernel_id_rejected() {
+        let json = hello_world().replace("dev.neige.hello-world", KERNEL_OVERLAY_PLUGIN_ID);
+        let err = Manifest::parse(&json).unwrap_err();
+        match err {
+            ManifestError::Invalid { field, reason } => {
+                assert_eq!(field, "id");
+                assert!(reason.contains("reserved"), "reason={reason}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The neighbouring id is fine — the refusal is exact, not a prefix ban.
+    #[test]
+    fn kernel_prefixed_id_still_allowed() {
+        let json = hello_world().replace("dev.neige.hello-world", "kernel-helper");
+        Manifest::parse(&json).expect("`kernel-helper` is not the reserved id");
     }
 
     #[test]
@@ -2172,7 +2726,7 @@ mod connector_kind_tests {
 
     fn base(extra: Value) -> String {
         let mut m = json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": "conn-x",
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
@@ -2220,6 +2774,48 @@ mod connector_kind_tests {
                 "args": ["quote", "{{symbol}}"]
             }]
         })
+    }
+
+    /// #1284 — `config_schema` is deliberately **not** on the app-only list:
+    /// S2/S3a/S3b give all three kinds a consumer, and the connector kinds are
+    /// where operator-supplied configuration is most obviously needed
+    /// (endpoints, argv values, env). Paired with the `input_schema` half,
+    /// which stays app-only — without that half this test would still pass if
+    /// `reject_app_only_surfaces` were deleted outright.
+    #[test]
+    fn connectors_may_declare_config_schema_but_still_not_input_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "endpoint": { "type": "string", "default": "https://a.example" } },
+            "additionalProperties": false
+        });
+
+        Manifest::parse(&base(json!({
+            "kind": "cli-query",
+            "cli_query": cli_query_block(),
+            "config_schema": schema,
+        })))
+        .expect("a connector may declare config_schema");
+
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "config_schema": schema,
+        })))
+        .expect("an mcp-http connector may declare config_schema");
+
+        let err = expect_reject(
+            Manifest::parse(&base(json!({
+                "kind": "cli-query",
+                "cli_query": cli_query_block(),
+                "input_schema": schema,
+            }))),
+            "input_schema on a connector",
+        );
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, .. } if field == "input_schema"),
+            "got {err:?}"
+        );
     }
 
     // ---- kind defaulting -------------------------------------------------
@@ -2363,7 +2959,7 @@ mod connector_kind_tests {
                 "views",
                 json!([{ "view_id": "main", "title": "Main", "scope": "card" }]),
             ),
-            ("workflows", json!([{ "id": "wf.build" }])),
+            ("templates", json!([{ "id": "wf.build" }])),
             (
                 "input_schema",
                 json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -2429,7 +3025,7 @@ mod connector_kind_tests {
         Manifest::parse(&base(json!({
             "entrypoint": { "command": "bin/run" },
             "views": [{ "view_id": "main", "title": "Main", "scope": "card" }],
-            "workflows": [{ "id": "wf.build" }],
+            "templates": [{ "id": "wf.build" }],
             "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
             "permissions": { "cards_create": true, "kv_quota_bytes": 4096 },
         })))

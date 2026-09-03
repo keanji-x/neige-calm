@@ -36,6 +36,8 @@ pub trait ServerRepoReadExt {
     async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>>;
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
+    /// #1253 PR1 — the Today launchpad wave, or `None` before it exists.
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>>;
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
     async fn waves_window(
         &self,
@@ -62,6 +64,13 @@ pub trait ServerRepoReadExt {
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     async fn harness_item_list_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>>;
+    async fn harness_item_list_transcript_by_card(
         &self,
         card_id: &str,
         after_id: i64,
@@ -157,6 +166,11 @@ where
             .await
             .map_err(Into::into)
     }
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
+        calm_truth::db::RepoRead::wave_get_launchpad(self)
+            .await
+            .map_err(Into::into)
+    }
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         calm_truth::db::RepoRead::wave_detail(self, id)
             .await
@@ -246,6 +260,19 @@ where
         descending: bool,
     ) -> Result<Vec<HarnessItem>> {
         calm_truth::db::RepoRead::harness_item_list_by_card(
+            self, card_id, after_id, limit, descending,
+        )
+        .await
+        .map_err(Into::into)
+    }
+    async fn harness_item_list_transcript_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>> {
+        calm_truth::db::RepoRead::harness_item_list_transcript_by_card(
             self, card_id, after_id, limit, descending,
         )
         .await

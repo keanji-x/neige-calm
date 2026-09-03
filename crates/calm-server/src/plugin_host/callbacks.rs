@@ -265,9 +265,9 @@ struct OverlaySetParams {
 
 async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: OverlaySetParams = parse_params("neige.overlay.set", &params)?;
-    if !OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable(&p.entity_kind) {
+    if !OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable(&p.entity_kind) {
         let kinds = OVERLAY_ENTITY_SCOPE_REGISTRY
-            .plugin_writable_kinds()
+            .externally_writable_kinds()
             .join(", ");
         return Err(RpcError::invalid_params(format!(
             "entity_kind must be one of [{kinds}], got `{}`",
@@ -324,9 +324,9 @@ struct OverlayDeleteParams {
 
 async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: OverlayDeleteParams = parse_params("neige.overlay.delete", &params)?;
-    if !OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable(&p.entity_kind) {
+    if !OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable(&p.entity_kind) {
         let kinds = OVERLAY_ENTITY_SCOPE_REGISTRY
-            .plugin_writable_kinds()
+            .externally_writable_kinds()
             .join(", ");
         return Err(RpcError::invalid_params(format!(
             "entity_kind must be one of [{kinds}], got `{}`",
@@ -1033,12 +1033,12 @@ mod tests {
                 .unwrap();
             let wave = repo
                 .wave_create(NewWave {
-                    workflow_input: None,
+                    template_input: None,
                     cove_id: cove.id.clone(),
                     title: "w".into(),
                     sort: None,
                     cwd: String::new(),
-                    workflow_id: None,
+                    template_id: None,
                     plugin_scope: None,
                     attach_folder: false,
                     theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -1133,7 +1133,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overlay_set_accepts_plugin_writable_entity_kinds() {
+    async fn overlay_set_accepts_externally_writable_entity_kinds() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         let card = h
             .ctx_storage
@@ -1241,7 +1241,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overlay_set_rejects_non_plugin_writable_entity_kinds() {
+    async fn overlay_set_rejects_kernel_reserved_entity_kinds() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         for entity_kind in ["view", "system"] {
             let err = dispatch(

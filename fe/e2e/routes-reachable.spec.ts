@@ -36,7 +36,8 @@ test('the application routes are reachable through the real kernel', async ({ pa
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
     { path: `/next/cove/${cove.id}/new`, anchor: page.getByLabel('What this wave should do') },
     { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
-    { path: '/next/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
+    { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
+    { path: '/next/settings/appearance', anchor: page.getByRole('combobox', { name: 'Theme' }) },
   ];
 
   for (const route of routes) {

@@ -794,9 +794,9 @@
    * frame around a core that already carries it. The two are the same diameter,
    * which is the thing the eye compares down a column.
    */
-  .taskDot[data-nc-task-status="dispatched"],
-  .taskDot[data-nc-task-status="running"],
-  .taskDot[data-nc-task-status="verifying"] {
+  .taskDot[data-nc-status="dispatched"],
+  .taskDot[data-nc-status="running"],
+  .taskDot[data-nc-status="verifying"] {
     border-width: 1px;
     border-color: var(--accent);
     padding: 1px;
@@ -805,7 +805,7 @@
     animation: task-dot-pulse var(--motion-pulse) ease-in-out infinite;
   }
 
-  .taskDot[data-nc-task-status="done"] {
+  .taskDot[data-nc-status="done"] {
     border-color: var(--success);
     background: var(--success);
   }
@@ -816,7 +816,7 @@
    * scale — enough to keep the mark from being a hard chip, far enough from
    * `--radius-pill` that the silhouette is unmistakably square.
    */
-  .taskDot[data-nc-task-status="failed"] {
+  .taskDot[data-nc-status="failed"] {
     border-color: var(--error);
     border-radius: calc(var(--radius-sm) / 2);
     background: var(--error);
@@ -865,8 +865,8 @@
   /*
    * ── Reduced motion, at a specificity that can actually win ───────────────
    *
-   * `[data-nc-task-status]`, not a bare `.taskDot`. A media query adds no
-   * specificity, and the pulse is declared at `.taskDot[data-nc-task-status=
+   * `[data-nc-status]`, not a bare `.taskDot`. A media query adds no
+   * specificity, and the pulse is declared at `.taskDot[data-nc-status=
    * "running"]` — (0,2,0) against a bare class's (0,1,0) — so the override this
    * rule replaces lost the cascade outright and never suppressed anything:
    * under emulated `reduce` the effective `animation-name` was still
@@ -886,7 +886,7 @@
    * the cascade again is red rather than merely present.
    */
   @media (prefers-reduced-motion: reduce) {
-    .taskDot[data-nc-task-status] {
+    .taskDot[data-nc-status] {
       animation: none;
     }
   }
@@ -1047,43 +1047,23 @@
       display: none;
     }
 
-    .mobileCardFacts {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      border-radius: var(--radius-md);
-      background: var(--surface-card);
-    }
-
-    .mobileCardFacts > div {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: var(--space-6);
-      min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));
+    /* The mobile Cards row's quiet rank: the kind and `kernel-owned`, each its
+       own element because each is its own field carrier (#1234). They sit in
+       `MobileListItem`'s meta lane, which supplies the type scale; this only
+       keeps the two words apart. */
+    .mobileRowMeta {
+      display: inline-flex;
       align-items: center;
-      padding-inline: var(--space-7);
+      gap: var(--space-2);
     }
 
-    .mobileCardFacts > div + div {
-      border-block-start: 1px solid var(--hairline);
-    }
-
-    .mobileCardFacts dt,
-    .mobileCardFacts dd {
-      min-inline-size: 0;
-      overflow: hidden;
-      font-size: var(--text-xs);
-      line-height: var(--leading-tight);
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-
-    .mobileCardFacts dt {
-      color: var(--text-3);
-    }
-
-    .mobileCardFacts dd {
-      color: var(--text);
+    /* A withdrawn declaration, struck through — the mobile half of the rule the
+       desktop draws with `.taskWithdrawn`. `RowBadge.struck` has no carrier in
+       the projection framework at all, so this class and the behaviour
+       assertion that reads it are the only thing holding it on this surface
+       (#1234 S1b-4b). */
+    .mobileRowStruck {
+      text-decoration: line-through;
     }
 
     .mobileConversationList {

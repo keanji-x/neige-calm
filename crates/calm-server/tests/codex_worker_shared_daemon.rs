@@ -133,12 +133,12 @@ async fn boot(start_shared: bool) -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "worker-shared".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -639,12 +639,12 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "worker recovery".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

@@ -50,12 +50,12 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
@@ -116,12 +116,12 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
@@ -178,12 +178,12 @@ async fn review_ratify_only_batch_does_not_advance_head() {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

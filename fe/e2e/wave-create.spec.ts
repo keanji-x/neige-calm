@@ -3,10 +3,14 @@ import { createCove } from './helpers/seed.js';
 
 const createdCoveIds: string[] = [];
 
-/* The composer's accessible name. astryx puts `label` on the `contenteditable`
-   as `aria-label`, so the browser-level check that the field is still *named*
-   is exactly this locator resolving. */
+/* The two strings the composer's task field answers to. astryx puts `label` on
+   the `contenteditable` as `aria-label`, so the browser-level check that the
+   field is still *named* is exactly this locator resolving; the placeholder is
+   the empty-state prompt beside it. Kept as literals so the checks below are
+   about *those strings* and not about "some textbox" (#1211 S2 deleted the
+   title field, not this one — the sentence is the wave's intent now). */
 const TASK_LABEL = 'What this wave should do';
+const TASK_PLACEHOLDER = 'What should this wave do?';
 
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -21,7 +25,22 @@ test.afterEach(async ({ request }) => {
   createdCoveIds.length = 0;
 });
 
-test('creates a wave from the cove page and persists it', async ({ page, request }) => {
+/*
+ * #1211 — a wave is created without *naming* it first.
+ *
+ * Nothing here collects a title any more: the title is not the intent (S2), the
+ * kernel takes `#[serde(default)]` for it, and the spec agent names the wave
+ * through `calm.wave.rename` once it knows what the wave is for — which only
+ * works while the stored title is empty. So this case asserts the `title`
+ * **key** is absent from the POST rather than asserting a value: an empty
+ * string reaches the same stored title but says this client decided the name,
+ * and the whole point is that it did not.
+ *
+ * What the reader does type is the wave's *intent*, into the composer this page
+ * became (S3). It is not delivered yet — the absence is asserted at the end of
+ * this case, under #1299.
+ */
+test('creates a wave from the cove page with no title, and persists it', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const cove = await createCove(request);
   createdCoveIds.push(cove.id);
@@ -32,11 +51,14 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   /* #1211 — a route, not a modal. `waitForURL` is the surface being ready;
      the composer being visible is the surface being *usable*, and both are
      asserted because a route that renders an error box would satisfy only the
-     first. */
+     first. The dialog count is the negative half of the same statement: main's
+     `getByRole('dialog', { name: 'New wave' })` scope has no successor here. */
   await page.waitForURL(/\/cove\/[^/]+\/new$/);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const message = `FE e2e wave ${Date.now()}`;
   await expect(page.getByLabel(TASK_LABEL)).toBeVisible();
+  // The empty-state prompt, by the other string the field answers to.
+  await expect(page.getByText(TASK_PLACEHOLDER)).toBeVisible();
   // #1147 S3 — the Folder control is present and **optional**. This test walks
   // the default path (nothing picked), which must stay byte-identical to the
   // #1131 body: the kernel keys its managed-workspace branch on the absence of
@@ -53,7 +75,14 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   // trigger's accessible name rather than a checked row — and since #1211 that
   // name states the default rather than asking a question.
   await expect(page.getByRole('button', { name: 'Template: No template' })).toBeVisible();
+  /* Create is gated on the sentence, which is where #1211 S3 differs from S2:
+     the composer *is* the page, so submitting an empty one would create a wave
+     with nothing in it and nothing on screen to say why it was allowed. S2's
+     "Create is live with nothing typed" belonged to a dialog that collected no
+     sentence at all. */
+  await expect(page.getByRole('button', { name: 'Create wave' })).toBeDisabled();
   await page.getByLabel(TASK_LABEL).fill(message);
+  await expect(page.getByRole('button', { name: 'Create wave' })).toBeEnabled();
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
     page.getByRole('button', { name: 'Create wave' }).click(),
@@ -67,19 +96,23 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('attach_folder');
   // `toMatchObject` above would not notice these, and no-template must not send
-  // them: the kernel 400s an empty `workflow_id` and the body is
+  // them: the kernel 400s an empty `template_id` and the body is
   // `deny_unknown_fields`.
-  expect(body).not.toHaveProperty('workflow_id');
-  expect(body).not.toHaveProperty('workflow_input');
+  expect(body).not.toHaveProperty('template_id');
+  expect(body).not.toHaveProperty('template_input');
 
   await expect(page).toHaveURL(/\/wave\/[0-9a-f-]+$/i);
   /* Untitled is the *normal* landing state now, so the page title is the
-     display fallback rather than anything the reader typed. Asserted because
-     "the header renders something readable for a blank title" is exactly what
-     stops being exercised once the title field is gone. */
+     display fallback (#409) rather than anything the reader typed. Asserted
+     because "the header renders something readable for a blank title" is
+     exactly what stops being exercised once the title field is gone — and it
+     is a *placeholder*, so the rename box opens blank rather than pre-filled
+     with it (#1211 S2). */
   await expect(page.locator('[data-nc-page-title]')).toHaveText(/Untitled wave/);
   const waveId = /\/wave\/([0-9a-f-]+)$/i.exec(page.url())?.[1];
   expect(waveId).toBeTruthy();
+  await page.getByRole('button', { name: 'Rename wave' }).click();
+  await expect(page.getByRole('textbox', { name: 'Wave title' })).toHaveValue('');
   const response = await request.get(`/api/coves/${cove.id}/waves`);
   expect(response.ok()).toBe(true);
   expect(await response.json() as { id: string; title: string }[]).toEqual(
@@ -176,13 +209,13 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
     page.getByRole('button', { name: 'Create wave' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  expect(body).toMatchObject({ cove_id: cove.id, workflow_id: 'small-change' });
+  expect(body).toMatchObject({ cove_id: cove.id, template_id: 'small-change' });
   expect(body).not.toHaveProperty('title');
-  // Unbound template: the kernel rejects `workflow_input` against it.
-  expect(body).not.toHaveProperty('workflow_input');
+  // Unbound template: the kernel rejects `template_input` against it.
+  expect(body).not.toHaveProperty('template_input');
 
   await expect(page).toHaveURL(/\/wave\/[0-9a-f-]+$/i);
-  await expect(page.locator('[data-nc-page-title]')).toBeVisible();
+  await expect(page.locator('[data-nc-page-title]', { hasText: 'Untitled wave' })).toBeVisible();
   // The kernel accepted the template and stored the binding — the assertion
   // that separates "the picker put a field on the wire" from "the wave was
   // actually created from that template".
@@ -190,7 +223,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   expect(waveId).toBeTruthy();
   const detail = await request.get(`/api/waves/${waveId}`);
   expect(detail.ok()).toBe(true);
-  expect((await detail.json() as { wave: { workflow_id: string | null } }).wave.workflow_id)
+  expect((await detail.json() as { wave: { template_id: string | null } }).wave.template_id)
     .toBe('small-change');
   expect(errors).toEqual([]);
 });

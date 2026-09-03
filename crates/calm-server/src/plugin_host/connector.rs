@@ -360,7 +360,7 @@ fn read_capped(
 /// one stale entry must not take the whole connector down (§2.2).
 ///
 /// There is no `ExposedTool::validate` in the tree (`Manifest::validate` only
-/// covers views / workflows / permissions / entrypoint), so the name check is
+/// covers views / templates / permissions / entrypoint), so the name check is
 /// applied here explicitly; a rejected name is skipped, not fatal.
 pub fn materialize_http_tools(
     plugin_id: &str,

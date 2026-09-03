@@ -221,10 +221,10 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
     );
 }
 
-/// Entry point 2 of 5: `seed_workflow_template_wave`, reached by creating a
-/// wave against a seeded workflow template key.
+/// Entry point 2 of 5: `seed_template_wave`, reached by creating a
+/// wave against a seeded template key.
 #[tokio::test]
-async fn seeded_workflow_template_waves_are_materialized() {
+async fn seeded_template_waves_are_materialized() {
     let b = boot().await;
     let (status, body) = post(
         b.app.clone(),
@@ -232,7 +232,7 @@ async fn seeded_workflow_template_waves_are_materialized() {
         json!({
             "cove_id": b.cove_id,
             "title": "from template",
-            "workflow_id": "small-change",
+            "template_id": "small-change",
             "theme": theme(),
         }),
     )

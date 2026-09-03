@@ -19,7 +19,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { coveOf, folderConflictMessage, type Cove } from '../../../../core/domain/cove.ts';
 import {
-  toWave, waveActivityFrom, waveDetailOperation, waveDisplayTitle,
+  toWave, waveActivityFrom, waveDisplayTitle,
   type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
 import type {
@@ -30,9 +30,8 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
-import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
-import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
+import { todaySummaryFailure } from '../../../../core/domain/today.ts';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
@@ -67,21 +66,19 @@ import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
-  prefetchCoveList, runOperation,
-  settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
-  useWaveTemplateMutation, useWaveTemplates, useWorkspace,
+  prefetchCoveList, specRunQueryOptions, todayLaunchpadQueryOptions,
+  useCoveConversationMutations, useCoveMutations, useSpecMutations, useTodaySummaryMutation,
+  useWaveConversationMutations, useWaveMutations, useWaveTemplates, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
-import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
   useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
-  useWavePanelNavigation, validateWaveSearch, type WaveSearch,
+  useSpecOpenIntent, useWavePanelNavigation, validateWaveSearch, type WaveSearch,
 } from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -818,6 +815,9 @@ export type AppRouterDeps = Readonly<{
   cards: CardRuntime;
 }>;
 
+/** The component every settings route uses; see `settingsRoute` below. */
+function renderNothing(): null { return null; }
+
 export function createRouteTree({ transport, unauthorized, client, onSignOut, cards }: AppRouterDeps): AnyRoute {
   const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /> });
 
@@ -855,27 +855,43 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
+  /*
+   * Every settings route renders nothing, deliberately.
+   *
+   * The URL is the state — which section is open, what a deep link means,
+   * what Back does — and `app/shell`'s
+   * `SettingsOverlay` is the view of it. The dialog cannot live here: a route
+   * component is remounted on every navigation, so moving between the
+   * overlay's own sections rebuilt the panel and replayed its entrance
+   * animation, which the reader sees as a flash on every click.
+   */
   const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: () => <SettingsRoute transport={transport} unauthorized={unauthorized} />,
+    component: renderNothing,
   });
 
-  const templateListRoute = createRoute({
+  const pluginsRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/settings/templates',
-    component: () => <TemplateListRoute transport={transport} unauthorized={unauthorized} />,
+    path: '/settings/plugins',
+    component: renderNothing,
   });
 
-  const templateEditorRoute = createRoute({
+  const appearanceRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/settings/templates/$templateId',
-    component: () => <TemplateEditorRoute transport={transport} unauthorized={unauthorized} />,
+    path: '/settings/appearance',
+    component: renderNothing,
+  });
+
+  const aboutRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/about',
+    component: renderNothing,
   });
 
   return rootRoute.addChildren([
-    indexRoute, coveRoute, newWaveRoute, waveRoute, settingsRoute, templateListRoute,
-    templateEditorRoute,
+    indexRoute, coveRoute, newWaveRoute, waveRoute, settingsRoute,
+    pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
 
@@ -895,6 +911,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
         transport={transport}
         unauthorized={unauthorized}
         onOpenSettings={() => go({ name: 'settings' })}
+        onOpenPlugins={() => go({ name: 'settings-plugins' })}
         onSignOut={onSignOut}
       />
     </ConversationProvider>
@@ -995,8 +1012,19 @@ function useConversationPanel(
      collapses them onto one operation — so the guard a ref would add is one the
      idempotency key already provides. */
   const [creating, setCreating] = useState(false);
+  /*
+   * The conversation whose composer this route was asked to put the caret in
+   * — a just-created wave's spec row (#1211 S2), and nothing else.
+   *
+   * It has to be held here rather than read off the registry at render time,
+   * because the request is cleared in the same commit that opens the row. Read
+   * once, at the composer's mount, and dropped when the drawer closes so that
+   * re-opening the same row by hand is an ordinary open.
+   */
+  const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
 
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
+  useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
   const scope: SpecConversationScope | null = source.kind === 'card'
     ? source.scope
     : source.kind === 'rows' && openRowId !== null ? source.scopeOf(openRowId) : null;
@@ -1090,14 +1118,20 @@ function useConversationPanel(
   useEffect(() => {
     const requestedOpenId = registry.requestedOpenId;
     if (requestedOpenId === null) return;
+    /* Captured here and not read at render time: the request is cleared in the
+       same commit that opens the row, so by the time the composer mounts the
+       registry no longer remembers what was asked for. */
+    const focusComposer = registry.requestedOpenFocusesComposer;
     if (rows !== null) {
       if (!rows.some((row) => row.id === requestedOpenId)) return;
       moveDrawerTo({ kind: 'open-row', id: requestedOpenId });
+      if (focusComposer) setComposerFocusFor(requestedOpenId);
       registry.clearOpenRequest();
       return;
     }
     if (scope === null || requestedOpenId !== scope.cardId) return;
     moveDrawerTo({ kind: 'open-row', id: scope.cardId });
+    if (focusComposer) setComposerFocusFor(scope.cardId);
     registry.clearOpenRequest();
   }, [registry, rows, scope]);
 
@@ -1512,6 +1546,13 @@ function useConversationPanel(
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
             <ChatComposer
+              /* Read at mount only, which is what makes it one-shot: the
+                 composer mounts when the drawer opens on a row, and the flag
+                 is dropped when it closes (the effect beside
+                 `composerFocusFor`). #1211 S2 — a wave created from the `+`
+                 lands with its spec conversation open and the caret in it,
+                 because the reader's first sentence is the wave's intent. */
+              focusOnMount={composerFocusFor === open.id}
               disabled={store.sending}
               onSend={(text) => store.send(open.id, text)}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
@@ -1607,6 +1648,110 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const chat = useConversationPanel(transport, unauthorized, {
     kind: 'elsewhere', intent: { kind: 'all' },
   });
+  /*
+   * #1253 §5.1 — the launchpad resolve, and it is a READ.
+   *
+   * `POST /api/today/launchpad/ensure` is deliberately not called from here,
+   * and that is INV-TODAYDOC-001, not a nicety: `ensure` materializes a
+   * workspace and then submits a `spec-harness-start` operation and waits on
+   * it, so putting it on the page-load path would make Today fail hard
+   * whenever codex is down — worse than the Today this replaces, which needed
+   * nothing to render. `ensure` belongs to an explicit action; PR1 has none.
+   *
+   * "Nothing yet" arrives as `null` in the body and becomes the empty state.
+   * Every failure — including a 404, which no longer means anything special
+   * here — arrives as an error and is rendered as one (INV-TODAYDOC-002).
+   */
+  const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
+  /*
+   * #1253 D5 — the trigger. `POST /api/today/summary`, no body and no prompt.
+   *
+   * It is a mutation on an explicit action and nowhere near the page load:
+   * the endpoint bootstraps the launchpad internally, which materializes a
+   * workspace and waits on a `spec-harness-start` (INV-TODAYDOC-001 is about
+   * keeping exactly that off the render path).
+   *
+   * A success does not refresh the document here. The agent's write arrives
+   * later as `wave.report_edited`, which the event bridge turns into
+   * `['today-launchpad']` and `['wave', id]` — refetching the report at 200
+   * would only fetch the OLD one, and it would hide a broken invalidation
+   * chain behind a lucky refresh.
+   */
+  const summary = useTodaySummaryMutation(transport, unauthorized);
+  const summaryNotice = useMemo(() => {
+    if (summary.failure === null) return undefined;
+    const classified = todaySummaryFailure(summary.failure);
+    /* "Nothing happened today" is data, not a malfunction, so it is not an
+       alert: `role="alert"` interrupts a screen-reader user for something they
+       asked about and got a straight answer to. The other two are failures and
+       are announced. */
+    return classified.kind === 'no-activity'
+      ? <span data-nc-role="hint">{classified.message}</span>
+      : <span role="alert" data-nc-role="hint">{classified.message}</span>;
+  }, [summary.failure]);
+  const launchpad = launchpadQuery.data;
+  const launchpadWaveId = launchpad?.wave_id ?? '';
+  /* The document itself comes from the ordinary wave detail — the resolve
+     carries no `report_card_id` because `readWaveReport` locates the card by
+     `kind === 'wave-report'` and that field would have no consumer (§5.1).
+
+     Gated on the server's own answer, not merely on having a wave id: when
+     `report_has_noninitial_content` is false there is nothing to draw, so the
+     page load stays at one request. It also keeps the states below honest —
+     every one of them is then about a document the reader is actually owed. */
+  const launchpadHasContent = launchpad?.report_has_noninitial_content === true;
+  const launchpadDetailQuery = useQuery({
+    ...waveDetailQueryOptions(transport, launchpadWaveId, unauthorized),
+    enabled: launchpadWaveId !== '' && launchpadHasContent,
+  });
+  const launchpadReport = useMemo(
+    () => readWaveReport(launchpadDetailQuery.data?.cards ?? []),
+    [launchpadDetailQuery.data],
+  );
+  /*
+   * Three states, three answers — and they must not be collapsed.
+   *
+   * `readWaveReport(...) === null` is true in all three: while the detail is
+   * in flight (which is EVERY page load, because this query cannot start until
+   * the resolve has answered), when the detail read fails, and when the
+   * payload genuinely will not decode. Handing all three to `ReportDocument`'s
+   * `empty` told a reader whose server was unreachable that their build was
+   * too old, with no retry — the same silent-degradation INV-TODAYDOC-002
+   * forbids, just with a worse lie in place of the empty state.
+   */
+  const launchpadDocument = launchpadDetailQuery.isError
+    ? (
+      <ErrorBox
+        message={`Today's progress is unavailable: ${launchpadDetailQuery.error.message}`}
+        onRetry={() => { void launchpadDetailQuery.refetch(); }}
+      />
+    )
+    : launchpadDetailQuery.data === undefined
+      // In flight. Nothing, not a placeholder: this frame is one round trip
+      // long on a healthy server, and a skeleton that flashes on every load is
+      // more motion than information.
+      ? null
+      : (
+        <ReportDocument
+          report={launchpadReport}
+          /* The detail has arrived and the server says the report has content,
+             so the in-flight and read-failed states are both behind us. What
+             remains is "this build could not make a report out of what
+             arrived" — almost always an undecodable payload, but also a 200
+             carrying no `kind === 'wave-report'` card at all. That second
+             shape is effectively unreachable (the card is `deletable: false`)
+             and its wording would be slightly off if it happened; it is not
+             worth a third branch, but it is worth not claiming a universal the
+             code does not enforce. */
+          empty={<ReportEmpty
+            lead="Today's report could not be read."
+            hints={[
+              'The server says it has been written, so this is a decoding problem, not an empty day.',
+              'The report\'s payload is probably newer than this build.',
+            ]}
+          />}
+        />
+      );
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -1647,6 +1792,21 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       )}
       conversationList={chat.list}
         conversationAction={chat.action}
+      /* Undefined while the resolve is in flight, `null` when the server says
+         there is no launchpad yet. The page
+         decides the empty state from `report_has_noninitial_content` and from
+         nothing else — see INV-TODAYDOC-003 on `TodayPageProps.launchpad`. */
+      launchpad={launchpadQuery.isError ? undefined : launchpad}
+      launchpadDocument={launchpadDocument}
+      launchpadError={launchpadQuery.isError
+        ? <ErrorBox
+          message={`Today's progress is unavailable: ${launchpadQuery.error.message}`}
+          onRetry={() => { void launchpadQuery.refetch(); }}
+        />
+        : undefined}
+      onWriteSummary={summary.write}
+      summaryPending={summary.pending}
+      summaryNotice={summaryNotice}
     />
     <ConfirmDialog
       open={deletion.open}
@@ -1699,28 +1859,19 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  *
  * Until then the sentence is not sent, the form says so where the reader can
  * see it before pressing anything, and this route lands them on the wave with
- * the spec conversation **already open** so saying it again is one keystroke.
- * That read is best-effort in the honest sense: its only effect is a drawer.
+ * the spec conversation **already open and holding the caret** so saying it
+ * again is one keystroke. That landing is stated on the navigation itself
+ * (`openSpec`), and its only effect is a drawer.
  *
  * The create posts **no title** — the kernel stores the empty string and the
  * spec agent names the wave through `calm.wave.rename` once it knows what the
  * work is (#1211 S1).
  */
-/**
- * How long the create waits for the spec card before navigating without it.
- *
- * Short on purpose: this read buys a convenience (the drawer is already open),
- * and the reader is standing in front of a submitted form. Anything long enough
- * to feel like a hang is longer than the convenience is worth.
- */
-const OPEN_SPEC_DEADLINE_MS = 1_500;
-
 function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const coveId = useRouteParam('/cove/');
   const workspace = useWorkspace(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
   const templates = useWaveTemplates(transport, unauthorized);
-  const registry = useConversationRegistry();
   const go = useGo();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1742,62 +1893,26 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
     return () => { liveRef.current = false; };
   }, []);
 
-  /* The registry outlives this route (`ConversationProvider` is above the
-     shell), which is what lets the create ask the *next* page to open the spec
-     drawer on a card that does not exist here yet. */
   /*
-   * Ask the wave page to open its spec conversation, so the reader lands ready
-   * to type — **before** navigating, and only if the read is quick.
+   * Landing in the spec conversation is stated on the **navigation**, not read
+   * here (#1211 S2, `useSpecOpenIntent`).
    *
-   * Two shapes were tried and both were wrong, in opposite directions:
+   * This route cannot name the card to open — `POST /api/waves` answers with a
+   * `Wave`, and the spec card arrives a route later with the wave detail — so
+   * an earlier shape of this slice read the detail here, raced it against a
+   * deadline, and wrote the card id into the conversation registry before
+   * navigating. That registry outlives every route, which is what made the
+   * write unsound in a way a deadline cannot fix: a landing that never reaches
+   * the wave (a failing detail read, an error box) leaves the request standing,
+   * and it springs a drawer open on some later visit nobody asked for.
    *
-   *  * `await` it, then `go()`. The read has no timeout, so a slow one parked
-   *    the reader on a stuck "Creating…" with the wave already on the server.
-   *  * `go()`, then fire it and write the result whenever it lands. That write
-   *    is `requestOpen`, which is last-write-wins on a registry outliving every
-   *    route — so a late landing overwrote a conversation the reader had opened
-   *    in the meantime. A location guard did not fix it either: the reader can
-   *    leave this wave and come *back* before the read lands (an ABA), and the
-   *    guard cannot tell that their newer choice is the one that should win.
-   *
-   * Racing it against a short deadline resolves both, because it removes the
-   * late write entirely rather than trying to judge it. Win the race and the
-   * request is made while this route still owns the screen; lose it and the
-   * result is dropped on the floor — no registry write can ever arrive after
-   * the reader has moved on, so there is nothing to adjudicate.
-   *
-   * The cost, stated: on a slow read the drawer does not open and the reader
-   * opens the conversation themselves. That is the correct thing to lose — no
-   * message rides on this, it is a convenience.
+   * `openSpec` puts the intent on the history entry this navigation creates, so
+   * it is scoped to exactly one landing, is redeemed by the wave route body
+   * against its own cards, and cannot be seen — or cleared — by any other
+   * route. `focusComposer` comes with it: the wave is unnamed and empty, and
+   * the reader's first sentence is its intent, so the caret has to be where
+   * they can type it.
    */
-  const openSpecOnArrival = async (waveId: string): Promise<void> => {
-    const read = runOperation(transport, waveDetailOperation(waveId), unauthorized)
-      .then((detail) => detail.cards.find(
-        (card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload),
-      ));
-    const timeout = new Promise<undefined>((resolve) => {
-      setTimeout(() => { resolve(undefined); }, OPEN_SPEC_DEADLINE_MS);
-    });
-    const specCard = await Promise.race([read.catch(() => undefined), timeout]);
-    /*
-     * `liveRef` guards the *write*, not just the navigation below.
-     *
-     * The deadline bounds how long this waits; it does not bound how long the
-     * **create** took to get here. A slow `POST /api/waves` gives the reader
-     * time to press Back, and the continuation still runs — so without this the
-     * race could be won after they had gone, and `requestOpen` writes into a
-     * registry that outlives every route. The symptom is not immediate and that
-     * is what makes it nasty: their *next* visit to that wave opens a Spec
-     * drawer nobody asked for.
-     *
-     * Found by review, by execution, after the first version of this redesign
-     * dropped the earlier location guard on the theory that the race had made
-     * it unnecessary. It had not: the race and the guard answer different
-     * questions — "how long do we wait" and "are we still the screen".
-     */
-    if (specCard !== undefined && liveRef.current) registry.requestOpen(specCard.id);
-  };
-
   const submit = (draft: NewWaveDraft) => {
     if (coveId === undefined) return;
     setCreating(true);
@@ -1805,14 +1920,15 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
     void waveMutations.create({
       cove_id: coveId,
       /* No `title` (#1211): the sentence the reader typed is the wave's intent,
-         not its name, and it travels as the first message below. */
+         not its name. It is not put on the wire at all yet — see the #1299 note
+         on this route — which is why the landing opens the spec composer. */
       theme: readHostThemeRgb(),
       // Spread, not two optional fields: no template leaves both keys absent,
-      // and `workflow_id: undefined` is not the same request as no
-      // `workflow_id` for anything that inspects the object before it is
+      // and `template_id: undefined` is not the same request as no
+      // `template_id` for anything that inspects the object before it is
       // serialized.
-      ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
-      ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
+      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
+      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       /*
        * Both keys or neither. `cwd` without `attach_folder` means "this path is
        * already claimed by some cove", which the kernel answers with a 409
@@ -1823,8 +1939,7 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
        * wave in the same repository does not conflict with the first.
        */
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
-    }).then(async (wave) => {
-      await openSpecOnArrival(wave.id).catch(() => undefined);
+    }).then((wave) => {
       /*
        * And only if the reader is still here.
        *
@@ -1845,7 +1960,7 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
        * a real "is this surface current" signal rather than a mount flag.
        */
       if (!liveRef.current) return;
-      go({ name: 'wave', waveId: wave.id });
+      go({ name: 'wave', waveId: wave.id, openSpec: true });
     }).catch((failure: unknown) => {
       const conflict = folderConflictOf(failure);
       if (conflict !== null) {
@@ -2117,6 +2232,32 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   // one decision, and two hand-written copies would drift apart silently.
   const specCard = cards.find((card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload));
   const registry = useConversationRegistry();
+  /*
+   * ── Redeeming "open the spec conversation of the wave I just created" ────
+   *
+   * The intent rides on the history entry the create navigated to
+   * (`useSpecOpenIntent`), so `armed` is already "this wave, this visit": no
+   * other route body can see it, and there is no global slot for one of them
+   * to clear out from under another. What is left here is the half only this
+   * component knows — which card the intent names. `POST /api/waves` answers
+   * with a `Wave`, and the spec card's id exists only once the detail has
+   * landed, which is here.
+   *
+   * `disarm()` before the open, unconditionally: a wave with no spec card has
+   * nothing to open, and an intent left armed on this entry would fire on the
+   * next visit to it (the Back button reaches one).
+   *
+   * `focusComposer` is what makes the landing complete: the wave is unnamed
+   * and empty, and the reader's first sentence *is* the intent, so the caret
+   * has to be where they can type it.
+   */
+  const specOpenIntent = useSpecOpenIntent(wave.id);
+  useEffect(() => {
+    if (!specOpenIntent.armed) return;
+    specOpenIntent.disarm();
+    if (specCard === undefined) return;
+    registry.requestOpen(specCard.id, { focusComposer: true });
+  }, [registry, specCard, specOpenIntent]);
   /*
    * The wave's assistant conversations (#1189). Its own endpoint, its own list;
    * the spec card is deliberately not in it — the server's list predicate is
@@ -2592,10 +2733,19 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
         arrivalAnchorId={arrivalAnchorId}
+        /*
+          #1211 S2 — "Nothing written here yet." described a missing artefact,
+          and it read as an omission the reader had made. It is not one: a wave
+          now starts with no name and no words in it *by design*, and the true
+          state of this page on arrival is "this wave has not taken shape yet
+          — say the first thing". The lead says that, and the first hint names
+          the one action that changes it, which is the conversation already
+          open beside it.
+        */
         empty={<ReportEmpty
-          lead="Nothing written here yet."
+          lead="This wave has not taken shape yet."
           hints={[
-            'The agent writes this report as it works — start a conversation and it fills in.',
+            'Say what you want in the conversation — the agent works it out with you and writes it up here.',
             'It stays with the wave, so it is here the next time you open it.',
           ]}
         />}
@@ -2662,128 +2812,5 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback} />}
     {chat.drawer}
     </>
-  );
-}
-
-function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const go = useGo();
-  const theme = useTheme();
-  const save = useSettingsMutation(transport, unauthorized);
-  const settings = useQuery(settingsQueryOptions(transport, unauthorized));
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  return (
-    <SettingsPage
-      settings={settings.data?.settings}
-      onOpenTemplates={() => go({ name: 'settings-templates' })}
-      loadError={settings.error instanceof Error ? settings.error.message : null}
-      onRetryLoad={() => { void settings.refetch(); }}
-      saving={saving}
-      saveError={saveError}
-      savedAt={savedAt}
-      onOpenToday={() => go({ name: 'today' })}
-      // `app/theme` and `features/settings` each own their copy of the mode
-      // union — features may not import app. The adaptation is here, and the
-      // two unions are only kept in step by this line.
-      themeMode={theme.mode satisfies SettingsThemeMode}
-      onThemeModeChange={(mode) => theme.setMode(mode)}
-      onSave={(patch) => {
-        setSaving(true);
-        setSaveError(null);
-        return save(patch)
-          .then(() => { setSavedAt(Date.now()); })
-          .catch((error: unknown) => {
-            setSaveError(error instanceof Error ? error.message : 'Save failed.');
-          })
-          .finally(() => { setSaving(false); });
-      }}
-    />
-  );
-}
-
-/**
- * Settings › Templates (#1230). Two routes rather than page-local state, so
- * Back leaves the editor instead of leaving Settings, and one template's
- * editor is a URL.
- *
- * Both read the **template list** — the same read the New wave picker uses.
- * There is no per-template endpoint: the list already carries `id` / `title` /
- * `tasks[{key, goal}]`, and a second read would be a second authority for the
- * same facts plus an N+1 whose failure modes have to be reasoned about apart
- * from the list's.
- */
-function TemplateListRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const go = useGo();
-  const templates = useWaveTemplates(transport, unauthorized);
-  return (
-    <TemplateListPage
-      templates={templates.loaded ? templates.templates : undefined}
-      loadError={templates.error}
-      onRetryLoad={templates.refetch}
-      onOpenSettings={() => go({ name: 'settings' })}
-      onEdit={(templateId) => go({ name: 'settings-template', templateId })}
-    />
-  );
-}
-
-function TemplateEditorRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const templateId = useRouteParam('/settings/templates/');
-  /*
-   * Keyed on the id: `saving` / `saveError` / `savedAt` are per-template facts,
-   * and this route component is reused across ids (same route, same instance).
-   * Without the key, one template's "Saved." and error banner render over the
-   * next template's editor, and an in-flight save suppresses the re-seed so
-   * template A's rows show under template B's title.
-   */
-  return (
-    <TemplateEditorSave
-      key={templateId ?? ''}
-      templateId={templateId}
-      transport={transport}
-      unauthorized={unauthorized}
-    />
-  );
-}
-
-function TemplateEditorSave({ templateId, transport, unauthorized }: {
-  templateId: string | undefined;
-  transport: ApiTransportPort;
-  unauthorized: UnauthorizedChannel;
-}) {
-  const go = useGo();
-  const templates = useWaveTemplates(transport, unauthorized);
-  const saveTemplate = useWaveTemplateMutation(transport, unauthorized);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const template = templates.loaded
-    ? templates.templates.find((entry) => entry.id === templateId)
-    : undefined;
-  return (
-    <TemplateEditorPage
-      template={template}
-      /* An id that names no template is a load failure for this route, not an
-         empty editor: blank fields for a template that does not exist would
-         invite a save against nothing. */
-      loadError={templates.loaded && template === undefined
-        ? `No template named ${templateId ?? ''}.`
-        : templates.error}
-      onRetryLoad={templates.refetch}
-      saving={saving}
-      saveError={saveError}
-      savedAt={savedAt}
-      onOpenTemplates={() => go({ name: 'settings-templates' })}
-      onSave={(save) => {
-        setSaving(true);
-        setSaveError(null);
-        return saveTemplate(save)
-          .then(() => { setSavedAt(Date.now()); })
-          .catch((error: unknown) => {
-            setSaveError(error instanceof Error ? error.message : 'Save failed.');
-          })
-          .finally(() => { setSaving(false); });
-      }}
-    />
   );
 }

@@ -21,11 +21,13 @@ mod wave_fsm_golden;
 mod wave_pin;
 #[path = "cases/wave_report_fork.rs"]
 mod wave_report_fork;
+#[path = "cases/wave_report_write_origin.rs"]
+mod wave_report_write_origin;
 #[path = "cases/wave_template_overlay.rs"]
 mod wave_template_overlay;
+#[path = "cases/wave_template_waves.rs"]
+mod wave_template_waves;
 #[path = "cases/wave_templates_read.rs"]
 mod wave_templates_read;
 #[path = "cases/wave_vcs.rs"]
 mod wave_vcs;
-#[path = "cases/wave_workflow_templates.rs"]
-mod wave_workflow_templates;

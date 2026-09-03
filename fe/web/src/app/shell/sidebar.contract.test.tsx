@@ -47,6 +47,7 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         collapsed={props.collapsed ?? false}
         onToggleCollapsed={props.onToggleCollapsed ?? vi.fn()}
         onOpenSettings={props.onOpenSettings ?? vi.fn()}
+        onOpenPlugins={props.onOpenPlugins ?? vi.fn()}
         onSignOut={props.onSignOut ?? vi.fn()}
       />
     </ThemeProvider>,

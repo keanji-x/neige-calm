@@ -94,10 +94,22 @@
  * * `16` — issue #985 adds task-context freeze/advance events, with backend
  *   `SYNC_EVENT_VERSION` bumped 12 → 13 in lockstep. Older frontends'
  *   event unions do not recognize the new discriminators.
+ * * `17` — issue #1209 PR-2 renames the two template fields of the
+ *   `POST /api/waves` request body to `template_id` / `template_input`.
+ *   `CreateWaveRequest` keeps `deny_unknown_fields`, so a cached bundle at
+ *   `16` would send the pre-rename spelling and get a 400 on every wave create —
+ *   exactly the "partially works" outcome `docs/upgrade-stability.md` forbids.
+ *   Raising the floor makes those bundles show the hard refresh curtain
+ *   instead of issuing a doomed request.
+ *
+ * This constant must equal `WEB_COMPAT_VERSION` in
+ * `crates/calm-server/src/routes/version.rs` and in
+ * `fe/web/src/app/providers/public.tsx`. The `web compat version lockstep
+ * gate (#1209 PR-2)` step in `.github/workflows/ci.yml` compares all three.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 16;
+export const WEB_COMPAT_VERSION = 18;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

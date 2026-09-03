@@ -8,10 +8,20 @@
 // model, and renderers that are faithful projections of it.
 //
 // This module holds the vocabulary of that view model plus `paintModule` /
-// `paintPanel`, the traversals S1b's renderers are meant to share. Today the
-// only callers are `paintPanel` and `panel.test.ts`; renderers are wired in
-// S1b-3 (desktop) and S1b-4 (mobile). See `paintModule`'s docstring for what
-// that does and does not buy. Everything here is data and pure functions;
+// `paintPanel`, the traversals S1b's renderers are meant to share. Since S1b-3b
+// the **desktop panel is one of those renderers**: `features/wave/page`'s
+// `desktop-painter.tsx` is a `RowPainter`, and `public.tsx` produces the panel
+// card's **row modules** by calling that file's `paintDesktopPanel` wrapper —
+// which calls `paintPanel` — instead of spelling their DOM inline. The panel
+// card is not only those modules: the page still composes `Referenced by` and
+// `Conversations` beside them, and those are router-fed slots outside the view
+// model (§3.2 below). Since S1b-4a the **mobile page is a second renderer**
+// (`mobile-painter.tsx`, one `paintModule` call per drill-down): Cards in
+// S1b-4a, Tasks in S1b-4b, and since S1b-4b the drill-down menu is derived from
+// the view model's `rowModules` rather than listed by hand. Both mobile row
+// modules therefore reach this file's traversal, and neither composes a row of
+// its own. See `paintModule`'s docstring for
+// what that does and does not buy. Everything here is data and pure functions;
 // `core` may not import React or touch the DOM (`fe/core/AGENTS.md`), so a
 // renderer supplies its own leaf constructors through `RowPainter<T>`.
 //
@@ -27,8 +37,8 @@ export type RowBadge = Readonly<{ id: string; text: string; struck: boolean }>;
 export type RowStatus = Readonly<{
   /** The bare status word — a structural obligation: the renderer writes it
    *  into the row's status marker attribute, unchanged. The attribute is
-   *  deliberately not named here: it is `data-nc-task-status` today, and S1b
-   *  renames it to `data-nc-status` when the panel is rewritten. */
+   *  deliberately not named in this type: it is `MARKER.status`
+   *  (`data-nc-status`), declared once below. */
   token: string;
   /**
    * The finished, readable string — a text obligation: the canonical phrase
@@ -39,9 +49,9 @@ export type RowStatus = Readonly<{
    *
    * The claim is about the row text and stops there: an **accessible name** may
    * be more than the row text, and today the desktop's is — the dot's
-   * `aria-label` is `Status: ${phrase}` (`public.tsx:730`) while its `title` is
-   * the bare phrase (`:731`). That `Status: ` prefix is **renderer chrome and
-   * is not in this field**, deliberately: it is a labelling decision about one
+   * `aria-label` is `Status: ${phrase}` while its `title` is the bare phrase
+   * (`wave/page/desktop-painter.tsx`'s `statusDot`). That prefix is **renderer
+   * chrome and is not in this field**, deliberately: it is a labelling decision about one
    * platform's graphic, not wording about the run.
    *
    * Nothing here stops a renderer wording its chrome differently from the
@@ -61,16 +71,20 @@ export type RowStatus = Readonly<{
  * `public.tsx`; without them here, each of S1b's two painters would re-invent
  * them — the same failure mode as `taskStatusPhrase`, which was written once
  * per surface until #1234 moved it down. This slice moves them down: they are
- * this type's fields, produced by `wave-page.ts`. `public.tsx` still spells its
- * own copies until S1b-3 rewrites the desktop panel.
+ * this type's fields, produced by `wave-page.ts`. Since S1b-3b the desktop
+ * painter reads them from here and spells none of its own. The mobile Cards row
+ * (S1b-4a) writes no wording at all — both of its actions are unsupported there,
+ * so it is handed none. The mobile Task row (S1b-4b) consumes **both** fields
+ * from here: `hint` becomes the row's pointer tooltip and a non-null `label`
+ * becomes its accessible name, so neither surface words a control for itself.
  *
  * **The wording is not a function of `kind`.** `open-card` reads
- * `Open the worker card for ${task.key}` on a Task row (`public.tsx:747`) and
- * has no wording at all on a Cards row (`:517`), so the two sentences are
+ * `Open the worker card for ${task.key}` on a Task row and has no wording at
+ * all on a Cards row's body button, so the two sentences are
  * derived per row, not looked up per kind.
  *
  * **`label` and `hint` are two channels on purpose**, and must not be merged:
- * `public.tsx:743-746` states the rule — `title` describes the destination
+ * `desktop-painter.tsx`'s `taskRow` states the rule — `title` describes the destination
  * *without touching the accessible name*, which stays the visible word
  * (WCAG 2.5.3). Merging them would either lose the delete target's accessible
  * name or rewrite the existing pointer text.
@@ -115,19 +129,22 @@ export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
  * omitted, and is required so that an **explicitly declared** unsupported
  * action must state why.
  *
- * **`paintModule` now reads this table**: it filters a row's actions by it
- * before calling `row()`, so the table decides what a painter is even handed.
- * **That, and only that, is what holds today** — the guarantee is over the
- * `actions` array `row()` receives, and `panel.test.ts` is the only thing that
- * observes it.
+ * **`paintModule` reads this table**: it filters a row's actions by it before
+ * calling `row()`, so the table decides what a painter is even handed. The
+ * guarantee is over the `actions` array `row()` receives; `panel.test.ts`
+ * observes it directly.
  *
- * **Once S1b-2's `checkProjection` exists** (it does not yet — there is no such
- * function in the tree), the same filter becomes non-silent at the marker
- * level: a painter that declares an action unsupported and paints it anyway
- * will paint one `[data-nc-row-action]` too many, and one that declares it
- * supported and skips it one too few, and *that* is what will go red. Even
- * then, "painting an unsupported *control*" is not the claim, because a painter
- * may draw an extra control with no marker at all.
+ * **S1b-2's `checkProjection` has landed** (`tools/projection/public.ts`), and
+ * makes the same filter non-silent at the marker level: a painter that declares
+ * an action unsupported and paints it anyway paints one `[data-nc-row-action]`
+ * too many, one that declares it supported and skips it one too few, and either
+ * is `action-sequence`. Since S1b-3b the **desktop painter is run through it
+ * over the real rendered page** (`desktop-projection.test.tsx`), and so is the
+ * mobile one over both of its pages (`mobile-projection.test.tsx` — Cards since
+ * S1b-4a, Tasks since S1b-4b), whose table is the
+ * deliberate inconsistency itself. And even wired, the claim is not "an unsupported
+ * *control* cannot be drawn": a painter may draw an extra control carrying no
+ * marker at all.
  *
  * What the filter cannot close is a table that contradicts itself —
  * `supported: true` next to an `undefined` callback. That is deliberately
@@ -139,14 +156,13 @@ export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
  * by projection.**
  *
  * **Support is not necessarily a platform constant.** The desktop's real
- * condition for `delete-card` is `onDeleteCard !== undefined`
- * (`public.tsx:514`) — a *host prop*, which can differ between two renders of
- * the same platform, not a fact about the platform. Since `RowPainter.action`
- * is a fixed table, expressing that means **rebuilding the painter per render**
- * with the support bound to the prop. S1b's desktop painter must do exactly
- * that: a painter that hard-codes `delete-card` as supported grows a delete
- * button on a page whose host never passed a handler, which is a control that
- * does not exist today.
+ * condition for `delete-card` is `onDeleteCard !== undefined` — a *host prop*,
+ * which can differ between two renders of the same platform, not a fact about
+ * the platform. Since `RowPainter.action` is a fixed table, expressing that
+ * means **rebuilding the painter per render** with the support bound to the
+ * prop, and `makeDesktopPainter` does exactly that: a painter that hard-coded
+ * `delete-card` as supported would grow a delete button on a page whose host
+ * never passed a handler, which is a control that does not exist today.
  */
 export type ActionSupport =
   | Readonly<{ supported: true }>
@@ -170,9 +186,12 @@ export type RowPainter<T> = Readonly<{
 
 /**
  * Paint one module: the traversal both of S1b's renderers are to go through,
- * and which will then be their single shared one. Today the only callers are
- * `paintPanel` and this module's own unit tests; the renderers are wired in
- * S1b-3 (desktop) and S1b-4 (mobile).
+ * and which will then be their single shared one. Its callers are `paintPanel`,
+ * this module's own unit tests, and S1b-2's `checkProjection`. The **desktop**
+ * production renderer reaches it through `paintPanel` as of S1b-3b
+ * (`wave/page/public.tsx` → `paintDesktopPanel` → `paintPanel`); **both** mobile
+ * pages reach it directly through `paintMobileModule` — Cards since S1b-4a,
+ * Tasks since S1b-4b — one call per drill-down.
  *
  * **The empty state is exclusive** (#1234 §5.20): `empty()` is called when the
  * module has zero rows and *only* then, and `row()` is called for every row and
@@ -186,23 +205,37 @@ export type RowPainter<T> = Readonly<{
  * is what makes an unsupported action's `why` mean anything — the table now
  * decides what the painter sees, instead of being a declaration nobody reads.
  * **The guarantee stops exactly at the call boundary**: it constrains the
- * `actions` array passed to `row()`, and nothing more. Once S1b-2's
- * `checkProjection` lands, that same constraint is what will make painting one
- * `[data-nc-row-action]` too many or too few go red; until then there is no
- * marker-level carrier at all, and the only observer is `panel.test.ts`. It
- * does *not* say "an unsupported control cannot be drawn" — a painter may still
- * draw a control that carries no marker, and may put a marker on a disabled
- * element or one with no handler (§6.3, §5.26-27).
+ * `actions` array passed to `row()`, and nothing more. S1b-2's
+ * `checkProjection` turns that same constraint into a marker-level red
+ * (`action-sequence`) for painters it is run over. It does *not* say "an
+ * unsupported control cannot be drawn" — a painter may still draw a control
+ * that carries no marker, and may put a marker on a disabled element or one
+ * with no handler (§6.3, §5.26-27).
  *
- * **Three gaps stay open on purpose:**
+ * **Three gaps, the first of them now closed for the surfaces that exist:**
  *
- *  - The projection check itself does not exist yet (S1b-2), so none of the
- *    marker-level claims above have a carrier in this tree today.
- *  - Nothing forces a renderer to *call* this, or `paintPanel`, at all. Both
- *    surfaces still compose their modules by hand; "both renderers are on the
- *    one branch" is a goal, not a fact this file can enforce (§6.10).
- *  - Whether a supported action is actually wired to a live handler is not
- *    checked anywhere, and will not be even after S1b-2 — see `ActionSupport`.
+ *  - The projection check runs over a **production** painter on every painted
+ *    surface there is: the desktop (`desktop-projection.test.tsx`, S1b-3b) and
+ *    both mobile pages (`mobile-projection.test.tsx` — Cards since S1b-4a,
+ *    Tasks since S1b-4b). "Every surface" is a claim about today's two, not a
+ *    rule this module can enforce on a third.
+ *  - Nothing in *this file* forces a renderer to call it. What forces the
+ *    desktop is a per-surface argument: `wave/page/desktop-entry.test.tsx`
+ *    mocks `paintDesktopPanel`, and holds both that the page calls it with the
+ *    whole view and that the panel it shows is the value handed back. (The
+ *    page's marker-literal source scan sits beside that as a narrower guard —
+ *    it stops a literal being rewritten in place, and is not a proof the
+ *    painter ran; markers reach a DOM by other routes than a literal.) That is
+ *    an argument about one surface, not a rule this module can state; both
+ *    mobile pages have the same pair in `mobile-entry.test.tsx` — Cards since
+ *    S1b-4a, Tasks since S1b-4b (§6.10).
+ *  - Whether a supported action is actually wired to a live handler is **not
+ *    checked by the projection framework** — not here and not by S1b-2 (see
+ *    `ActionSupport`). It is not unchecked everywhere: for the desktop's three
+ *    actions `wave/page/public.test.tsx` drives the real page and asserts the
+ *    payload reaching the callback the action names. That cover is positive
+ *    only — an extra, spurious callback on the same gesture is not excluded —
+ *    and `tools/projection/public.ts`'s standing list keeps the exact terms.
  */
 export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T {
   const paintRow = (row: PanelRow): T => painter.row({
@@ -223,28 +256,59 @@ export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T
  *
  * **The mobile surface is not this.** Mobile drills down into one module at a
  * time, so on mobile the module sequence is a *navigation* structure rather
- * than a DOM sequence: each mobile page will call `paintModule` once when S1b-4
- * wires it, and there is nothing for `paintPanel` to do there. Today the mobile
- * surface calls neither.
+ * than a DOM sequence: each mobile page calls `paintModule` once — Cards as of
+ * S1b-4a, Tasks as of S1b-4b — and there is nothing for `paintPanel` to do
+ * there. What *is* derived from `view.rowModules` on that surface is the
+ * drill-down menu (S1b-4b): the module sequence drives navigation, one entry per
+ * module, rather than a painted sequence of trees.
  *
- * **Nothing forces the desktop component to call this.** The desktop can still
- * hand-compose its two modules and this function would never notice; that gap
- * is covered only by review (§6.10). Do not read this docstring as saying
- * every renderer goes through here.
+ * **The desktop does reach this** (S1b-3b): `wave/page/public.tsx` renders the
+ * **row modules** of its panel card as `paintDesktopPanel(painter, view)`,
+ * which calls this, and composes no row itself. The card around them is still
+ * the page's — `Referenced by` and `Conversations` sit beside the painted
+ * modules and are outside the view model.
+ * What holds that is not this function — it cannot notice a caller that walks
+ * away — but the page-level constraint described in `paintModule`. Do not read
+ * this docstring as saying every renderer goes through here: the mobile one
+ * does not.
  */
 export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): readonly T[] {
   return view.rowModules.map((module) => paintModule(painter, module));
 }
 
 /**
- * The DOM marker attribute names — **reserved here for S1b-2/3/4**, and read by
- * nothing in production yet.
+ * The DOM marker attribute names — read by the checker, by tests, and **since
+ * S1b-3b by production renderers: the desktop panel, and since S1b-4a/4b both
+ * mobile row-module pages.**
  *
- * To be precise about the present: `checkProjection` (S1b-2) does not exist,
- * the desktop painter (S1b-3) and the mobile painter (S1b-4) are not written,
- * and no `.tsx` or `.css` in the tree spells any of these names by way of this
- * table. Today the only reader is `panel.test.ts`, which pins the table as a
- * whole. Do not read this as "both surfaces already depend on these".
+ * To be precise about the present: `checkProjection` (S1b-2) reads this table in
+ * full — every marker here has a selector in `tools/projection/public.ts`, and
+ * `FIELD` below is its closed value domain — and
+ * `features/wave/page/desktop-painter.tsx` writes every one of them into the
+ * desktop panel *by way of this table*, never as a literal;
+ * `features/wave/page/mobile-painter.tsx` does the same for both mobile pages,
+ * through `ui/mobile-list`'s marker channels (which, like
+ * `ui/panel-card`'s, spell the attribute names themselves — see below).
+ *
+ * Spellings outside this table remain, and are named so the coincidence is not
+ * mistaken for a dependency:
+ *
+ *  - `web/src/ui/panel-card/public.tsx` writes `data-nc-module` and
+ *    `data-nc-field` as **production** literals. It cannot import from here —
+ *    `.dependency-cruiser.cjs`'s `ui-only-core-type-whitelist` lets `ui/**`
+ *    read only `core/types/{ids,a11y}.ts` and `core/state/types.ts` — so its
+ *    three marker channels take the marker *value* as a bare string and spell
+ *    the attribute names themselves;
+ *  - `page.module.css` selects `[data-nc-status]` literally (a stylesheet
+ *    cannot import a constant), and the desktop test suites query the same
+ *    literal.
+ *
+ * `desktop-projection.test.tsx` is what pins the desktop page's rendered markers
+ * back to this table, and `mobile-projection.test.tsx` does the same for the two
+ * mobile pages: their selectors are built from `MARKER`, so a literal that
+ * disagreed would leave the checker finding no marker at all. That is also what
+ * holds `ui/mobile-list`'s own spelling of the attribute names, which it cannot
+ * import for the same dependency-cruiser reason as `ui/panel-card`.
  *
  * They are declared now, in the one platform-independent module both surfaces
  * will depend on, because a marker name is exactly the kind of fact that
@@ -256,11 +320,14 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
  * does neither — these are platform-independent strings. **No DOM operation
  * belongs in this file.**
  *
- * `status` is spelled `data-nc-status` here, its final name. Until S1b-3
- * `public.tsx` still writes the old `data-nc-task-status`; that slice renames
- * every occurrence, and its oracle is that `rg "data-nc-task-status" fe`
- * returns zero hits. This slice defines the vocabulary and changes no existing
- * attribute.
+ * `status` is spelled `data-nc-status`, and since S1b-3a that is the tree's
+ * only spelling of the status marker. S1b-3b closed the page's half of the
+ * remaining coincidence: the desktop dot's attribute is now written from this
+ * table, and `public.tsx` may spell no marker name at all. `page.module.css`
+ * still writes the literal, because a stylesheet has no way to read a constant;
+ * what stops it drifting is that the page's rendered dot is checked against this
+ * table and the stylesheet is checked against the rendered dot
+ * (`task-row.browser.test.tsx`).
  */
 export const MARKER = Object.freeze({
   /** Bijection anchor for a row module. Carries no text obligation. */
@@ -274,10 +341,11 @@ export const MARKER = Object.freeze({
    *  subtraction, and `label` / `hint` are read off `aria-label` / `title`.
    *
    *  **Not `data-nc-action`**, which is already taken and is a *styling*
-   *  protocol: `styles/base.css:207` gives every `[data-nc-action]` a button
-   *  geometry (inline-flex, `--control-h`, border, pointer cursor) and
-   *  `:225-248` freezes its value domain to `primary | secondary | tertiary |
-   *  destructive` (`styles/README.md:33`). A row painter writing
+   *  protocol: `styles/base.css`'s global `[data-nc-action]` rule gives every
+   *  such element a button geometry (inline-flex, `--control-h`, border,
+   *  pointer cursor), and the per-value rules beside it freeze the attribute's
+   *  domain to the four-way vocabulary `primary | secondary | tertiary |
+   *  destructive` that `styles/README.md` documents. A row painter writing
    *  `data-nc-action="open-card"` would silently inherit button styling on a
    *  desktop control and on a mobile `<li>`, and hand the frozen vocabulary a
    *  fifth value. The row-scoped marker therefore gets its own name. */
@@ -289,7 +357,9 @@ export const MARKER = Object.freeze({
   field: 'data-nc-field',
 } as const);
 
-/** The permitted values of `MARKER.field` — one carrier per field. */
+/** The permitted values of `MARKER.field` — one carrier per field. **Closed, and
+ *  checked as closed**: `checkProjection` reports any `data-nc-field` whose
+ *  value is not one of these as `field-domain`. */
 export const FIELD = Object.freeze({
   /** `PanelRow.title`. Exactly one per row. */
   title: 'title',

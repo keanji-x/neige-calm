@@ -6,7 +6,19 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 
-export const WEB_COMPAT_VERSION = 16;
+/**
+ * This bundle's view of the negotiated wire contract.
+ *
+ * Must equal `WEB_COMPAT_VERSION` in `crates/calm-server/src/routes/version.rs`
+ * and in `web/src/api/version.ts`. Nothing relates the three at the type level;
+ * the `web compat version lockstep gate (#1209 PR-2)` step in
+ * `.github/workflows/ci.yml` compares them textually.
+ *
+ * 16 -> 17: #1209 PR-2 renamed the two template fields of the `POST /api/waves`
+ * request body, which `deny_unknown_fields` makes a hard break for older
+ * bundles.
+ */
+export const WEB_COMPAT_VERSION = 18;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

@@ -67,7 +67,43 @@ export const waveLifecycleSchema = z
 export type WaveLifecycle = z.infer<typeof waveLifecycleSchema>;
 
 /** `model::Wave` — wave metadata row. `archived_at` is `Option<i64>` server-side. */
-export const waveSchema = z.object({
+/**
+ * #1209 PR-2 — one-way read compatibility for the pre-rename wave keys.
+ *
+ * `wave.updated` rows already on disk (and REST responses replayed from them)
+ * spell the template fields `workflow_id` / `workflow_input`. `waveObjectSchema`
+ * only knows the new spelling and defaults both to `null`, so a mechanical
+ * rename here would have made every historical row hydrate as
+ * `template_id: null` — silently, with no parse error. That fail-open is the
+ * whole reason this function exists; it mirrors the deserialize-only
+ * `#[serde(alias = "workflow_id")]` on `calm_types::Wave`.
+ *
+ * Deliberately a preprocess step and NOT an optional field on the schema:
+ * making the old key part of the schema would give the shape two writeable
+ * spellings again, which is exactly what #1209 removes. The old keys are
+ * dropped, and only copied over when the new key is absent.
+ *
+ * Each of the three zod readers in this repo carries its own copy of this
+ * function on purpose. A shared helper would make "the third reader was never
+ * wired up" a green regression.
+ */
+function normalizeLegacyTemplateKeys(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const row = raw as Record<string, unknown>;
+  if (!('workflow_id' in row) && !('workflow_input' in row)) return raw;
+  const { workflow_id: legacyId, workflow_input: legacyInput, ...rest } = row;
+  return {
+    ...rest,
+    ...(rest.template_id === undefined && legacyId !== undefined
+      ? { template_id: legacyId }
+      : {}),
+    ...(rest.template_input === undefined && legacyInput !== undefined
+      ? { template_input: legacyInput }
+      : {}),
+  };
+}
+
+const waveObjectSchema = z.object({
   id: z.string(),
   cove_id: z.string(),
   title: z.string(),
@@ -90,11 +126,11 @@ export const waveSchema = z.object({
    */
   cwd: z.string().default(''),
   /**
-   * Issue #760 slice 4a — optional workflow descriptor backing this wave.
+   * Issue #760 slice 4a — optional template descriptor backing this wave.
    * Defaulted to `null` for replay of event-log rows written before the
    * field existed; fresh rows serialize the field explicitly.
    */
-  workflow_id: z.string().nullable().default(null),
+  template_id: z.string().nullable().default(null),
   /**
    * #1110 S4 — owning plugin id copied at create. Defaulted to `null` so
    * pre-S4 `wave.updated` replays (no key) parse; mirrors
@@ -103,13 +139,13 @@ export const waveSchema = z.object({
   plugin_scope: z.string().nullable().default(null),
   purpose: z.string().nullable().default(null),
   /**
-   * Issue #891 — opaque bound-workflow input JSON (kernel validates at
+   * Issue #891 — opaque bound-template input JSON (kernel validates at
    * create time; the frontend never interprets it). `z.unknown()` mirrors
    * the `#[ts(type = "unknown")]` override on the Rust side (same pattern
    * as `Card.payload`). Defaulted to `null` for pre-#891 replay payloads
    * that omit the key — mirrors the server-side `#[serde(default)]`.
    */
-  workflow_input: z.unknown().default(null),
+  template_input: z.unknown().default(null),
   /**
    * Issue #250 PR 2 — unix-ms stamp the wave most recently entered a
    * terminal lifecycle state (Done / Canceled / Failed), or `null`
@@ -147,6 +183,11 @@ export const waveSchema = z.object({
   created_at: z.number(),
   updated_at: z.number(),
 });
+
+export const waveSchema = z.preprocess(
+  normalizeLegacyTemplateKeys,
+  waveObjectSchema,
+);
 
 export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec']);
 export type WorkerSessionKind = z.infer<typeof runtimeKindSchema>;
@@ -229,9 +270,12 @@ export const coveDeletedSchema = z.object({
 
 export const waveUpdatedSchema = z.object({
   ev: z.literal('wave.updated'),
-  data: waveSchema.extend({
-    agent_message: z.string().optional(),
-  }),
+  data: z.preprocess(
+    normalizeLegacyTemplateKeys,
+    waveObjectSchema.extend({
+      agent_message: z.string().optional(),
+    }),
+  ),
 });
 
 export const waveDeletedSchema = z.object({
@@ -345,6 +389,16 @@ export const harnessTranscriptClearedSchema = z.object({
     runtime_id: z.string(),
     card_id: z.string(),
     wave_id: z.string(),
+    // #1252 S0-2 — the reset hard-deletes the transcript, so these are the
+    // only surviving record of its size and the card's age at reset.
+    // #1252 R1/F1 — nullable, and null is NOT the same as 0: rows written
+    // before the telemetry existed carry no measurement at all, and the
+    // Rust side keeps them replayable rather than dropping them from WS
+    // replay. The keys are always present on the wire (serde emits
+    // `null` for `None`), so these stay required-but-nullable.
+    cleared_item_count: z.number().nullable(),
+    cleared_params_bytes: z.number().nullable(),
+    card_age_ms_at_clear: z.number().nullable(),
   }),
 });
 

@@ -1,9 +1,9 @@
-// GitHub issue URL → structured `workflow_input` fields — issue #891
+// GitHub issue URL → structured `template_input` fields — issue #891
 // slice ③ (design §3.1).
 //
 // The issue-dev wave form asks the user for exactly two things: a GitHub
 // issue URL and a working directory. Everything else in the
-// `issue-development` workflow's `workflow_input` is derived, and this
+// `issue-development` workflow's `template_input` is derived, and this
 // parser is the derivation: `{repo, issue_number, issue_url}` out of the
 // pasted URL, entirely client-side. The kernel deliberately does no URL
 // syntax work (design §6 decision 2 — "repo/issue_number are structured
@@ -54,7 +54,7 @@ const SCHEME_HOST_RE = /^https:\/\/github\.com(\/.*)$/i;
 // Owner: GitHub usernames/orgs are alphanumeric + hyphens. Repo names
 // additionally allow `.` and `_`. Anything outside that charset (spaces,
 // `%2F` tricks, unicode) fails the match rather than round-tripping into
-// `workflow_input.repo`. No `.*` after the number: `/issues/12/pull/99`
+// `template_input.repo`. No `.*` after the number: `/issues/12/pull/99`
 // must not parse as issue 12.
 const PATH_RE =
   /^\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/issues\/([0-9]+)\/?(?:[?#].*)?$/;

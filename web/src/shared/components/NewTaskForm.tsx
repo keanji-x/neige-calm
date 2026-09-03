@@ -111,17 +111,17 @@ export interface NewTaskFormProps {
    *  shipped `issue-development` workflow: the user supplies a GitHub
    *  issue URL (plus the same cwd/cove flow), the form derives
    *  `{repo, issue_number, issue_url}` client-side and POSTs them as
-   *  `workflow_input` alongside `workflow_id: "issue-development"`. */
+   *  `template_input` alongside `template_id: "issue-development"`. */
   variant?: 'task' | 'issue-dev';
 }
 
-/** #891 (design §6 F5) — v1 has no `GET /api/workflows` discovery
- *  endpoint, so the issue-dev variant hardcodes the shipped workflow id.
+/** #891 (design §6 F5) — this legacy form deliberately does not consume
+ *  `GET /api/wave-templates`, so the issue-dev variant hardcodes the id.
  *  If the git-forge plugin isn't running, the create POST 400s with a
  *  readable message that the normal submit-error path surfaces. */
-const ISSUE_DEV_WORKFLOW_ID = 'issue-development';
+const ISSUE_DEV_TEMPLATE_ID = 'issue-development';
 
-/** Allowed `workflow_input.merge_policy` values — mirrors the enum in the
+/** Allowed `template_input.merge_policy` values — mirrors the enum in the
  *  shipped `issue-development` input_schema (git-forge manifest, #891 ②).
  *  The default mirrors the schema's documentary `default`: kernel doesn't
  *  apply defaults (design F6), so the form always sends the value. The
@@ -168,7 +168,7 @@ export function NewTaskForm({
   const [issueUrl, setIssueUrl] = useState('');
   const [mergePolicy, setMergePolicy] = useState<MergePolicy>('hold-for-ratify');
   // Raw JSON escape hatch: `null` = not overridden (the textarea mirrors
-  // the derived workflow_input); a string = the user has taken over and
+  // the derived template_input); a string = the user has taken over and
   // their JSON is what gets POSTed (schema-level validation stays
   // server-side — a 400 surfaces through the normal error path).
   const [rawJson, setRawJson] = useState<string | null>(null);
@@ -366,12 +366,12 @@ export function NewTaskForm({
     setTitle(`dev #${parsedIssue.issue_number}`);
   }, [parsedIssue]);
 
-  /** The `workflow_input` derived from the structured fields —
+  /** The `template_input` derived from the structured fields —
    *  merge_policy always present. `null` until the URL parses. The
    *  schema's optional `notes` key has no form field (#891 signoff:
    *  it duplicated the task-description free-text) — the raw-JSON
    *  escape hatch is the way to send one. */
-  const derivedWorkflowInput = useMemo(() => {
+  const derivedTemplateInput = useMemo(() => {
     if (!parsedIssue) return null;
     return {
       issue_url: parsedIssue.issue_url,
@@ -384,7 +384,7 @@ export function NewTaskForm({
   // What the raw-JSON textarea shows: the user's override once they've
   // edited, otherwise a live mirror of the derived input.
   const rawJsonText =
-    rawJson ?? (derivedWorkflowInput ? JSON.stringify(derivedWorkflowInput, null, 2) : '');
+    rawJson ?? (derivedTemplateInput ? JSON.stringify(derivedTemplateInput, null, 2) : '');
   const rawJsonError = useMemo(() => {
     if (rawJson === null) return null;
     try {
@@ -453,11 +453,11 @@ export function NewTaskForm({
         // parsing); otherwise the derived structured fields go out. The
         // plain 'task' variant spreads nothing — its body stays
         // byte-identical to pre-#891.
-        const workflowFields = isIssueDev
+        const templateFields = isIssueDev
           ? {
-              workflow_id: ISSUE_DEV_WORKFLOW_ID,
-              workflow_input:
-                rawJson !== null ? (JSON.parse(rawJson) as unknown) : derivedWorkflowInput,
+              template_id: ISSUE_DEV_TEMPLATE_ID,
+              template_input:
+                rawJson !== null ? (JSON.parse(rawJson) as unknown) : derivedTemplateInput,
             }
           : {};
         const wave = await createWave.mutateAsync({
@@ -466,7 +466,7 @@ export function NewTaskForm({
           cwd: finalCwd,
           attach_folder: attachFolder,
           theme: readHostThemeRgb(),
-          ...workflowFields,
+          ...templateFields,
         });
         // Belt-and-suspenders cache invalidate — useCreateWaveMutation
         // already kicks ['waves', cove_id], but a brand-new cove also
@@ -488,7 +488,7 @@ export function NewTaskForm({
       createCove,
       createWave,
       cwd,
-      derivedWorkflowInput,
+      derivedTemplateInput,
       isIssueDev,
       onCreated,
       qc,
@@ -566,7 +566,7 @@ export function NewTaskForm({
       >
         {/* Issue URL — issue-dev variant only (#891 ③). The one
             user-facing required field besides cwd: everything else in
-            the workflow_input is derived from it client-side
+            the template_input is derived from it client-side
             (parseGitHubIssueUrl). Inline error + disabled submit on a
             malformed URL, same pattern as the cwd field below. */}
         {isIssueDev && (
@@ -748,12 +748,12 @@ export function NewTaskForm({
 
         {/* Raw JSON escape hatch — issue-dev variant only (#891 ③,
             design §3.1). Collapsed by default; shows the exact
-            `workflow_input` the form will POST (live-derived from the
+            `template_input` the form will POST (live-derived from the
             fields above until the user edits, at which point the raw
             value takes over). Local JSON.parse gates submit; the
             schema-level validation stays server-side and a 400 lands in
             the normal error alert below. This is the generic seam:
-            future workflows get raw mode first, a thin form later. */}
+            future templates get raw mode first, a thin form later. */}
         {isIssueDev && (
           <details className="new-task-form-rawjson">
             {/* The override state is surfaced on the always-visible
@@ -762,11 +762,11 @@ export function NewTaskForm({
                 raw blob would otherwise ship with no visible indicator
                 that the form fields above are being ignored. */}
             <summary className="new-task-form-rawjson-summary">
-              Raw workflow_input JSON
+              Raw template_input JSON
               {rawJson !== null ? ' — overriding form fields' : ''}
             </summary>
             <textarea
-              aria-label="Raw workflow_input JSON"
+              aria-label="Raw template_input JSON"
               className="new-task-form-input new-task-form-rawjson-text"
               rows={8}
               spellCheck={false}
@@ -1059,7 +1059,7 @@ function canSubmitForm({
   coveChoice: CoveChoice;
   submitting: boolean;
   /** `null` in the plain 'task' variant. In 'issue-dev' (#891 ③) the
-   *  workflow_input must be produceable: either the raw-JSON override
+   *  template_input must be produceable: either the raw-JSON override
    *  is active and parses, or the issue URL parsed into the derived
    *  fields. A valid raw override deliberately unblocks submit even
    *  with an unparsed URL — it's the escape hatch (server-side schema

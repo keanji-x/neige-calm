@@ -16,11 +16,15 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::NewCove;
+use calm_server::model::{NewCove, NewOverlay};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
+use calm_server::validation::{
+    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
+    template_overlay_payload,
+};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -360,8 +364,82 @@ async fn spec_reset_on_template_wave_is_refused() {
     assert_eq!(spec_harness_ops_for_wave(&boot.repo, wave_id).await, 0);
 }
 
+/// #1297: marking an *existing* wave as a template is a kernel-internal
+/// operation. It used to be reachable by POSTing the overlay through
+/// `/api/overlays`, which is the same door an attacker would use to strand
+/// a running wave (template waves are held out of dispatch and out of
+/// `GET /api/waves`), so the public route now refuses it.
+///
+/// The downstream behaviour that POST was standing in for — a template wave
+/// refuses `/spec/reset` — is still proven, from the kernel-internal write
+/// that production actually uses.
 #[tokio::test]
-async fn overlay_post_marks_existing_wave_as_template_and_blocks_spec_reset() {
+async fn overlay_post_cannot_mark_an_existing_wave_as_template() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "live wave",
+            &attached_repo_fixture("1297-forge"),
+            Some(false),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["id"].as_str().unwrap().to_string();
+
+    let (status, err) = post(
+        boot.app.clone(),
+        "/api/overlays",
+        json!({
+            "plugin_id": "kernel",
+            "entity_kind": "view",
+            "entity_id": wave_id,
+            "kind": "template",
+            "payload": { "schemaVersion": 1 }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={err}");
+
+    // The wave is untouched: no template row landed, and it stays visible.
+    // This is the half that matters — a 403 that still wrote the row would
+    // be worse than no gate at all.
+    //
+    // Scoped deliberately: this asserts the row is absent and the wave is
+    // still listed, NOT that the scheduler still dispatches it. Dispatch
+    // admission is exercised against a real scheduler in
+    // `scheduler::inv_1110_001_template_wave_does_not_dispatch`; claiming it
+    // here off a list-visibility check would be asserting more than the test
+    // runs.
+    // Scoped to `kind == template`: the kernel writes its own `layout` row
+    // under the same `view` namespace when it builds the wave, so an
+    // "empty overlay list" assertion here would be asserting something
+    // false about a different row.
+    let overlays = boot
+        .repo
+        .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, &wave_id)
+        .await
+        .expect("overlays");
+    assert!(
+        !overlays.iter().any(|o| o.kind == OVERLAY_TEMPLATE_KIND),
+        "refused write must not land: {overlays:?}"
+    );
+    let (status, list) = get(boot.app.clone(), "/api/waves").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["id"] == wave_id.as_str()),
+        "wave must remain listed; list={list}"
+    );
+}
+
+#[tokio::test]
+async fn template_overlay_written_internally_blocks_spec_reset() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -378,19 +456,16 @@ async fn overlay_post_marks_existing_wave_as_template_and_blocks_spec_reset() {
     let wave_id = body["id"].as_str().unwrap().to_string();
     assert!(spec_harness_ops_for_wave(&boot.repo, &wave_id).await >= 1);
 
-    let (status, overlay) = post(
-        boot.app.clone(),
-        "/api/overlays",
-        json!({
-            "plugin_id": "kernel",
-            "entity_kind": "view",
-            "entity_id": wave_id,
-            "kind": "template",
-            "payload": { "schemaVersion": 1 }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "body={overlay}");
+    boot.repo
+        .overlay_upsert(NewOverlay {
+            plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
+            entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
+            entity_id: wave_id.clone(),
+            kind: OVERLAY_TEMPLATE_KIND.into(),
+            payload: template_overlay_payload(),
+        })
+        .await
+        .expect("mark as template");
 
     let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
     assert_eq!(status, StatusCode::OK);

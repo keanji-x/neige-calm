@@ -77,9 +77,16 @@
     background: transparent;
   }
 
-  .item:hover,
-  .item:focus-visible {
+  /* #1234 — hover is an affordance, so it belongs to rows that do something.
+     A row with no `onSelect` renders no invisible button at all, and lighting
+     it up under the pointer promised a landing that does not exist. */
+  .item:not(.itemStatic):hover,
+  .item:not(.itemStatic):focus-visible {
     background: var(--overlay-hover);
+  }
+
+  .itemStatic {
+    cursor: default;
   }
 
   .itemNested {
@@ -113,6 +120,21 @@
     font-size: var(--text-xs);
     line-height: var(--leading-tight);
     color: var(--text-3);
+  }
+
+  /* #1234 S1b-4b — the accessible-description carrier. The canonical clip block
+     (the same one `ui/schema-form/fields/DirectoryField` uses): `clip-path`
+     alone would leave the node selectable, and `display: none` would take it
+     out of the accessibility tree, which is the one tree it exists to be in. */
+  .srOnly {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .empty {

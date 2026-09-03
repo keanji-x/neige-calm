@@ -60,12 +60,12 @@ async fn user_prompt_card_first_turn_true_binary() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "e2e-user-prompt".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

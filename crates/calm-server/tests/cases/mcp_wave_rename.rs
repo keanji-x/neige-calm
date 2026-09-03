@@ -142,12 +142,12 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         .unwrap();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     let new_wave = NewWave {
-        workflow_input: None,
+        template_input: None,
         cove_id: cove.id.clone(),
         title: title.into(),
         sort: None,
         cwd: String::new(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),

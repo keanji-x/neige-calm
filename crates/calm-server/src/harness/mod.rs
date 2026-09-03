@@ -5,6 +5,7 @@ pub mod registry;
 pub mod run_loop;
 pub mod snapshot;
 pub mod state;
+pub mod token_usage;
 
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
 pub use run_loop::{SpecHarness, SpecHarnessParams};
 pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
 pub use state::{HarnessState, IssuingKind, run_status_for};
+pub use token_usage::{BASELINE_TOKENS, TokenUsage};
 
 /// #953 §5 — how [`spawn_recovered_harness`] claims the registry slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -624,12 +626,12 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: cove.id.clone(),
                 title: "workspace replay".into(),
                 sort: None,
                 cwd: "/tmp".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -819,12 +821,12 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: cove.id.clone(),
                 title: "review replay".into(),
                 sort: None,
                 cwd: "/tmp".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),

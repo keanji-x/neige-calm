@@ -1,5 +1,5 @@
 // GitHub issue URL → the structured fields the `issue-development` template's
-// `workflow_input` requires (#1209).
+// `template_input` requires (#1209).
 //
 // The kernel deliberately does no URL syntax work: its `input_schema` checks
 // field *shapes* (`repo` is a string, `issue_number` an integer) and nothing
@@ -15,7 +15,7 @@
 //
 // Accepted (deliberately narrow, fail-closed):
 //   * `https://github.com/<owner>/<repo>/issues/<n>` — github.com only.
-//     Enterprise hosts are rejected: the shipped workflow drives `gh` against
+//     Enterprise hosts are rejected: the shipped template drives `gh` against
 //     github.com, so an enterprise URL would create a wave whose repo
 //     cross-check can never pass.
 //   * Scheme and host match case-insensitively (RFC 3986 makes both
@@ -45,7 +45,7 @@ const SCHEME_HOST_RE = /^https:\/\/github\.com(\/.*)$/i;
 
 // Owner: alphanumeric + hyphen. Repo additionally allows `.` and `_`. Anything
 // else (spaces, `%2F` tricks, unicode) fails the match rather than round-
-// tripping into `workflow_input.repo`. No `.*` after the number.
+// tripping into `template_input.repo`. No `.*` after the number.
 const PATH_RE = /^\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/issues\/([0-9]+)\/?(?:[?#].*)?$/;
 
 /** `null` for anything that is not an https github.com issue URL. */

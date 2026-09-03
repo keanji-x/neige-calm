@@ -36,12 +36,12 @@ async fn make_cove(repo: &SqlxRepo, name: &str) -> Cove {
 
 async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
     repo.wave_create(NewWave {
-        workflow_input: None,
+        template_input: None,
         cove_id: cove_id.into(),
         title: title.into(),
         sort: None,
         cwd: String::new(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -209,12 +209,12 @@ async fn wave_crud_round_trip() {
 
     let err = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: "no-such-cove".into(),
             title: "x".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1520,6 +1520,44 @@ async fn plugin_install_get_list_round_trip() {
     assert!(repo.plugin_get_by_id("p.one").await.unwrap().is_none());
     let err = repo.plugin_delete("p.one").await.unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
+}
+
+/// #1284 S1 review round 3 (P2-3). `PATCH /api/plugins/{id}/config` documents
+/// itself as the only writer of an installed plugin's `user_config`, and the
+/// 409-plus-`?reset=true` design for a corrupt row rests entirely on that
+/// sentence. It used to be true only because `PluginHost::install` refuses a
+/// duplicate id before reaching the upsert — a statement propped up by a check
+/// in another crate, which is not where it can be relied on.
+///
+/// So the SQL carries it: `plugin_install`'s `ON CONFLICT DO UPDATE` set
+/// leaves `user_config` alone. Everything else in that set still updates,
+/// which is the half that must not regress.
+#[tokio::test]
+async fn plugin_install_upsert_never_resets_operator_config() {
+    let repo = fresh_repo().await;
+    repo.plugin_install(sample_new_plugin("p.cfg", false))
+        .await
+        .unwrap();
+    repo.plugin_update_user_config("p.cfg", json!({ "theme": "light" }))
+        .await
+        .unwrap();
+
+    // A second install of the same id — what the upsert branch is for — passes
+    // the `{}` every fresh install passes.
+    let mut np = sample_new_plugin("p.cfg", true);
+    np.version = "0.2.0".into();
+    let after = repo.plugin_install(np).await.unwrap();
+
+    assert_eq!(
+        after.user_config,
+        json!({ "theme": "light" }),
+        "the upsert must not be a second writer of user_config"
+    );
+    assert_eq!(
+        after.version, "0.2.0",
+        "…while the rest of the set still updates"
+    );
+    assert!(after.enabled);
 }
 
 #[tokio::test]

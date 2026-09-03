@@ -140,6 +140,33 @@
     border-radius: var(--radius-md);
   }
 
+  /* The status bar's overflow control. Text-weight, aligned with the rows it
+     follows: it is a disclosure, not an action the page wants you to take. */
+  .moreButton {
+    align-self: flex-start;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    background: none;
+    border: none;
+    padding-inline: var(--space-2);
+    cursor: pointer;
+  }
+
+  .moreButton:hover {
+    color: var(--text-2);
+  }
+
+  /* The document's trigger and whatever the last press answered, on one row so
+     the answer reads as belonging to the button rather than to the report. */
+  .summaryTrigger {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
   .slotNote,
   .inlineEmpty {
     font-size: var(--text-xs);

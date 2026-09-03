@@ -30,6 +30,51 @@ struct WaveDetailRow {
     overlays_json: String,
 }
 
+/// SQL fragment restricting a `harness_items` page to the two methods a
+/// transcript can render (#1255).
+///
+/// Spliced, not bound: it is a fixed literal in this file with no caller input
+/// in it, and `IN (?, ?)` cannot be expressed as a single bindable parameter.
+/// See [`RepoRead::harness_item_list_transcript_by_card`] for why the filter
+/// has to sit here, inside the `LIMIT`, rather than in the caller.
+const TRANSCRIPT_METHOD_PREDICATE: &str = " AND method IN ('item/started', 'item/completed')";
+
+impl SqlxRepo {
+    /// One paging query over `harness_items`, with an optional extra
+    /// `WHERE` fragment (`""` for none).
+    async fn harness_item_page(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+        method_predicate: &str,
+    ) -> Result<Vec<HarnessItem>> {
+        const COLUMNS: &str = "id, runtime_id, card_id, wave_id, thread_id, turn_id, \
+                               item_uuid, item_type, method, params, created_at_ms";
+        let (comparison, order, cursor) = if descending {
+            ("<", "DESC", if after_id == 0 { i64::MAX } else { after_id })
+        } else {
+            (">", "ASC", after_id)
+        };
+        let sql = format!(
+            "SELECT {COLUMNS} FROM harness_items \
+             WHERE card_id = ?1 AND id {comparison} ?2{method_predicate} \
+             ORDER BY id {order} LIMIT ?3"
+        );
+        let mut rows = sqlx::query_as::<_, crate::db::rows::HarnessItemRow>(&sql)
+            .bind(card_id)
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        if descending {
+            rows.reverse();
+        }
+        Ok(rows.into_iter().map(HarnessItem::from).collect())
+    }
+}
+
 #[async_trait]
 impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- coves
@@ -126,6 +171,22 @@ impl RepoRead for SqlxRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Wave::from).collect())
+    }
+
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
+        // Same predicate as `today_launchpad_ensure_tx`'s first SELECT, and
+        // single-valued by migration 0064's partial unique index — which is
+        // what makes the answer well-defined, not the `LIMIT 1`. A bare
+        // `LIMIT 1` has no `ORDER BY`, so on a hand-broken database holding two
+        // launchpad rows sqlite may return either one; `ORDER BY id` is here so
+        // that even then the answer is at least stable across calls rather than
+        // flapping between two waves.
+        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose = 'launchpad' ORDER BY id LIMIT 1"
+        ))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Wave::from))
     }
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
@@ -660,37 +721,25 @@ impl RepoRead for SqlxRepo {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<HarnessItem>> {
-        let (sql, cursor) = if descending {
-            (
-                r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
-                          item_uuid, item_type, method, params, created_at_ms
-                   FROM harness_items
-                   WHERE card_id = ?1 AND id < ?2
-                   ORDER BY id DESC
-                   LIMIT ?3"#,
-                if after_id == 0 { i64::MAX } else { after_id },
-            )
-        } else {
-            (
-                r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
-                          item_uuid, item_type, method, params, created_at_ms
-                   FROM harness_items
-                   WHERE card_id = ?1 AND id > ?2
-                   ORDER BY id ASC
-                   LIMIT ?3"#,
-                after_id,
-            )
-        };
-        let mut rows = sqlx::query_as::<_, crate::db::rows::HarnessItemRow>(sql)
-            .bind(card_id)
-            .bind(cursor)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?;
-        if descending {
-            rows.reverse();
-        }
-        Ok(rows.into_iter().map(HarnessItem::from).collect())
+        self.harness_item_page(card_id, after_id, limit, descending, "")
+            .await
+    }
+
+    async fn harness_item_list_transcript_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>> {
+        self.harness_item_page(
+            card_id,
+            after_id,
+            limit,
+            descending,
+            TRANSCRIPT_METHOD_PREDICATE,
+        )
+        .await
     }
 
     async fn worker_flow_item_list_by_card(

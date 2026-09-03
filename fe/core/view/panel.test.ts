@@ -95,12 +95,15 @@ describe('paintModule', () => {
  * `delete-card` unsupported and paint one anyway with nothing to notice.
  *
  * The guarantee is deliberately narrow — it constrains the actions handed to
- * `row()`, and that is the whole of what this suite (or anything else in the
- * tree today) observes. Once S1b-2's `checkProjection` exists it will follow
- * that how many `[data-nc-row-action]` markers a faithful painter emits is
- * constrained too; there is no such check yet. Even then it will **not** say an
- * unsupported control cannot be drawn: a painter may draw an extra control that
- * carries no marker at all.
+ * `row()`, and that is the whole of what *this suite* observes. S1b-2's
+ * `checkProjection` now carries the consequence at the marker level: how many
+ * `[data-nc-row-action]` markers a painter emits is constrained too, for the
+ * painters it is run over — which since S1b-3b include a production one, the
+ * desktop painter, over the real rendered page, and since S1b-4a/4b the mobile
+ * painter over both of its drill-down pages
+ * (`wave/page/mobile-projection.test.tsx`). Neither claim says an unsupported
+ * control cannot be drawn: a painter may draw an extra control that carries no
+ * marker at all.
  */
 describe('paintModule action filtering', () => {
   /*
@@ -177,14 +180,21 @@ describe('paintModule action filtering', () => {
 
 /*
  * `paintPanel` is the **desktop's** traversal: the desktop panel card lays
- * both modules out in one tree. Mobile drills into one module at a time and
- * will call `paintModule` per page when S1b-4 wires it, so the module sequence
- * there is a navigation structure, not a DOM sequence. Today the mobile surface
- * calls neither: outside this suite, `paintModule`'s only caller is
- * `paintPanel`, and no production renderer calls either one.
+ * both modules out in one tree. Mobile drills into one module at a time and,
+ * since S1b-4a/4b, calls `paintModule` once per page, so the module sequence
+ * there is a navigation structure, not a DOM sequence. The mobile surface
+ * therefore calls `paintModule` and — correctly — never `paintPanel`.
  *
- * Nothing forces the desktop component to call this — that gap is review's
- * (§6.10), not this suite's.
+ * **The desktop does, since S1b-3b.** The production chain is
+ * `wave/page/public.tsx`'s desktop panel card → `paintDesktopPanel` →
+ * `paintPanel` → `paintModule`. So outside this suite `paintPanel`'s callers are
+ * that wrapper and `checkProjection` (`tools/projection/public.ts`).
+ *
+ * Nothing *in this file* forces that chain to exist — this suite would stay
+ * green if the page stopped calling the wrapper tomorrow. What holds it is
+ * `wave/page/desktop-entry.test.tsx`, which mocks `paintDesktopPanel` and
+ * checks the page both calls it and renders what it returns; the residue that
+ * oracle leaves is written down in `tools/projection/public.ts`'s standing list.
  */
 describe('paintPanel', () => {
   /* `c1` carries actions on purpose. With an actionless row here, `paintPanel`
@@ -262,9 +272,9 @@ describe('DOM marker vocabulary', () => {
     });
   });
 
-  /* The status marker is defined at its **final** name. `public.tsx` still
-     writes `data-nc-task-status` until S1b-3, whose oracle is that
-     `rg "data-nc-task-status" fe` returns zero hits. */
+  /* The status marker is defined at its **final** name, and since S1b-3a that
+     is also the name `public.tsx` and `page.module.css` write: the earlier
+     spelling of this attribute is gone from the tree. */
   it('spells the status marker at its post-rename name', () => {
     expect(MARKER.status).toBe('data-nc-status');
   });

@@ -56,6 +56,15 @@ pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
 const DEFAULT_PERMITS: usize = 8;
 
+/// The report-edit authors that wake the spec agent, as a single source of
+/// truth: `event_warrants_spec_push_with_role` reads this list, and the spec
+/// system prompt renders it (`spec_card::render_system_prompt`), so the
+/// prompt cannot drift away from dispatch behaviour. Spec/Kernel authors are
+/// deliberately absent — the spec (or the kernel on its behalf) wrote those,
+/// and pushing them back would loop.
+pub(crate) const SPEC_WAKE_AUTHORS: &[EditAuthor] =
+    &[EditAuthor::User, EditAuthor::Plugin, EditAuthor::Assistant];
+
 fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
     daemon
         .proc_supervisor_sock
@@ -100,12 +109,7 @@ pub(crate) fn event_warrants_spec_push_with_role(
         // session editing the spec's work product, so it cannot loop, and
         // leaving the spec unaware that its report changed under it is a
         // worse failure than one extra wake-up.
-        Event::WaveReportEdited { author, .. } => {
-            matches!(
-                author,
-                EditAuthor::User | EditAuthor::Plugin | EditAuthor::Assistant
-            )
-        }
+        Event::WaveReportEdited { author, .. } => SPEC_WAKE_AUTHORS.contains(author),
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
         | Event::ReviewRound { .. }
@@ -1414,10 +1418,16 @@ pub(crate) fn harness_observation_from_event(
             log_tail: log_tail.clone(),
             attempt: *attempt,
         }),
-        Event::WaveReportEdited { body_after, .. } => Some(HarnessObservation::ReportEdited {
+        Event::WaveReportEdited {
+            body_after, author, ..
+        } => Some(HarnessObservation::ReportEdited {
             wave_id: wave_id.clone(),
             body_sha256: sha256_hex(body_after),
             body: body_after.clone(),
+            // #1252 S0 R1/F2 — the event's own attribution, carried through
+            // so the turn text names the real author instead of calling
+            // every edit a user edit.
+            author: Some(*author),
         }),
         Event::WorkspaceLeased {
             card_id,

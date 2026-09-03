@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // Invariants for the Today surface. Behavior lives in public.test.tsx.
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
@@ -91,5 +92,296 @@ describe('INV-A11Y-061 navigation shape', () => {
       <TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW} />,
     );
     expect(container.querySelectorAll('a').length).toBe(0);
+  });
+});
+
+/*
+ * #1253 §5.2 — the Today document region.
+ *
+ * `launchpad` is the server's answer to `GET /api/today/launchpad`, and
+ * `report_has_noninitial_content` is the ONLY thing on this page that decides
+ * between the document and the empty state. The stand-in document below is a
+ * marker, not a report: what is under test is which branch runs, and the real
+ * `ReportDocument` against a real canonical initial payload is exercised at the
+ * composition layer in `app/router/today-document.test.tsx`.
+ */
+const DOCUMENT = <p>the day&apos;s report</p>;
+const EMPTY_COPY = 'Nothing written today yet.';
+
+describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () => {
+  it('renders the empty state for a report nobody has written', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+    // The negative half: the canonical initial report is a well-formed
+    // document — four empty H1s — so a page that decided this by looking at
+    // the document instead of at the server field would render those headings
+    // here rather than the empty state.
+    expect(screen.queryByText("the day's report")).toBeNull();
+  });
+
+  it('renders the document once the server says the report has content', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText("the day's report")).toBeTruthy();
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+  });
+
+  it('treats a 404 as the empty state rather than an error', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={null} launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+  });
+
+  it('says nothing at all while the resolve is still in flight', () => {
+    // "We do not know yet" and "there is nothing" are different answers, and
+    // flashing the second one while the first is true is how a page teaches
+    // people to distrust it.
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByText("the day's report")).toBeNull();
+  });
+
+  it('offers no trigger button anywhere in the main column', () => {
+    /*
+     * `POST /api/today/summary` does not exist until PR2. A stubbed, mocked or
+     * disabled button would be worse than its absence.
+     *
+     * Asserted as "no button at all in the main column", not as "no button
+     * inside the empty-state paragraph" (that paragraph is a `<p>` with one
+     * text node, so querying it for a button is null whatever production does)
+     * and not as a label regex either — "Generate", "Run" or a Chinese label
+     * would walk straight past one. The workspace is seeded with no waves so
+     * the column holds only the document region and the terminal placeholder,
+     * neither of which has a control today.
+     */
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[]} coves={[cove()]} nowMs={NOW}
+      launchpad={null}
+    />);
+    const empty = screen.getByText(EMPTY_COPY);
+    const mainColumn = empty.parentElement;
+    expect(mainColumn).not.toBeNull();
+    expect(mainColumn?.querySelectorAll('button').length).toBe(0);
+    // And the region really is the main column, not some stray wrapper: the
+    // terminal placeholder is its sibling.
+    expect(within(container).getByText('Terminal is not wired up yet.').closest('section')?.parentElement)
+      .toBe(mainColumn);
+  });
+});
+
+describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state', () => {
+  it('shows the failure and suppresses the empty state', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={undefined}
+      launchpadDocument={DOCUMENT}
+      launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
+    />);
+    expect(screen.getByRole('alert').textContent).toContain('boom');
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+  });
+});
+
+describe('#1253 D7 the status bar comes before the document', () => {
+  it('puts the waiting rows above the document in the main column', () => {
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave({ lifecycle: 'blocked' })]} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    const main = within(container).getByText('Waiting on you');
+    const document_ = within(container).getByText("the day's report");
+    expect(main.compareDocumentPosition(document_) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('#1253 D7 the status bar is O(1) in height', () => {
+  /*
+   * D7 puts the status bar above the document *because* its height does not
+   * depend on the workspace, and that is the whole justification for the
+   * order. `waiting` has no natural bound, so without a cap the justification
+   * is false — a review found it false at 100 blocked waves, with the report
+   * pushed off the first screen.
+   */
+  const manyWaiting = Array.from({ length: 100 }, (_, index) => wave({
+    id: `blocked-${index}`, title: `Blocked ${index}`, lifecycle: 'blocked',
+  }));
+
+  it('caps the waiting rows so the document cannot be pushed down', () => {
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={manyWaiting} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    const waitingLabel = within(container).getByText('Waiting on you');
+    const section = waitingLabel.closest('section');
+    expect(section?.querySelectorAll('[data-nc-role="row"]').length).toBe(5);
+    // The count that is not shown is stated rather than dropped.
+    expect(screen.getByRole('button', { name: '+95 more waiting' })).toBeTruthy();
+    // The header still reports the true total, so the cap hides no fact.
+    expect(screen.getByRole('banner').textContent).toContain('100waiting');
+  });
+
+  it('keeps every waiting wave reachable behind the control', async () => {
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={manyWaiting} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    /* Scoped to the status bar, because a waiting wave whose lifespan overlaps
+       the selected day also shows on the calendar agenda — so an unscoped
+       `queryByText` would be answered by the panel and prove nothing about the
+       cap. RUNNING and RECENT both exclude anything already counted as
+       waiting, so this control is the status bar's only route to the rest. */
+    const waiting = () => within(container).getByText('Waiting on you').closest('section');
+    const rows = () => [...(waiting()?.querySelectorAll('[data-nc-role="row"]') ?? [])]
+      .map((row) => row.textContent);
+    expect(rows()).not.toContain('Blocked 99');
+    await userEvent.click(screen.getByRole('button', { name: '+95 more waiting' }));
+    expect(rows()).toContain('Blocked 99');
+    expect(rows().length).toBe(100);
+    expect(screen.getByRole('button', { name: 'Show fewer' })).toBeTruthy();
+  });
+
+  it('draws no control when the waiting list already fits', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={manyWaiting.slice(0, 5)} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.queryByRole('button', { name: /more waiting/ })).toBeNull();
+  });
+});
+
+describe('#1253 the first-run page still owns a document', () => {
+  /*
+   * `coves` is the USER-visible list: #175 filters the system cove out of
+   * `GET /api/coves`, and the launchpad wave lives in the system cove. So
+   * "no waves and no coves" is a perfectly ordinary state for a workspace
+   * whose only content is the day's report — and the early return for it used
+   * to drop the document and the resolve failure alike.
+   */
+  it('renders the report on a workspace with no user coves', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
+    expect(screen.getByText("the day's report")).toBeTruthy();
+  });
+
+  it('surfaces a failed resolve on a workspace with no user coves', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW}
+      launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
+    />);
+    expect(screen.getByRole('alert').textContent).toContain('boom');
+  });
+});
+
+describe('#1253 D5 the document’s trigger', () => {
+  const WRITE = 'Write today’s progress';
+  const REWRITE = 'Rewrite today’s progress';
+  const props = {
+    renderWaveRow, waves: [wave()], coves: [cove()], nowMs: NOW,
+    launchpadDocument: <p>the day&apos;s report</p>,
+  } as const;
+
+  /*
+   * No control at all when the composition offers none — not a disabled one.
+   *
+   * A disabled button is a promise it will work later. An absent one is the
+   * honest shape for "this composition has no trigger", which is what every
+   * suite in this file passes and what `features/**` alone can ever have: the
+   * endpoint lives in `app/router`.
+   */
+  it('renders nothing when no trigger was supplied', () => {
+    render(<TodayPage {...props} launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }} />);
+    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
+    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
+  });
+
+  /*
+   * The control appears whether or not anything happened today.
+   *
+   * This page cannot know — the design gives it no activity read, deliberately
+   * (D4 deleted the layer that would have offered one) — so hiding the button
+   * would be a guess, and the wrong guess makes the feature look broken. The
+   * gate is `POST /api/today/summary`'s, which refuses an empty window without
+   * creating a conversation or sending a message (INV-TODAYDOC-007).
+   */
+  it('offers the trigger in the empty state and a re-run once the report has content', async () => {
+    const pressed: string[] = [];
+    const { rerender } = render(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      onWriteSummary={() => pressed.push('empty')}
+    />);
+    await userEvent.click(screen.getByRole('button', { name: WRITE }));
+    expect(pressed).toEqual(['empty']);
+
+    rerender(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      onWriteSummary={() => pressed.push('rerun')}
+    />);
+    await userEvent.click(screen.getByRole('button', { name: REWRITE }));
+    expect(pressed).toEqual(['empty', 'rerun']);
+    expect(screen.getByText("the day's report")).toBeTruthy();
+  });
+
+  /* In flight the control says so and cannot fire again — one press, one
+     request, however fast the user is. */
+  it('is inert while a request is in flight', async () => {
+    const pressed: string[] = [];
+    render(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      onWriteSummary={() => pressed.push('again')}
+      summaryPending
+    />);
+    const button = screen.getByRole('button', { name: 'Writing…' });
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    await userEvent.click(button);
+    expect(pressed).toEqual([]);
+  });
+
+  /* The notice sits beside the button, not in place of the document: a refused
+     or failed trigger changed nothing about the report already on screen. */
+  it('shows the trigger’s answer without replacing the report', () => {
+    render(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      onWriteSummary={() => undefined}
+      summaryNotice={<span>Nothing has happened in this workspace today yet.</span>}
+    />);
+    expect(screen.getByText('Nothing has happened in this workspace today yet.')).toBeTruthy();
+    expect(screen.getByText("the day's report")).toBeTruthy();
+  });
+
+  /* INV-TODAYDOC-002 — a failed resolve shows the failure and nothing else.
+     The trigger would rewrite a document the page could not even read. */
+  it('is absent when the resolve itself failed', () => {
+    render(<TodayPage
+      {...props}
+      launchpad={undefined}
+      launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
+      onWriteSummary={() => undefined}
+    />);
+    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
+    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
   });
 });

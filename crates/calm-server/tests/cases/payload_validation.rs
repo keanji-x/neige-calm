@@ -55,12 +55,12 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -355,44 +355,23 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// #1297: the `view` / `system` entity kinds are kernel-reserved, so the
+/// public endpoint refuses them however well-formed the payload is.
+///
+/// These three payloads used to be this file's coverage of the `template`
+/// payload validator via the route. They can no longer reach it — the route
+/// stops them a step earlier — so their shape assertions now live where they
+/// are still reachable: `calm_truth::validation`'s unit tests for
+/// `validate_overlay_payload("template", …)`, which already cover the same
+/// missing / extra-field / wrong-version trio. What is proven *here* is the
+/// property those tests cannot see: the gate runs **before** the validator,
+/// so a valid payload and a malformed one are indistinguishable from outside.
 #[tokio::test]
-async fn post_template_overlay_with_valid_payload_returns_200() {
-    let (state, wave_id) = boot().await;
-    let resp = post_overlay(
-        app(state),
-        json!({
-            "plugin_id": "kernel",
-            "entity_kind": "view",
-            "entity_id": wave_id,
-            "kind": "template",
-            "payload": { "schemaVersion": 1 }
-        }),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn post_template_overlay_with_template_key_returns_200() {
-    let (state, wave_id) = boot().await;
-    let resp = post_overlay(
-        app(state),
-        json!({
-            "plugin_id": "kernel",
-            "entity_kind": "view",
-            "entity_id": wave_id,
-            "kind": "template",
-            "payload": { "schemaVersion": 1, "template_key": "issue-development" }
-        }),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn post_template_overlay_rejects_missing_schema_version_extra_fields_and_wrong_version() {
+async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
     let (state, wave_id) = boot().await;
     for payload in [
+        json!({ "schemaVersion": 1 }),
+        json!({ "schemaVersion": 1, "template_key": "issue-development" }),
         json!({}),
         json!({ "schemaVersion": 1, "extra": true }),
         json!({ "schemaVersion": 99 }),
@@ -408,10 +387,94 @@ async fn post_template_overlay_rejects_missing_schema_version_extra_fields_and_w
             }),
         )
         .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "payload={payload:?}");
+        let body = body_to_json(resp).await;
+        assert_eq!(body["code"], "forbidden", "payload={payload:?}");
+    }
+}
+
+/// The two reserved namespaces are independent: neither one alone lets a
+/// write through. A non-kernel `plugin_id` on a reserved `entity_kind` is
+/// still refused, and the reserved `plugin_id` on an externally-writable
+/// `entity_kind` is refused too.
+#[tokio::test]
+async fn post_overlay_reserved_namespaces_are_independently_enforced() {
+    let (state, wave_id) = boot().await;
+    let cases = [
+        ("p1", "view", "template", json!({ "schemaVersion": 1 })),
+        ("p1", "system", "status", json!({ "state": "ok" })),
+        ("kernel", "wave", "status", json!({ "state": "ok" })),
+    ];
+    for (plugin_id, entity_kind, kind, payload) in cases {
+        let resp = post_overlay(
+            app(state.clone()),
+            json!({
+                "plugin_id": plugin_id,
+                "entity_kind": entity_kind,
+                "entity_id": wave_id,
+                "kind": kind,
+                "payload": payload
+            }),
+        )
+        .await;
         assert_eq!(
             resp.status(),
-            StatusCode::BAD_REQUEST,
-            "payload={payload:?}"
+            StatusCode::FORBIDDEN,
+            "{plugin_id}/{entity_kind}/{kind}"
+        );
+    }
+}
+
+/// The positive half of #1297 acceptance: an ordinary client writing an
+/// ordinary overlay under its own `plugin_id` is untouched. Without this the
+/// gate could be tightened to "reject everything" and the tests above would
+/// stay green.
+#[tokio::test]
+async fn post_overlay_still_accepts_non_reserved_plugin_and_entity_kind() {
+    let (state, wave_id) = boot().await;
+    let resp = post_overlay(
+        app(state),
+        json!({
+            "plugin_id": "p1",
+            "entity_kind": "wave",
+            "entity_id": wave_id,
+            "kind": "plugin-private-kind",
+            "payload": { "anything": true }
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Deleting is the second half of the forge — mark, act, remove the evidence
+/// — so the same gate covers it.
+#[tokio::test]
+async fn delete_overlay_rejects_reserved_namespaces() {
+    let (state, wave_id) = boot().await;
+    for (plugin_id, entity_kind) in [("kernel", "view"), ("p1", "view"), ("kernel", "wave")] {
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/overlays/delete")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "plugin_id": plugin_id,
+                            "entity_kind": entity_kind,
+                            "entity_id": wave_id,
+                            "kind": "template"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "{plugin_id}/{entity_kind}"
         );
     }
 }
@@ -455,8 +518,12 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
                 cove: wave.cove_id.clone(),
             },
         ),
-        ("view", "main", EventScope::System),
-        ("system", "global", EventScope::System),
+        // `view` / `system` are kernel-reserved since #1297 and can no
+        // longer be reached through this route at all. Their scope mapping
+        // (both → `EventScope::System`) is asserted directly against the
+        // registry in `calm_truth::validation`'s
+        // `overlay_entity_scope_registry_reserved_kinds_scope_to_system`,
+        // which is where that mapping still has a live reader.
     ];
 
     for (entity_kind, entity_id, expected_scope) in cases {

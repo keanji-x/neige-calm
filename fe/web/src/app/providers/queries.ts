@@ -25,15 +25,21 @@ import {
   type ReportBlock, type TaskVerdict, type WaveBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
+  pluginsOperation, setPluginEnabledOperation, type PluginListItem,
+} from '../../../../core/domain/plugins.ts';
+import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
+  todayLaunchpadOperation, todaySummaryOperation,
+  type TodayLaunchpadWire, type TodaySummaryWire,
+} from '../../../../core/domain/today.ts';
+import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
-  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, putWaveTemplateOperation, toWave,
+  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
   updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
   type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
-  type WaveTemplateGoalEdit,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
@@ -41,6 +47,7 @@ import {
   createWaveConversationOperation, waveConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
+import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 
@@ -115,11 +122,24 @@ export const queryKeys = Object.freeze({
   waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  /* Settings › Plugins. Not reached by any event policy — see
+     `pluginsQueryOptions` for why, and for what stands in for one. */
+  plugins: () => ['plugins'] as const,
   /* #1209 — the New wave picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
      can move under them is a plugin starting or stopping, which changes an
      `input_schema` the new-wave page reads. */
   waveTemplates: () => ['wave-templates'] as const,
+  /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by wave:
+     the kernel's partial unique index makes `purpose = 'launchpad'` a
+     singleton, and the id is what this query is fetching.
+
+     PR2 put it on `wave.report_edited`'s invalidation list, together with
+     `['wave', id]`. Both are needed and neither is generated: the first
+     carries the empty-state predicate, the second carries the document, and
+     `PolicyMap` is exhaustive over event kinds rather than over query keys, so
+     no golden would have reported their absence. */
+  todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
   /* The event bridge can only invalidate the `['cove-conversations']` prefix —
@@ -501,6 +521,79 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
   };
 }
 
+/**
+ * #1253 §5.1 — the Today page load's resolve. A pure read: it never
+ * bootstraps, so the first paint of Today does not depend on codex being up.
+ *
+ * **`null` is data; any failure is an error** (INV-TODAYDOC-002). "There is no
+ * launchpad yet" arrives as a 200 with a null body and becomes the empty
+ * state; a 500, a timeout or a schema mismatch reaches the reader as an error
+ * box. There is no status-code special case left to get wrong — this used to
+ * convert a 404 into `null` here, and the endpoint now says `null` itself.
+ * Folding the two together — treating any failure as "nothing yet" — would
+ * make an unreachable server look exactly like a fresh workspace, which is the
+ * silent degradation this invariant exists to forbid.
+ */
+export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.todayLaunchpad(),
+    queryFn: (): Promise<TodayLaunchpadWire | null> =>
+      runOperation(transport, todayLaunchpadOperation(), unauthorized),
+  };
+}
+
+/**
+ * The Today trigger (#1253 D5), as one mutation.
+ *
+ * `failure` is handed back as an `ApiFailure` rather than as a sentence,
+ * because the wording is `core/domain/today`'s job: `todaySummaryFailure`
+ * matches on the machine-readable `code` there, where it is unit-testable and
+ * away from React.
+ *
+ * **`onSuccess` deliberately does not touch the document's keys.** A 200 means
+ * the message was enqueued, not that the agent has written anything — the write
+ * lands later as a `wave.report_edited` event, which the bridge turns into
+ * `['today-launchpad']` and `['wave', id]`. Refetching either here would fetch
+ * the *old* report, and worse, it would hide a broken invalidation chain behind
+ * a lucky refresh: the page would appear to update after a press even with both
+ * keys missing from the policy, which is the exact defect §6 exists to prevent.
+ * An earlier version invalidated `['wave', id]` here while this comment claimed
+ * it did not; the code was what moved.
+ *
+ * What IS true immediately is that the launchpad now carries a conversation, so
+ * the conversation lists — and only those — are invalidated. That "and only
+ * those" is asserted, not asserted-in-prose:
+ * `today-summary-write.contract.test.tsx` drives this hook and asserts the
+ * invalidated set by EQUALITY, so a third key added here turns it red too —
+ * "and only those" is the claim, and a denylist of the two keys that would hurt
+ * most would not have been it. Without that guard the document tests in
+ * `app/router` could pass on a refetch from here instead of on the invalidation
+ * policy they exist to pin.
+ */
+export type TodaySummaryMutation = Readonly<{
+  write: () => void;
+  pending: boolean;
+  failure: ApiFailure | null;
+}>;
+
+export function useTodaySummaryMutation(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+): TodaySummaryMutation {
+  const client = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (): Promise<TodaySummaryWire> =>
+      runOperation(transport, todaySummaryOperation(), unauthorized),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.waveConversationsPrefix() });
+    },
+  });
+  return {
+    write: () => { mutation.mutate(); },
+    pending: mutation.isPending,
+    failure: mutation.error instanceof ApiError ? mutation.error.failure : null,
+  };
+}
+
 export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.settings(),
@@ -545,14 +638,17 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
-    // #1230 — the Settings editor reads this list too, and there `[]` must not
-    // be readable as "loaded and empty": rendering an empty form for a template
-    // whose read has not landed is INV-SETTINGS-002's defect in another place.
+    // `[]` must not be readable as "loaded and empty" — the New wave picker
+    // renders a different affordance for "no templates" than for "not yet".
     //
     // A **failed** read is not loaded either. The first cut wrote
     // `!query.isPending`, which is true once a read has errored — so a dead
-    // server produced `loaded: true` with `templates: []`, and the editor said
-    // "No template named small-change" instead of reporting the failure.
+    // server produced `loaded: true` with `templates: []`, i.e. a picker
+    // claiming the server has no templates instead of reporting the failure.
+    //
+    // #1300 S1 removed the Settings editor, which was this field's other
+    // consumer. It stays because the picker is a consumer in its own right —
+    // `new-wave/public.tsx` branches on it — not as a leftover.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
@@ -794,43 +890,139 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
 }
 
 /**
- * Saving a template invalidates the template list, which since #1230 is the
- * single read for both the New wave picker and the Settings editor. One
- * authority, one invalidation.
+ * Settings › Plugins — the installed list.
+ *
+ * `retry: false` for the same reason the template read has it: this list is a
+ * screen the reader is looking at, and a failed read must say so and offer
+ * Retry rather than sit spinning through three silent attempts.
+ *
+ * **`plugin.state` does not refresh this list.** `core/events/invalidation-plan`
+ * maps that event to `noop('No plugin list query exists.')` — a reason that was
+ * true until this query was added, and `core/events` is a frozen module whose
+ * change needs its own issue. Without help, enabling a plugin would leave the
+ * row reading `spawning` for as long as the pane stayed open, which is exactly
+ * the transition the reader is waiting on.
+ *
+ * So the query polls *only while some row is in motion*: a `spawning` or
+ * `installing` plugin is a state the kernel is actively leaving, and every
+ * other state is one nothing will change without a write from this screen. The
+ * poll therefore stops on its own, and a settled list costs nothing.
  */
-export function useWaveTemplateMutation(
-  transport: ApiTransportPort,
-  unauthorized: UnauthorizedChannel,
-): (save: {
-  id: string;
-  title: string;
-  edits: readonly WaveTemplateGoalEdit[];
-  appends: readonly WaveTemplateGoalEdit[];
-}) => Promise<WaveTemplate> {
+/* Frozen array, not a `Set`: `architecture/no-module-runtime-state` rejects a
+   module-level `new`, and two entries do not need a hash lookup. */
+const PLUGIN_TRANSIENT_STATES = Object.freeze(['spawning', 'installing'] as const);
+
+export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.plugins(),
+    queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
+    retry: false,
+    /*
+     * Polls **only while a row is in motion**, and only while this pane holds
+     * the query — leaving Settings drops the observer and the interval with it.
+     * That visibility is the bound.
+     *
+     * A counted cap was tried and was worse: `dataUpdateCount` also counts the
+     * invalidation every enable/disable fires, it lives on the cached query
+     * rather than on this visit, and it never resets — so a handful of toggles
+     * exhausted the budget and left the poll permanently off, which is the one
+     * failure mode this exists to prevent.
+     */
+    refetchInterval: (query: { state: { data?: PluginListItem[] } }) =>
+      (query.state.data ?? []).some((plugin) =>
+        (PLUGIN_TRANSIENT_STATES as readonly string[]).includes(plugin.state))
+        ? PLUGIN_POLL_MS
+        : false as const,
+  };
+}
+
+const PLUGIN_POLL_MS = 2000;
+
+export type PluginMutations = Readonly<{
+  /** The plugins a lifecycle write is in flight for. */
+  pendingIds: ReadonlySet<string>;
+  /** The last failure per plugin, so one plugin's error cannot label another. */
+  errors: ReadonlyMap<string, string>;
+  setEnabled: (id: string, enabled: boolean) => void;
+}>;
+
+/**
+ * Enable / disable.
+ *
+ * **Per plugin, not per hook.** A single `useMutation` exposes only the latest
+ * call's `variables` and `error`, so toggling two plugins in quick succession
+ * moved the spinner onto the second one — the first row snapped back to its
+ * server value mid-flight — and a failure on the first was attributed to
+ * whichever call happened last, or lost entirely. The pending set and the
+ * error map are keyed by plugin id, which is the only thing that makes two
+ * concurrent writes describable.
+ *
+ * The response is **not** written through to the cached list: enable answers as
+ * soon as the row flips, while the supervisor is still bringing the process up,
+ * so its `state` is a snapshot that is already stale by the time it lands. An
+ * invalidation asks the kernel what is actually true.
+ */
+export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
   const client = useQueryClient();
-  const mutation = useMutation({
-    mutationFn: (save: {
-      id: string;
-      title: string;
-      edits: readonly WaveTemplateGoalEdit[];
-      appends: readonly WaveTemplateGoalEdit[];
-    }) => runOperation(
-      transport,
-      putWaveTemplateOperation(save.id, { title: save.title, edits: save.edits, appends: save.appends }),
-      unauthorized,
-    ),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.waveTemplates() }); },
+  /* A **count** per id, not membership: the switch stays usable while a write
+     is in flight, so one plugin can have two. With a set, the first response
+     cleared the marker while the second write was still out, and the row read
+     idle mid-flight. */
+  const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const write = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
+    onMutate: ({ id }) => {
+      setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
+      setErrors((current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    },
+    onError: (error, { id }) => {
+      setErrors((current) => new Map(current)
+        .set(id, error instanceof Error ? error.message : 'Could not change this plugin.'));
+    },
+    onSettled: (_data, _error, { id }) => {
+      setPending((current) => {
+        const next = new Map(current);
+        const left = (current.get(id) ?? 1) - 1;
+        if (left <= 0) next.delete(id); else next.set(id, left);
+        return next;
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.plugins() });
+    },
   });
-  return (save) => mutation.mutateAsync(save);
+  return {
+    pendingIds: new Set(pending.keys()),
+    errors,
+    setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
+  };
 }
 
 export function useSettingsMutation(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): (patch: SettingsPatch) => Promise<SettingsBag> {
   const client = useQueryClient();
   const save = useMutation({
     mutationFn: (patch: SettingsPatch) => runOperation(transport, putSettingsOperation(patch), unauthorized),
-    // PUT answers with the full bag, so writing it through avoids a refetch
-    // that would briefly render the pre-save values.
-    onSuccess: (bag) => { client.setQueryData(queryKeys.settings(), bag); },
+    /*
+     * Invalidate; do **not** write the response through.
+     *
+     * The PUT answers with the whole bag, which used to be written straight
+     * into the cache to avoid a refetch. That is only sound while writes cannot
+     * overlap, and Settings › Network commits per field: change a proxy, leave
+     * the field, change it again, leave again, and the first response can land
+     * last. Written through, its older bag becomes the cache — measured: the
+     * field reverted to the earlier value, under a green tick, while the server
+     * held the newer one, and every other reader of `['settings']` saw the
+     * stale bag until something refetched.
+     *
+     * A refetch cannot invert like that: it asks after the write settled, and
+     * the last answer is the server's own state.
+     */
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.settings() }); },
   });
   return (patch) => save.mutateAsync(patch);
 }

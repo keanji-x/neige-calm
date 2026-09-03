@@ -129,7 +129,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
-    assert_eq!(v["apiVersion"].as_str().unwrap(), "1");
+    // #1300 S1: "2" -> "3" when `PUT /api/wave-templates/{id}` was deleted.
+    assert_eq!(v["apiVersion"].as_str().unwrap(), "3");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
@@ -145,12 +146,15 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 16);
+    // #1300 S1: 17 -> 18 so a cached bundle still rendering the deleted
+    // Settings > Templates editor gets the refresh curtain instead of a 404 on
+    // Save.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 18);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 16);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 18);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -198,5 +202,55 @@ async fn db_instance_id_changes_across_boots_stable_within_boot() {
     assert_eq!(
         id_a, id_a_again,
         "dbInstanceId must be stable within a single boot",
+    );
+}
+
+/// #1209 PR-2 (design §3.6, test #15) — the server's compatibility **floor**
+/// really moved past the bundle that predates the wave-create field rename.
+///
+/// `POST /api/waves` now rejects the pre-rename spelling with a 400
+/// (`deny_unknown_fields`). A cached bundle at 16 would therefore keep issuing
+/// requests that cannot succeed — "partially works", which
+/// `docs/upgrade-stability.md` forbids. Raising `minWebCompatVersion` above 16
+/// is what makes those bundles hit the hard refresh curtain instead.
+///
+/// The literal 16 below is a **historical** value: it is the last floor that
+/// still accepted the old spelling. Do not bump it along with
+/// `WEB_COMPAT_VERSION` — a `> WEB_COMPAT_VERSION - 1` style assertion would be
+/// self-referential and could never fail.
+///
+/// Honest scope: this sees only the server. It cannot observe either frontend
+/// bundle's constant. The three-way agreement is enforced by the `web compat
+/// version lockstep gate (#1209 PR-2)` step in `.github/workflows/ci.yml`.
+#[tokio::test]
+async fn web_compat_floor_is_above_the_previous_bundle() {
+    /// Floor shipped before #1209 PR-2; the last bundle generation that spoke
+    /// the pre-rename wave-create field names.
+    const LAST_PRE_RENAME_FLOOR: u64 = 16;
+
+    let state = fresh_state().await;
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let floor = v["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_PRE_RENAME_FLOOR,
+        "minWebCompatVersion must exclude pre-rename bundles, got {floor}"
     );
 }

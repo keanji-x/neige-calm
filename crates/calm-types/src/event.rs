@@ -135,6 +135,21 @@ pub enum EditAuthor {
     Plugin,
 }
 
+impl EditAuthor {
+    /// The bare-lowercase spelling this variant takes on the wire, taken
+    /// from the derived `Serialize` impl rather than re-spelled by hand —
+    /// both the spec system prompt and `Observation::ReportEdited`'s turn
+    /// text name the author to the agent, and those two must agree with the
+    /// `wave.report_edited` payload the agent can also see.
+    pub fn wire_str(self) -> String {
+        serde_json::to_value(self)
+            .expect("EditAuthor serializes")
+            .as_str()
+            .expect("EditAuthor is a unit variant, i.e. a JSON string")
+            .to_string()
+    }
+}
+
 /// Where an event lives in the cove → wave → card hierarchy.
 ///
 /// `EventScope::System` is the catch-all for events that genuinely don't
@@ -384,11 +399,53 @@ pub enum Event {
         old_phase: HarnessPhaseTag,
         new_phase: HarnessPhaseTag,
     },
+    /// #1252 S0-2 — the harness transcript reset hard-deletes every
+    /// `harness_items` row for the card, so this event is the *only*
+    /// surviving evidence of what was there. The measurements below are
+    /// taken inside the reset transaction immediately **before** the
+    /// delete; without them a later retrospective is not merely
+    /// incomplete but directionally biased (it would conclude "resets are
+    /// frequent and surviving contexts are short", both artifacts of the
+    /// delete).
+    ///
+    /// **Nullable, not defaulted-to-zero.** The `Option` is what carries the
+    /// contract; `#[serde(default)]` is explicit reinforcement of serde's
+    /// existing "an absent `Option` field is `None`" rule, not the thing
+    /// doing the work (removing it changes nothing — verified by mutation).
+    ///   * Absence must deserialize because rows written before #1252 carry
+    ///     only `{card_id, runtime_id, wave_id}`, and
+    ///     [`Event::from_kind_and_payload`] is how `events_since` /
+    ///     `events_for_wave` rebuild stored rows. A required field makes
+    ///     those rows fail to deserialize, and both readers `continue` past
+    ///     the error — the row vanishes from WS replay while its id still
+    ///     advances the client cursor, splicing a client's spec history
+    ///     across a reset it never heard about.
+    ///   * `Option` (rather than a defaulted bare `i64`) is required because a
+    ///     defaulted `0` would be indistinguishable from a genuinely empty
+    ///     transcript. `None` means "this reset predates #1252 and was never
+    ///     measured"; `Some(0)` means "measured, and it really was empty".
+    ///
+    /// The emit path (`spec_harness_start_adapter`) always writes `Some(..)`;
+    /// `None` exists only for historical rows read back off the events table.
     #[serde(rename = "harness.transcript.cleared")]
     HarnessTranscriptCleared {
         runtime_id: String,
         card_id: CardId,
         wave_id: WaveId,
+        /// Number of `harness_items` rows deleted by this reset.
+        /// `None` on pre-#1252 rows only.
+        #[serde(default)]
+        cleared_item_count: Option<i64>,
+        /// Summed byte length of those rows' `params` payloads — the only
+        /// cumulative-size measure the `harness_items` schema carries
+        /// (there is no token-count column). `None` on pre-#1252 rows only.
+        #[serde(default)]
+        cleared_params_bytes: Option<i64>,
+        /// Card age at reset: emit time minus the card row's `created_at`,
+        /// in milliseconds. Lets a retrospective tell "reset an hour in"
+        /// from "reset after a week". `None` on pre-#1252 rows only.
+        #[serde(default)]
+        card_age_ms_at_clear: Option<i64>,
     },
     /// #615 F1 — emitted when `POST /api/cards/{id}/spec/input` queues
     /// a user-authored text observation onto the spec harness. Card-scoped
@@ -1919,6 +1976,9 @@ mod scope_tests {
             runtime_id: "runtime-1".into(),
             card_id: CardId::from("card-1"),
             wave_id: WaveId::from("wave-1"),
+            cleared_item_count: Some(12),
+            cleared_params_bytes: Some(3_400),
+            card_age_ms_at_clear: Some(86_400_000),
         };
         assert_eq!(transcript_cleared.kind_tag(), "harness.transcript.cleared");
 
@@ -2730,6 +2790,9 @@ mod scope_tests {
                 runtime_id: "runtime-transcript".into(),
                 card_id: CardId::from("card-runtime"),
                 wave_id: WaveId::from("wave-1"),
+                cleared_item_count: Some(12),
+                cleared_params_bytes: Some(3_400),
+                card_age_ms_at_clear: Some(86_400_000),
             },
             Event::HarnessUserMessageEnqueued {
                 runtime_id: "runtime-user-message".into(),
@@ -2941,10 +3004,10 @@ mod scope_tests {
             pinned_at: None,
             lifecycle: WaveLifecycle::Draft,
             cwd_wire_alias: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             purpose: None,
-            workflow_input: None,
+            template_input: None,
             terminal_at: None,
             workspace: Default::default(),
             created_at: 0,

@@ -98,7 +98,7 @@
 //
 // "No template" is a first-class option and the default, and it is **not** a
 // row the server sent: it is the absence of a template, i.e. a create with no
-// `workflow_id`. Everything about this list is arranged so that staying on it
+// `template_id`. Everything about this list is arranged so that staying on it
 // is free. In particular `templates` may be empty because the read failed or
 // has not landed, and the composer is fully usable in that state: this is the
 // app's only wave-creation entry point, and a failed list read must not be able
@@ -110,9 +110,10 @@
 // those are the wave you get. See `NO_TEMPLATE` and `FOLDER_PLACEHOLDER` for
 // the long form.
 //
-// The vocabulary seam is deliberate and recorded in #1209: the read side says
-// *template*, the write side says `workflow_id`. This form speaks the read
-// side's word to the user and the write side's word on the wire.
+// One concept, one word, one field: the list, the chip and the wire all say
+// *template* / `template_id`. (#1209 removed the vocabulary seam this comment
+// used to describe, where the read side and the write side used different
+// words for the same thing.)
 //
 // ### Collapsed, not spread out
 //
@@ -215,8 +216,8 @@ export type NewWaveDraft = Readonly<{
    */
   message: string;
   /** Absent for no template — never `null` or `''`, which the kernel 400s. */
-  workflow_id?: string;
-  workflow_input?: Readonly<Record<string, unknown>>;
+  template_id?: string;
+  template_input?: Readonly<Record<string, unknown>>;
   /**
    * Absolute path, **or the key is absent**. Absent is not "the empty string":
    * the caller distinguishes the two to decide whether the request carries
@@ -274,8 +275,8 @@ const BLANK = '';
  * makes a settled default look like an outstanding task.
  *
  * `No template` and not `Blank`: `Blank` was the codebase's word for "no
- * `workflow_id` on the wire", and it had leaked onto a chip a person reads
- * before they know this app has workflows at all. The same string serves as the
+ * `template_id` on the wire", and it had leaked onto a chip a person reads
+ * before they know this app has templates at all. The same string serves as the
  * chip and as the menu's first row, which is now a plain identity rather than
  * two strings that have to be kept in step.
  */
@@ -468,15 +469,15 @@ export function NewWaveForm({
     const folder = cwd.trim();
     const base = { message: trimmed, ...(folder === '' ? {} : { cwd: folder }) };
     if (effectiveSelection === BLANK) { onSubmit(base); return; }
-    if (parsedIssue === null) { onSubmit({ ...base, workflow_id: effectiveSelection }); return; }
+    if (parsedIssue === null) { onSubmit({ ...base, template_id: effectiveSelection }); return; }
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
     onSubmit({
       ...base,
-      workflow_id: effectiveSelection,
-      workflow_input: { ...parsedIssue, merge_policy: mergePolicy },
+      template_id: effectiveSelection,
+      template_input: { ...parsedIssue, merge_policy: mergePolicy },
     });
   }
 

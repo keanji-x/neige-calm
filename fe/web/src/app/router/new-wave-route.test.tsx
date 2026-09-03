@@ -67,8 +67,8 @@ const LISTING = {
    names the wave later through `calm.wave.rename`. */
 const WAVE_ROW = {
   id: 'w-new', cove_id: 'c1', title: '', sort: 0, archived_at: null, pinned_at: null,
-  lifecycle: 'draft', cwd: '/srv/managed', workflow_id: null, plugin_scope: null,
-  purpose: null, workflow_input: null, terminal_at: null, created_at: 1, updated_at: 1,
+  lifecycle: 'draft', cwd: '/srv/managed', template_id: null, plugin_scope: null,
+  purpose: null, template_input: null, terminal_at: null, created_at: 1, updated_at: 1,
 };
 
 /** The 409 `POST /api/waves` answers a folder clash with — no `error` key. */
@@ -92,9 +92,9 @@ const TEMPLATES = [
 function harness(options: {
   templates?: unknown;
   waveCreate?: ApiTransportResponse;
-  /** Override the detail read — the one follow-up call this page makes. */
+  /** Override the detail read the wave page makes when the create lands. */
   waveDetail?: ApiTransportResponse;
-  /** Hold the detail read open until this resolves, to drive late-landing. */
+  /** Hold the detail read open until this resolves, to drive a slow landing. */
   heldDetail?: Promise<void>;
   /** Hold the create POST open until this resolves, to drive a late create. */
   heldCreate?: Promise<void>;
@@ -122,11 +122,11 @@ function harness(options: {
           ? Promise.resolve({ status: 500, statusText: 'Server Error', body: { message: 'boom' } })
           : Promise.resolve({ status: 200, statusText: 'OK', body: templates });
       }
-      /* The create is followed by a detail read, which is how the route finds
-         the spec card whose conversation it asks the wave page to open. Served
-         here rather than left to fall through to `[]`, because a decode failure
-         would look identical to "the feature did not run". No first message
-         rides on it — that is #1299. */
+      /* The wave page reads the detail on arrival, and that read is where the
+         spec card — the one the landing opens — comes from. Served here rather
+         than left to fall through to `[]`, because a decode failure would look
+         identical to "the feature did not run". No first message rides on it —
+         that is #1299. */
       if (request.method === 'GET' && request.path === '/api/waves/w-new') {
         if (options.waveDetail) return Promise.resolve(options.waveDetail);
         const detail = {
@@ -141,9 +141,9 @@ function harness(options: {
             overlays: [],
           },
         } satisfies ApiTransportResponse;
-        /* Held open on request, so a test can land this response *after* the
-           reader has navigated away — the sequence the location guard exists
-           for. Resolves to the same body either way. */
+        /* Held open on request, so a test can land the wave page's cards
+           *after* the navigation has happened. Resolves to the same body
+           either way. */
         return options.heldDetail
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
@@ -274,6 +274,51 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     expect(composerText()).toBe('Read it');
   });
 
+  /*
+   * ── Nothing on this page names the wave ─────────────────────────────────
+   *
+   * #1211 S2 deleted the title field, and S3 replaced the dialog with this
+   * page. The field that survives is the composer, and it is the wave's
+   * *intent*, not its name — so the statement to keep alive across the move is
+   * "no control here collects a title, and no `title` key is on the wire".
+   *
+   * Carried over from the shell suite's `creates with no title field on screen
+   * and no title key on the wire`, which went with the dialog. The screen half
+   * had to be rewritten: there, the absent field answered to the composer's own
+   * label, and here that label is the composer.
+   *
+   * The body is asserted on **key absence**: `title: ''` reaches the same
+   * stored value, so an assertion on the value could not tell "nobody named
+   * this wave" from "this client named it the empty string" — and only the
+   * former leaves `calm.wave.rename` able to name it (#1211 S1).
+   */
+  it('creates with no title control on screen and no title key on the wire', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    // Exposed first, so the absence checks below cannot pass vacuously.
+    expect(await findComposer()).toBeTruthy();
+    /* By name, not by counting textboxes: the composer is a textbox, and so is
+       the template's input field on the issue-development path — a count would
+       say nothing. Anything that named itself a title would match. */
+    expect(screen.queryByRole('textbox', { name: /title/i })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: /title/i })).toBeNull();
+    expect(screen.queryByLabelText(/title/i)).toBeNull();
+
+    /* Create is gated on the sentence and on nothing else — no name is asked
+       for, so nothing here can be blocking on one. (S2's dialog collected no
+       sentence and its Create was live immediately; S3 makes the composer the
+       page, so an empty one has nothing to submit.) */
+    const create = await screen.findByRole('button', { name: 'Create wave' });
+    expect(create.hasAttribute('disabled')).toBe(true);
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    expect(create.hasAttribute('disabled')).toBe(false);
+    await userEvent.click(create);
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
+    expect(Object.hasOwn(body, 'title')).toBe(false);
+    expect(body).toMatchObject({ cove_id: 'c2' });
+  });
+
   it('posts the opener\'s cove_id and omits cwd / attach_folder with no folder chosen', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
@@ -295,10 +340,10 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     expect(body).toMatchObject({ cove_id: 'c2' });
     expect(body).toHaveProperty('theme');
     /* #1211 — the sentence is the wave's *intent*, not its name. No `title` on
-       the wire at all (the kernel stores the empty string and the spec agent
-       renames later), and the text reaches the agent as the spec card's first
-       message instead. Both halves asserted: a create that quietly went back to
-       posting the title would satisfy neither. */
+       the wire at all: the kernel stores the empty string and the spec agent
+       renames later through `calm.wave.rename`. The sentence itself is not on
+       the wire either yet (#1299, asserted just below) — a create that quietly
+       went back to posting it as the title would satisfy neither. */
     expect(body).not.toHaveProperty('title');
     /* #1299 — nothing is delivered from this page yet. */
     expect(specInputTexts(sent)).toEqual([]);
@@ -308,9 +353,9 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     expect(body).not.toHaveProperty('attach_folder');
     expect(sent.some((request) => request.path.startsWith('/api/fs/listdir'))).toBe(false);
     // #1209 — Blank is the default, and Blank means the key is not on the wire
-    // at all. `workflow_id: null` or `''` is a 400 from the kernel.
-    expect(body).not.toHaveProperty('workflow_id');
-    expect(body).not.toHaveProperty('workflow_input');
+    // at all. `template_id: null` or `''` is a 400 from the kernel.
+    expect(body).not.toHaveProperty('template_id');
+    expect(body).not.toHaveProperty('template_input');
   });
 
   /*
@@ -345,8 +390,8 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     });
     expect(sent.some((request) => request.path === '/api/fs/listdir')).toBe(true);
     // Attaching a folder is orthogonal to #1209's template choice: staying on
-    // Blank must still keep `workflow_id` off the wire.
-    expect(body).not.toHaveProperty('workflow_id');
+    // Blank must still keep `template_id` off the wire.
+    expect(body).not.toHaveProperty('template_id');
   });
 
   /*
@@ -371,7 +416,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({
       cove_id: 'c1',
-      workflow_id: 'small-change',
+      template_id: 'small-change',
       cwd: '/srv/app',
       attach_folder: true,
     });
@@ -424,8 +469,8 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({
       cove_id: 'c2',
-      workflow_id: 'issue-development',
-      workflow_input: {
+      template_id: 'issue-development',
+      template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',
         issue_number: 1209,
@@ -434,7 +479,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     });
   });
 
-  it('sends an unbound template as an id with no workflow_input', async () => {
+  it('sends an unbound template as an id with no template_input', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await findComposer();
@@ -444,10 +489,10 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ workflow_id: 'small-change' });
+    expect(body).toMatchObject({ template_id: 'small-change' });
     expect(body).not.toHaveProperty('title');
     expect(specInputTexts(sent)).toEqual([]);
-    expect(body).not.toHaveProperty('workflow_input');
+    expect(body).not.toHaveProperty('template_input');
   });
 
   /*
@@ -509,14 +554,14 @@ describe('the sentence is not delivered yet, and the wave opens ready for it', (
   });
 
   /*
-   * The positive half, and the one this round actually added: on the happy path
-   * the spec card is found and its conversation is requested, so the reader
+   * The positive half: the create states `openSpec` on the navigation it makes
+   * and the wave route body redeems it against its own cards, so the reader
    * lands ready to say the sentence again.
    *
    * Asserted through the drawer the wave page opens, not by spying on the
-   * registry: `requestOpen` is an implementation detail and the drawer is the
-   * thing the reader gets. Without this case `openSpecOnArrival` could be
-   * deleted outright and every other case here would stay green.
+   * router state: the marker is an implementation detail and the drawer is the
+   * thing the reader gets. Without this case the `openSpec: true` on the `go()`
+   * below could be deleted and every other case here would stay green.
    */
   it('opens the wave\'s spec conversation on arrival', async () => {
     harness({ templates: TEMPLATES });
@@ -535,21 +580,20 @@ describe('the sentence is not delivered yet, and the wave opens ready for it', (
   });
 
   /*
-   * A slow spec-card read must neither hold the reader nor write late.
+   * A slow landing must not hold the reader on the form.
    *
-   * The read races a short deadline *before* navigating. Two earlier shapes
-   * were wrong in opposite directions: awaiting it unbounded parked the reader
-   * on a stuck "Creating…", and firing it after navigating let a late
-   * `requestOpen` overwrite a conversation they had opened since — which a
-   * location guard could not fix either, because they can leave this wave and
-   * come back before it lands.
+   * The create used to read the wave detail *here*, race it against a deadline,
+   * and write the spec card's id into the conversation registry before
+   * navigating. The registry outlives every route, so a landing that never
+   * reached the wave left that request standing and sprang a drawer open on a
+   * later visit — which is why the intent moved onto the history entry
+   * (`openSpec`) and the read moved to the wave page that owns it.
    *
-   * So the guarantee is: lose the race and the result is *dropped*, not
-   * deferred. The reader is navigated without the drawer, and releasing the
-   * read afterwards changes nothing — there is no late write left to
-   * adjudicate.
+   * So the guarantee here is now two-sided and this case pins both: the
+   * navigation does not wait on any read, and the drawer opens when the read it
+   * does depend on finally lands — on this entry, and only this one.
    */
-  it('navigates without the drawer when the spec-card read is slow, and never writes late', async () => {
+  it('navigates before the wave detail lands, and opens the drawer when it does', async () => {
     let releaseDetail = (): void => undefined;
     const held = new Promise<void>((resolve) => { releaseDetail = () => { resolve(); }; });
     const { sent } = harness({ heldDetail: held });
@@ -560,20 +604,15 @@ describe('the sentence is not delivered yet, and the wave opens ready for it', (
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
 
-    // The deadline fires and the reader goes, drawer or no drawer.
-    await waitFor(
-      () => { expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w-new`); },
-      { timeout: 5_000 },
-    );
+    // The reader goes at once — nothing on this page is waiting for the read.
+    await waitFor(() => { expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w-new`); });
     expect(createdWaveBodies(sent)).toHaveLength(1);
     await findWavePage();
     expect(screen.queryByRole('complementary', { name: 'Spec' })).toBeNull();
 
-    // And the read landing afterwards is inert — this is the assertion that
-    // would fail if the result were merely deferred rather than dropped.
     releaseDetail();
     await held;
-    expect(screen.queryByRole('complementary', { name: 'Spec' })).toBeNull();
+    expect(await screen.findByRole('complementary', { name: 'Spec' })).toBeTruthy();
   }, 10_000);
 
   /*
@@ -609,11 +648,13 @@ describe('the sentence is not delivered yet, and the wave opens ready for it', (
      * And nothing was written into the registry on the way past.
      *
      * Asserting only the pathname above is not enough, and that gap is exactly
-     * what review caught by execution: the drawer request outlives every route,
-     * so a write made after the reader left is invisible *here* and surfaces on
-     * their **next** visit to the wave as a Spec drawer nobody opened. This is
-     * the second time a test in this file asserted the wrong side of a late
-     * write; the observable has to be the later visit, not the current screen.
+     * what review caught by execution on the shape this replaced: a drawer
+     * request written into a provider after the reader left was invisible
+     * *here* and surfaced on their **next** visit to the wave as a Spec drawer
+     * nobody opened. The intent now rides on the history entry the create would
+     * have made — and it never made one — so the later visit is the observable
+     * that says so, and it stays the observable regardless of how the intent is
+     * carried.
      */
     window.history.pushState({}, '', `${APP_BASEPATH}/wave/w-new`);
     /* Wait for the page to be far enough along that a leftover request *would*
@@ -625,9 +666,9 @@ describe('the sentence is not delivered yet, and the wave opens ready for it', (
     expect(screen.queryByRole('complementary', { name: 'Spec' })).toBeNull();
   }, 10_000);
 
-  /* A failure looking for the spec card costs a closed drawer and nothing else,
-     so it must not block the navigation — there is no message riding on it. */
-  it('still lands on the wave when the spec-card lookup fails', async () => {
+  /* A wave detail that will not load costs a closed drawer and nothing else, so
+     it must not block the navigation — there is no message riding on it. */
+  it('still lands on the wave when the wave detail read fails', async () => {
     const { sent } = harness({
       waveDetail: { status: 500, statusText: 'Server Error', body: { error: 'boom' } },
     });

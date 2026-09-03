@@ -24,18 +24,21 @@ use axum::{
     Json, Router,
     extract::{FromRef, State},
     http::StatusCode,
-    routing::post,
+    routing::{get, post},
 };
 use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use utoipa::ToSchema;
 // #1147 — one definition of the path digest, shared with the scheduler's
 // child-wave bootstrap key.
 use crate::workspace_materialize::workspace_key_digest;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
+    Router::new()
+        .route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
+        .route("/api/today/launchpad", get(resolve_today_launchpad))
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -44,6 +47,55 @@ pub struct TodayLaunchpad {
     pub spec_card_id: String,
     pub terminal_card_id: String,
     pub terminal_id: String,
+}
+
+/// #1253 §5.1 — what the Today **page load** reads.
+///
+/// A deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it
+/// does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
+/// reader's, and the two answer different questions.
+///
+/// There is no `report_card_id` here on purpose. The wave detail already
+/// returns the wave's cards and the frontend locates the report by
+/// `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+/// such a field would have no consumer.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct TodayLaunchpadResolved {
+    pub wave_id: String,
+    /// Whether this report's `summary`/`body` differ **right now** from the
+    /// canonical freshly-minted pair.
+    ///
+    /// It is NOT "has anyone ever written it": no history is consulted, so
+    /// none can be reported, and restoring the text to the canonical pair
+    /// turns this back to `false`. Do not build a "the summary has run" marker
+    /// on it — see the first bullet below.
+    ///
+    /// It is computed server-side by
+    /// [`WaveReportPayload::report_startup_read_required`], the kernel's one
+    /// canonical "has this been written" predicate. It is deliberately NOT
+    /// named `report_started`, and the difference is not cosmetic (design D7):
+    ///
+    /// * **It is a statement about the report's CURRENT content, not about its
+    ///   history.** The name says exactly that, and the name is the contract:
+    ///   it is `has_noninitial_content`, not `has_ever_been_written`. Restoring
+    ///   `summary` and `body` byte-for-byte to the canonical initial pair
+    ///   flips it back to `false`, whatever happened in between — no history is
+    ///   consulted, so none can be reported.
+    /// * It therefore also answers "has *anyone* written it", not "has today's
+    ///   summary run": a user hand-editing the document flips it exactly as a
+    ///   summary agent would, and a stale document still reads as content.
+    ///   Anything that really needs "did the summary run" needs a durable
+    ///   marker or event, not this.
+    /// * It compares `summary + body` only; `doc_rev` and `blocks` are
+    ///   deliberately ignored, so a canonical placeholder that CRDT has
+    ///   already materialised still reads `false` — and so does a report whose
+    ///   text was reverted to canonical while those two stayed non-zero.
+    ///
+    /// The frontend must not re-derive this by looking at the report body:
+    /// `readWaveReport` returns non-null for the canonical initial report
+    /// (its body carries the maintenance-contract comment and four H1s), so a
+    /// null-check there renders four empty headings instead of an empty state.
+    pub report_has_noninitial_content: bool,
 }
 
 struct EnsureTxResult {
@@ -63,11 +115,203 @@ struct EnsureTxResult {
     repointed: bool,
 }
 
+/// Does `error` carry SQLite's unique-violation message for `constraint`?
+///
+/// **`constraint` is a COLUMN list, never an index name.** SQLite words a
+/// unique violation as `UNIQUE constraint failed: <table>.<column>[, …]` — it
+/// names the index only for a unique index over *expressions*. Both indexes
+/// this module races on (`idx_coves_one_system` on `coves(kind)`,
+/// `idx_waves_one_launchpad` on `waves(purpose)`) are partial indexes over
+/// plain columns, so their messages read `coves.kind` and `waves.purpose` and
+/// contain no index name at all. Passing the index name here matches nothing:
+/// the arm becomes dead code and the race surfaces as a 500 instead of the
+/// retry it was written to perform. `routes::waves` has always used the column
+/// form (`waves.cove_id`); this module did not until #1253 PR1.
+/// The `constraint` argument for the system-cove race, and the ONLY place that
+/// string is written.
+///
+/// **What binds it, precisely** — two different mutations, two different
+/// carriers, both measured:
+///
+/// * Reverting *this constant* to an index name →
+///   `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`
+///   goes red, because it asserts against the constant.
+/// * Reverting the *call site* to an inline index literal →
+///   `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
+///   goes red **at its HTTP status assertion**, which fires on the losing
+///   request's 500. NOT at its `retries == 1` assertion, which that mutation
+///   never reaches. What [`SystemCoveMintCounters`] contributes there is not
+///   the failing assertion but its *validity*: `attempts == 2` proves the race
+///   happened at all, without which the status assertion is satisfied by a run
+///   in which nothing was ever retried.
+const SYSTEM_COVE_UNIQUE: &str = "coves.kind";
+
+/// The `constraint` argument for the launchpad-wave race.
+///
+/// **Read this before trusting it, because its guard is weaker than the one
+/// above and the difference is not obvious.** The retry arm it feeds is
+/// unreachable (see `ensure_today_launchpad`), so there is no behavioural case
+/// that can drive it — nothing observes the call site at run time.
+///
+/// * Reverting *this constant* to an index name: caught by
+///   `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`.
+/// * Reverting the *call site* to an inline literal, leaving this constant
+///   correct: **the test stays green.** The only thing that fails is
+///   `cargo clippy --lib -- -D warnings`, on `dead_code`, because nothing
+///   outside `mod tests` would read the constant any more. Verified by running
+///   both.
+///
+/// So the carrier for the call site is **clippy's `dead_code` on the non-test
+/// target**, not a test. That is thin on purpose-built terms: one
+/// `#[allow(dead_code)]`, or one second non-test reader of this constant, and
+/// the guard goes silent with nothing turning red. Do not add either without
+/// replacing the guard.
+const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
+
+/// Per-server observation of the system-cove mint race.
+///
+/// **Why it exists.** Without it the concurrency case asserted only its
+/// *outcome* — both requests succeeded, one cove, one launchpad — and every one
+/// of those assertions is equally true when the race never happens, because
+/// then only one request mints and the retry arm is never needed. `attempts`
+/// lets the case assert the race *occurred*, which is what makes the outcome
+/// assertions mean anything.
+///
+/// **Why it is not `#[cfg(feature = "fixtures")]`.** A case about scheduling
+/// has to execute the instructions production executes; a counter compiled only
+/// into the test build makes the tested binary a different binary from the
+/// shipped one, which is exactly what a timing test cannot afford. The cost is
+/// two relaxed atomic adds on a path taken at most once per server.
+///
+/// **Why it hangs off [`AppState`] and not a `static`.** A process-global is
+/// shared by every `AppState` in the process, and ~30 sibling cases in
+/// `tests/cases/today_launchpad.rs` drive the same `ensure` helper. Under
+/// nextest (process per test) that is invisible; under a plain
+/// `cargo test --test domain_api_suite` they run as threads in one process and
+/// the counters read other cases' requests. Reproduced with a process-global
+/// here, the failure is a confident false RED reading "the race did not happen:
+/// 19 of the 2 requests found no system cove". Per-instance scoping removes the
+/// sharing rather than documenting it.
+///
+/// [`AppState`]: crate::state::AppState
+/// A rendezvous the system-cove mint race can be *created* at, not merely
+/// observed.
+///
+/// `None` in production — the mint path costs one `Option` check and never
+/// waits. A test arms it with a `Barrier::new(2)`; both requests then park
+/// here after their `cove_get_system()` has returned `None` and before either
+/// opens its write transaction, so the second request provably cannot read the
+/// first one's committed row.
+///
+/// **Why this exists at all.** `attempts == 2` observes whether the race
+/// happened; it cannot make it happen. `tokio::join!` does not order the two
+/// requests, so on a scheduler where A finishes the whole mint before B reads,
+/// the assertion correctly reports "the race did not happen" — and a case that
+/// is red for that reason is worse than the vacuous one it replaced. Our box
+/// measured 20/20 and 4/4 green and was simply not an environment that could
+/// falsify it; a CI runner was. The counters stay: they are what proves the
+/// rendezvous actually did its job.
+///
+/// **Why an `Option` on [`AppState`] rather than `#[cfg(feature = "fixtures")]`.**
+/// `routes::waves`'s `wait_at_chat_wave_ensure_barrier` is the existing
+/// precedent for this shape and is cfg-gated behind a process-global registry.
+/// That carrier was already ruled against for the counters, for two reasons
+/// that apply here unchanged: a cfg-gated path means the tested binary does not
+/// execute the instructions the shipped one does, which is exactly what a
+/// timing test cannot afford; and a process-global is shared by every
+/// `AppState` in the process, which a threaded `cargo test` turns into
+/// cross-case interference. Same shape as the precedent, per-instance carrier.
+///
+/// [`AppState`]: crate::state::AppState
+pub type SystemCoveMintRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
+
+#[derive(Debug, Default)]
+pub struct SystemCoveMintCounters {
+    /// Requests that found no system cove and therefore tried to mint one.
+    /// Two of these means both requests read `None` before either wrote — i.e.
+    /// the race actually happened.
+    pub attempts: AtomicU64,
+    /// Mints that lost the race and took the retry arm.
+    pub retries: AtomicU64,
+}
+
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     let CalmError::Db(sqlx::Error::Database(error)) = error else {
         return false;
     };
     error.is_unique_violation() && error.message().contains(constraint)
+}
+
+/// #1253 §5.1 — the read-only resolve the Today page load uses.
+///
+/// **This handler must never reach the harness.** `ensure_today_launchpad`
+/// materializes a workspace and then submits `spec-harness-start` and
+/// `.wait()`s on it; putting that on the page-load path would make the whole
+/// Today route fail hard whenever codex is unavailable, which is strictly
+/// worse than the Today page this replaces (it needed nothing to render). So
+/// this endpoint reads two rows and returns. It does not call `ensure`, does
+/// not materialize a workspace, and submits no operation — `ensure` hangs off
+/// an explicit user action only (INV-TODAYDOC-001).
+///
+/// **Routine absence is data; anomalous absence is an error.** That is the
+/// whole rule, and the two branches here are the two sides of it.
+///
+/// *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+/// `200` with a `null` body — not a 404. It was a 404 for one revision, on the
+/// grounds that 404 is "cheap and fail-closed". That reasoning did not survive
+/// contact with the fact that this is the **landing route**: every session on
+/// a fresh workspace hit it, and the browser reports every 404 on its console
+/// error stream, so an expected state was being transported as an error. CI
+/// found it — two Playwright specs assert zero console errors and both load
+/// Today; one CI run logged the 404 thirty times, because the query refetches.
+/// The alternative was allowlisting a 404 in those specs, which buys a
+/// permanent hole in a "no console errors" gate for a transient condition:
+/// once #1253 PR2's trigger lands, first use mints a launchpad and the
+/// exemption outlives its reason.
+///
+/// *A launchpad wave with no `wave-report` card* stays a `404`, and that is
+/// the same rule rather than an exception to it. The wave and its report card
+/// are created in **one transaction** (`today_launchpad_ensure_tx`), and the
+/// adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
+/// commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
+/// The state is unreachable, so it produces no console noise in practice — and
+/// if it ever does occur, an error is the correct signal.
+///
+/// Deliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence
+/// idiom. That 404 is **control flow**: its consumer bootstraps on it, so the
+/// status means "go create one" (INV-TODAYTERM-006 pins that chain). This one
+/// would mean "render the empty state" — pure data, no action — so borrowing
+/// the shape would discard the meaning.
+#[utoipa::path(get, path = "/api/today/launchpad", tag = "waves", responses(
+    (status = 200, description = "The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.", body = Option<TodayLaunchpadResolved>),
+    (status = 404, description = "The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs.", body = ErrorBody)
+))]
+pub(crate) async fn resolve_today_launchpad(
+    State(app): State<AppState>,
+    _actor: Actor,
+) -> Result<Json<Option<TodayLaunchpadResolved>>> {
+    let Some(wave) = app.repo.wave_get_launchpad().await? else {
+        return Ok(Json(None));
+    };
+    let report = app
+        .repo
+        .cards_by_wave(wave.id.as_str())
+        .await?
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .ok_or_else(|| CalmError::NotFound("today launchpad report card".into()))?;
+    // A payload this build cannot parse is, by construction, not the canonical
+    // initial payload, so `true` ("someone wrote something here") is the honest
+    // answer and it shows the document rather than hiding it behind an empty
+    // state. The alternative — treating an unreadable payload as empty — would
+    // let one bad row silently swallow a real report.
+    let has_noninitial_content = serde_json::from_value::<WaveReportPayload>(report.payload)
+        .map(|payload| payload.report_startup_read_required())
+        .unwrap_or(true);
+    Ok(Json(Some(TodayLaunchpadResolved {
+        wave_id: wave.id.to_string(),
+        report_has_noninitial_content: has_noninitial_content,
+    })))
 }
 
 /// #1147 — the launchpad wave's workspace. `Managed`, under the workspace
@@ -146,10 +390,10 @@ async fn today_launchpad_ensure_tx(
         // second writer of a column that design D1 demotes to a projection of
         // `workspace.path`. It now writes everything *except* the workspace
         // and hands the workspace to the single writer below, in the same tx.
-        sqlx::query("UPDATE waves SET purpose='launchpad', workflow_id=NULL, plugin_scope=NULL, workflow_input=NULL, updated_at=?2 WHERE id=?1")
+        sqlx::query("UPDATE waves SET purpose='launchpad', template_id=NULL, plugin_scope=NULL, template_input=NULL, updated_at=?2 WHERE id=?1")
             .bind(wave.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
         wave.purpose = Some("launchpad".into());
-        wave.workflow_id = None; wave.plugin_scope = None; wave.workflow_input = None;
+        wave.template_id = None; wave.plugin_scope = None; wave.template_input = None;
         (wave, false, true)
     } else {
         let id = new_id(); let now = now_ms();
@@ -159,12 +403,12 @@ async fn today_launchpad_ensure_tx(
         // migration 0018's `DEFAULT ''` for the remainder of this tx) and is
         // written together with the workspace columns by the single workspace
         // writer below, shared by all three branches.
-        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,workflow_id,purpose,workflow_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
+        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,template_id,purpose,template_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
             .bind(&id).bind(cove_id).bind(sort).bind(now).execute(&mut **tx).await?;
         s.write.cove_cache().insert(WaveId::from(id.clone()), cove_id.to_string().into());
         (Wave { id:id.into(), cove_id:cove_id.to_string().into(), title:"Today".into(), sort,
             archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd_wire_alias:String::new(),
-            workflow_id:None, plugin_scope:None, purpose:Some("launchpad".into()), workflow_input:None,
+            template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
             terminal_at:None, workspace: WaveWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };
 
@@ -332,6 +576,19 @@ pub(crate) async fn ensure_today_launchpad(
     let cove = if let Some(c) = app.repo.cove_get_system().await? {
         c
     } else {
+        // The read said "no system cove". Counted before the mint so that a
+        // test can tell "both requests raced" from "the second one simply read
+        // the first one's row".
+        app.system_cove_mint
+            .attempts
+            .fetch_add(1, Ordering::Relaxed);
+        // Armed only by the concurrency case; `None` everywhere else, so this
+        // is one `Option` check on the production path. See
+        // [`SystemCoveMintRendezvous`] for why the race has to be created here
+        // rather than hoped for.
+        if let Some(barrier) = &app.system_cove_mint_rendezvous {
+            barrier.wait().await;
+        }
         let route = RouteState::from_ref(&app);
         let minted = write_with_event_typed(
             app.repo.as_ref(),
@@ -350,11 +607,26 @@ pub(crate) async fn ensure_today_launchpad(
         .await;
         match minted {
             Ok((c, _)) => c,
-            Err(e) if is_unique_constraint(&e, "idx_coves_one_system") => app
-                .repo
-                .cove_get_system()
-                .await?
-                .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?,
+            // The COLUMN form, not `idx_coves_one_system`: see
+            // `is_unique_constraint`. Until #1253 PR1 this arm never matched,
+            // so the loser of the first-concurrent-mint race got a 500.
+            //
+            // Unlike the launchpad arm below, this one is genuinely reachable:
+            // `cove_get_system()` runs OUTSIDE any transaction, so two
+            // concurrent `POST /api/today/launchpad/ensure` calls can both read
+            // `None` and both reach the mint. NOT two page loads — a page load
+            // calls only the read-only resolve and never gets here
+            // (INV-TODAYDOC-001); `ensure` has no production caller at all
+            // today, so the race needs two deliberate bootstrap requests.
+            // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
+            // drives exactly that.
+            Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => {
+                app.system_cove_mint.retries.fetch_add(1, Ordering::Relaxed);
+                app.repo
+                    .cove_get_system()
+                    .await?
+                    .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?
+            }
             Err(e) => return Err(e),
         }
     };
@@ -373,7 +645,41 @@ pub(crate) async fn ensure_today_launchpad(
     .await;
     let out = match attempt {
         Ok(v) => v,
-        Err(e) if is_unique_constraint(&e, "idx_waves_one_launchpad") => {
+        // The COLUMN form, not `idx_waves_one_launchpad`: see
+        // `is_unique_constraint`.
+        //
+        // —— This arm is UNREACHABLE today, and that is worth stating plainly.
+        //
+        // 1. Why. `write_in_tx` opens the transaction with **BEGIN IMMEDIATE**
+        //    (`calm-truth`'s `events.rs`), which takes the writer lock at
+        //    transaction start. `today_launchpad_ensure_tx`'s
+        //    `SELECT ... WHERE purpose='launchpad'` and the `INSERT`/`UPDATE`
+        //    that follows it therefore sit inside ONE writer-lock hold: no
+        //    other writer can commit between them, so the SELECT cannot miss a
+        //    row that the INSERT then collides with. A concurrency probe
+        //    confirmed it — 320 concurrent `ensure`s against a pre-seeded
+        //    system cove never entered this arm, while forcing the SELECT to
+        //    miss did enter it. Contrast the `coves.kind` arm above, which IS
+        //    reachable precisely because its `cove_get_system()` read happens
+        //    OUTSIDE any transaction.
+        // 2. Why keep it. It is fail-safe against two ordinary refactors:
+        //    moving that SELECT out of the transaction (or to a deferred one),
+        //    and a **second writer of `purpose='launchpad'` appearing**. As of
+        //    #1253, `routes/today.rs` is the sole writer of that value in the
+        //    whole repository — the two statements in
+        //    `today_launchpad_ensure_tx` — and that is exactly the fact a
+        //    future change would silently invalidate.
+        // 3. What is and is not covered. The *string* is pinned, by
+        //    `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`,
+        //    which provokes a real violation of this index on a real database.
+        //    The *reachability* is not pinned by anything, and the
+        //    system-cove concurrency case
+        //    (`today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`)
+        //    does NOT cover this arm — it exercises the `coves.kind` one. This
+        //    is a known, named gap; do not close it by asserting that test
+        //    covers both, and do not add a fixtures-gated seam whose only
+        //    purpose is to make an unreachable state reachable.
+        Err(e) if is_unique_constraint(&e, LAUNCHPAD_UNIQUE) => {
             // A concurrent inserter won the partial unique index; retry selects it.
             let route = RouteState::from_ref(&app);
             let cove_id = cove.id.to_string();
@@ -488,5 +794,116 @@ pub(crate) async fn ensure_today_launchpad(
         _ => Err(CalmError::Internal(format!(
             "launchpad exists but harness start failed: {op}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+
+    /// #1253 PR1 — how SQLite words a violation of the two partial unique
+    /// indexes this module races on.
+    ///
+    /// **This is a claim about SQLite, not about this crate**, which is why it
+    /// is worth a test even though one of the two arms it protects is
+    /// unreachable (see `ensure_today_launchpad`): the message wording is the
+    /// entire content of the fix, it comes from outside this repository, and it
+    /// can change under us. It runs the real migrations on a real database and
+    /// provokes real violations; `is_unique_constraint` is then called
+    /// **directly**, as the module's own private function. No hand-built
+    /// `CalmError`, and deliberately not `waves::is_unique_constraint_for_test`
+    /// — a test that reaches for a test-only export is testing the export.
+    ///
+    /// **What it binds, and what it does not.** It asserts against
+    /// [`SYSTEM_COVE_UNIQUE`] and [`LAUNCHPAD_UNIQUE`] rather than string
+    /// literals, so it is a test of **those two constants**: reverting either
+    /// to an index name turns it red, where the first version of this test
+    /// (which restated the literals) stayed green.
+    ///
+    /// It is **not** a test of the call sites, and claiming it was is itself a
+    /// review finding. A call site that passes an inline literal instead of its
+    /// constant leaves this test green — measured: that mutation on the
+    /// launchpad arm passes here and fails only
+    /// `cargo clippy --lib -- -D warnings`, on `dead_code`. What binds each
+    /// call site is written on the constant it uses: the concurrency case for
+    /// [`SYSTEM_COVE_UNIQUE`], clippy alone for [`LAUNCHPAD_UNIQUE`].
+    ///
+    /// The negative half is load-bearing too: asserting only that the constants
+    /// match would stay green if SQLite ever started naming the index as well,
+    /// so both index names are asserted NOT to match.
+    #[tokio::test]
+    async fn sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let pool = repo.pool();
+
+        // —— coves(kind) WHERE kind = 'system' (migration 0009) ——
+        let insert_system_cove = |id: &'static str| {
+            sqlx::query(
+                "INSERT INTO coves(id,name,color,sort,kind,created_at,updated_at) \
+                 VALUES(?1,'System','#abc',1,'system',1,1)",
+            )
+            .bind(id)
+            .execute(pool)
+        };
+        insert_system_cove("cove-winner").await.unwrap();
+        let error: CalmError = insert_system_cove("cove-loser").await.unwrap_err().into();
+        let message = error.to_string();
+        assert!(
+            message.contains("UNIQUE constraint failed: coves.kind"),
+            "unexpected message: {message}"
+        );
+        // `SYSTEM_COVE_UNIQUE`, not a literal, so this assertion follows the
+        // constant the retry arm reads: revert the CONSTANT and this goes red,
+        // where a literal here would pin only the helper. It does NOT follow
+        // the call site — swapping the arm to an inline literal leaves this
+        // green (the docstring above says what catches that instead).
+        assert!(
+            is_unique_constraint(&error, SYSTEM_COVE_UNIQUE),
+            "the system-cove retry arm's constraint must match a real \
+             violation, but `{SYSTEM_COVE_UNIQUE}` does not: {message}"
+        );
+        assert!(
+            !is_unique_constraint(&error, "idx_coves_one_system"),
+            "the index name must NOT match — matching it is what made the \
+             system-cove retry arm dead code before #1253: {message}"
+        );
+
+        // —— waves(purpose) WHERE purpose = 'launchpad' (migration 0064) ——
+        let insert_launchpad = |id: &'static str| {
+            sqlx::query(
+                "INSERT INTO waves(id,cove_id,title,sort,lifecycle,purpose,created_at,updated_at) \
+                 VALUES(?1,'cove-winner','Today',1,'draft','launchpad',1,1)",
+            )
+            .bind(id)
+            .execute(pool)
+        };
+        insert_launchpad("wave-winner").await.unwrap();
+        let error: CalmError = insert_launchpad("wave-loser").await.unwrap_err().into();
+        let message = error.to_string();
+        assert!(
+            message.contains("UNIQUE constraint failed: waves.purpose"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            is_unique_constraint(&error, LAUNCHPAD_UNIQUE),
+            "the launchpad retry arm's constraint must match a real violation, \
+             but `{LAUNCHPAD_UNIQUE}` does not: {message}"
+        );
+        assert!(
+            !is_unique_constraint(&error, "idx_waves_one_launchpad"),
+            "the index name must NOT match — see the note on the launchpad \
+             retry arm in `ensure_today_launchpad`: {message}"
+        );
+
+        // Both indexes are PARTIAL, and that is the whole reason the index name
+        // never appears: sqlite names the index only for a unique index over
+        // *expressions*. A non-partial index on a plain column words it the
+        // same way, so the fix is about partiality only incidentally — pin the
+        // observed behaviour rather than the folklore.
+        assert!(
+            !message.contains("idx_"),
+            "no index name appears anywhere in the message: {message}"
+        );
     }
 }

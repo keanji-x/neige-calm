@@ -93,7 +93,7 @@ describe('route registration', () => {
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
       '/', '/cove/$coveId', '/cove/$coveId/new', '/wave/$waveId',
-      '/settings', '/settings/templates', '/settings/templates/$templateId',
+      '/settings', '/settings/plugins', '/settings/appearance', '/settings/about',
     ]);
   });
 
@@ -105,7 +105,9 @@ describe('route registration', () => {
    * actually breaks: a `NavTarget` variant nobody registered a route for
    * (`go` then lands on a blank screen), or a route nobody can navigate to.
    * Adding `settings-templates` in #1230 would have passed that version
-   * untouched.
+   * untouched — and #1300 S1, which removed those same two entries, would have
+   * needed one hand edit per deleted `expect` instead of the two-line diff the
+   * set-equality shape gives it.
    */
   it('matches every navigation target to a registered route, and no route is unreachable', () => {
     /*
@@ -128,8 +130,9 @@ describe('route registration', () => {
       'new-wave': { name: 'new-wave', coveId: 'c1' },
       'wave': { name: 'wave', waveId: 'w1' },
       'settings': { name: 'settings' },
-      'settings-templates': { name: 'settings-templates' },
-      'settings-template': { name: 'settings-template', templateId: 't1' },
+      'settings-plugins': { name: 'settings-plugins' },
+      'settings-appearance': { name: 'settings-appearance' },
+      'settings-about': { name: 'settings-about' },
     };
     const targets: NavTarget[] = Object.values(samples);
     // A registered path with `$param` matches a concrete path of the same

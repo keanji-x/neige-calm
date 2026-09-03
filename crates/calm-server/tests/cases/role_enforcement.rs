@@ -49,12 +49,12 @@ async fn spec_card_can_update_wave() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -149,12 +149,12 @@ async fn ai_codex_cannot_update_wave() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -297,12 +297,12 @@ async fn public_card_create_writes_worker_role() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -343,12 +343,12 @@ async fn unique_spec_card_per_wave_index_enforced() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

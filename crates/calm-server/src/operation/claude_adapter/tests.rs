@@ -36,12 +36,12 @@ async fn claude_worker_harness() -> ClaudeWorkerHarness {
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         repo.as_ref(),
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "claude workspace leases".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

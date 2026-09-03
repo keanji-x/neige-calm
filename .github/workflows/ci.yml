@@ -72,71 +72,122 @@ jobs:
 
       - name: harness raw status UPDATE gate (#679 PR3a)
         run: |
-          hits=$(grep -rniE "update[[:space:]]+runtimes" crates/calm-server/src/harness crates/calm-server/src/operation/spec_harness_start_adapter.rs crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs | wc -l)
-          [ "$hits" -eq 0 ] && echo "OK: no raw runtimes UPDATE in harness paths" || { echo "::error::raw UPDATE runtimes survives in harness paths ($hits)"; grep -rniE "update[[:space:]]+runtimes" crates/calm-server/src/harness crates/calm-server/src/operation/spec_harness_start_adapter.rs crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs; exit 1; }
+          set -euo pipefail
+          paths=(
+            crates/calm-server/src/harness
+            # Deliberately unquoted: a no-match literal fails the path check below.
+            crates/calm-server/src/operation/spec_harness_*.rs
+          )
+          for path in "${paths[@]}"; do
+            [ -e "$path" ] || { echo "::error::required harness scan path does not exist: $path"; exit 1; }
+          done
+          set +e
+          output="$(grep -rniE "update[[:space:]]+runtimes" "${paths[@]}" 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              hits="$(printf '%s\n' "$output" | wc -l)"
+              echo "::error::raw UPDATE runtimes survives in harness paths ($hits)"
+              exit 1
+              ;;
+            1) echo "OK: no raw runtimes UPDATE in harness paths" ;;
+            *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
+              printf '%s\n' "$output"
+              echo "::error::raw UPDATE runtimes harness scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
+
+      - name: install ripgrep for ratchets
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: runtimes ratchet selftest
+        run: scripts/ci/ratchets/selftest.sh
 
       - name: PR9b-iv runtimes retirement ratchet (#758)
-        run: |
-          set -euo pipefail
-          if rg -n "FROM runtimes\b|INTO runtimes\b|UPDATE runtimes\b|DELETE FROM runtimes\b" crates/ --type=rust --type=sql --glob '!crates/calm-truth/migrations/**'; then
-            echo "::error::runtimes table SQL survived outside historical migrations"
-            exit 1
-          fi
-          if rg -n "worker_sessions_parity|NEIGE_ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT|worker_sessions_parity_divergences|worker-session-parity-drop" crates/; then
-            echo "::error::worker_sessions parity sweep scaffolding survived"
-            exit 1
-          fi
-          if rg -n "runtime_(start|supersede|set_status_for_card|complete_for_card|status_flip|finalize|lease_acquire|lease_release|restore_from_superseded|backfill_worker_sessions_from_runtimes)_tx\b" crates/ --type=rust; then
-            echo "::error::retired runtime write transaction helper survived"
-            exit 1
-          fi
-          echo "OK: PR9b-iv runtimes retirement ratchet clean"
+        run: scripts/ci/ratchets/runtimes_retirement.sh
 
-      # Complements the PR9b-iv ratchet (which forbids only the bare,
-      # unquoted FROM/INTO/UPDATE/DELETE runtimes verbs). The `runtimes`
-      # table was dropped in migration 0055 and must never return. This
-      # step closes the two holes the verb-list ratchet leaves: (a) DDL/JOIN
-      # it never names (CREATE TABLE / CREATE INDEX ... ON / ALTER TABLE /
-      # REPLACE INTO / JOIN), and (b) QUOTED identifiers `"runtimes"` that
-      # slip past every \b-anchored pattern. The 0055 drop-regression test
-      # legitimately re-creates the table to prove the drop, so it is the
-      # single scoped exclusion (alongside historical migrations).
       - name: dropped runtimes table reintroduction ratchet (#679 PR10)
-        run: |
-          set -euo pipefail
-          EXCL=(--type=rust --type=sql
-                --glob '!crates/calm-truth/migrations/**'
-                --glob '!crates/calm-server/tests/migration_0055_drop_runtimes.rs')
-          # (a) DDL / JOIN / REPLACE — bare or quoted — that the verb-list ratchet misses
-          if rg -niP '\b((create\s+(temp(orary)?\s+)?table|alter\s+table|replace\s+into|join)\s+(if\s+not\s+exists\s+)?|create\s+(unique\s+)?index\s+(if\s+not\s+exists\s+)?\S+\s+on\s+)"?runtimes"?\b' crates/ "${EXCL[@]}"; then
-            echo "::error::dropped 'runtimes' table reintroduced via DDL/JOIN/REPLACE (migration 0055 dropped it)"
-            exit 1
-          fi
-          # (b) quoted-identifier DML that bypasses the existing \b-anchored FROM/INTO/UPDATE/DELETE gate
-          if rg -niP '\b(from|update|delete\s+from|insert\s+into)\s+"runtimes"' crates/ "${EXCL[@]}"; then
-            echo "::error::dropped 'runtimes' table reintroduced via quoted-identifier SQL"
-            exit 1
-          fi
-          echo "OK: no dropped-runtimes-table reintroduction (quoted/DDL/JOIN holes closed)"
+        run: scripts/ci/ratchets/dropped_runtimes_table.sh
 
       - name: no parallel operation-event entrance (#679 PR4)
         run: |
-          hits=$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/ | wc -l)
-          [ "$hits" -eq 0 ] && echo OK || { echo "::error::parallel operation-event entrance survives"; grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/; exit 1; }
+          set -euo pipefail
+          path=crates/
+          [ -e "$path" ] || { echo "::error::required operation-event scan path does not exist: $path"; exit 1; }
+          set +e
+          output="$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" "$path" 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::parallel operation-event entrance event_append_for_operation_tx/events_append_for_operation_tx survives"
+              exit 1
+              ;;
+            1) echo "OK: no parallel operation-event entrance" ;;
+            *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
+              printf '%s\n' "$output"
+              echo "::error::operation-event entrance scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
 
       - name: token authority audit gate (#679 PR7b-i)
         run: |
           set -euo pipefail
+          paths=(
+            crates/calm-server/src/mcp_server/handshake.rs
+            crates/calm-server/src/mcp_server/transport.rs
+          )
+          for path in "${paths[@]}"; do
+            [ -e "$path" ] || { echo "::error::required token authority scan path does not exist: $path"; exit 1; }
+          done
           grep -q "session_get_by_active_token_hash" crates/calm-server/src/mcp_server/handshake.rs \
             || { echo "::error::handshake must authenticate through active worker_sessions"; exit 1; }
-          if grep -n "card_mcp_token_lookup_by_hash" crates/calm-server/src/mcp_server/handshake.rs; then
-            echo "::error::handshake must not authenticate through card_mcp_tokens"
-            exit 1
-          fi
-          if grep -nE "\.card_get\(|\.card_role_get\(" crates/calm-server/src/mcp_server/transport.rs; then
-            echo "::error::transport auth path must not resolve per-call identity through card_get/card_role_get"
-            exit 1
-          fi
+          set +e
+          output="$(grep -n "card_mcp_token_lookup_by_hash" crates/calm-server/src/mcp_server/handshake.rs 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::handshake must not authenticate through card_mcp_token_lookup_by_hash/card_mcp_tokens"
+              exit 1
+              ;;
+            1) ;;
+            *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
+              printf '%s\n' "$output"
+              echo "::error::card_mcp_token_lookup_by_hash handshake scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
+          set +e
+          output="$(grep -nE "\.card_get\(|\.card_role_get\(" crates/calm-server/src/mcp_server/transport.rs 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::transport auth path must not resolve per-call identity through card_get/card_role_get"
+              exit 1
+              ;;
+            1) ;;
+            *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
+              printf '%s\n' "$output"
+              echo "::error::card_get/card_role_get transport scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
           echo "OK: MCP token authority is session-bound and transport per-call auth is session-derived"
 
       # Soft backstop alongside the cargo-feature gate on
@@ -150,17 +201,34 @@ jobs:
       - name: sanity — no raw_repo escape in production
         run: |
           set -euo pipefail
-          if grep -rn "raw_repo" \
-              crates/calm-server/src/routes/ \
-              crates/calm-server/src/plugin_host/ \
-              crates/calm-server/src/card_fsm.rs \
-              crates/calm-server/src/terminal_sweeper.rs \
-              crates/calm-server/src/replay.rs \
-              2>/dev/null; then
-            echo "::error::raw_repo() used in production module — must go through write_with_event"
-            exit 1
-          fi
-          echo "OK: no raw_repo escape in production"
+          paths=(
+            crates/calm-server/src/routes/
+            crates/calm-server/src/plugin_host/
+            crates/calm-server/src/card_fsm.rs
+            crates/calm-server/src/terminal_sweeper.rs
+            crates/calm-server/src/replay.rs
+          )
+          for path in "${paths[@]}"; do
+            [ -e "$path" ] || { echo "::error::required raw_repo scan path does not exist: $path"; exit 1; }
+          done
+          set +e
+          output="$(grep -rn "raw_repo" "${paths[@]}" 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::raw_repo() used in production module — must go through write_with_event"
+              exit 1
+              ;;
+            1) echo "OK: no raw_repo escape in production" ;;
+            *)
+              # No fixture pins this inline infrastructure-error branch; fail closed as defense in depth.
+              printf '%s\n' "$output"
+              echo "::error::raw_repo production scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
 
       - name: pgid escape gate (#1013 T11)
         # The `pgid-escape-probe` feature compiles a module whose only job is to
@@ -300,6 +368,12 @@ jobs:
             exit 1
           fi
           echo "OK: none of the accessor/derive shapes this ratchet knows about are present (this is drift detection, not a completeness proof)"
+
+      - name: web compat version lockstep gate (#1209 PR-2)
+        run: ./scripts/gate-web-compat-version-lockstep.sh
+
+      - name: template rename residual gate (#1209 PR-2, acceptance B10)
+        run: ./scripts/gate-1209-template-rename-residual.sh
 
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
@@ -726,266 +800,15 @@ jobs:
             exit 1
           fi
 
-  # #903 — the rust-dependent half of the `web (build + test + a11y)` split
-  # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).
-  # It builds the replay bin the Playwright setup hook needs. Deliberately
-  # has NO `npm run build` step: a11y runs against the Vite DEV server
-  # (playwright.config.ts webServer: `npx vite`), never the production
-  # bundle — dropping that build is the core time saving of the split.
-  a11y:
-    name: a11y (replay + playwright)
-    runs-on: ubuntu-latest
-    # a11y suite locally takes ~10s; cold cargo build for the replay binary
-    # is the dominant factor (~25-60s with cache, longer cold). 20 minutes
-    # is comfortable headroom without masking a genuinely stuck run.
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      # Rust toolchain + cache — needed so the Playwright `replay-setup`
-      # project (issue #56 slice 5) can `cargo run --bin replay --serve`.
-      # See `web/e2e/_setup/replay-server.setup.ts`. Reuses the shared
-      # workspace cache populated by the `rust` job above.
-      - uses: dtolnay/rust-toolchain@stable
-
-      # #903 — mold via ld takeover; see the rust job's step for rationale.
-      - uses: rui314/setup-mold@v1
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace
-
-      # See note above on --legacy-peer-deps.
-      - name: npm ci
-        run: npm ci --legacy-peer-deps
-
-      # Pre-build the replay binary so the cargo invocation inside the
-      # Playwright setup hook (`replay-server.setup.ts`) is effectively a
-      # no-op rather than a cold compile that may bump up against the 60s
-      # READY_TIMEOUT_MS banner-wait. --locked matches the `rust` job.
-      #
-      # `--features fixtures` (#682): the replay [[bin]] declares
-      # `required-features = ["fixtures"]` for its `/dev/force-spec-phase`
-      # hook; the setup hook passes the same flag so this stays a cache hit.
-      - name: cargo build --bin replay
-        working-directory: .
-        run: cargo build -p calm-server --bin replay --features fixtures --locked
-
-      # Playwright browsers aren't bundled with `@playwright/test`; the
-      # binary must be downloaded once per runner. `--with-deps` also
-      # installs the system libraries chromium needs on ubuntu-latest.
-      #
-      # #903 — cache the browser download. The install step stays as-is: on a
-      # cache hit `npx playwright install` sees the browser and skips the
-      # download in seconds, and only the --with-deps apt portion still runs
-      # (~29s → ~10s).
-      - name: cache playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
-
-      - name: install playwright chromium
-        run: npx playwright install --with-deps chromium
-
-      # The a11y gate — issue #56 acceptance criterion 5. Runs
-      # `lint && a11y:e2e && a11y:color` (#690): `a11y:e2e` is the whole
-      # `a11y` Playwright project (testMatch `a11y-*.spec.ts` — keyboard,
-      # axe, spec-chat, wave/cove lifecycle + ops, cwd-resolve, deep-link,
-      # sidebar-delete, trace-smoke, #177 theme-toggle), and `a11y:color`
-      # is the `color-anchor` project (color-system-anchor snapshot). The
-      # replay binary + Vite dev server are spawned automatically by
-      # playwright.config.ts (`replay-setup` project + `webServer` block).
-      #
-      # `npm run a11y` chains `npm run lint` first (lint:js = `eslint .`,
-      # lint:css = `stylelint`), so all JS/CSS linting runs in THIS job —
-      # not in `web-unit`.
-      - name: npm run a11y
-        run: npm run a11y
-        env:
-          CI: "true"
-
-      # Surfaces the Playwright HTML report on failure so the user can
-      # download traces / screenshots from the run page instead of
-      # repro'ing locally.
-      - name: upload playwright report on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: |
-            web/playwright-report/
-            web/test-results/
-          retention-days: 7
-          if-no-files-found: ignore
-
-  chromium-e2e:
-    name: chromium e2e (playwright + docker stack)
-    # Pinned to ubuntu-22.04 (GLIBC 2.35) so the natively-compiled
-    # calm-server binary loads inside the `debian:bookworm-slim` runtime
-    # image used by docker-compose.yml (GLIBC 2.36 — forward-compatible
-    # with anything <= 2.35). `ubuntu-latest` currently resolves to
-    # ubuntu-24.04 (GLIBC 2.39), which produces a binary whose .dynstr
-    # references GLIBC_2.39 symbols and fails to load against bookworm's
-    # libc with `version GLIBC_2.39 not found`. See docker-compose.yml:24
-    # for the matching runtime-image rationale. Revisit this pin when
-    # `debian:bookworm-slim` is bumped forward, or when ubuntu-22.04
-    # nears its April-2027 EOL — whichever comes first.
-    runs-on: ubuntu-22.04
-    # Release rust build dominates (~3-6min warm, longer cold), then docker
-    # compose up + 2 specs (~30s each with retries). 30 minutes is comfortable
-    # headroom; bump if cold-cache cargo build pushes us over.
-    timeout-minutes: 30
-    # #903 — e2e verifies behavior, not performance: opt-level 1 is behaviorally
-    # equivalent and nearly halves the release build (~4m13s of the ~6min job).
-    # Must match stack-e2e-tier-1's value or the shared rust-cache key's dep
-    # fingerprints split. Tradeoff: CI e2e binaries aren't bit-identical to
-    # production's opt-3; to revert, delete this env block in both jobs.
-    env:
-      CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      # #903 — mold via ld takeover; see the rust job's step for rationale.
-      # mold supports ubuntu-22.04, and the release link of the large bins
-      # below benefits too. Linker choice doesn't affect the produced
-      # binary's glibc ABI, so the GLIBC pin rationale above is untouched.
-      - uses: rui314/setup-mold@v1
-
-      # Reuse the shared workspace cargo cache populated by the `rust` job.
-      # The rust job builds debug; this job needs release binaries (`make
-      # dev` runs `cargo build --release` for calm-server /
-      # neige-codex-bridge). Sharing the registry + git index across debug
-      # and release is still a substantial speedup vs. cold cache.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      # See note above on --legacy-peer-deps in the `web-unit` job.
-      - name: npm ci
-        working-directory: web
-        run: npm ci --legacy-peer-deps
-
-      # Build release binaries + web bundle the way `make dev` expects them.
-      # We don't call `make dev` directly here so the cargo + npm steps stay
-      # visible in the GitHub Actions log timeline. Issue #236 followup
-      # added `neige-mcp-stdio-shim` to the list — docker-compose.yml bind-
-      # mounts it into /usr/local/bin so codex inside the container can
-      # spawn the kernel-as-MCP-server bridge per spec/worker card. The
-      # chromium-e2e specs don't exercise codex today, but the docker
-      # compose `up` step uses the same compose file as `make dev` and
-      # will fail trying to bind-mount a non-existent host path.
-      - name: cargo build --release (server + codex bridge + mcp-stdio shim + proc-supervisor)
-        # Issue #388 Phase 1 — `calm-proc-supervisor` is bind-mounted by
-        # docker-compose.yml into the calm-server container so calm-server can
-        # talk to it over a control UDS for every terminal spawn. Without it
-        # in the release build, docker-compose mounts a non-existent host path
-        # and the container shell aborts before `calm-server listening`.
-        run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
-
-      - name: npm run build (web bundle for nginx)
-        working-directory: web
-        run: npm run build
-
-      # Stub the codex CLI mount so docker compose doesn't fail trying to
-      # bind-mount a host path that exists only on developer machines. The
-      # chromium specs (`golden-path`, `wave-create`) don't exercise codex,
-      # so any executable file will do — we point at /bin/true. Same idea
-      # for the optional /mnt/data2 mount and the HTTP proxy defaults.
-      - name: write CI .env overrides
-        run: |
-          cat > .env <<'EOF'
-          CALM_CODEX_HOST_BIN=/bin/true
-          CALM_EXTRA_MOUNT=/tmp
-          CALM_PORT=4041
-          CALM_DEV_AUTOLOGIN=true
-          HTTP_PROXY=
-          HTTPS_PROXY=
-          NO_PROXY=*
-          http_proxy=
-          https_proxy=
-          no_proxy=*
-          EOF
-
-      # `make dev` would re-trigger the cargo + npm builds; we've done both
-      # already, so call `make up` (which skips rebuild) plus the `dirs`
-      # target it depends on. Run as the current runner UID/GID so the
-      # host-mounted $HOME stays writable.
-      - name: docker compose up
-        run: make up
-
-      - name: wait for stack
-        run: |
-          for i in {1..30}; do
-            if curl -sf http://localhost:4041/api/version > /dev/null; then
-              echo "Stack is up after ${i} attempts"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::Stack failed to come up within 60s"
-          docker compose ps
-          docker compose logs
-          exit 1
-
-      # #903 — cache the browser download; see the a11y job's cache step for
-      # rationale (install stays: cache hit skips the download, apt still runs).
-      - name: cache playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
-
-      - name: install playwright chromium
-        working-directory: web
-        run: npx playwright install --with-deps chromium
-
-      # `playwright.config.ts` already bumps `retries` to 2 when CI=true,
-      # so the bare `--project=chromium` invocation inherits that.
-      - name: playwright chromium project
-        working-directory: web
-        env:
-          CI: "true"
-        run: npx playwright test --project=chromium
-
-      - name: upload playwright report on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-chromium-report
-          path: |
-            web/playwright-report/
-            web/test-results/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: dump docker logs on failure
-        if: failure()
-        run: docker compose logs --no-color || true
-
-      # `if: always()` so we tear the stack down even when the playwright
-      # step fails — keeps the runner clean for retries and avoids leaking
-      # containers that hold ports across re-runs.
-      - name: docker compose down
-        if: always()
-        run: make stop
+  # #1297 — the `a11y (replay + playwright)` and `chromium e2e` jobs were
+  # removed here. Both drove the unmaintained `web/` app, and both broke on
+  # a change that is correct: their shared fixture
+  # (`web/e2e/helpers/reset.ts` `seedWaveViewMode`) seeds view state by
+  # POSTing a `plugin_id: kernel` overlay through `/api/overlays`, which is
+  # exactly the forge #1297 closes. `web/` is no longer maintained and is not
+  # a compatibility target, so the gates were dropped rather than the fix
+  # weakened. `web-unit` and `stack e2e (tier 1)` still cover what remains of
+  # `web/`; the maintained frontend is gated by `fe-*`.
 
   fe-e2e:
     name: fe e2e (playwright + docker stack)

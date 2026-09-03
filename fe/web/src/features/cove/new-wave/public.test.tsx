@@ -24,6 +24,7 @@ const LISTING: DirectoryListing = {
  * `contenteditable` as `aria-label`, so it resolves by label query.
  */
 const TASK_LABEL = 'What this wave should do';
+const TASK_PLACEHOLDER = 'What should this wave do?';
 
 /* The folder chip's copy, restated here for the same reason `TASK_LABEL` is:
    it is user-facing text, and a test that imported it from the component could
@@ -48,14 +49,14 @@ const ISSUE_DEV: WaveTemplate = {
     required: ['issue_url', 'repo', 'issue_number'],
   },
   tasks: [
-    { key: 'inspect-issue', goal: 'Read the bound workflow input and view the source issue.' },
+    { key: 'inspect-issue', goal: 'Read the bound template input and view the source issue.' },
     { key: 'review-design-a', goal: 'Review the proposed design for correctness.' },
     { key: 'open-pr', goal: 'Open a pull request and check its diff.' },
     { key: 'merge', goal: 'Merge the pull request and close the issue.' },
   ],
 };
 /** Unbound templates: no `input_schema`, therefore no fields, therefore no
-    `workflow_input` on the wire. */
+    `template_input` on the wire. */
 const SMALL_CHANGE: WaveTemplate = {
   id: 'small-change',
   title: 'Small change',
@@ -153,19 +154,37 @@ async function chooseTemplate(name: string) {
   await userEvent.click(screen.getByRole('menuitem', { name: new RegExp(`^${name}`) }));
 }
 
-describe('NewWaveForm asks for a task and what the wave starts from', () => {
-  it('keeps submit disabled while the task is empty', () => {
+describe('NewWaveForm asks only what the wave starts from', () => {
+  /*
+   * #1211 — a wave starts unnamed, and this form asks for exactly one thing.
+   *
+   * The title is no longer the intent: the kernel takes `#[serde(default)]` for
+   * it and the spec agent names the wave once it knows what it is for. What is
+   * collected instead is the sentence, and Create is gated on **it** and on
+   * nothing else — so this pair is the whole gate, in both directions.
+   *
+   * S2 stated this as "nothing is required, Create is live on first paint",
+   * which was true of a dialog that collected no sentence at all. S3 made the
+   * composer the page: an empty one has nothing to submit, and a Create that
+   * fired anyway would make a wave with nothing in it and nothing on screen
+   * saying why that was allowed.
+   *
+   * Red when a *second* required field comes back, whatever it is called (the
+   * case below it goes green on the sentence alone), or when the sentence stops
+   * gating the submit.
+   */
+  it('keeps submit disabled while the composer is empty', () => {
     renderForm();
     expect(submitButton().disabled).toBe(true);
   });
 
-  it('enables submit after typing a title', async () => {
+  it('enables submit on the sentence alone', async () => {
     renderForm();
     await fillMessage();
     expect(submitButton().disabled).toBe(false);
   });
 
-  it('calls onSubmit with the trimmed title', async () => {
+  it('calls onSubmit with the trimmed sentence', async () => {
     const { props } = renderForm();
     await fillMessage('  Ship the thing  ');
     await userEvent.click(submitButton());
@@ -198,7 +217,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
    * `Cove` and `Claim this folder` absences are untouched — the cove is the
    * opener's, and the claim is implied by picking a folder (see `app/shell`).
    */
-  it('asks for the task, a template and an optional folder — never a cove or claim control', async () => {
+  it('asks for a template and an optional folder — never a cove or claim control', async () => {
     const { props } = renderForm();
     await fillMessage();
     // Present, and empty: the placeholder is what an unset folder shows, and an
@@ -262,7 +281,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     expect(task.getAttribute('contenteditable')).toBe('true');
     expect(task.getAttribute('aria-multiline')).toBe('true');
     // The row the user asked us to reclaim: the prompt lives in the box.
-    expect(screen.getByText('What should this wave do?')).toBeTruthy();
+    expect(screen.getByText(TASK_PLACEHOLDER)).toBeTruthy();
   });
 
   it('flips the label and blocks submit while submitting', () => {
@@ -457,7 +476,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
 });
 
 describe('Start from — no template is the default and stays free', () => {
-  it('selects no template on open and submits no workflow_id at all', async () => {
+  it('selects no template on open and submits no template_id at all', async () => {
     const { onSubmit } = renderForm();
     /* The collapsed trigger *is* the answer to "what is selected" — there is
        no checked radio left to read it off. Its accessible name is the control's
@@ -472,7 +491,7 @@ describe('Start from — no template is the default and stays free', () => {
     expect(draft).toEqual({ message: 'Ship the thing' });
     // Not `null`, not `''` — the kernel 400s a whitespace-only id and the body
     // is `deny_unknown_fields`. Absence is the only spelling of "no template".
-    expect(Object.hasOwn(draft, 'workflow_id')).toBe(false);
+    expect(Object.hasOwn(draft, 'template_id')).toBe(false);
   });
 
   /*
@@ -502,7 +521,7 @@ describe('Start from — no template is the default and stays free', () => {
 });
 
 describe('Start from — an unbound template is id-only', () => {
-  it('sends workflow_id and no workflow_input for small-change', async () => {
+  it('sends template_id and no template_input for small-change', async () => {
     const { onSubmit } = renderForm();
     await fillMessage();
     await chooseTemplate('Small change');
@@ -513,9 +532,9 @@ describe('Start from — an unbound template is id-only', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ message: 'Ship the thing', workflow_id: 'small-change' });
-    // Sending `workflow_input` against an unbound template is a 400.
-    expect(Object.hasOwn(draft, 'workflow_input')).toBe(false);
+    expect(draft).toEqual({ message: 'Ship the thing', template_id: 'small-change' });
+    // Sending `template_input` against an unbound template is a 400.
+    expect(Object.hasOwn(draft, 'template_input')).toBe(false);
   });
 });
 
@@ -550,8 +569,8 @@ describe('Start from — issue development expands under the group', () => {
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
       message: 'Ship the thing',
-      workflow_id: 'issue-development',
-      workflow_input: {
+      template_id: 'issue-development',
+      template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',
         issue_number: 1209,
@@ -567,8 +586,8 @@ describe('Start from — issue development expands under the group', () => {
     await userEvent.type(screen.getByLabelText('Issue URL'), 'https://github.com/o/r/issues/7');
     await userEvent.click(screen.getByRole('checkbox'));
     await userEvent.click(submitButton());
-    const [draft] = onSubmit.mock.calls[0] as [{ workflow_input: { merge_policy: string } }];
-    expect(draft.workflow_input.merge_policy).toBe('auto-merge');
+    const [draft] = onSubmit.mock.calls[0] as [{ template_input: { merge_policy: string } }];
+    expect(draft.template_input.merge_policy).toBe('auto-merge');
   });
 
   /*
@@ -592,7 +611,7 @@ describe('Start from — issue development expands under the group', () => {
 
   /*
    * A stopped plugin drops the schema on the read side, so the create path
-   * would reject `workflow_input`. The picker must follow: still offerable
+   * would reject `template_input`. The picker must follow: still offerable
    * (the report still seeds), just with no fields.
    */
   it('offers issue development with no fields when nothing is bound to it', async () => {
@@ -603,7 +622,7 @@ describe('Start from — issue development expands under the group', () => {
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
-      message: 'Ship the thing', workflow_id: 'issue-development',
+      message: 'Ship the thing', template_id: 'issue-development',
     });
   });
 
@@ -683,17 +702,18 @@ describe('Start from — each template says which tasks it pre-sets', () => {
    * tabbable, because the picker is entered from its trigger and walked with
    * arrow keys.
    *
-   * Green when: the dialog's tab order is task → picker → folder → actions,
-   * and every option carries `tabindex="-1"`.
+   * Green when: the dialog's tab order is picker → folder → actions, and
+   * every option carries `tabindex="-1"`.
    * Red when: the "N tasks" trigger (or any other `tabindex="0"`) comes back
    * inside the menu, or an option is left tabbable.
    *
-   * The **folder** stop is #1147 S3's, and it is the one change to this case:
-   * the walk was three steps and is now four. That is the new truth, not a
-   * weakening — the picker is still exactly one stop, which is what the case
-   * exists to pin, and the folder button is one control contributing one stop.
-   * Its "Use a Neige workspace instead" companion is deliberately not in the
-   * walk: it does not exist until a folder has been chosen, and none has here.
+   * The **folder** stop is #1147 S3's, and the task stop that used to open the
+   * walk is gone with the field (#1211 S2), so the walk is three steps again —
+   * and it now *starts* at the picker, which is also where the dialog puts its
+   * opening focus. The picker is still exactly one stop, which is what the
+   * case exists to pin. The folder's "Use a Neige workspace instead" companion
+   * is deliberately not in the walk: it does not exist until a folder has been
+   * chosen, and none has here.
    */
   it('costs the tab order nothing — the picker is one stop, options are not', async () => {
     renderForm();
@@ -712,7 +732,7 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     await fillMessage();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
     const order: Element[] = [];
-    for (let step = 0; step < 4; step += 1) {
+    for (let step = 0; step < 3; step += 1) {
       await userEvent.tab();
       if (document.activeElement !== null) order.push(document.activeElement);
     }
@@ -779,12 +799,18 @@ describe('Start from — each template says which tasks it pre-sets', () => {
  */
 describe('The folder is optional, and its absence is the managed default', () => {
   it('never requires a folder to submit', async () => {
-    renderForm();
+    const { onSubmit } = renderForm();
     expect(submitButton().disabled).toBe(true);
     await fillMessage();
     // The title alone enables it: nothing about the folder gates the submit,
     // before or after the picker has been opened.
     expect(submitButton().disabled).toBe(false);
+    await userEvent.click(folderChip());
+    await screen.findByDisplayValue('/srv/app/');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(submitButton());
+    const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+    expect(Object.hasOwn(draft, 'cwd')).toBe(false);
   });
 
   /*
@@ -896,7 +922,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
     await pickTheListedFolder();
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({
-      message: 'Ship the thing', workflow_id: 'small-change', cwd: '/srv/app',
+      message: 'Ship the thing', template_id: 'small-change', cwd: '/srv/app',
     });
   });
 });

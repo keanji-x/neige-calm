@@ -23,6 +23,7 @@
 - { path: fe/tools/architecture, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; enforcement infrastructure" }
 - { path: fe/tools/oracle, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; oracle enforcement infrastructure" }
 - { path: fe/tools/ownership, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; ownership enforcement infrastructure" }
+- { path: fe/tools/projection, type: directory, owner: tooling/architecture, readonly: false, basis: "#1234 忠实投影检查器；验证域，故不入 core/web 运行时" }
 - { path: fe/tools/styles, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; styles enforcement infrastructure" }
 - { path: fe/tools/mutation, type: directory, owner: tooling/mutation-evidence, readonly: false, basis: "#997 tracked, replayable mutation evidence" }
 - { path: fe/tools/test-tier, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-tier policy enforcement infrastructure (#997)" }
