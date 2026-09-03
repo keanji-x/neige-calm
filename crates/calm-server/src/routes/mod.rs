@@ -1,4 +1,4 @@
-//! HTTP route registry. Each sub-module (`areas`, `waves`, ...) returns its
+//! HTTP route registry. Each sub-module (`areas`, `tracks`, ...) returns its
 //! own `Router<AppState>`; this file merges them.
 
 use crate::openapi::ApiDoc;
@@ -25,11 +25,11 @@ pub mod theme;
 pub mod threads;
 pub mod today;
 pub mod today_summary;
+pub mod track_conversations;
+pub mod track_report_blocks;
+pub mod track_templates;
+pub mod tracks;
 pub mod version;
-pub mod wave_conversations;
-pub mod wave_report_blocks;
-pub mod wave_templates;
-pub mod waves;
 
 /// Full REST surface. Includes both protected (`protected_router`) and
 /// public (`public_router`) trees. Kept as a single helper so tests and
@@ -59,10 +59,10 @@ pub fn protected_router() -> Router<AppState> {
         .merge(areas::router())
         .merge(area_conversations::router())
         .merge(area_folders::router())
-        .merge(waves::router())
-        .merge(wave_conversations::router())
-        .merge(wave_report_blocks::router())
-        .merge(wave_templates::router())
+        .merge(tracks::router())
+        .merge(track_conversations::router())
+        .merge(track_report_blocks::router())
+        .merge(track_templates::router())
         .merge(cards::router())
         .merge(overlays::router())
         .merge(plugins::router())

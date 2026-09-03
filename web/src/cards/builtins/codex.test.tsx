@@ -85,7 +85,7 @@ function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
     runtime: null,
     sort: 0,
     updated_at: 1,
-    wave_id: 'wave_1',
+    track_id: 'track_1',
     ...over,
   };
 }

@@ -1,9 +1,9 @@
 # #1209 — Template 与 workflow 合并为一个概念
 
-状态：设计中（**v5**，五轮独立评审后修订；逐条裁决见 §11）。目标是让 `POST /api/waves` 的
+状态：设计中（**v5**，五轮独立评审后修订；逐条裁决见 §11）。目标是让 `POST /api/tracks` 的
 模板字段只做一件事：**指名一个 template**；
 插件绑定（binding + `input_schema`）降级为 template 的一个可选属性。成功判据是
-`crates/calm-server/src/routes/waves.rs:779` 那一行特例消失，且不是换个地方重新出现。
+`crates/calm-server/src/routes/tracks.rs:779` 那一行特例消失，且不是换个地方重新出现。
 
 > **v4 的两条新约束来自人（2026-09-01，原话）**：
 > 「我觉得这里你可以破坏兼容性，因为新的 FE 还没有上生产，所以我希望你尽可能保持一致。」
@@ -31,14 +31,14 @@
 已快进到 `origin/main` = **`0b4b022f`**（v2 写的是 `6e0339b0`，之后进了
 `67829da0` #1191 手机端导航框架与 `0b4b022f` #1147 S6）。
 **本文引用的每一个文件都被逐一核过没被这两个提交碰到**（`git diff --stat 6e0339b0..0b4b022f --`
-`routes/waves.rs`、`routes/wave_templates.rs`、`workflow_templates.rs`、`plugin_host/manifest.rs`、
-`plugin_host/mod.rs`、`error.rs`、`lib.rs`、`calm-types/src/wave_report.rs`、
+`routes/tracks.rs`、`routes/track_templates.rs`、`workflow_templates.rs`、`plugin_host/manifest.rs`、
+`plugin_host/mod.rs`、`error.rs`、`lib.rs`、`calm-types/src/track_report.rs`、
 `calm-truth/src/db/mod.rs`、`calm-truth/src/db/sqlite/area.rs`、`ci.yml`、
 `plugins/git-forge/manifest.json`、`docs/deploy-and-upgrade.md`，以及四个被引测试文件
-`tests/cases/wave_workflow_templates.rs`（仍是 589 行）、`tests/cases/wave_templates_read.rs`、
-`tests/forge_workflow_e2e.rs`、`tests/cases/wave_workspace_materialize.rs` —— **全部空输出**）。
+`tests/cases/track_workflow_templates.rs`（仍是 589 行）、`tests/cases/track_templates_read.rs`、
+`tests/forge_workflow_e2e.rs`、`tests/cases/track_workspace_materialize.rs` —— **全部空输出**）。
 注意：`crates/calm-server/tests/` 目录**整体**被动过（`replay_fixtures.rs`、
-`terminal_card_endpoint.rs`、`wave_workspace_repoint.rs`、`ws_terminal_e2e.rs`、
+`terminal_card_endpoint.rs`、`track_workspace_repoint.rs`、`ws_terminal_e2e.rs`、
 `claude_card_endpoint.rs`、`scheduler.rs`），只是不含本文引用的那四个。
 **v3 新增的记账纪律**：评审通道给出的「引用漂移」修正**本身也要复核**——
 v3 逐条打开后驳回了通道 A 六条 ±1 修正里的四条（见 §11 的 R10）。
@@ -46,8 +46,8 @@ v3 逐条打开后驳回了通道 A 六条 ±1 修正里的四条（见 §11 的
 **v4 的基线注记（两条，都是本轮实测）**：
 
 1. **本 worktree 仍是 `0b4b022f`，不动。** 共享 `origin/main` 期间前进到 `355807d6`；
-   `git diff --stat 0b4b022f..355807d6 --` 对本文引用的 Rust / 文档文件（`routes/waves.rs`、
-   `routes/wave_templates.rs`、`workflow_templates.rs`、`plugin_host/manifest.rs`、
+   `git diff --stat 0b4b022f..355807d6 --` 对本文引用的 Rust / 文档文件（`routes/tracks.rs`、
+   `routes/track_templates.rs`、`workflow_templates.rs`、`plugin_host/manifest.rs`、
    `calm-types/src/model.rs`、`crates/neige-app/src/`、`routes/version.rs`、
    `docs/deploy-and-upgrade.md`、`docs/upgrade-stability.md`）**全部空输出**；
    **唯一被碰的是三个 OpenAPI 生成物**（`fe/core/api/generated/openapi.json`、
@@ -57,7 +57,7 @@ v3 逐条打开后驳回了通道 A 六条 ±1 修正里的四条（见 §11 的
 2. **⚠️ #1230 的基线在四轮评审里动了四次，v5 因此不再记它的行号。**
    `1230-s1` worktree 的 HEAD 依次是 `b93fb767`（v2/v3）→ `7b85caa3`（v4 写的）→
    `d51571d7`（第 4 轮评审当时）→ **`3b9cc03c`（本轮实测，`git -C ../1230-s1 log --oneline -1`，
-   工作区另有 `tests/cases/wave_workflow_templates.rs` 未提交）**。
+   工作区另有 `tests/cases/track_workflow_templates.rs` 未提交）**。
    **v4 §8.2 那组自称「对 `7b85caa3` 复测」的坐标复现不出来**（两个通道各自独立实测，
    见 §11 的 R4）——它们来自当时的 dirty working tree。
    **v5 的处置：删掉本文里全部 `1230-s1` 行号，只保留结构结论（形状），
@@ -77,7 +77,7 @@ v4 在三处违反了它（#1230 复测坐标、`manifest.rs:302` 那条「pin�
 
 #1209 正文写了「本 issue 只记账，不主张现在重构」，并列了四条触发条件。其中
 **「某个模板不再由 Rust 硬编码」** 已经被 #1230 S1 触发：该切片让
-`GET /api/wave-templates` 改读已播种 template wave 的 report，Rust 常量退化为
+`GET /api/track-templates` 改读已播种 template track 的 report，Rust 常量退化为
 bootstrap（见 §8）。所以本文不再论证「要不要做」，只设计「怎么做」。
 
 ---
@@ -86,7 +86,7 @@ bootstrap（见 §8）。所以本文不再论证「要不要做」，只设计�
 
 ### 1.1 create 路径上的两条路
 
-`crates/calm-server/src/routes/waves.rs:761-784` 是第一条路（插件绑定）：
+`crates/calm-server/src/routes/tracks.rs:761-784` 是第一条路（插件绑定）：
 
 ```rust
 let bound_plugin = match p.workflow_id.as_deref() {
@@ -105,7 +105,7 @@ validate_workflow_input_binding(bound_plugin.as_ref(), p.workflow_input.as_ref()
 p.plugin_scope = bound_plugin.as_ref().map(|m| m.id.clone());                        // :793
 ```
 
-`crates/calm-server/src/routes/waves.rs:799-814` 是第二条路（模板播种 + fork），
+`crates/calm-server/src/routes/tracks.rs:799-814` 是第二条路（模板播种 + fork），
 条件是**同一个字符串**再判一次 `is_workflow_template_key`：
 
 ```rust
@@ -114,7 +114,7 @@ if let Some(workflow_id) = p.workflow_id.as_deref()
 {
     ensure_workflow_templates(&s).await?;                                       // :803
     if fork_report_from.is_none() {
-        fork_report_from = Some(lookup_workflow_template_wave(&s, &template_key).await?
+        fork_report_from = Some(lookup_workflow_template_track(&s, &template_key).await?
             .ok_or_else(|| CalmError::Internal(/* :807-811 */))?);
     }
 }
@@ -125,15 +125,15 @@ if let Some(workflow_id) = p.workflow_id.as_deref()
 
 ### 1.2 绑定解析器本身很小
 
-`resolve_trusted_workflow`（`waves.rs:937-950`）= 在 `running ∧ trusted` 的插件里找
+`resolve_trusted_workflow`（`tracks.rs:937-950`）= 在 `running ∧ trusted` 的插件里找
 `manifest.workflows[].id == workflow_id`，命中返回**整个 Manifest**。
 `WorkflowDescriptor` 只有一个字段 `id`（`crates/calm-server/src/plugin_host/manifest.rs:472-475`，
 doc 从 `:467` 起）。
 
 也就是说：**一个插件「声明一个 workflow」在数据上只贡献了一个名字**；真正有用的
 `input_schema` 挂在 Manifest 顶层（`plugins/git-forge/manifest.json:273-300`），
-不在 workflow 条目上。`validate_workflow_input_binding`（`waves.rs:958-995`）的注释也明说
-「Workflow-level `input_schema` is never consulted」（`waves.rs:957`）。
+不在 workflow 条目上。`validate_workflow_input_binding`（`tracks.rs:958-995`）的注释也明说
+「Workflow-level `input_schema` is never consulted」（`tracks.rs:957`）。
 
 这条事实是整个统一模型的地基：**plugin 的 workflow 声明 ≈「我认领 template key X，
 并为它提供输入 schema」**，本来就已经是「template 的一个属性」的形状了。
@@ -143,7 +143,7 @@ doc 从 `:467` 起）。
 `plugin_host/mod.rs:1099-1130` 在 spawn 的原子准入里跑 `find_workflow_conflict`（`:1114-1119`），
 在「running ∧ trusted ∧ admitted」这同一个集合上强制 workflow id 唯一，注释
 （`mod.rs:1093-1095`）点名三个消费者：`resolve_trusted_workflow`、`bound_workflow`、
-MCP per-wave tool scope。
+MCP per-track tool scope。
 
 推论（**INFERRED**）：「一个 template key 最多被一个插件绑定」今天就成立，
 不需要本次设计新增任何锁或校验。
@@ -152,28 +152,28 @@ MCP per-wave tool scope。
 
 | 事实 | 权威 | 定义处 | 消费处 |
 |---|---|---|---|
-| template 名册（3 个 key）+ 出厂 title | Rust 常量 | `workflow_templates.rs:18`（`WORKFLOW_TEMPLATE_KEYS`）、`:25-38`（`WORKFLOW_TEMPLATES`）——**两份独立数组**，见 §2.3 | `waves.rs:449`、`wave_templates.rs:103-104`、`workflow_templates.rs:41` |
-| template 出厂正文/任务 | Rust 常量函数 | `workflow_templates.rs:44-51`（`workflow_template_report`）、`:62-69`（`workflow_template_tasks`）、`:99-118`（`report_from_tasks`） | `waves.rs:586`、`:523`；`wave_templates.rs:117` |
-| template 当前正文/title | 已播种 template wave 的 report 行 | DB（system area 的 template wave） | `waves.rs:805-812`（fork 的是它，不是常量）；#1230 S1 让读口也认它 |
-| binding + `input_schema` | 插件 manifest | `plugins/git-forge/manifest.json:273-300`（`input_schema`）、`:302-306`（`workflows`） | `waves.rs:937-950`、`wave_templates.rs:109-111` |
-| 报告形状契约（contract prefix） | Rust 常量函数 | **`crates/calm-types/src/wave_report.rs:137-144`** | `workflow_templates.rs:104`（拼进 body） |
+| template 名册（3 个 key）+ 出厂 title | Rust 常量 | `workflow_templates.rs:18`（`WORKFLOW_TEMPLATE_KEYS`）、`:25-38`（`WORKFLOW_TEMPLATES`）——**两份独立数组**，见 §2.3 | `tracks.rs:449`、`track_templates.rs:103-104`、`workflow_templates.rs:41` |
+| template 出厂正文/任务 | Rust 常量函数 | `workflow_templates.rs:44-51`（`workflow_template_report`）、`:62-69`（`workflow_template_tasks`）、`:99-118`（`report_from_tasks`） | `tracks.rs:586`、`:523`；`track_templates.rs:117` |
+| template 当前正文/title | 已播种 template track 的 report 行 | DB（system area 的 template track） | `tracks.rs:805-812`（fork 的是它，不是常量）；#1230 S1 让读口也认它 |
+| binding + `input_schema` | 插件 manifest | `plugins/git-forge/manifest.json:273-300`（`input_schema`）、`:302-306`（`workflows`） | `tracks.rs:937-950`、`track_templates.rs:109-111` |
+| 报告形状契约（contract prefix） | Rust 常量函数 | **`crates/calm-types/src/track_report.rs:137-144`** | `workflow_templates.rs:104`（拼进 body） |
 
 （末行的定位是 v1 的错误：v1 把调用点 `workflow_templates.rs:99-105` 当成了定义处。）
 
-注意第 3 行与第 2 行的关系：`waves.rs:805-812` 里 fork 的是 **wave 的 report 行**，
+注意第 3 行与第 2 行的关系：`tracks.rs:805-812` 里 fork 的是 **track 的 report 行**，
 不是常量。所以「模板正文的真值今天已经在 DB 里」——这是 #1230 正文的核心发现，
 读代码可确认（**OBSERVED**）。常量在两处进场：
-`seed_workflow_template_wave`（`waves.rs:517-579`，其中 `:523` 取常量报告、
-`:562-577` 落库）与 `restamp_template_report_if_placeholder`（`waves.rs:581-613`）。
+`seed_workflow_template_track`（`tracks.rs:517-579`，其中 `:523` 取常量报告、
+`:562-577` 落库）与 `restamp_template_report_if_placeholder`（`tracks.rs:581-613`）。
 后者**先无条件取常量报告**（`:586-590`）**再**判是否早退（`:592-594`），
 且早退判据是精确相等而非「用户改过」，详见 §2.3。
 
 ### 1.5 读口已经按统一后的形状写了
 
-`crates/calm-server/src/routes/wave_templates.rs:1-39` 的模块头是一份契约（`:41` 起是 `use`），明写：
+`crates/calm-server/src/routes/track_templates.rs:1-39` 的模块头是一份契约（`:41` 起是 `use`），明写：
 
-* `:5-7` 「没有 `wave_templates` 行；这个端点是 *join*，不复制不发明第三处」；
-* `:20-22` 「`tasks` 从纯常量函数读，绝不从 template wave 的 stored report 读：
+* `:5-7` 「没有 `track_templates` 行；这个端点是 *join*，不复制不发明第三处」；
+* `:20-22` 「`tasks` 从纯常量函数读，绝不从 template track 的 stored report 读：
   一次 *读* 不能触发写」；
 * `:29-39` 词汇缝：读口说 template，写口说 `workflow_id`，并写死「合并落地时这里返回的
   形状一个字都不用改」。
@@ -186,20 +186,20 @@ MCP per-wave tool scope。
 
 * **「读口说 template、写口说 `workflow_id`」——这句被删掉**（缝没了）。
 * **「合并落地时这里返回的形状一个字都不用改」（`:39`）——这句仍然为真，而且更强了。**
-  `WaveTemplate` 的字段集合是 `{key, title, tasks?, input_schema?}`
-  （`routes/wave_templates.rs`，`workflow_id` 在该文件里只出现在三处**注释**：
+  `TrackTemplate` 的字段集合是 `{key, title, tasks?, input_schema?}`
+  （`routes/track_templates.rs`，`workflow_id` 在该文件里只出现在三处**注释**：
   `:32`、`:57`、`:62`——**实测 `grep -n workflow_id`**），
   **没有任何一个字段叫 `workflow_id`**。所以 §3 的改名**不改读口的响应形状**，
   §10.1 的 PR-1 验收 **A5** 与 §8.3 第一行照旧成立。改的只有那三处注释里的拼写。
 
 ### 1.6 前端
 
-* `fe/core/domain/wave.ts:166-182` — `workflow_id` / `workflow_input` 的注释已经按
+* `fe/core/domain/track.ts:166-182` — `workflow_id` / `workflow_input` 的注释已经按
   「template 的 key」措辞，并复述了词汇缝。
-* `fe/core/domain/wave.ts:198-215` — `waveTemplateSchema` + `waveTemplatesOperation`。
-* `fe/web/src/features/area/new-wave/public.tsx:247-256` — `needsInput(template)`
+* `fe/core/domain/track.ts:198-215` — `trackTemplateSchema` + `trackTemplatesOperation`。
+* `fe/web/src/features/area/new-track/public.tsx:247-256` — `needsInput(template)`
   判据是 `template.input_schema != null`，**不是 id 白名单**。
-* `fe/e2e/wave-create.spec.ts:84-155` — 用 `small-change`（无绑定模板）跑真内核。
+* `fe/e2e/track-create.spec.ts:84-155` — 用 `small-change`（无绑定模板）跑真内核。
 
 **结论（OBSERVED）**：前端已经只看见一个概念。**统一本身**对 FE 是零改动。
 **但 v4 的 D2 改名对 FE 不是零改动，而且面比 §3 v3 版写的大一倍**——因为仓里有**两个**前端：
@@ -211,7 +211,7 @@ MCP per-wave tool scope。
 
 **所以「可以破坏兼容性」不等于「`web/` 不用改」**：`web/` 是活的生产客户端，
 它必须在**同一个 PR**里跟着改名，否则一个还在浏览器缓存里的旧 bundle 会继续发
-`workflow_id`，撞上 `deny_unknown_fields`（`waves.rs:196`）拿到一个 400——
+`workflow_id`，撞上 `deny_unknown_fields`（`tracks.rs:196`）拿到一个 400——
 那是 `docs/upgrade-stability.md:29` 明令禁止的「部分工作」。
 处置见 §3 的 `WEB_COMPAT_VERSION` 裁决。
 
@@ -225,12 +225,12 @@ MCP per-wave tool scope。
 Template {
     id:      &'static str,              // 名册键；写口的 `workflow_id` 就是它
     title:   String,                    // 已播种→report.summary；未播种→常量
-    content: WaveReportPayload,         // 已播种→template wave 的 report；未播种→常量渲染
+    content: TrackReportPayload,         // 已播种→template track 的 report；未播种→常量渲染
     binding: Option<PluginBinding>,     // 可选属性，不是兄弟概念
 }
 
 PluginBinding {
-    plugin_id:    String,               // 落到 waves.plugin_scope
+    plugin_id:    String,               // 落到 tracks.plugin_scope
     input_schema: Option<Value>,        // 决定这个 template 收不收 workflow_input
 }
 ```
@@ -246,7 +246,7 @@ PluginBinding {
 ```rust
 // crates/calm-server/src/workflow_templates.rs —— 名册的唯一**可失败查找 helper**。
 // ⚠️ v4 收窄（通道 A m4，重扫判定成立）：v3 写「唯一查找入口」是**假的**。
-// 合并后 #1230 侧 `routes/wave_templates.rs` 的 `current_definition` 回落分支里
+// 合并后 #1230 侧 `routes/track_templates.rs` 的 `current_definition` 回落分支里
 // 开手写了 `WORKFLOW_TEMPLATES.iter().find(|t| t.key == key)`（v5：不记行号，见 §8 基线声明）
 // 取 title——同一个数组，因此**漂移不可能发生**，但「唯一入口」这个全称句子不成立。
 // 处置：§8.2 的合并规则把这个站点点名（它不吃 `is_workflow_template_key`，
@@ -259,8 +259,8 @@ pub fn workflow_template(key: &str) -> Option<&'static WorkflowTemplate> {
 ```
 
 ```rust
-// crates/calm-server/src/routes/waves.rs
-/// #1209 — 「这个 id 能不能建 wave」的唯一答案，外加它可选的插件绑定。
+// crates/calm-server/src/routes/tracks.rs
+/// #1209 — 「这个 id 能不能建 track」的唯一答案，外加它可选的插件绑定。
 /// 名字里的 "Admission" 是重点：它回答的是**准入**，不是「模板当前长什么样」——
 /// 后者的权威是已播种的 report（§2.3 类别 2），不是这个结构体。
 /// （v2 这里写的是「名字里不出现 Template」，下一行却叫 `TemplateAdmission`，
@@ -282,11 +282,11 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
 注意三点：
 
 1. **名册成员资格是准入判据，绑定不是。** 这一句是 `:779` 消失的全部原因。
-2. `resolve_trusted_workflow` 一个字不改地活下来（`waves.rs:937-950`），它仍然是
-   「和 `bound_workflow` 同一个 filter」的绑定解析器（`waves.rs:932-936` 的 doc 依旧成立），
+2. `resolve_trusted_workflow` 一个字不改地活下来（`tracks.rs:937-950`），它仍然是
+   「和 `bound_workflow` 同一个 filter」的绑定解析器（`tracks.rs:932-936` 的 doc 依旧成立），
    只是不再决定 create 是否放行。
 3. **没有 `title` 字段。** v1 曾放一个 `title: &'static str`，两个通道都指出它是出厂标题的
-   第二份拷贝：#1230 之后当前标题的权威是已播种 report（#1230 侧 `wave_templates.rs` 的 `current_definition`），
+   第二份拷贝：#1230 之后当前标题的权威是已播种 report（#1230 侧 `track_templates.rs` 的 `current_definition`），
    而 create 草图里根本没有消费者。删掉。读口需要标题时走 #1230 的 `current_definition`，
    不走这里。
 
@@ -295,15 +295,15 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
 v1 在这里写了「**2 处**可漂移权威，Rust 常量降级为 bootstrap、之后永远让位」。
 两个通道都判它不成立，重扫后**判定成立、v1 错**。三条反证据，逐条读过：
 
-* `restamp_template_report_if_placeholder` **无条件**先取常量报告（`waves.rs:586-590`），
+* `restamp_template_report_if_placeholder` **无条件**先取常量报告（`tracks.rs:586-590`），
   才在 `:592-594` 早退；早退的判据是
   `report_startup_read_required()` = `summary != initial.summary || body != initial.body`
-  （`crates/calm-types/src/wave_report.rs:184-187`）——**精确相等**，不是「用户改过」。
+  （`crates/calm-types/src/track_report.rs:184-187`）——**精确相等**，不是「用户改过」。
   所以一份被改回 canonical placeholder 的已播种 report 会被常量**重新盖章**。
-* #1230 S1 之后，每次 `PUT /api/wave-templates/{id}` 都用 Rust intro + Rust renderer
-  重写报告（#1230 侧 `wave_templates.rs` 的 `PUT` handler：取 Rust intro/renderer，再落库）。
+* #1230 S1 之后，每次 `PUT /api/track-templates/{id}` 都用 Rust intro + Rust renderer
+  重写报告（#1230 侧 `track_templates.rs` 的 `PUT` handler：取 Rust intro/renderer，再落库）。
   intro 与 contract prefix 用户改不动。
-* 报告形状契约（contract prefix，`crates/calm-types/src/wave_report.rs:137-144`）
+* 报告形状契约（contract prefix，`crates/calm-types/src/track_report.rs:137-144`）
   **会**和已播种拷贝发散：改这个常量对任何非 placeholder 的已播种报告都不传播
   （同一条 `:592-594` 早退）。v1 说它和内容「同生共死」，错。
 
@@ -312,10 +312,10 @@ v1 在这里写了「**2 处**可漂移权威，Rust 常量降级为 bootstrap�
 | # | 类别 | 权威 | 会不会与别处发散 |
 |---|---|---|---|
 | 1 | **名册**（有哪几个 template） | Rust 常量 `WORKFLOW_TEMPLATES`（`workflow_templates.rs:25-38`） | 今天会：`WORKFLOW_TEMPLATE_KEYS`（`:18`）是第二份独立数组，`is_workflow_template_key`（`:40-42`）走它，而 create/读口走 `WORKFLOW_TEMPLATES`。**§2.2 把 KEYS 删掉、predicate 从 `WORKFLOW_TEMPLATES` 派生，这一类归零。** |
-| 2 | **可编辑内容**（title + task 的 key/goal） | 已播种 template wave 的 report 行 | 未播种时回落 Rust 常量（`workflow_templates.rs:44-51`、`:62-69`）。#1230 S1 让读口也认这一条，从而消掉「广告 vs 实际 fork」的漂移。 |
-| 3 | **不可编辑内容**（intro + contract prefix） | Rust 常量（`workflow_templates.rs` 的 `*_INTRO`；`wave_report.rs:137-144`） | **会**。常量改了不回灌已播种拷贝。已知、本次不修（§9 非目标 8）。 |
+| 2 | **可编辑内容**（title + task 的 key/goal） | 已播种 template track 的 report 行 | 未播种时回落 Rust 常量（`workflow_templates.rs:44-51`、`:62-69`）。#1230 S1 让读口也认这一条，从而消掉「广告 vs 实际 fork」的漂移。 |
+| 3 | **不可编辑内容**（intro + contract prefix） | Rust 常量（`workflow_templates.rs` 的 `*_INTRO`；`track_report.rs:137-144`） | **会**。常量改了不回灌已播种拷贝。已知、本次不修（§9 非目标 8）。 |
 | 4 | **binding 声明**（哪个插件认领哪个 workflow id） | 插件 manifest（`plugins/git-forge/manifest.json:302-306`） | 不会：内核不复述。 |
-| 5 | **binding 生效**（这次请求到底绑没绑上） | 运行态 × env 信任策略 | 不是静态权威，是运行时函数：`resolve_trusted_workflow` 要求 running（`waves.rs:941-943`）∧ `trusted_forge_plugin`（`forge_trust.rs:1-8`，读 `NEIGE_TRUSTED_FORGE_PLUGINS` 环境变量）。同一份 manifest 在两台机器上可以给出不同答案。 |
+| 5 | **binding 生效**（这次请求到底绑没绑上） | 运行态 × env 信任策略 | 不是静态权威，是运行时函数：`resolve_trusted_workflow` 要求 running（`tracks.rs:941-943`）∧ `trusted_forge_plugin`（`forge_trust.rs:1-8`，读 `NEIGE_TRUSTED_FORGE_PLUGINS` 环境变量）。同一份 manifest 在两台机器上可以给出不同答案。 |
 
 `input_schema` 属于第 4 类：内核不可能知道第三方插件的输入 schema，schema 的校验方
 和消费方是插件自己，抄进内核就是一个必然过期的副本（§6 展开）。
@@ -377,7 +377,7 @@ git grep -l 'workflow_id'    -- 'crates/'          | wc -l   # 173  (tracked fil
 git grep -l 'workflow_id'    -- 'crates/**/*.rs'   | wc -l   # 168
 git grep -l 'workflow_input' -- 'crates/'          | wc -l   # 165
 git grep -l 'workflow_input' -- 'crates/**/*.rs'   | wc -l   # 162
-git grep -l 'NewWave {'      -- '*.rs'             | wc -l   # 147
+git grep -l 'NewTrack {'      -- '*.rs'             | wc -l   # 147
 ```
 
 **这些数字只用来说明「为什么要切成两个 PR」，不用来说明覆盖度。**
@@ -389,22 +389,22 @@ git grep -l 'NewWave {'      -- '*.rs'             | wc -l   # 147
 
 | 站点 | 判断内容 |
 |---|---|
-| `CreateWaveRequest.workflow_id`（`waves.rs:210`）、`.workflow_input`（`:212-214`）、`deny_unknown_fields`（`:196`） | 旧拼写变未知字段 ⇒ 400（§3.5）；**绝不加别名** |
-| `CreateWaveRequest::into_parts`（`waves.rs:227-239`） | 跟改 |
-| `NewWave.workflow_id`（`crates/calm-truth/src/model.rs:108`）、`.workflow_input`（doc `:116-122`） | 改名 **+ 改 doc**（doc 里逐字写了旧名） |
-| `calm_types::Wave`（`crates/calm-types/src/model.rs:339` 定义，`workflow_id` 在 `:359`、`workflow_input` 在 `:370`，都带 `#[serde(default)]`） | **改名 + 加单向读别名**（§3.4）。它经 `WaveUpdatedPayload`（`crates/calm-types/src/event.rs:83`，`#[serde(flatten)]`）进历史事件——**全清单里唯一有 fail-open 危险的一格** |
+| `CreateTrackRequest.workflow_id`（`tracks.rs:210`）、`.workflow_input`（`:212-214`）、`deny_unknown_fields`（`:196`） | 旧拼写变未知字段 ⇒ 400（§3.5）；**绝不加别名** |
+| `CreateTrackRequest::into_parts`（`tracks.rs:227-239`） | 跟改 |
+| `NewTrack.workflow_id`（`crates/calm-truth/src/model.rs:108`）、`.workflow_input`（doc `:116-122`） | 改名 **+ 改 doc**（doc 里逐字写了旧名） |
+| `calm_types::Track`（`crates/calm-types/src/model.rs:339` 定义，`workflow_id` 在 `:359`、`workflow_input` 在 `:370`，都带 `#[serde(default)]`） | **改名 + 加单向读别名**（§3.4）。它经 `TrackUpdatedPayload`（`crates/calm-types/src/event.rs:83`，`#[serde(flatten)]`）进历史事件——**全清单里唯一有 fail-open 危险的一格** |
 | `crates/calm-server/src/plugin_host/workflow_input.rs` **整个模块**（模块名、模块 doc `:3`、`WORKFLOW_INPUT_MAX_BYTES`（`:27`）、`validate_workflow_input`（`:240`）；**26 处命中**，`grep -c workflow_input` 实测） | 见下面「用户可见错误词汇」 |
 | `spec_harness_start_adapter.rs:162-180`（`bound_workflow`） | 跟改；fail-safe（`:181-190`）语义不变 |
 | `mcp_server/tool_visibility.rs` | **不受影响**：真正的 gate 只读 `plugin_scope`（`:109`）。七处 `workflow_id` 命中 = 两条注释（`:18`、`:61`）+ 五处测试结构体字面量（`:200-209`、`:340-345`）。**两个通道本轮独立复核，判定 §5.1 的说法正确**——不要「顺手」改这里的 gate |
 
 **用户可见错误词汇（本类里最容易漏的一格，v4 完全没记账）**：
-`workflow_input` 出现在 `POST /api/waves` 的 400 正文里——
-`waves.rs:965`（``wave create: `workflow_input` requires `workflow_id` ``）、
+`workflow_input` 出现在 `POST /api/tracks` 的 400 正文里——
+`tracks.rs:965`（``track create: `workflow_input` requires `workflow_id` ``）、
 `:974-975`（``does not declare an input_schema; `workflow_input` is not accepted``）、
 `:987-988`（``requires `workflow_input` (required: [...])``）；
 以及 `plugin_host/workflow_input.rs` 产出的 `workflow_input.<key>: …` 前缀
-（`:247`、`:253`、`:264`、`:274`、`:278`），它经 `waves.rs:992-993` 的
-`wave create: {reason}` 浮到线上——**正是 §4.4 矩阵行 10 的那条正文**。
+（`:247`、`:253`、`:264`、`:274`、`:278`），它经 `tracks.rs:992-993` 的
+`track create: {reason}` 浮到线上——**正是 §4.4 矩阵行 10 的那条正文**。
 所以 §4.4 里凡是写「统一后 = 同」的错误正文行，在 PR-2 之后**都不可能为真**；
 §4.4 已按三列（今天 / PR-1 后 / PR-2 后）重排。
 
@@ -414,15 +414,15 @@ git grep -l 'NewWave {'      -- '*.rs'             | wc -l   # 147
 
 | 站点 | 漏改的后果 |
 |---|---|
-| **`crates/calm-server/src/routes/today.rs:149`（`UPDATE waves SET … workflow_id=NULL … workflow_input=NULL …`）与 `:162`（`INSERT INTO waves(… workflow_id, purpose, workflow_input …)`）** | **编译干净、clippy 绿，Today launchpad 路径运行期 `no such column`。见 §3.3，本轮 BLOCKER** |
-| `WAVE_SELECT_COLUMNS`（`crates/calm-truth/src/db/rows.rs:87`）与 `WAVE_SELECT_COLUMNS_W`（`:94`） | 同上；**改这两个常量一次修好 10 个词法 SELECT**（清单见 §3.3） |
-| `db/sqlite/wave.rs:184` 的 INSERT 列表 | 同上 |
+| **`crates/calm-server/src/routes/today.rs:149`（`UPDATE tracks SET … workflow_id=NULL … workflow_input=NULL …`）与 `:162`（`INSERT INTO tracks(… workflow_id, purpose, workflow_input …)`）** | **编译干净、clippy 绿，Today launchpad 路径运行期 `no such column`。见 §3.3，本轮 BLOCKER** |
+| `TRACK_SELECT_COLUMNS`（`crates/calm-truth/src/db/rows.rs:87`）与 `TRACK_SELECT_COLUMNS_W`（`:94`） | 同上；**改这两个常量一次修好 10 个词法 SELECT**（清单见 §3.3） |
+| `db/sqlite/track.rs:184` 的 INSERT 列表 | 同上 |
 | 三组测试侧原始 SQL（§3.3 列全） | 测试运行期红（吵，不是生产风险，但会被误读成「改名把测试改坏了」） |
-| **`web/src/api/wire.ts:96-106`** — `Omit<Schemas['CreateWaveRequest'], 'workflow_input'>`。**它是手写的，不是生成物**（不在 `ci.yml:1194` 的 `git diff --exit-code` 清单里，实测该清单是 `web/src/api/openapi.json`、`generated.ts`、`generated-terminal.ts`、`generated-events.ts`、`web/src/editor/types/`、`fe/core/api/generated/wire.ts`、`fe/core/api/generated/openapi.json` 七项） | `Omit` 的键是字符串字面量：改名后它**静默地不再 omit 任何东西**，那个 `workflow_input?: unknown` 覆盖退化成一个多余属性。**类型层的静默失败，不是编译错误** |
-| **`web/src/wave-fs-viewers/schemas.ts:152`（`workflow_id`）、`:160`（`workflow_input: z.unknown().default(null)`）** — **第三个 Zod 读取器**，读的是旧 `wave.json` / FS snapshot | 机械改名 ⇒ 旧 snapshot 因 `.default(null)` **静默变成 `template_id=null`**——正是 §3.4 存在的理由。**必须走 §3.4 的 normalize 策略，不许机械改** |
+| **`web/src/api/wire.ts:96-106`** — `Omit<Schemas['CreateTrackRequest'], 'workflow_input'>`。**它是手写的，不是生成物**（不在 `ci.yml:1194` 的 `git diff --exit-code` 清单里，实测该清单是 `web/src/api/openapi.json`、`generated.ts`、`generated-terminal.ts`、`generated-events.ts`、`web/src/editor/types/`、`fe/core/api/generated/wire.ts`、`fe/core/api/generated/openapi.json` 七项） | `Omit` 的键是字符串字面量：改名后它**静默地不再 omit 任何东西**，那个 `workflow_input?: unknown` 覆盖退化成一个多余属性。**类型层的静默失败，不是编译错误** |
+| **`web/src/track-fs-viewers/schemas.ts:152`（`workflow_id`）、`:160`（`workflow_input: z.unknown().default(null)`）** — **第三个 Zod 读取器**，读的是旧 `track.json` / FS snapshot | 机械改名 ⇒ 旧 snapshot 因 `.default(null)` **静默变成 `template_id=null`**——正是 §3.4 存在的理由。**必须走 §3.4 的 normalize 策略，不许机械改** |
 | `docs/oracle/gates-types.yaml:1424`、**`docs/oracle/a11y-contract.yaml:596`**（把 `workflow_input.merge_policy` 写成 UI 契约）、**`docs/oracle/pages-shared.yaml:3542`**（「issue-dev 变体硬编码 workflow_id」）、**`:3586`/`:3590`**（`:3590` 说某测试用 `toEqual` 钉死**整个** create body，含 `workflow_input` 四个键） | oracle 判据与代码脱节；`:3590` 那条尤其——改名正好改的就是它钉的那个 body |
-| `fe/e2e/wave-create.spec.ts:57,59,60,141,142,143,154`（v4 只列了其中四个） | e2e 红（吵，但坐标不全会让实现者以为改完了） |
-| **`crates/calm-server/tests/cases/wave_projection_policy_patch.rs:155`** — 一份**字符串名册**（`"workflow_id"`、`"workflow_input"` 作为字面量列在数组里），不受字段类型保护 | 测试红或静默失去覆盖，取决于名册怎么用 |
+| `fe/e2e/track-create.spec.ts:57,59,60,141,142,143,154`（v4 只列了其中四个） | e2e 红（吵，但坐标不全会让实现者以为改完了） |
+| **`crates/calm-server/tests/cases/track_projection_policy_patch.rs:155`** — 一份**字符串名册**（`"workflow_id"`、`"workflow_input"` 作为字面量列在数组里），不受字段类型保护 | 测试红或静默失去覆盖，取决于名册怎么用 |
 | 只在**注释 / 文档 / CSS 类名**里的：`web/src/shared/components/issueUrl.ts:1,6,57` + `issueUrl.test.ts`、`fe/core/domain/issue-url.ts:2,48` + 其测试、`web/src/calm.css:4414`（`/* Raw workflow_input JSON escape hatch … */`）、`fe/web/src/features/area/README.md:71` | 没人会红。留下的是被行为打脸的注释——**§3.9 自己立的规矩要求同 PR 改掉** |
 | **`NewTaskForm.tsx` 的用户可见文案**：v4 只列了 `:114`/`:458`；实测还有 `:124`（注释）、`:171`、`:369`、`:459`、`:569`（正文「the workflow_input is derived from it client-side」）、`:751`、**`:765`（可见文字 "Raw workflow_input JSON"）**、**`:769`（`aria-label="Raw workflow_input JSON"`）**、`:1062` | `:769` 的 aria-label 同时是 `a11y-contract.yaml` 与 `pages-shared.yaml` 的锚点 ⇒ oracle 与 UI 一起漂 |
 
@@ -432,7 +432,7 @@ git grep -l 'NewWave {'      -- '*.rs'             | wc -l   # 147
 # 在 PR-2 的最终树上跑。除 allowlist 外必须零输出。
 git grep -n 'workflow_id\|workflow_input' -- . \
   ':!crates/calm-truth/migrations/00[0-7]*.sql' \
-  ':!crates/calm-truth/src/db/sqlite/wave_plugin_scope_migration_tests.rs' \
+  ':!crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs' \
   ':!plugins/*/manifest.json' \
   ':!docs/architecture/1209-template-workflow-unify.md' \
   ':!docs/_1209-design-review-*.md'
@@ -442,8 +442,8 @@ git grep -n 'workflow_id\|workflow_input' -- . \
 
 1. **旧迁移**（`0059`、`0061`、`0076` 等）——它们跑在**自己那个时间点的 schema** 上，
    改名迁移排在其后（§3.3）。改它们 = sqlx checksum 崩（CLAUDE.md「Never Edit Released Migration」）。
-2. **`wave_plugin_scope_migration_tests.rs`**——它**故意**停在 `0075` 的历史 schema 上建行
-   （`:66` 的 `INSERT INTO waves (… workflow_id …)`，注释 `:60-64` 自己写明了这一点）。
+2. **`track_plugin_scope_migration_tests.rs`**——它**故意**停在 `0075` 的历史 schema 上建行
+   （`:66` 的 `INSERT INTO tracks (… workflow_id …)`，注释 `:60-64` 自己写明了这一点）。
    那一行必须**保持旧名**：它构造的是改名迁移之前的世界。
 3. **插件 manifest 的 `workflows[]`**——D4-A 之后不改名（§3.8 + §9 非目标 11）。
 4. **内部 plugin-workflow 词汇**：`plugin_host/` 里描述「插件声明的 workflow」这个概念的
@@ -459,21 +459,21 @@ git grep -n 'workflow_id\|workflow_input' -- . \
 
 #### 类别 3 — **机械构造点**（编译器逐个报错，不需要判断）
 
-`NewWave { workflow_id: …, .. }` / `Wave { … }` 这类结构体字面量填充位，
-以及两个前端里由 TS 类型驱动的调用点。**147 个 `.rs` 文件含 `NewWave {`**（上面的命令）。
+`NewTrack { workflow_id: …, .. }` / `Track { … }` 这类结构体字面量填充位，
+以及两个前端里由 TS 类型驱动的调用点。**147 个 `.rs` 文件含 `NewTrack {`**（上面的命令）。
 高风险的共享 builder（漏改一个会让一批测试同时红，容易被误诊）：
-`crates/calm-server/tests/support/codex_fixture.rs`、`support/mcp.rs`、`support/wave_file.rs`、
+`crates/calm-server/tests/support/codex_fixture.rs`、`support/mcp.rs`、`support/track_file.rs`、
 `support/worker_flow.rs`、`crates/calm-truth-test-harness/src/lib.rs`。
 
 **生成物**（不手改，跑生成器）：`crates/calm-server/src/openapi.rs:47`/`:164-166` 注册
-`Wave` / `NewWave` / `CreateWaveRequest`，符号名不动，但产物会变。
+`Track` / `NewTrack` / `CreateTrackRequest`，符号名不动，但产物会变。
 产物 = `ci.yml:1194` 那七项里**实际命中本字段的五个**（实测 `grep -c`）：
 `fe/core/api/generated/openapi.json`(10)、`fe/core/api/generated/wire.ts`(4)、
 `web/src/api/openapi.json`(10)、`web/src/api/generated.ts`(11)、
 `web/src/api/generated-events.ts`(4)。
 `generated-terminal.ts`(0) 与 `editor/types/` 随全量生成命令一起被检查，但本字段不命中。
 **v4 只点名了三个生成物**（人当初给的那三个），漏了 `fe/core/api/generated/wire.ts`
-与 `web/src/api/generated-events.ts`——后者正是 `Wave.workflow_input` 到 UI 的那条路
+与 `web/src/api/generated-events.ts`——后者正是 `Track.workflow_input` 到 UI 的那条路
 （`web/src/api/wire.ts:96-106` 的注释自己写着这件事）。
 **本文不给生成物行号**（`355807d6` 刚动过它们，给了也过期）。
 
@@ -491,7 +491,7 @@ git grep -n 'workflow_id\|workflow_input' -- . \
 * **禁止编辑 `0059_waves_workflow_id.sql`**：sqlx 对整个迁移文件（含注释）做 checksum，
   改一个已应用的迁移会让启动直接 `VersionMismatch`（CLAUDE.md「Never Edit Released Migration」）。
 * **新增一条迁移** `0079_waves_rename_workflow_id_to_template_id.sql`：
-  `ALTER TABLE waves RENAME COLUMN workflow_id TO template_id;`
+  `ALTER TABLE tracks RENAME COLUMN workflow_id TO template_id;`
   （`workflow_input → template_input` 同理，原列由 `0061_waves_workflow_input.sql:8` 建）。
   **号段实测**：目录里最新是 `0078_cards_role_assistant.sql`，`0079` 空闲，不撞号
   （两个通道独立复核一致）。**rebase 之后要复查撞号**——这是唯一一处允许在实现期定的坐标。
@@ -501,11 +501,11 @@ git grep -n 'workflow_id\|workflow_input' -- . \
   （`docs/deploy-and-upgrade.md:76-78`），**不要**标 `destructive`——
   标了会让 `preflight.rs:220-227` 以一个**不对的理由**判 breaking。
   本次的 breaking 由 3.6 的两个版本常量承担。
-* **旧迁移里对 `waves.workflow_id` 的引用不用管**：`0076_waves_plugin_scope.sql:41,45,47`
+* **旧迁移里对 `tracks.workflow_id` 的引用不用管**：`0076_waves_plugin_scope.sql:41,45,47`
   是在**它自己那个时间点的 schema** 上跑的，改名迁移排在它之后，重放顺序不变。
   **这一条必须在 PR 描述里写出来**，否则下一个评审会以为它是漏网。
-* **旧迁移测试 fixture 也保持旧名**：`wave_plugin_scope_migration_tests.rs:66` 的
-  `INSERT INTO waves (… workflow_id …)` 跑在**停在 `0075` 的 schema** 上
+* **旧迁移测试 fixture 也保持旧名**：`track_plugin_scope_migration_tests.rs:66` 的
+  `INSERT INTO tracks (… workflow_id …)` 跑在**停在 `0075` 的 schema** 上
   （该文件 `:60-64` 的注释自己写明了这个构造），它在改名迁移之前，机械改名会把它改坏。
   §3.2 的 allowlist 第 2 项就是它。
 
@@ -518,29 +518,29 @@ git grep -n 'workflow_id\|workflow_input' -- . \
 
 | # | 站点 | 形状 | 谁会告诉我漏了 |
 |---|---|---|---|
-| 1 | `crates/calm-truth/src/db/rows.rs:87` `WAVE_SELECT_COLUMNS` | 共享列表常量 | 没人（运行期） |
-| 2 | `crates/calm-truth/src/db/rows.rs:94` `WAVE_SELECT_COLUMNS_W`（`w.` 限定版；**v4 写的 `:95` 差一行**） | 共享列表常量 | 没人。另有 `wave_select_columns_lists_agree`（`rows.rs:162` 起的 test mod）钉住两份列表一致 |
-| 3 | `crates/calm-truth/src/db/sqlite/wave.rs:184` INSERT 列表 | 字面 SQL | 没人 |
-| 4 | **`crates/calm-server/src/routes/today.rs:149`**：`UPDATE waves SET purpose='launchpad', workflow_id=NULL, plugin_scope=NULL, workflow_input=NULL, updated_at=?2 WHERE id=?1` | 字面 SQL | **没人。Today launchpad 的「复用旧行」腿运行期炸** |
-| 5 | **`crates/calm-server/src/routes/today.rs:162`**：`INSERT INTO waves(id,area_id,title,sort,lifecycle,workflow_id,purpose,workflow_input,created_at,updated_at) VALUES(…)` | 字面 SQL | **没人。Today launchpad 的「新建行」腿运行期炸** |
+| 1 | `crates/calm-truth/src/db/rows.rs:87` `TRACK_SELECT_COLUMNS` | 共享列表常量 | 没人（运行期） |
+| 2 | `crates/calm-truth/src/db/rows.rs:94` `TRACK_SELECT_COLUMNS_W`（`w.` 限定版；**v4 写的 `:95` 差一行**） | 共享列表常量 | 没人。另有 `track_select_columns_lists_agree`（`rows.rs:162` 起的 test mod）钉住两份列表一致 |
+| 3 | `crates/calm-truth/src/db/sqlite/track.rs:184` INSERT 列表 | 字面 SQL | 没人 |
+| 4 | **`crates/calm-server/src/routes/today.rs:149`**：`UPDATE tracks SET purpose='launchpad', workflow_id=NULL, plugin_scope=NULL, workflow_input=NULL, updated_at=?2 WHERE id=?1` | 字面 SQL | **没人。Today launchpad 的「复用旧行」腿运行期炸** |
+| 5 | **`crates/calm-server/src/routes/today.rs:162`**：`INSERT INTO tracks(id,area_id,title,sort,lifecycle,workflow_id,purpose,workflow_input,created_at,updated_at) VALUES(…)` | 字面 SQL | **没人。Today launchpad 的「新建行」腿运行期炸** |
 
-**改 #1/#2 两个常量一次修好 10 个词法 SELECT**（实测消费点，`grep -rn WAVE_SELECT_COLUMNS crates/`）：
+**改 #1/#2 两个常量一次修好 10 个词法 SELECT**（实测消费点，`grep -rn TRACK_SELECT_COLUMNS crates/`）：
 `calm-truth`：`db/sqlite/read.rs:123`、`:133`、`:154`、`:301`（`_W` 版）、
-`db/sqlite/wave.rs:268`、`wave_vcs/snapshot.rs:40`、`:266`；
-`calm-server`：`routes/today.rs:134`、`:143`、`wave_lifecycle.rs:141`。
+`db/sqlite/track.rs:268`、`track_vcs/snapshot.rs:40`、`:266`；
+`calm-server`：`routes/today.rs:134`、`:143`、`track_lifecycle.rs:141`。
 **但 #3/#4/#5 三处原始字符串必须单独列、单独改**——它们不走那两个常量。
 
 **测试侧的原始 SQL**（会大声红，不是生产风险，但列出来免得被误诊成「改名把测试搞坏了」）：
 `crates/calm-server/tests/forge_workflow_e2e.rs:160`、`:176`、
 `crates/calm-server/tests/support/spec_turn.rs:121`、
-`crates/calm-server/src/operation/child_wave_adapter.rs:1350`
+`crates/calm-server/src/operation/child_track_adapter.rs:1350`
 （**在 `#[cfg(test)] mod tests` 内**，该 mod 自 `:499` 起——所以它是测试不是生产，
 通道 B 把它列进「显式测试 SELECT」是对的）。
-`wave_plugin_scope_migration_tests.rs:66` **不在**这一类，见上面的 allowlist 理由。
+`track_plugin_scope_migration_tests.rs:66` **不在**这一类，见上面的 allowlist 理由。
 
 **验收（§10.1 的 PR-2 侧 **B1/B2/B3**）——v4 的往返验收不够，因为它碰不到 `today.rs`**：
 
-1. `POST /api/waves {template_id:"small-change"}` → 201 → `GET /api/waves/{id}` 回显
+1. `POST /api/tracks {template_id:"small-change"}` → 201 → `GET /api/tracks/{id}` 回显
    ——覆盖 #1/#2/#3。
 2. **Today launchpad 两条腿都要真跑**（通道 B 明确要求）：
    (a) **新建腿**——空库上打 Today launchpad 端点，走 `:162` 的 INSERT；
@@ -554,9 +554,9 @@ git grep -n 'workflow_id\|workflow_input' -- . \
 
 ### 3.4 事件日志：唯一一处需要兼容读的地方
 
-`Wave`（`crates/calm-types/src/model.rs:339`）不只是 REST 响应，它**被整体嵌进持久事件载荷**
-——`WaveUpdatedPayload`（`crates/calm-types/src/event.rs:83`）用 `#[serde(flatten)]`
-把整个 wave 摊在事件 data 的顶层（该结构体 `:78-79` 的 doc 明写这是为了
+`Track`（`crates/calm-types/src/model.rs:339`）不只是 REST 响应，它**被整体嵌进持久事件载荷**
+——`TrackUpdatedPayload`（`crates/calm-types/src/event.rs:83`）用 `#[serde(flatten)]`
+把整个 track 摊在事件 data 的顶层（该结构体 `:78-79` 的 doc 明写这是为了
 "preserve the historical wire shape"）。
 `workflow_id`（`model.rs:359`）与 `workflow_input`（`:370`）上挂的都是 `#[serde(default)]`。
 
@@ -572,7 +572,7 @@ v4 在这里引的是 goldens 文件，那是**测试数据**，不是读取者�
 于是有两条独立的坏路，方向相反：
 
 * **缺键 + `#[serde(default)]` ⇒ 静默 `None`**：历史事件行里写着 `"workflow_id": "小改动"`，
-  新代码找 `template_id` 找不到 ⇒ `default` ⇒ `None`。replay 出来的 wave 丢掉模板归属，
+  新代码找 `template_id` 找不到 ⇒ `default` ⇒ `None`。replay 出来的 track 丢掉模板归属，
   **无任何报错**。
 * **若为了防上一条而把 `default` 去掉 ⇒ 硬反序列化错误 ⇒ 整行被跳过**（`events.rs:578-585`）。
   比丢一个字段更糟。
@@ -581,18 +581,18 @@ v4 在这里引的是 goldens 文件，那是**测试数据**，不是读取者�
 `docs/oracle/gates-types.yaml:1424` 那条 gate 讲的是「新增字段要有默认值」，
 **改名是它没覆盖的一种情况**。
 
-**裁决**：`Wave` 的新字段带 `#[serde(alias = "workflow_id")]`（`workflow_input` 同理），
+**裁决**：`Track` 的新字段带 `#[serde(alias = "workflow_id")]`（`workflow_input` 同理），
 `#[serde(default)]` **保留**（去掉它会踩上面第二条）。
 
 * 它是**反序列化单向**的：序列化只出 `template_id`，wire 上仍然只有一个名字。
-* **载体只有 `calm_types::Wave` 一个**（**v5 更正，两个通道独立提出，判定成立**）：
-  v4 的 §3.4 与 §10.0 item 4 写「`Wave` / `WaveRow` 都加 alias」，
-  **`WaveRow` 那一半是错的且不可编译**——`crates/calm-truth/src/db/rows.rs:99` 是
+* **载体只有 `calm_types::Track` 一个**（**v5 更正，两个通道独立提出，判定成立**）：
+  v4 的 §3.4 与 §10.0 item 4 写「`Track` / `TrackRow` 都加 alias」，
+  **`TrackRow` 那一半是错的且不可编译**——`crates/calm-truth/src/db/rows.rs:99` 是
   `#[derive(Debug, sqlx::FromRow)]`，**没有 serde**，给它加 serde helper attribute
   轻则无效重则编译失败。而且**本来就无事可做**：`FromRow` 按**列名**绑定，
-  §3.3 的迁移就地改了列名，`WaveRow` 上不存在遗留键问题。
+  §3.3 的迁移就地改了列名，`TrackRow` 上不存在遗留键问题。
   **该指令已删除**（§10.0 同步）。
-* 它**绝不加在 `CreateWaveRequest` 上**——写口的旧拼写必须 400（3.5）。
+* 它**绝不加在 `CreateTrackRequest` 上**——写口的旧拼写必须 400（3.5）。
   这条不对称是本设计的一个**判断**，不是发现：请求是一个有活人在另一端的契约，
   拒绝是可观测、可修的；事件日志是不可变的历史记录，拒绝它等于弄坏 replay。
 
@@ -602,7 +602,7 @@ v4 在这里引的是 goldens 文件，那是**测试数据**，不是读取者�
 |---|---|---|---|
 | 1 | `fe/core/api/schemas.ts:97` | REST 响应 + 历史 event | 单向 normalize：吃旧键，产出新键 |
 | 2 | `web/src/api/schemas.ts:127` | 同上（生产 bundle） | 同上 |
-| 3 | **`web/src/wave-fs-viewers/schemas.ts:152`（`workflow_id`）、`:160`（`workflow_input`）** | **旧 `wave.json` / FS snapshot**——一批**磁盘上已经写死**的历史文件 | 同上。**这一处最危险**：`:160` 今天是 `z.unknown().default(null)`、`:152` 是 `.nullable().default(null)`，机械改名后旧 snapshot **静默变成 `template_id=null`**，一个错误都不报 |
+| 3 | **`web/src/track-fs-viewers/schemas.ts:152`（`workflow_id`）、`:160`（`workflow_input`）** | **旧 `track.json` / FS snapshot**——一批**磁盘上已经写死**的历史文件 | 同上。**这一处最危险**：`:160` 今天是 `z.unknown().default(null)`、`:152` 是 `.nullable().default(null)`，机械改名后旧 snapshot **静默变成 `template_id=null`**，一个错误都不报 |
 
 **三处的 normalize 必须同形**：读入时先把旧键搬到新键（旧键存在且新键缺失才搬），
 再交给现有 schema；**不要**把旧键做成 schema 的一个可选字段——那是写口方案 B 的前端版。
@@ -614,7 +614,7 @@ v4 在这里引的是 goldens 文件，那是**测试数据**，不是读取者�
 
 ### 3.5 旧拼写的拒绝策略
 
-`CreateWaveRequest` 有 `#[serde(deny_unknown_fields)]`（`waves.rs:196`），
+`CreateTrackRequest` 有 `#[serde(deny_unknown_fields)]`（`tracks.rs:196`），
 所以改名之后 `{"workflow_id": "small-change"}` 会在 **serde 层**被拒，得到一个
 **400**，正文是 serde 生成的 `unknown field \`workflow_id\``——
 **不经过 `admit_template`，因此不带本文任何一条错误文案**。
@@ -622,12 +622,12 @@ v4 在这里引的是 goldens 文件，那是**测试数据**，不是读取者�
 **裁决：接受这个形状，不做定制错误。** 理由三条：
 
 1. 人已经明说可以破坏兼容性，而这正是「明确拒绝、不部分工作」（`upgrade-stability.md:29`）；
-2. 做定制文案意味着在 `CreateWaveRequest` 上把 `workflow_id` 声明成一个字段再手动拒——
+2. 做定制文案意味着在 `CreateTrackRequest` 上把 `workflow_id` 声明成一个字段再手动拒——
    那就重新引入了「写口认识两个名字」，是方案 B 的分期付款版；
 3. 真正需要被**及时**告知的不是某个手搓 curl 的人，而是浏览器里的旧 bundle，
    而那条路已经被 3.6 的 `WEB_COMPAT_VERSION` 硬挡住了，不会走到这个 400。
 
-**代价，明写**：任何在仓外用 `workflow_id` 调 `POST /api/waves` 的脚本会拿到一个
+**代价，明写**：任何在仓外用 `workflow_id` 调 `POST /api/tracks` 的脚本会拿到一个
 「字段名错了」而不是「概念改了」的错误。这是一个**判断**，不是发现。
 
 ### 3.6 让旧前端硬失败，而不是「部分工作」
@@ -695,7 +695,7 @@ pin：`crates/calm-server/tests/cases/version.rs:19,131` 已经在断言它等�
 
 **`SYNC_EVENT_VERSION` 要不要动？裁决：不动，并说明理由。**
 它是 `crates/calm-types/src/event.rs:243` 的 `13`，描述的是**事件帧**的版本。
-`Wave` 的字段改名确实改了 `wave_updated` 的载荷形状，但 3.4 的 `alias`
+`Track` 的字段改名确实改了 `track_updated` 的载荷形状，但 3.4 的 `alias`
 让新读者能读旧帧，而**旧读者读新帧**这条路已经被 `WEB_COMPAT_VERSION`
 和「breaking ⇒ 全进程重启」（3.7）关掉了——没有一个旧读者能活到读新帧。
 **这是一个判断，不是发现**；下一位评审若认为帧形状变了就该动，改它是一行 + 一批 golden。
@@ -813,7 +813,7 @@ pin：`crates/calm-server/tests/cases/version.rs:19,131` 已经在断言它等�
   （`plugin_host/manifest.rs:93-100` 的字段文档，`WorkflowDescriptor` 在 `:467-475`）；
   改它的名字会让**每一份第三方 manifest 在解析期就炸**——不是「行为变了」，是「读不进来了」。
 * **D4-A 只改*接受语义*，schema 一个字节不动**（§5.3 已经论证过这一点）：
-  `workflows[].id` 照旧解析，变的只是 `POST /api/waves` 还认不认一个名册外的 id。
+  `workflows[].id` 照旧解析，变的只是 `POST /api/tracks` 还认不认一个名册外的 id。
 
 **所以两者的代价不在一个量级**：改名买到的是词汇整洁，付出的是本设计一直刻意避开的
 那一类契约破坏——而本切片已经在 REST 那一侧付过一次 Tier B 了（§3.5），
@@ -828,7 +828,7 @@ D4-A 之后 `workflows[]` 的**每一个合法值都是一个 template key**，
 
 ### 3.9 词汇缝记账段落的新文本
 
-`routes/wave_templates.rs:29-39` 那段（读口说 template、写口说 `workflow_id`）**整段删除**，
+`routes/track_templates.rs:29-39` 那段（读口说 template、写口说 `workflow_id`）**整段删除**，
 换成：
 
 > 一个概念（template），一个字段（`template_id`）。读口列出它，写口按它准入，
@@ -841,7 +841,7 @@ D4-A 之后 `workflows[]` 的**每一个合法值都是一个 template key**，
 v4 相对 v3 的区别是：v3 是把缝的描述**改写成仍然为真**，v4 是**缝没了所以整段删**。）
 
 > **⚠️ v5 的时序更正（两个通道独立提出，判定成立）：上面这段新文本属于 PR-2，不是 PR-1。**
-> v4 的 §10.1 把 `wave_templates.rs` 的模块头改写排进 PR-1，
+> v4 的 §10.1 把 `track_templates.rs` 的模块头改写排进 PR-1，
 > 但新文本里写的是 `template_id`——而 **PR-1 落地后字段仍然叫 `workflow_id`**
 > （v4 自己的切线定义）。照 v4 执行，PR-1 会交付一段**提前撒谎的契约注释**,
 > 正是这一节自己立的规矩要禁的东西。
@@ -860,7 +860,7 @@ v4 相对 v3 的区别是：v3 是把缝的描述**改写成仍然为真**，v4 
 > 代价是 PR-1 交付一个**缝已经没了但注释还在描述它**的中间态——那也是假绿，只是反方向。
 > **本文选临时文本。**
 
-`fe/web/src/features/area/new-wave/public.tsx:38-45` 那段 FE 侧的缝注释同理，整段删。
+`fe/web/src/features/area/new-track/public.tsx:38-45` 那段 FE 侧的缝注释同理，整段删。
 
 ---
 
@@ -868,14 +868,14 @@ v4 相对 v3 的区别是：v3 是把缝的描述**改写成仍然为真**，v4 
 
 ### 4.1 代码草图（PROPOSED）
 
-分两块。**准入 + 绑定**替换 `waves.rs:761-793`，留在原位（在任何 DB 写之前）：
+分两块。**准入 + 绑定**替换 `tracks.rs:761-793`，留在原位（在任何 DB 写之前）：
 
 ```rust
 // #1209 — 一次查找。template 是概念；插件绑定是它的属性。
 let admission = match p.workflow_id.as_deref() {
     Some(id) => Some(admit_template(&s, id).await.ok_or_else(|| {
         CalmError::BadRequest(format!(
-            "wave create: `workflow_id` must reference a known wave template; got `{id}`"
+            "track create: `workflow_id` must reference a known track template; got `{id}`"
         ))
     })?),
     None => None,
@@ -891,15 +891,15 @@ validate_workflow_input_binding(bound_plugin, p.workflow_input.as_ref())?;
 p.plugin_scope = bound_plugin.map(|m| m.id.clone());
 ```
 
-**v2 删掉了 `if id.trim().is_empty()` 这道守卫**（今天在 `waves.rs:770-772`）。
+**v2 删掉了 `if id.trim().is_empty()` 这道守卫**（今天在 `tracks.rs:770-772`）。
 理由：新模型下空白 id 本来就落不进名册，走同一个 `ok_or_else` 得到同一个 400 状态码，
 这个分支不可能改变任何结果；而 §4.3 正在取缔的东西就是「零效果的遗留特例」。
 唯一的行为差是错误正文里回显的 id 是空白串——这本来就是它。
 **代价**：今天没有任何 Rust 测试 POST 过空白 `workflow_id`（只有
-`fe/e2e/wave-create.spec.ts:55-60` 从 FE 侧断言「Blank 根本不发这个字段」），
+`fe/e2e/track-create.spec.ts:55-60` 从 FE 侧断言「Blank 根本不发这个字段」），
 所以删守卫等于删一段无人钉住的代码。§10.2 新增测试 #12 补上这个 pin。
 
-**播种 + fork**（今天的 `waves.rs:799-814`）**移到 `waves.rs:867` 的 area 404 与
+**播种 + fork**（今天的 `tracks.rs:799-814`）**移到 `tracks.rs:867` 的 area 404 与
 `:823-847` 的 cwd 校验之后**，即紧挨着 `let workspace_root = ...`（`:899`）之前：
 
 ```rust
@@ -909,9 +909,9 @@ if let Some(admission) = &admission {
     ensure_workflow_templates(&s).await?;
     if fork_report_from.is_none() {
         fork_report_from = Some(
-            lookup_workflow_template_wave(&s, admission.key).await?.ok_or_else(|| {
+            lookup_workflow_template_track(&s, admission.key).await?.ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "wave create: seeded template `{}` is missing after ensure",
+                    "track create: seeded template `{}` is missing after ensure",
                     admission.key
                 ))
             })?,
@@ -923,11 +923,11 @@ if let Some(admission) = &admission {
 ### 4.2 §决策 D3b — 把播种移到 4xx 校验之后（v2 新增）
 
 今天的顺序是错的，而 v1 逐字保留了它。**OBSERVED**：`ensure_workflow_templates`
-在 `waves.rs:803` 被调用，早于 cwd 形状校验（`:823-828`）、attached 校验（`:843-847`）
+在 `tracks.rs:803` 被调用，早于 cwd 形状校验（`:823-828`）、attached 校验（`:843-847`）
 和 area 404（`:863-867`）。于是
-`POST /api/waves {workflow_id:"small-change", area_id:"nope"}` 会先铸出 system area、
-3 个 template wave、3 份 report（`waves.rs:448`、`:449-455`、`:517-579`），**然后 404**。
-这和 handler 自己的契约注释直接冲突：`waves.rs:759-760`
+`POST /api/tracks {workflow_id:"small-change", area_id:"nope"}` 会先铸出 system area、
+3 个 template track、3 份 report（`tracks.rs:448`、`:449-455`、`:517-579`），**然后 404**。
+这和 handler 自己的契约注释直接冲突：`tracks.rs:759-760`
 「All branches that surface a 4xx short-circuit before any DB write.」
 
 **裁决：本切片移动，不记账。** 理由：搬一个 `if` 块，零新概念，而且不搬的话
@@ -937,11 +937,11 @@ CLAUDE.md「Mirror Code / Statement Widened」那类教训点名的假绿。
 搬完之后**仍然不能说「任何非 201 都没有写」**，要诚实。事务内还有**三**类判定落在播种之后
 （v2 只写了两类，通道 B 的 M2 补了第三类，重扫**判定成立**）：
 
-* folder-claim **409**（`waves.rs:889-897`、`:923-928`）；
+* folder-claim **409**（`tracks.rs:889-897`、`:923-928`）；
 * 事务内 **500**（DB/IO）；
-* **显式 `fork_report_from` 的两条 400**（v2 漏了）：源 wave 不存在
-  （`waves.rs:1410-1418`，消息在 `:1413`）与跨 area 且源不在 system area
-  （`waves.rs:1424-1430`，消息在 `:1428`）。整个 fork 分支从 `waves.rs:1408` 开始，
+* **显式 `fork_report_from` 的两条 400**（v2 漏了）：源 track 不存在
+  （`tracks.rs:1410-1418`，消息在 `:1413`）与跨 area 且源不在 system area
+  （`tracks.rs:1424-1430`，消息在 `:1428`）。整个 fork 分支从 `tracks.rs:1408` 开始，
   **在事务内**。所以「合法 template + 无效显式 fork」= 先播种、再 400。
 
 所以 `:759-760` 的注释应改写为：
@@ -952,14 +952,14 @@ CLAUDE.md「Mirror Code / Statement Widened」那类教训点名的假绿。
 > 不在此列——那时模板已经播种，且播种是独立提交，回滚不掉。
 
 **关于「要不要把显式 fork 源前移到播种之前校验」的裁决：不做，接受并记账。**
-这是一个**判断**，不是发现。前移意味着在事务外再读一遍 `wave_get` + 源 area 的 kind，
+这是一个**判断**，不是发现。前移意味着在事务外再读一遍 `track_get` + 源 area 的 kind，
 而权威判定必须留在事务内（否则是 TOCTOU）——于是就得到两份同判据的代码，
 正是 CLAUDE.md「Mirror Code Must Call The Original」点名的形状。残余副作用的边界很小：
 播种是幂等的（测试 #5），最坏情况是「用户用错的 fork 源触发了一次本来迟早会发生的播种」。
 代价明写在 §4.4 的新行 17 与 §4.2 的注释里，不假装它不存在。
 
 **另一条搬位的副作用，明写（NIT 级）**：`ensure_workflow_templates` → `ensure_system_area`
-（`waves.rs:448`、`:459-485`）今天会在 `:863` 的 `area_get` **之前**铸出 system area。
+（`tracks.rs:448`、`:459-485`）今天会在 `:863` 的 `area_get` **之前**铸出 system area。
 于是在一个全新库上、以 system area 为目标的 create，搬位后会从 201 翻成 404。
 **实践中不可达**：`area_create_system_tx` 用 `new_id()`
 （`crates/calm-truth/src/db/sqlite/area.rs:73`，`let id = new_id();`），id 猜不到；
@@ -981,18 +981,18 @@ v1 在这里给的是一条**语法**判据：「不存在任何一个分支的�
 
 v2 换成**语义判据 + 路由级集合测试**：
 
-> **语义判据**：`POST /api/waves` 是否接受一个 `workflow_id`，只能是
+> **语义判据**：`POST /api/tracks` 是否接受一个 `workflow_id`，只能是
 > 「它在名册里吗」的函数；插件是否绑定、是否在跑、是否受信，都不得改变这个答案。
 
 它的可执行版本不是 grep，而是 §10.2 的测试 #8 与 #9 组成的一对：
 
-* #9（路由 × 路由，不引用任何常量）：`GET /api/wave-templates` 列出的每个 id，
-  `POST /api/waves` 都**不以准入理由拒绝**（全称量化）；抽样的名册外 id，`POST` 拒绝。
+* #9（路由 × 路由，不引用任何常量）：`GET /api/track-templates` 列出的每个 id，
+  `POST /api/tracks` 都**不以准入理由拒绝**（全称量化）；抽样的名册外 id，`POST` 拒绝。
   **v3 诚实标注**：反方向是抽样而非集合相等，见 §10.2「#9 的形状」。
 * #8（真路由 + 真插件）：一个 running ∧ trusted 的插件声明了名册外的 workflow id，
   create 仍然 400。这一条正是「绑定不得影响准入」的正例。
 
-`grep -n 'is_workflow_template_key' crates/calm-server/src/routes/waves.rs` 返回空
+`grep -n 'is_workflow_template_key' crates/calm-server/src/routes/tracks.rs` 返回空
 仍然保留在 §10.1 的验收里，但降级为「名字确实没了」的**必要不充分**条件，
 不再单独承担「没换马甲」这个判断。
 
@@ -1005,12 +1005,12 @@ v1 的矩阵有四类错误（两个通道合并后逐条重扫，**全部判定
 **`Result<_>` → HTTP 的映射**（`crates/calm-server/src/error.rs:182-199`）：
 `NotFound`→404、`BadRequest`/`PluginInstall`→400、`Forbidden`/`PluginPermission`→403、
 `Internal`/`Db`/`Io`/`Serde`/`CodexAppServer`→500。
-（附带 OBSERVED：`create_wave` 的 utoipa 注解只声明了 201 与 500，`waves.rs:724-727`，
+（附带 OBSERVED：`create_track` 的 utoipa 注解只声明了 201 与 500，`tracks.rs:724-727`，
 没有 400/404/409。这是既有的 OpenAPI 记账缺口，本设计不修，记在这里免得下一个人以为它是权威。）
 
 **错误优先级树（v3 新增，通道 B 的 M1）**。v2 只给了「共享前提」，于是把
 「area 不存在 ⇒ 一律 404，与 `workflow_id` 无关」写成了一句错话：
-**workflow 准入排在 area 查找之前**（今天 `waves.rs:761` vs `:863-867`；
+**workflow 准入排在 area 查找之前**（今天 `tracks.rs:761` vs `:863-867`；
 统一后 §4.1 的草图 `admit_template` 仍在 `:761` 的位置）。
 所以「未知 id + 不存在的 area」是 **400，不是 404**。
 
@@ -1018,70 +1018,70 @@ v1 的矩阵有四类错误（两个通道合并后逐条重扫，**全部判定
 > 通道 B M1，重扫判定成立、v3 错。** 两条错各自独立：
 >
 > * v3 把「显式 fork 校验」放在第 7、folder claim 放在第 8。**实际相反**：
->   `enforce_folder_claim_tx` 在 `waves.rs:1391`（其上的注释明写它 "Must stay first"），
->   `wave_create_tx` 在 `:1401-1402`，显式 fork 校验到 `:1408` 才开始（源不存在的 400 在
+>   `enforce_folder_claim_tx` 在 `tracks.rs:1391`（其上的注释明写它 "Must stay first"），
+>   `track_create_tx` 在 `:1401-1402`，显式 fork 校验到 `:1408` 才开始（源不存在的 400 在
 >   `:1410-1418`）。所以**「folder 冲突 + fork 源不存在」是 409，不是 v3 那棵树预测的 400**。
-> * v3 把 DB/IO 写成固定的第 9 级。**假**：`wave_create_tx`（`:1401`）自己的 DB 错误
+> * v3 把 DB/IO 写成固定的第 9 级。**假**：`track_create_tx`（`:1401`）自己的 DB 错误
 >   就排在 fork 400 之前。DB/IO 不是一个层级，它是**每一个 `await?` 都可能发生的横切错误**。
 
 > **⚠️ v5 再更正一层：不是两棵树，是**四**个阶段（通道 B M5，重扫判定成立、v4 漏了一整段）。**
-> v4 说「真实控制流只有事务前 + 事务内」。**假。事务在 `waves.rs:1609` 就提交了**，
-> 之后还有两段**同步跑、能返回非 2xx、而 wave/cards/events 已经落盘**的代码。
+> v4 说「真实控制流只有事务前 + 事务内」。**假。事务在 `tracks.rs:1609` 就提交了**，
+> 之后还有两段**同步跑、能返回非 2xx、而 track/cards/events 已经落盘**的代码。
 > 而且最前面还有一段：旧拼写的 400 发生在 **serde extractor 里，函数体还没开始执行**。
 
 真实顺序，**四个阶段**（v5）：
 
 **阶段 0 — serde/JSON extractor**（在 handler 函数体**之前**）：
-`CreateWaveRequest` 的 `#[serde(deny_unknown_fields)]`（`waves.rs:196`）在这里拒掉旧拼写
+`CreateTrackRequest` 的 `#[serde(deny_unknown_fields)]`（`tracks.rs:196`）在这里拒掉旧拼写
 （矩阵行 18/19/20）。**它不经过本 handler 的任何一行代码**，所以本文任何一条错误文案都不适用
 （§3.5）。v4 的两棵树把这一层完全省掉了，于是行 18–20 在树上无处可挂。
 
 **阶段 1 — 事务前**（自上而下短路；§4.2 搬位之后，这几级全部在任何 DB 写之前）：
 
 ```
-1. 模板准入               waves.rs:761-784（统一后：admit_template）    → 400  unknown template
-2. 输入绑定矩阵           waves.rs:790 → :958-995                      → 400  五种正文
-3. cwd 形状               waves.rs:823-828                             → 400
-4. attached 工作区        waves.rs:843-847                             → 400
-5. area 存在性            waves.rs:863-867                             → 404
+1. 模板准入               tracks.rs:761-784（统一后：admit_template）    → 400  unknown template
+2. 输入绑定矩阵           tracks.rs:790 → :958-995                      → 400  五种正文
+3. cwd 形状               tracks.rs:823-828                             → 400
+4. attached 工作区        tracks.rs:843-847                             → 400
+5. area 存在性            tracks.rs:863-867                             → 404
 ────────────────────────── 以上全部无 DB 写 ──────────────────────────
-6. 模板播种 + 隐式 fork    搬到 waves.rs:899 之前                        → 副作用从这里开始
+6. 模板播种 + 隐式 fork    搬到 tracks.rs:899 之前                        → 副作用从这里开始
 ```
 
-**阶段 2 — 事务内**（`write_with_actor_events_typed` 的闭包，从 `waves.rs:1391` 起。
-**这里的每一步都在第 6 步之后**，所以任何一步失败都留下已播种的模板 wave）：
+**阶段 2 — 事务内**（`write_with_actor_events_typed` 的闭包，从 `tracks.rs:1391` 起。
+**这里的每一步都在第 6 步之后**，所以任何一步失败都留下已播种的模板 track）：
 
 ```
-T1. folder claim          waves.rs:1391-1399（其上注释明写 "Must stay first"）      → 409
-T2. wave_create_tx        waves.rs:1401-1402                                       → 视错误而定
-T3. 显式 fork 源校验       waves.rs:1408 起；源不存在 :1410-1418、跨 area :1424-1430  → 400
+T1. folder claim          tracks.rs:1391-1399（其上注释明写 "Must stay first"）      → 409
+T2. track_create_tx        tracks.rs:1401-1402                                       → 视错误而定
+T3. 显式 fork 源校验       tracks.rs:1408 起；源不存在 :1410-1418、跨 area :1424-1430  → 400
 T4. 其后的 card / report 写入                                                       → 视错误而定
-── 事务在 waves.rs:1609 提交 ──────────────────────────────────────────────────────
+── 事务在 tracks.rs:1609 提交 ──────────────────────────────────────────────────────
 ```
 
 **阶段 3 — 事务后**（**v5 新增；这一段整个是 v4 漏掉的**）：
 
 ```
-P1. materialize_workspace   waves.rs:1620-1633   → 非 2xx，而 wave/cards/events 已提交
-P2. spec-harness start      waves.rs:1660-1676   → 运行期失败降级为 warn；
+P1. materialize_workspace   tracks.rs:1620-1633   → 非 2xx，而 track/cards/events 已提交
+P2. spec-harness start      tracks.rs:1660-1676   → 运行期失败降级为 warn；
                                                     但提交前的序列化/提交仍可返回错误
 ```
 
 **P1 的孤儿结果今天就被一条测试明确钉住**：
-`crates/calm-server/tests/cases/wave_workspace_materialize.rs:270-313`
+`crates/calm-server/tests/cases/track_workspace_materialize.rs:270-313`
 （`materialize_failure_fails_the_create`）断言「物化失败 ⇒ 非 2xx」**并且**
-「wave 行活下来」（`:307-313` 的 `orphans.len() == 1`），
+「track 行活下来」（`:307-313` 的 `orphans.len() == 1`），
 其注释 `:293-306` 逐字写明这是**有意钉住的已知状态**，并写着
 "Do not \"fix\" a failure here by loosening the assertion"。
 **⇒ 「非 201 ⇒ 无副作用」这句话在本 handler 上永远不可能为真**，不只是「播种搬位之后仍不完全」。
-`waves.rs:759-760` 那句注释的改写文本（§4.2）因此还要再加一句：事务提交后的物化失败
+`tracks.rs:759-760` 那句注释的改写文本（§4.2）因此还要再加一句：事务提交后的物化失败
 同样返回非 2xx 且不回滚。
 
 **横切、不属于任何一个阶段**：generic DB / IO 错误（`CalmError::Db` / `Io` ⇒ 500，
 `error.rs:182-199`）**可能出现在任何一个可失败的 DB/FS 操作上**。
 **v5 更正 v4 的措辞（通道 B，判定成立）**：v4 写「任何 `await?`」——**载体不对**，两个方向都错：
-`materialize_workspace`（`waves.rs:1620`）是一个**同步的 `?`**，不是 `await?`；
-而 `resolve_trusted_workflow(&s, id).await`（`waves.rs:937-950`）**根本没有 `?`**，它返回 `Option`。
+`materialize_workspace`（`tracks.rs:1620`）是一个**同步的 `?`**，不是 `await?`；
+而 `resolve_trusted_workflow(&s, id).await`（`tracks.rs:937-950`）**根本没有 `?`**，它返回 `Option`。
 正确的说法是「**任何可失败的 DB / FS 操作**」。
 
 **矩阵行 17 仍然成立**：它的前提里已经有「无并发的 folder-claim 冲突」（下面共享前提 5），
@@ -1089,7 +1089,7 @@ P2. spec-harness start      waves.rs:1660-1676   → 运行期失败降级为 wa
 
 **统一前后这四个阶段的形状都不变**，唯一的变化是阶段 1 里第 6 步的位置——
 **v4 更正（B/M1 的尾巴 + 通道 A n1，两个通道独立提出）**：v3 说它今天在「第 1 步之后」，
-**实测是「第 2 步之后」**——`validate_workflow_input_binding` 在 `waves.rs:790`，
+**实测是「第 2 步之后」**——`validate_workflow_input_binding` 在 `tracks.rs:790`，
 播种块在 `:799-814`。搬位是把它从「第 2 步之后」挪到「第 5 步之后」。
 
 **全表共享的前提**（写一次，不再逐行重复）。它们是「为了让某一行只考察一个变量」而钉住的
@@ -1100,21 +1100,21 @@ P2. spec-harness start      waves.rs:1660-1676   → 运行期失败降级为 wa
    `workflow_id` 无关」，**是错的**，通道 B M1 判定成立。）
 2. `cwd` 要么省略，要么是通过 `:823-828` 形状校验与 `:843-847` attached 校验的绝对路径；
    否则 400（树的第 3/4 步）。
-3. 请求体其余字段合法（`deny_unknown_fields`，`waves.rs:196`）。
-4. 未显式给 `fork_report_from`（除行 17 外）。显式给了就永远赢（`waves.rs:804`，pin：
-   `wave_workflow_templates.rs:383`）——所有「+ fork 模板」的行都以此为前提。
+3. 请求体其余字段合法（`deny_unknown_fields`，`tracks.rs:196`）。
+4. 未显式给 `fork_report_from`（除行 17 外）。显式给了就永远赢（`tracks.rs:804`，pin：
+   `track_workflow_templates.rs:383`）——所有「+ fork 模板」的行都以此为前提。
 5. 无并发的 folder-claim 冲突（树的第 8 步，与本设计正交）。
 6. **插件态前提，逐行显式给**（v2 有几行省略了它，通道 B 逐行核时点名行 3/9/10）：
    任何一行只要没写明插件，就默认「**没有任何 running ∧ trusted 的插件认领本行的 id**」
    ——包括「一个插件都没注册」这个退化情形，它和「注册了但没 running / 没 trusted」
-   在 `resolve_trusted_workflow`（`waves.rs:937-950`）眼里是同一个 `None`。
+   在 `resolve_trusted_workflow`（`tracks.rs:937-950`）眼里是同一个 `None`。
 
 > **⚠️ v5 把「统一后」这一列拆成两列（通道 B M5 的尾巴，判定成立）。**
 > v4 的矩阵只有「今天 / 统一后」两组列，而 v4 同时又把切片切成了两个 PR，
 > 于是「统一后」在同一张表里同时指 **PR-1 之后**（概念统一、字段仍叫 `workflow_id`）
 > 和 **PR-2 之后**（拼写终态）。后果很具体：**行 6/8/9/10/11 的「统一后 = 同」在终态是假的**
 > ——那几条正文里嵌着 `workflow_input` / `workflow_id` 这两个字面串（§3.2 类别 1 已点名它们的
-> 产生处：`waves.rs:965`/`:974-975`/`:987-988` 与 `plugin_host/workflow_input.rs`）。
+> 产生处：`tracks.rs:965`/`:974-975`/`:987-988` 与 `plugin_host/workflow_input.rs`）。
 
 **PR-2 那一列的通用规则**（写一次，表里只标例外）：
 **凡是响应正文里出现 `workflow_id` / `workflow_input` 这两个字面串的，
@@ -1124,36 +1124,36 @@ P2. spec-harness start      waves.rs:1660-1676   → 运行期失败降级为 wa
 | # | 输入（在上述前提下） | 今天 状态码 | 今天 响应正文 | **PR-1 后** 状态码 | **PR-1 后** 响应正文 | **PR-2 后**（拼写终态） | 变化 |
 |---|---|---|---|---|---|---|---|
 | 1 | 无 `workflow_id`，无 `workflow_input` | 201（无 fork，`plugin_scope=null`） | — | 同 | — | 同（字段名换，无正文） | — |
-| 2 | `workflow_id: "   "`（空白） | 400（`waves.rs:770-772`） | `…must reference a registered trusted workflow; got \`   \`` | 400（名册未命中） | ``wave create: `workflow_id` must reference a known wave template; got `   ` `` | 同，但字段名变 `template_id`（§10.3 三条腿不受影响） | **正文变两次**（守卫也删了，§4.1） |
-| 3 | `workflow_id: "missing-workflow"`（前提 6：无插件认领它） | 400（`waves.rs:780`） | 同上文案 | 400 + `…known wave template` | 同上 | 同，字段名变 | **正文变两次** |
+| 2 | `workflow_id: "   "`（空白） | 400（`tracks.rs:770-772`） | `…must reference a registered trusted workflow; got \`   \`` | 400（名册未命中） | ``track create: `workflow_id` must reference a known track template; got `   ` `` | 同，但字段名变 `template_id`（§10.3 三条腿不受影响） | **正文变两次**（守卫也删了，§4.1） |
+| 3 | `workflow_id: "missing-workflow"`（前提 6：无插件认领它） | 400（`tracks.rs:780`） | 同上文案 | 400 + `…known track template` | 同上 | 同，字段名变 | **正文变两次** |
 | 4 | `small-change` / `investigation`（无插件绑定），无 input | 201 + fork | — | 同（名册命中，binding=None） | — | 同 | — |
 | 5 | `issue-development` + git-forge running∧trusted，**带合法 `workflow_input`** | 201 + fork + `plugin_scope` | — | 同 | — | 同（请求体键名变 `template_input`） | — |
-| 6 | `issue-development` + git-forge running∧trusted，**不带 input** | **400**（`waves.rs:977-990`；git-forge 的 schema `required` 非空，`manifest.json:299`） | ``…plugin `dev.neige.git-forge` requires `workflow_input` (required: [...])`` | 同 | 同 | **正文变**：``requires `template_input` ``（产生处 `waves.rs:987-988`） | **PR-2 正文变** |
+| 6 | `issue-development` + git-forge running∧trusted，**不带 input** | **400**（`tracks.rs:977-990`；git-forge 的 schema `required` 非空，`manifest.json:299`） | ``…plugin `dev.neige.git-forge` requires `workflow_input` (required: [...])`` | 同 | 同 | **正文变**：``requires `template_input` ``（产生处 `tracks.rs:987-988`） | **PR-2 正文变** |
 | 7 | `issue-development` + git-forge **stopped 或 untrusted**，不带 input | 201 + fork，`plugin_scope=null` | — | 同（名册命中，binding=None） | — | 同 | — |
-| 8 | `issue-development` + git-forge stopped/untrusted，**带 input** | 400（`waves.rs:962-967`，走的是 `None`-plugin 臂） | ``wave create: `workflow_input` requires `workflow_id` `` | 同 | 同（文案仍误导，见下） | **正文变**：``\`template_input\` requires \`template_id\` ``（产生处 `waves.rs:965`）；**误导性不变**，见下 | **PR-2 正文变** |
-| 9 | **名册内 template**，其绑定插件 running∧trusted 但**无 `input_schema`**，带了 input | 400（`waves.rs:973-976`） | ``…does not declare an input_schema; `workflow_input` is not accepted`` | 同 | 同 | **正文变**：``…`template_input` is not accepted``（产生处 `waves.rs:974-975`）。**注意 `input_schema` 这个词不变**——它是插件那一侧的字段（§3.8 的界线） | **PR-2 正文变** |
-| 10 | **名册内 template**，其绑定插件 running∧trusted 且有 schema，`workflow_input` 违反该 schema | 400（`waves.rs:992-993`） | `wave create: <reason>`，其中 `<reason>` 形如 ``workflow_input.<key>: …`` | 同 | 同 | **正文变**：`<reason>` 变成 ``template_input.<key>: …``。**产生处不在 `waves.rs`，在 `plugin_host/workflow_input.rs:247/:253/:264/:274/:278`** —— 这一格是 v4 整条漏掉的那个模块浮上线的地方 | **PR-2 正文变**（且要改另一个模块） |
-| 11 | 有 `workflow_input` 但无 `workflow_id` | 400（`waves.rs:962-967`） | ``…requires `workflow_id` `` | 同 | 同 | **正文变**：``\`template_input\` requires \`template_id\` `` | **PR-2 正文变** |
-| 12 | `area_id` 不存在，`workflow_id` 是**名册内**的 key（若 id 不在名册里，按优先级树先得 400，见上） | 404（`waves.rs:863-867`），**且模板已被播种**（`:803` 在 `:863` 之前） | ``area `<id>` `` | 404，**且未播种**（§4.2 搬位） | 同 | 同（正文不含本字段） | **副作用变**（v1 整行缺失） |
-| 12a | 名册内 key + **`cwd` 不是绝对路径** | 400（`waves.rs:823-828`），**且已播种** | ``…`cwd` must be absolute…`` | 400，**且未播种** | 同 | 同 | **副作用变**（v2 缺此行） |
-| 12b | 名册内 key + **显式给了一个不是 git 仓库的 `cwd`**（v4 更正措辞，见下） | 400（`waves.rs:843-847` → `validate_attached_workspace`），**且已播种** | 因 `validate_attached_workspace` 而异 | 400，**且未播种** | 同 | 同 | **副作用变**（v2 缺此行） |
-| 13 | 名册命中但 `ensure` 后 lookup 不到那个 wave | 500（`waves.rs:807-811`） | ``…seeded template `X` is missing after ensure`` | 同 | 同 | 同（正文不含本字段） | — |
-| 14 | `ensure_workflow_templates` 内部失败（建 area / 建 wave / 落 report） | 该错误**原样上抛**（`waves.rs:803` 的 `?`），可能是 500 也可能已留下部分播种副作用 | 因错而异 | 同 | 同 | 同 | — |
-| 15 | **running ∧ trusted 插件声明了名册外的 workflow id**，且（无 required input 或给了合法 input） | **201**，`plugin_scope` 打上，**无 fork** | — | **400** + `…known wave template` | — | 同，字段名变 | **有意变更 A**（PR-1），见 §5 |
-| 16 | 同上，但插件 schema required 非空且没给 input | 400（`waves.rs:977-990`） | ``…requires `workflow_input` `` | 400 | `…known wave template` | 同，字段名变 | 状态码不变，**拒绝理由与正文变**（更早在准入处拒） |
-| 17 | **破前提 4**：名册内 key + **显式** `fork_report_from` 指向不存在的 wave（或跨 area 且源不在 system area） | 400（**阶段 2 事务内**：`waves.rs:1410-1418` / `:1424-1430`），**且模板已被播种** | ``…fork source wave `X` does not exist`` / ``…must be in the target area or the system area`` | 同 | 同 | 同（正文不含本字段） | **无变化**（搬位改不掉它：判定在事务内、播种在事务外，见 §4.2 的裁决） |
-| **P1** | **（v5 新增）** 任何合法 create，但工作区物化失败 | **非 2xx**，**且 wave / cards / events 已提交**（`waves.rs:1620-1633`，在 `:1609` 提交之后） | 含 `materialize workspace` | 同 | 同 | 同 | **无变化**；本行的作用是钉住「非 201 ⇒ 无副作用」**永远为假**。已有 pin：`wave_workspace_materialize.rs:270-313` |
+| 8 | `issue-development` + git-forge stopped/untrusted，**带 input** | 400（`tracks.rs:962-967`，走的是 `None`-plugin 臂） | ``track create: `workflow_input` requires `workflow_id` `` | 同 | 同（文案仍误导，见下） | **正文变**：``\`template_input\` requires \`template_id\` ``（产生处 `tracks.rs:965`）；**误导性不变**，见下 | **PR-2 正文变** |
+| 9 | **名册内 template**，其绑定插件 running∧trusted 但**无 `input_schema`**，带了 input | 400（`tracks.rs:973-976`） | ``…does not declare an input_schema; `workflow_input` is not accepted`` | 同 | 同 | **正文变**：``…`template_input` is not accepted``（产生处 `tracks.rs:974-975`）。**注意 `input_schema` 这个词不变**——它是插件那一侧的字段（§3.8 的界线） | **PR-2 正文变** |
+| 10 | **名册内 template**，其绑定插件 running∧trusted 且有 schema，`workflow_input` 违反该 schema | 400（`tracks.rs:992-993`） | `track create: <reason>`，其中 `<reason>` 形如 ``workflow_input.<key>: …`` | 同 | 同 | **正文变**：`<reason>` 变成 ``template_input.<key>: …``。**产生处不在 `tracks.rs`，在 `plugin_host/workflow_input.rs:247/:253/:264/:274/:278`** —— 这一格是 v4 整条漏掉的那个模块浮上线的地方 | **PR-2 正文变**（且要改另一个模块） |
+| 11 | 有 `workflow_input` 但无 `workflow_id` | 400（`tracks.rs:962-967`） | ``…requires `workflow_id` `` | 同 | 同 | **正文变**：``\`template_input\` requires \`template_id\` `` | **PR-2 正文变** |
+| 12 | `area_id` 不存在，`workflow_id` 是**名册内**的 key（若 id 不在名册里，按优先级树先得 400，见上） | 404（`tracks.rs:863-867`），**且模板已被播种**（`:803` 在 `:863` 之前） | ``area `<id>` `` | 404，**且未播种**（§4.2 搬位） | 同 | 同（正文不含本字段） | **副作用变**（v1 整行缺失） |
+| 12a | 名册内 key + **`cwd` 不是绝对路径** | 400（`tracks.rs:823-828`），**且已播种** | ``…`cwd` must be absolute…`` | 400，**且未播种** | 同 | 同 | **副作用变**（v2 缺此行） |
+| 12b | 名册内 key + **显式给了一个不是 git 仓库的 `cwd`**（v4 更正措辞，见下） | 400（`tracks.rs:843-847` → `validate_attached_workspace`），**且已播种** | 因 `validate_attached_workspace` 而异 | 400，**且未播种** | 同 | 同 | **副作用变**（v2 缺此行） |
+| 13 | 名册命中但 `ensure` 后 lookup 不到那个 track | 500（`tracks.rs:807-811`） | ``…seeded template `X` is missing after ensure`` | 同 | 同 | 同（正文不含本字段） | — |
+| 14 | `ensure_workflow_templates` 内部失败（建 area / 建 track / 落 report） | 该错误**原样上抛**（`tracks.rs:803` 的 `?`），可能是 500 也可能已留下部分播种副作用 | 因错而异 | 同 | 同 | 同 | — |
+| 15 | **running ∧ trusted 插件声明了名册外的 workflow id**，且（无 required input 或给了合法 input） | **201**，`plugin_scope` 打上，**无 fork** | — | **400** + `…known track template` | — | 同，字段名变 | **有意变更 A**（PR-1），见 §5 |
+| 16 | 同上，但插件 schema required 非空且没给 input | 400（`tracks.rs:977-990`） | ``…requires `workflow_input` `` | 400 | `…known track template` | 同，字段名变 | 状态码不变，**拒绝理由与正文变**（更早在准入处拒） |
+| 17 | **破前提 4**：名册内 key + **显式** `fork_report_from` 指向不存在的 track（或跨 area 且源不在 system area） | 400（**阶段 2 事务内**：`tracks.rs:1410-1418` / `:1424-1430`），**且模板已被播种** | ``…fork source track `X` does not exist`` / ``…must be in the target area or the system area`` | 同 | 同 | 同（正文不含本字段） | **无变化**（搬位改不掉它：判定在事务内、播种在事务外，见 §4.2 的裁决） |
+| **P1** | **（v5 新增）** 任何合法 create，但工作区物化失败 | **非 2xx**，**且 track / cards / events 已提交**（`tracks.rs:1620-1633`，在 `:1609` 提交之后） | 含 `materialize workspace` | 同 | 同 | 同 | **无变化**；本行的作用是钉住「非 201 ⇒ 无副作用」**永远为假**。已有 pin：`track_workspace_materialize.rs:270-313` |
 
 **PR-2 新增的三行（D2 改名带来的，见 §3；它们发生在**阶段 0**，不经过 handler 函数体）**：
 
 | # | 输入（在上述前提下） | 今天 / PR-1 后 | **PR-2 后** | 变化 |
 |---|---|---|---|---|
-| 18 | 请求体用**旧拼写** `workflow_id: "small-change"` | 201 + fork | **400**，serde 的 ``unknown field `workflow_id` ``（`deny_unknown_fields`，`waves.rs:196`），**不经过 `admit_template`，不含本文任何一条文案** | **有意变更 C**，见 §3.5 |
+| 18 | 请求体用**旧拼写** `workflow_id: "small-change"` | 201 + fork | **400**，serde 的 ``unknown field `workflow_id` ``（`deny_unknown_fields`，`tracks.rs:196`），**不经过 `admit_template`，不含本文任何一条文案** | **有意变更 C**，见 §3.5 |
 | 19 | 请求体用旧拼写 `workflow_input` + 新拼写 `template_id` | 视绑定而定 | **400**，同上，``unknown field `workflow_input` `` | **有意变更 C** |
 | 20 | 请求体同时给 `template_id` 与 `workflow_id` | — | **400**，同上（`workflow_id` 仍是未知字段）。**这一行的作用是钉住「写口只认识一个名字」**，即 §3.1 表里被驳回的方案 B 没有从后门溜进来 | **新** |
 
 **v4 对行 12b 措辞的更正（通道 A n2，重扫判定成立）**：v3 把这个 400 记在
-`attach_folder` 头上，**是错的**。`waves.rs:843` 的守卫是 `if !cwd_omitted`，
+`attach_folder` 头上，**是错的**。`tracks.rs:843` 的守卫是 `if !cwd_omitted`，
 **只看 `cwd` 给没给，完全不看 `attach_folder`**（实测 `sed -n '843,847p'`）。
 所以任何显式的、通过了 `:823-828` 绝对路径形状校验、但目标不是 git 仓库的 `cwd`
 都会 400，与 `attach_folder` 无关。§10.2 #13 的第 3 条腿同步更正。
@@ -1164,15 +1164,15 @@ P2. spec-harness start      waves.rs:1660-1676   → 运行期失败降级为 wa
   行 16 提醒：这不是一个干净的 201→400，而是一个混合面——它的一部分今天已经 400，
   只是理由不同。§5 展开。
 * **变更 B（行 2/3/15/16）**：未知/空白 id 的 400 **正文**从
-  `must reference a registered trusted workflow` 改为 `must reference a known wave template`。
+  `must reference a registered trusted workflow` 改为 `must reference a known track template`。
   这不是润色：旧文案陈述的是「插件注册表」这个已经不再是准入判据的东西。
   两个既有测试钉住了旧子串：
-  `crates/calm-server/tests/cases/wave_workflow_templates.rs:586` 与
+  `crates/calm-server/tests/cases/track_workflow_templates.rs:586` 与
   **`crates/calm-server/tests/forge_workflow_e2e.rs:427`**（后者 v1 的文件清单里没有，§10.1 已补）。
   处置见 §10.3。
 * **变更 C（行 18/19/20，v4 新增）**：请求体字段改名（§3）。旧拼写变成未知字段 ⇒ 400。
   它同时把变更 B 的落点也改了一次：新文案里那句话现在应该说
-  ``\`template_id\` must reference a known wave template``。§10.3 的三条腿据此更新。
+  ``\`template_id\` must reference a known track template``。§10.3 的三条腿据此更新。
 
 **行 8/11 的文案，明写一条已知的烂**：``workflow_input` requires `workflow_id`` 在行 8
 里是误导的——调用方**确实**发了 `workflow_id`，真实原因是「这个 template 此刻没有绑定」。
@@ -1204,42 +1204,42 @@ v1 给了 4 个站点，两个通道各自重扫后都指出扫描不完整（�
 表内坐标在新基线上仍成立）。命中 25 行，去掉
 `manifest.rs` 自身的字段定义/校验/文档行后，**每一个构造带 `workflows` 的 Manifest 的站点**：
 
-| 站点 | 声明的 workflow id | 是模板 key | 走 `POST /api/waves`？ |
+| 站点 | 声明的 workflow id | 是模板 key | 走 `POST /api/tracks`？ |
 |---|---|---|---|
 | `plugins/git-forge/manifest.json:302-306` | `issue-development` | ✓ | ✓（唯一的真实插件） |
-| `crates/calm-server/src/routes/waves.rs:3588` | `issue-development` | ✓ | ✗ 直接单测 `validate_workflow_input_binding` |
-| `crates/calm-server/tests/cases/wave_templates_read.rs:107` | `issue-development` | ✓ | ✗ 只读 `GET /api/wave-templates` |
-| `crates/calm-truth/src/db/sqlite/wave_plugin_scope_migration_tests.rs:78-84` | `issue-development`（4 种畸形 JSON） | ✓ | ✗ 迁移回填单测 |
+| `crates/calm-server/src/routes/tracks.rs:3588` | `issue-development` | ✓ | ✗ 直接单测 `validate_workflow_input_binding` |
+| `crates/calm-server/tests/cases/track_templates_read.rs:107` | `issue-development` | ✓ | ✗ 只读 `GET /api/track-templates` |
+| `crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs:78-84` | `issue-development`（4 种畸形 JSON） | ✓ | ✗ 迁移回填单测 |
 | `crates/calm-server/src/plugin_host/mod.rs:2373` | 参数化 | 视传入 | ✗ spawn 准入单测 |
 | `crates/calm-server/src/plugin_host/manifest.rs:1388`、`:1409-1413`、`:1557` | `issue-development` / 参数化 | — | ✗ manifest 解析单测 |
 | `crates/calm-server/src/plugin_host/manifest.rs:2246`、`:2312` | `wf.build` | ✗ | ✗ manifest 解析单测 |
 | `crates/calm-server/src/mcp_server/tool_visibility.rs:375-377` | `WORKFLOW_ID`（非模板） | ✗ | ✗ 工具可见性单测 |
 | `crates/calm-server/src/operation/spec_harness_start_adapter.rs:1829-1831` | `WORKFLOW_ID`（非模板） | ✗ | ✗ `bound_workflow` 解析单测 |
-| `crates/calm-server/src/operation/child_wave_adapter.rs:1980` | `[]`（空） | — | ✗ |
+| `crates/calm-server/src/operation/child_track_adapter.rs:1980` | `[]`（空） | — | ✗ |
 | `crates/calm-server/tests/cases/mcp_plugin_tools.rs:924-926` | `WORKFLOW_ID`（非模板） | ✗ | ✗ 见下 |
 | `crates/calm-server/tests/plugin_workflow_uniqueness.rs:350-352` | `SHARED_WORKFLOW_ID`（非模板） | ✗ | ✗ spawn 准入 |
 | `crates/calm-server/tests/codex_forge_e2e.rs:2834` | 断言 shipped manifest 的 workflows | ✓ | ✗ |
 
-唯一一处把**非模板** `workflow_id` 落进 wave 行的是
-`crates/calm-server/tests/cases/mcp_plugin_tools.rs:671-682` —— `repo.wave_create(NewWave{..})`
+唯一一处把**非模板** `workflow_id` 落进 track 行的是
+`crates/calm-server/tests/cases/mcp_plugin_tools.rs:671-682` —— `repo.track_create(NewTrack{..})`
 结构体字面量，注释自己写着 `// Direct repo create (route validation is out of scope here).`
 （`:670`）。绕过路由，本设计不影响它。
 
-FE / e2e / oracle 侧无消费者：`fe/e2e/wave-create.spec.ts:141` 用 `small-change`；
-`docs/oracle/gates-types.yaml:1424` 只断言 `wave.workflow_id → null` 的默认值。
+FE / e2e / oracle 侧无消费者：`fe/e2e/track-create.spec.ts:141` 用 `small-change`；
+`docs/oracle/gates-types.yaml:1424` 只断言 `track.workflow_id → null` 的默认值。
 
-**结论（OBSERVED）**：通过 HTTP 用非模板 workflow id 建 wave 这条路，
+**结论（OBSERVED）**：通过 HTTP 用非模板 workflow id 建 track 这条路，
 **在本仓内**没有任何生产代码、任何插件、任何测试在走。
 **这句话的边界，明写**：它只覆盖 checked-in 的东西，不覆盖运行时装进来的第三方插件——
 见 §5.3 的重新定级。
 
 另有两条下游确认它的消失不会波及别处：
 
-* `bound_workflow`（`spec_harness_start_adapter.rs:162-180`）读的是 `waves.workflow_id`
+* `bound_workflow`（`spec_harness_start_adapter.rs:162-180`）读的是 `tracks.workflow_id`
   这一列。收紧 create 之后这列只可能装模板 key；老数据里若有别的值，
   `bound_workflow` 的行为完全不变（它自己去 registry 解析，解析不到就 fail-safe 回
   vanilla prompt，`:181-190`）。**不需要数据迁移。**
-* MCP per-wave tool scope 读的是 `waves.plugin_scope`（`mcp_server/tool_visibility.rs:109`），
+* MCP per-track tool scope 读的是 `tracks.plugin_scope`（`mcp_server/tool_visibility.rs:109`），
   **不读 `workflow_id`**。不受影响。（v1 引的 `:114-128` 那段看不出字段来源。）
 
 ### 5.2 三个选项
@@ -1247,7 +1247,7 @@ FE / e2e / oracle 侧无消费者：`fe/e2e/wave-create.spec.ts:141` 用 `small-
 | | 方案 | 结果 |
 |---|---|---|
 | **A（采纳）** | 拒绝：不在名册里就是 400 | 「binding 是 template 的属性」这句话真的成立。插件不能凭空造出一个可创建的东西。 |
-| B | 保留：视作「无 report 可 fork 的退化 template」 | 这就是 `:779` 换马甲。它要求内核维持「可绑定但不是模板」这个类别——而这个类别正是本 issue 要消灭的二元性。而且它创建出的 wave 没有 report 可 fork，等于一个既非模板又非空白的第三种出生方式。 |
+| B | 保留：视作「无 report 可 fork 的退化 template」 | 这就是 `:779` 换马甲。它要求内核维持「可绑定但不是模板」这个类别——而这个类别正是本 issue 要消灭的二元性。而且它创建出的 track 没有 report 可 fork，等于一个既非模板又非空白的第三种出生方式。 |
 | C | 升格：插件声明的 workflow 变成插件贡献的 template（进名册） | 方向上正确，但**今天做不了**：`WorkflowDescriptor` 只有 `id`（`manifest.rs:472-475`），没有 title，picker 无从展示；也没有 tasks/report，fork 无从谈起。真实成本见下。 |
 
 **v1 在 C 这一格发明了一个不存在的障碍，删除。** v1 写「要做必须先扩 manifest schema
@@ -1260,13 +1260,13 @@ FE / e2e / oracle 侧无消费者：`fe/e2e/wave-create.spec.ts:141` 用 `small-
   `extra_workflow_descriptor_fields_are_ignored`，把 `plan_template`/`gates`/
   `spec_instructions`/`card_kinds`/`input_schema` 塞进去仍解析成功）。
 * `manifest.rs:761-765` 不是字段白名单，是「connector-only 插件不得声明 `workflows`」
-  这条校验（错误信息 `cannot own a wave workflow`）。
+  这条校验（错误信息 `cannot own a track workflow`）。
 
 也就是说**解析器这一侧对 C 是敞开的**，加字段是向后兼容的。C 的真实成本在别处：
 ① `WorkflowDescriptor` 要长出 title / tasks / intro 三类内容，各自需要一个权威归属决定
 （插件常量？可编辑副本？——直接撞上 §2.3 的类别 2/3）；② picker 展示与 i18n；
-③ 播种/重播种/插件卸载后那些已 fork 的 wave 怎么办的生命周期；
-④ 名册从编译期常量变成运行时集合之后，`GET /api/wave-templates` 的稳定性语义。
+③ 播种/重播种/插件卸载后那些已 fork 的 track 怎么办的生命周期；
+④ 名册从编译期常量变成运行时集合之后，`GET /api/track-templates` 的稳定性语义。
 这四条才是把 C 推成独立 epic 的原因。
 
 **采纳 A**，并且 A 与 C 前向兼容：将来 C 落地时，名册从
@@ -1276,11 +1276,11 @@ FE / e2e / oracle 侧无消费者：`fe/e2e/wave-create.spec.ts:141` 用 `small-
 ### 5.3 代价，明写（v2 重新定级：这是一次**公开插件契约破坏**）
 
 采纳 A 之后，一个第三方受信插件**无法**再通过声明一个新 workflow id 让用户建出绑定它的
-wave。v1 把这条风险定为「低」，理由是「今天无人使用 + 白名单极窄」。
+track。v1 把这条风险定为「低」，理由是「今天无人使用 + 白名单极窄」。
 两个通道里 B 指出这个推理不成立，**判定成立，v1 错**，理由是两条读出来的事实：
 
 * **manifest 契约公开承诺了这个能力**：`plugin_host/manifest.rs:93-100` 的字段文档写着
-  「Trusted forge plugins may declare workflow ids. Wave create binds `workflow_id` to one
+  「Trusted forge plugins may declare workflow ids. Track create binds `workflow_id` to one
   of these so the kernel can copy the owning plugin into `plugin_scope` and validate
   `workflow_input` against this Manifest's `input_schema`」。这段话里**没有一个字**说
   「必须是三个内置模板 key 之一」。任何按文档写插件的人都会认为自己可以起新 id。
@@ -1304,8 +1304,8 @@ wave。v1 把这条风险定为「低」，理由是「今天无人使用 + 白�
    所以这一节是**新建**，不是追加到已有插件章节。内容两句话：
    > #1209 起，受信插件在 manifest 的 `workflows[].id` 里声明的 id **必须**是内核
    > template 名册里的 key（今天是 `issue-development` / `small-change` / `investigation`）。
-   > 声明名册外的 id 不再让 `POST /api/waves` 建出绑定它的 wave——该请求返回 400
-   > `wave create: \`template_id\` must reference a known wave template`。
+   > 声明名册外的 id 不再让 `POST /api/tracks` 建出绑定它的 track——该请求返回 400
+   > `track create: \`template_id\` must reference a known track template`。
    >
    > **⚠️ v5 的 PR 归属更正（两个通道独立提出，判定成立）**：上面这段引的是 **PR-2** 的正文。
    > v4 却把 `docs/deploy-and-upgrade.md` 排进 **PR-1** 的文件集，
@@ -1382,7 +1382,7 @@ wave。v1 把这条风险定为「低」，理由是「今天无人使用 + 白�
 Tier A 说的「plugin manifest」，是 manifest 的**schema**（内核会解析哪些字段），
 还是内核对 manifest 所声明内容的**接受语义**？**#1209 只改后者**——
 manifest schema 一个字节没动，`WorkflowDescriptor` 照旧解析 `workflows[].id`
-（`plugin_host/manifest.rs:467-475`），变的只是 `POST /api/waves` 还认不认一个
+（`plugin_host/manifest.rs:467-475`），变的只是 `POST /api/tracks` 还认不认一个
 名册外的 id。这个分辨**支持**「Tier D / 撤回定级」那一支：
 `upgrade-stability.md:41` 的 Tier D 明写包括「第三方 app 表达面」，
 而「插件声明一个 id、内核据此放行 create」正是一种表达面。
@@ -1478,23 +1478,23 @@ manifest schema 一个字节没动，`WorkflowDescriptor` 照旧解析 `workflow
 理由：
 
 1. schema 的**校验方和消费方**是插件（`validate_workflow_input_binding` 只是把
-   manifest 里的 schema 拿来跑 `validate_workflow_input`，`waves.rs:992-993`）。
+   manifest 里的 schema 拿来跑 `validate_workflow_input`，`tracks.rs:992-993`）。
    内核复述一份 schema 就是 CLAUDE.md「Mirror Code Must Call The Original」那条教训的原型。
 2. 复述会新增第 3 处权威（§2.3 的下限被打破）。
-3. 读口今天就是这么写的（`wave_templates.rs:109-111`），而且模块头
-   （`wave_templates.rs:11-14`）已经论证过：读口和写口用**同一个** `resolve_trusted_workflow`。
+3. 读口今天就是这么写的（`track_templates.rs:109-111`），而且模块头
+   （`track_templates.rs:11-14`）已经论证过：读口和写口用**同一个** `resolve_trusted_workflow`。
 
 **这条保证的精确范围（v3 收窄，通道 B m4，重扫判定成立）**：v2 说「广告了 schema 但
 create 拒收在**结构上不可能**发生」，**太强**。`resolve_trusted_workflow` 每次调用都
-**重新采样**运行态与信任态（`waves.rs:941-943` 现取 `running_plugin_ids()`），
+**重新采样**运行态与信任态（`tracks.rs:941-943` 现取 `running_plugin_ids()`），
 所以 GET 之后、POST 之前把插件停掉，就恰好产生这个错配。
-既有测试自己就演示了停机后 schema 消失（`tests/cases/wave_templates_read.rs:260-264`
+既有测试自己就演示了停机后 schema 消失（`tests/cases/track_templates_read.rs:260-264`
 的注释 + `stop`）。正确的表述是：
 
 > **同一个运行态快照内**，读口与写口用同一个判据，因此不存在「判据不同」造成的漂移。
 > 跨请求的运行态变化（插件在 GET 与 POST 之间 stop / 被移出信任名单）**会**产生
 > 「picker 广告了 schema、create 拒收 input」——这是**已接受的竞态**，
-> 不是判据漂移，其后果是一个 400，不是错误的 wave。本设计不消除它
+> 不是判据漂移，其后果是一个 400，不是错误的 track。本设计不消除它
 > （消除它需要把运行态快照钉进一次会话，属于另一个 epic）。
 
 被否决的替代方案：**template 自己声明参数（Rust 侧）**。除上面三条外还有一个硬伤——
@@ -1521,27 +1521,27 @@ v1 在这里写的不变量量化到了「每一个端点」，却打算用「�
 两个通道都判它钉不住，**判定成立，v1 错**，证据两条：
 
 * #1230 S1 的那条断言只从**未播种**状态调用两个 GET，然后检查 overlay 仍为空
-  （#1230 侧 `tests/cases/wave_workflow_templates.rs` 的那条 read-only case）；
+  （#1230 侧 `tests/cases/track_workflow_templates.rs` 的那条 read-only case）；
 * 它用的 helper `seeded_templates` 只枚举 `kind == "template"` 的 overlay
-  （`tests/cases/wave_workflow_templates.rs:168-184`，本 worktree 与 1230 侧同一段），
-  **不看 wave 行、不看 card、不看 report 内容**。
+  （`tests/cases/track_workflow_templates.rs:168-184`，本 worktree 与 1230 侧同一段），
+  **不看 track 行、不看 card、不看 report 内容**。
 
-于是这些生产改动全都能溜过去：给**别的**读路由（`GET /api/areas`、wave detail）加
+于是这些生产改动全都能溜过去：给**别的**读路由（`GET /api/areas`、track detail）加
 `ensure_workflow_templates`；GET 建一个 system area 但不建 overlay；GET 改写已播种的
-report/title/doc_rev；GET 建不带 overlay 的 wave；只在「已经播种」那条分支里写。
+report/title/doc_rev；GET 建不带 overlay 的 track；只在「已经播种」那条分支里写。
 
 **v2 把不变量收窄到测试真能守住的范围，并把测试加强到能守住它。**
 
 > **INV-1209-SEED（v3）——「这两条读路由不得物化 template 播种状态」**：
-> 对 `GET /api/wave-templates` 与 `GET /api/wave-templates/{id}` 中的任意一条，
+> 对 `GET /api/track-templates` 与 `GET /api/track-templates/{id}` 中的任意一条，
 > 一次请求前后，以下快照必须逐字节相等：
-> areas 全表、waves 全表、cards 全表、**overlay 全表（不再只筛 `kind=="template"`）**、
+> areas 全表、tracks 全表、cards 全表、**overlay 全表（不再只筛 `kind=="template"`）**、
 > **`area_folders` 全表**、**`events` 全表的 `(count, max(id))`**，
-> 以及三个模板 wave 的 report payload（或其 `doc_rev`）。
+> 以及三个模板 track 的 report payload（或其 `doc_rev`）。
 > 起始状态：**A 未播种**、**B 已播种且 report 可读**，各断言一次。
 
 **名字为什么从「读不触发播种」改成「不得物化 template 播种状态」**（通道 B m1，
-重扫**判定成立**）：v2 引用 `wave_templates.rs:20-22` 的「一次*读*不能触发写」并当成
+重扫**判定成立**）：v2 引用 `track_templates.rs:20-22` 的「一次*读*不能触发写」并当成
 本不变量的表述，但快照钉不住那句话——它既不看 `events`，也不看 `area_folders`，
 也不看非 template overlay。而 `log_pure_event`（`crates/calm-truth/src/db/mod.rs:683`，
 doc 从 `:669` 起，明写「the event itself is the only write」）说明**一行 event 本身就是一次写**：
@@ -1562,7 +1562,7 @@ v3 的处置是**两头都收**：把 `events`/`area_folders`/全部 overlay 纳
 
 **第三种起始状态 C（已播种但 report 读不出来）——不加，改为对 §8.1b 下硬裁决**
 （通道 A m2，重扫**判定成立**：这是文档自己打开的活岔路，不是假想）。
-若 #1230 用「读时修复」（`resolve_report_for_wave` 失败就用常量重新盖章）来关掉 F13 的洞，
+若 #1230 用「读时修复」（`resolve_report_for_track` 失败就用常量重新盖章）来关掉 F13 的洞，
 那么一次 GET 就写了库，而 #10 在 A、B 两态下**依然全绿**。
 两条出路里 v3 选后者，理由是前者要在测试里制造一个「overlay 在、report 载荷损坏」的
 人造状态，而那个状态的**唯一**合法产生方式在 #1230 那边、还没定形：
@@ -1575,14 +1575,14 @@ v3 的处置是**两头都收**：把 `events`/`area_folders`/全部 overlay 纳
   （§8.1b 的 CLOSED 方框，实测于 `1230-s1@3b9cc03c`），状态 C 在两条 GET 上就是一个 500，
   不可能是一次静默的写。**#10 不需要状态 C，本不变量不需要重新论证。**
 
-依据：`wave_templates.rs:20-22` 已经把「一次读不能引发写」写成契约；
-#1230 S1 的模块头（`wave_templates.rs` 的 "Editable templates (#1230)" 章节）重申并把它
+依据：`track_templates.rs:20-22` 已经把「一次读不能引发写」写成契约；
+#1230 S1 的模块头（`track_templates.rs` 的 "Editable templates (#1230)" 章节）重申并把它
 落在 `current_definition` 上（`lookup` miss 就是「未播种」，绝不 ensure）。
 本设计不动这条契约，只把它的测试加强到配得上它。落点见 §10.2 测试 #10。
 
-为什么不对称是对的（而不是需要修的丑）：播种要写 3 个 wave + 3 份 report + 可能还要建
-system area（循环在 `waves.rs:449-455`；建 area 在 `:459-485`；每个模板的建 wave + 落 report
-在 `:517-579`）。让任何人打开 New wave 对话框就产生 6 行以上写入，
+为什么不对称是对的（而不是需要修的丑）：播种要写 3 个 track + 3 份 report + 可能还要建
+system area（循环在 `tracks.rs:449-455`；建 area 在 `:459-485`；每个模板的建 track + 落 report
+在 `:517-579`）。让任何人打开 New track 对话框就产生 6 行以上写入，
 既不可撤销，也让「从未用过模板的库」和「用过的库」在 DB 上不再可区分。
 
 ---
@@ -1614,27 +1614,27 @@ system area（循环在 `waves.rs:449-455`；建 area 在 `:459-485`；每个模
 * **本节关于 #1209 侧的冲突判断，大部分是「预测」（v3 已把两条转为实测）。** 到今天为止
   `git status` 里除了本设计文档没有任何 #1209 代码 diff，所以「干净并集」「追加位置不同」
   这类话没有可比较的实物。**v3 收紧了这条对冲**：两个通道都指出，其中**两个**文件的判断
-  今天就能定死，不必对冲（A n1 说 `waves.rs`、A J6 + B M5 说 `workflow_templates.rs`），
+  今天就能定死，不必对冲（A n1 说 `tracks.rs`、A J6 + B M5 说 `workflow_templates.rs`），
   重扫**判定成立**——那两条已改标 **MEASURED** 并附 hunk 头 / 实测站点表。
   过度对冲与对冲不足一样费读者。
-  **剩下的**（`routes/wave_templates.rs` 与测试文件的具体落点）仍带 `PREDICTED，待实现 diff 复核`
+  **剩下的**（`routes/track_templates.rs` 与测试文件的具体落点）仍带 `PREDICTED，待实现 diff 复核`
   标记**；实现 PR 的第一件事就是拿真 diff 重跑一遍本节。
 
-两边都改 `routes/waves.rs`、`routes/wave_templates.rs`、`workflow_templates.rs`、
-`tests/cases/wave_workflow_templates.rs`。以下按文件给出合并规则。**不假设谁先落地。**
+两边都改 `routes/tracks.rs`、`routes/track_templates.rs`、`workflow_templates.rs`、
+`tests/cases/track_workflow_templates.rs`。以下按文件给出合并规则。**不假设谁先落地。**
 
 ### 8.1 #1230 S1 做了什么（OBSERVED，读 `git show b93fb767`）
 
 | 变更 | 位置 |
 |---|---|
-| `ensure_workflow_templates` / `lookup_workflow_template_wave` 提为 `pub(crate)` | `waves.rs:446`、`:487`（`git show --numstat b93fb767` 对 waves.rs 是 **`2 2`**，不是 v2 写的 `+4/−4`；两个 hunk 头是 `@@ -443,7 +443,7 @@` 与 `@@ -484,7 +484,7 @@`） |
+| `ensure_workflow_templates` / `lookup_workflow_template_track` 提为 `pub(crate)` | `tracks.rs:446`、`:487`（`git show --numstat b93fb767` 对 tracks.rs 是 **`2 2`**，不是 v2 写的 `+4/−4`；两个 hunk 头是 `@@ -443,7 +443,7 @@` 与 `@@ -484,7 +484,7 @@`） |
 | 新增 `workflow_template_intro` / `workflow_template_report_from_tasks` / `workflow_template_tasks_from_body` | `workflow_templates.rs`（+169） |
-| `GET /api/wave-templates` 的 title/tasks 改读已播种 report，回落常量 | 新 `current_definition`（该版 `wave_templates.rs:256-279`） |
-| 新增 `GET`/`PUT /api/wave-templates/{id}` | 该版 `wave_templates.rs:303-420+`；`known_template` 在 `:297-301` |
-| 模块头新增 "Editable templates (#1230)" 章节 | 该版 `wave_templates.rs:45-110` |
+| `GET /api/track-templates` 的 title/tasks 改读已播种 report，回落常量 | 新 `current_definition`（该版 `track_templates.rs:256-279`） |
+| 新增 `GET`/`PUT /api/track-templates/{id}` | 该版 `track_templates.rs:303-420+`；`known_template` 在 `:297-301` |
+| 模块头新增 "Editable templates (#1230)" 章节 | 该版 `track_templates.rs:45-110` |
 | OpenAPI + 生成物 + FE wire | `openapi.rs`(+4)、`fe/core/api/generated/openapi.json`(+167)、`web/src/api/generated.ts`(+160)、`web/src/api/openapi.json`(+167) |
 | 端点计数棘轮 +1 | `fe/tools/architecture/openapi-contract.test.ts`（±1，v1 的表漏了这一行） |
-| 测试 | `tests/cases/wave_workflow_templates.rs` +402/−0（**追加在当前 EOF**，见 §8.2） |
+| 测试 | `tests/cases/track_workflow_templates.rs` +402/−0（**追加在当前 EOF**，见 §8.2） |
 
 （`git show --numstat b93fb767` 的完整 9 个文件，逐行核过。）
 
@@ -1642,7 +1642,7 @@ system area（循环在 `waves.rs:449-455`；建 area 在 `:459-485`；每个模
 
 > **✅ CLOSED（2026-09-01，v5 实测）。** v3/v4 把它写成「#1209/#1230 的合流硬前提」。
 > **上游已经按本文的裁决方向修好了，而且注释逐字复述了本文的发现。**
-> 实测（`git -C ../1230-s1 show HEAD:crates/calm-server/src/routes/wave_templates.rs`，
+> 实测（`git -C ../1230-s1 show HEAD:crates/calm-server/src/routes/track_templates.rs`，
 > HEAD = `3b9cc03c`）：`current_definition` 现在是
 >
 > ```rust
@@ -1651,8 +1651,8 @@ system area（循环在 `waves.rs:449-455`；建 area 在 `:459-485`；每个模
 > // `if let Ok(...)` here and so reported stale constant content with
 > // `seeded: false` whenever the report card was unreadable — i.e. it turned
 > // an outage into exactly the drift this endpoint exists to remove.
-> if let Some(wave_id) = lookup_workflow_template_wave(s, key).await? {
->     let (_, _, report) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;   // ← `?`，上抛
+> if let Some(track_id) = lookup_workflow_template_track(s, key).await? {
+>     let (_, _, report) = resolve_report_for_track(s.repo.as_ref(), &track_id).await?;   // ← `?`，上抛
 > ```
 >
 > **两个 `?` 都在，降级分支没了。** 因此：
@@ -1671,8 +1671,8 @@ system area（循环在 `waves.rs:449-455`；建 area 在 `:459-485`；每个模
 所以列为 #1230 的 pre-merge 裁决项。** `current_definition` 写成
 
 ```rust
-if let Some(wave_id) = lookup_workflow_template_wave(s, key).await?
-    && let Ok((_, _, report)) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await
+if let Some(track_id) = lookup_workflow_template_track(s, key).await?
+    && let Ok((_, _, report)) = resolve_report_for_track(s.repo.as_ref(), &track_id).await
 ```
 
 （#1230 的**早期**版本；**这个形状今天已经不存在了**，见上面的 CLOSED 方框）。
@@ -1684,15 +1684,15 @@ overlay **已存在**但 report 读取/解析失败时，第二个 `let Ok(..)` 
 **v3 裁决（从「建议」升级为合流硬前提）**。两个通道都指出 v2 只是「记了一段话」，
 没有进入任何切片的门禁（A m2 从 INV-SEED 一侧、B M7 从产品洞一侧），**判定成立**。
 v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#1209 的确不经过
-`current_definition`（create fork 的是 `waves.rs:805-812`），但 §7 的 INV-1209-SEED
+`current_definition`（create fork 的是 `tracks.rs:805-812`），但 §7 的 INV-1209-SEED
 **依赖它朝哪个方向修**——「读时修复」会让一次 GET 变成一次写，而 #10 照绿（§7 状态 C）。
 
 > **裁决**：`current_definition` 在「overlay 存在 ∧ report 读取/解析失败」时
 > **必须 `?` 上抛（500）**，不得降级为常量 + `seeded: false`。
-> **归属**：#1230 的作者（这行代码在 `1230-s1` `routes/wave_templates.rs:256-258`，
+> **归属**：#1230 的作者（这行代码在 `1230-s1` `routes/track_templates.rs:256-258`，
 > 回落分支在 `:270-278`）。
-> **门禁**：#1230 侧新增一条真路由测试——播种后把该 template wave 的 report 载荷弄坏，
-> `GET /api/wave-templates/{id}` 必须 500，且**库不被改写**（复用 §10.2 #10 的 snapshot helper）。
+> **门禁**：#1230 侧新增一条真路由测试——播种后把该 template track 的 report 载荷弄坏，
+> `GET /api/track-templates/{id}` 必须 500，且**库不被改写**（复用 §10.2 #10 的 snapshot helper）。
 > **合流硬前提**：两条切片合并落地前，这条必须已落在 #1230 的 PR 里；
 > 若 #1230 的作者选择「读时修复」而非上抛，则 #1209 的 §7 与 §10.2 #10 必须补状态 C
 > 并重新论证不变量（§7 已写明这条代价）。
@@ -1702,20 +1702,20 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 ### 8.2 逐文件的冲突解决规则
 
-**`crates/calm-server/src/routes/waves.rs`**（**MEASURED，不是 PREDICTED**）— 冲突面为零。
+**`crates/calm-server/src/routes/tracks.rs`**（**MEASURED，不是 PREDICTED**）— 冲突面为零。
 通道 A 的 n1 指出这条今天就能定死，**判定成立**：
-`git diff b93fb767^ b93fb767 -- crates/calm-server/src/routes/waves.rs | grep '^@@'` 给出
+`git diff b93fb767^ b93fb767 -- crates/calm-server/src/routes/tracks.rs | grep '^@@'` 给出
 **恰好两个 hunk**：`@@ -443,7 +443,7 @@` 与 `@@ -484,7 +484,7 @@`（即 `:446`、`:487`
 两行可见性改动，numstat `2 2`）。#1209 动的是 `:761-793`、`:799-814`（后者搬到 `:899` 之前，
 §4.2）与新增 `admit_template`。**两侧 hunk 的行区间不相交，是今天可验证的事实。**
 **规则：两侧全取（union），无需人工裁决。**
-新增的 `admit_template` 保持 `pub(crate)`（`waves.rs` 内部使用；读口**不**调它，见下）。
+新增的 `admit_template` 保持 `pub(crate)`（`tracks.rs` 内部使用；读口**不**调它，见下）。
 
 **`crates/calm-server/src/workflow_templates.rs`** — **v1 说「#1209 一行不改」，这是错的，
 而且照做会打红 CI。** 通道 A 提出，重扫**判定成立**：
 
-* `is_workflow_template_key`（`:40-42`）今天的**生产**调用点恰好只有 `waves.rs:779` 与
-  `waves.rs:800`，两处都被本切片删除。其余引用只有 `workflow_templates.rs:511`、`:520`，
+* `is_workflow_template_key`（`:40-42`）今天的**生产**调用点恰好只有 `tracks.rs:779` 与
+  `tracks.rs:800`，两处都被本切片删除。其余引用只有 `workflow_templates.rs:511`、`:520`，
   都在 `#[cfg(test)] mod tests`（该 mod 从 `:372-373` 开始）内。
 * `WORKFLOW_TEMPLATE_KEYS`（`:18`）的生产引用只有 `:41`（即 `is_workflow_template_key`
   自己），其余 `:510`、`:560` 同在 test mod 内。
@@ -1775,7 +1775,7 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
   | `WORKFLOW_TEMPLATE_KEYS` | `workflow_templates.rs:677` | test mod（= 本 worktree 的 `:560`） |
   | `is_workflow_template_key` | `workflow_templates.rs:628` | test mod |
   | `is_workflow_template_key` | `workflow_templates.rs:637` | test mod（负例 `"missing-workflow"`） |
-  | `is_workflow_template_key` | **`routes/wave_templates.rs:298`**（`fn known_template` 在 `:297`，import 在 `:122`） | **生产** |
+  | `is_workflow_template_key` | **`routes/track_templates.rs:298`**（`fn known_template` 在 `:297`，import 在 `:122`） | **生产** |
 
   即 **6 个 test 使用点 + 1 个生产使用点 + 1 处 import**（v4 措辞更正，通道 A m3 + 通道 B n3
   都指出 v3 那句「6 处 + 1 import」与它自己上面这张 7 行表自相矛盾——**判定成立**：
@@ -1788,14 +1788,14 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
   > 1. `7b85caa3` 与 `b93fb767` 在这条 grep 上**逐字节相同**（根本没漂）；
   > 2. 第 4 轮评审当时的 tip `d51571d7` 又是另一组坐标；
   > 3. **本轮实测的 HEAD 是 `3b9cc03c`**，坐标是第四组
-  >    （`workflow_templates.rs` 六个 test 点 + `routes/wave_templates.rs` 一个生产点 +
-  >    一处 import；此外还有 `routes/waves.rs` 三处——那三处正是 §4.1 要删掉的
+  >    （`workflow_templates.rs` 六个 test 点 + `routes/track_templates.rs` 一个生产点 +
+  >    一处 import；此外还有 `routes/tracks.rs` 三处——那三处正是 §4.1 要删掉的
   >    `:779` / `:800` 与它们的 import，属于 #1209 侧，不算 #1230 的接触面）。
   >
   > v4 那组数字既不是 (1) 也不是 (2)——它们来自当时的 dirty working tree。
   >
   > **写进设计的只有形状：`WORKFLOW_TEMPLATE_KEYS` / `is_workflow_template_key` 在 #1230 侧
-  > 恒为 6 个 test 使用点 + 1 个生产使用点（`routes/wave_templates.rs` 的 `known_template`）
+  > 恒为 6 个 test 使用点 + 1 个生产使用点（`routes/track_templates.rs` 的 `known_template`）
   > + 1 处 import，四个基线上都成立。**
   > **合流时的动作是：对当时的 #1230 HEAD 重跑
   > `git grep -n 'WORKFLOW_TEMPLATE_KEYS\|is_workflow_template_key' -- crates/`，
@@ -1809,18 +1809,18 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
   （**v5 实测该分支在 `3b9cc03c` 上仍然存在**，形状不变；同样不记行号。）
   **漂移不可能发生**（同一个数组），因此这不是正确性风险；
   它证伪的是 §2.2 v3 那句「名册的唯一查找入口」——**该 claim 已在 §2.2 收窄**。
-  **合并规则**：这一处**两侧都不动**（同 `list_wave_templates` 那条的理由：
+  **合并规则**：这一处**两侧都不动**（同 `list_track_templates` 那条的理由：
   它已经在遍历/命中名册，再套一层可失败查找只会把「查不到」变成一个静默的空标题）。
   写在这里是为了让合并的人**知道它存在**，不要以为验收 A7 覆盖了全部名册查找。
 
 * **三种落地顺序的结论（v3 明写）**：
   1. **只有 #1209 落地**：绿。两个符号删净；`workflow_template()` 有生产调用方
      （`admit_template`）；`WORKFLOW_TEMPLATES` / `WorkflowTemplate.title` / 三个 key 常量
-     都还有生产消费者（`waves.rs:449`、`routes/wave_templates.rs:103-104`、
+     都还有生产消费者（`tracks.rs:449`、`routes/track_templates.rs:103-104`、
      `workflow_templates.rs:44-51`/`:62-69`）。`ci.yml:305` 与 `:901` 都不红。
   2. **#1230 先、#1209 后**：只有当合并**同时**改掉上表 7 处才绿。git 在其中绝大多数上
      **不会**冲突（不同文件 / 不同 hunk），所以**破坏在编译前是静默的**。
-  3. **#1209 先、#1230 变基**：#1230 的分支在 `routes/wave_templates.rs:298` 编译不过，
+  3. **#1209 先、#1230 变基**：#1230 的分支在 `routes/track_templates.rs:298` 编译不过，
      同样**没有任何 git 冲突来预警**。
   **所以「顺序无关」这句话只对本 PR 自己的 CI 成立，对这一对不成立。**
   唯一的守法是把它变成一条机器可跑的验收（§10.1 的 PR-1 验收 **A7**）：
@@ -1829,34 +1829,34 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
   ```
   在**合并后的树**上跑，而不是只在自己分支上跑。
 
-5. #1230 侧的 `known_template`（`routes/wave_templates.rs` 里那个调 `is_workflow_template_key`
+5. #1230 侧的 `known_template`（`routes/track_templates.rs` 里那个调 `is_workflow_template_key`
    的一行 predicate；**行号见合流时的 grep，本文不记**）要改写为
    `workflow_template(id).is_some()`——这也顺带兑现了「只有一个名册」。
    （通道 A m4 说 `fn` 在 `:296`；**实测在 `:297`**，v2 的坐标是对的，该修正驳回。）
 
-**`crates/calm-server/src/routes/wave_templates.rs`** — 第二个需要人裁的文件。
+**`crates/calm-server/src/routes/track_templates.rs`** — 第二个需要人裁的文件。
 
 * 模块头 `:1-39`：#1230 改写了「tasks 从常量读」那段（该版 `:22-26`、`:45-110`），
   #1209 要改写「词汇缝」那段（`:29-39`，见 §3）。**两段不重叠，两侧全取。**
   合并后必须再读一遍全文确认没有互相打脸的句子——尤其 `:39`
   「When the merge lands, the shape returned here does not change.」这句，#1209 必须兑现它
-  （本设计不改 `WaveTemplate` 的任何字段）。**这一条是可机检的**：合并后
-  `WaveTemplate` 的字段集合与 `fe/core/domain/wave.ts:198-211` 的 zod schema 都不动。
-* `list_wave_templates` 里 `resolve_trusted_workflow(&s, template.key)` 那一行
+  （本设计不改 `TrackTemplate` 的任何字段）。**这一条是可机检的**：合并后
+  `TrackTemplate` 的字段集合与 `fe/core/domain/track.ts:198-211` 的 zod schema 都不动。
+* `list_track_templates` 里 `resolve_trusted_workflow(&s, template.key)` 那一行
   （`:109-111` / #1230 版 `:199-201`）：**v3 撤回 v2 的「改走 `admit_template`」，
   规则改为「两侧都不动这一行」**（通道 A m5，重扫**判定成立**）。
-  理由：该循环本来就在遍历 `WORKFLOW_TEMPLATES`（`routes/wave_templates.rs:103-104`），
+  理由：该循环本来就在遍历 `WORKFLOW_TEMPLATES`（`routes/track_templates.rs:103-104`），
   准入在进入循环体时**已经成立**；再调一次 `admit_template` 就是一次**冗余的可失败查找**，
   而它的失败模式是 `Option` ⇒ 读口会**静默地宣告「这个 template 没有 schema」**而不是报错。
-  那正是 `wave_templates.rs:11-14` 的模块头存在要防的 picker-vs-create 漂移。
-  `resolve_trusted_workflow` 本来就是**共享的绑定解析器**（`waves.rs:932-950` 的 doc），
+  那正是 `track_templates.rs:11-14` 的模块头存在要防的 picker-vs-create 漂移。
+  `resolve_trusted_workflow` 本来就是**共享的绑定解析器**（`tracks.rs:932-950` 的 doc），
   统一之后它一个字不改（§2.2 第 2 点），读口继续直接调它就是最短、最诚实的写法。
   **附带收益**：本文件因此少一个与 #1230 的接触点。
-* `GET/PUT /api/wave-templates/{id}`：**#1209 不碰其逻辑**，只按上面第 4 条把
+* `GET/PUT /api/track-templates/{id}`：**#1209 不碰其逻辑**，只按上面第 4 条把
   `known_template` 的 predicate 换成 `workflow_template(id).is_some()`（因为
   `is_workflow_template_key` 已被删）。这是**合并前提**，不再是加分项。
 
-**测试** — `crates/calm-server/tests/cases/wave_workflow_templates.rs` — **第一个需要人裁的
+**测试** — `crates/calm-server/tests/cases/track_workflow_templates.rs` — **第一个需要人裁的
 测试文件**。v1 说「追加位置不同」，这是错的（通道 B 提出，重扫**判定成立**）：
 本 worktree 该文件共 589 行，最后一个 case 是 `unknown_workflow_id_still_400s`（`:568-589`）；
 #1230 的新 case **正是从当前 EOF 追加**（本文不记它那一侧的行号）。#1209 的新 case 若按默认习惯也追加到 EOF，
@@ -1880,8 +1880,8 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 1. **两侧的生成物都不取。** 合并冲突时对这 7 个产物一律 `git checkout --ours` / `--theirs`
    都不对——它们不是源。
-2. **先把两侧的 **Rust** 源合并干净**（`openapi.rs` 的注册、`CreateWaveRequest` / `Wave` /
-   `NewWave` 的字段、#1230 的两个新端点）。
+2. **先把两侧的 **Rust** 源合并干净**（`openapi.rs` 的注册、`CreateTrackRequest` / `Track` /
+   `NewTrack` 的字段、#1230 的两个新端点）。
 3. **再从合并后的 Rust 重新生成**：`cd web && npm run gen:api`（`ci.yml:1186-1187`）
    与 `cargo run --bin emit-openapi > fe/core/api/generated/openapi.json`（`ci.yml:1190`）。
 4. **裁决权交给 `ci.yml:1194` 的 `git diff --exit-code`**（覆盖那 7 个产物）。
@@ -1894,8 +1894,8 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 | #1230 的面 | 统一后 |
 |---|---|
-| `GET /api/wave-templates` 响应形状 | **不变**（#1209 兑现 `wave_templates.rs:39` 的承诺） |
-| `GET/PUT /api/wave-templates/{id}` | 行为**不变**；`known_template` 的**实现**换一行（`is_workflow_template_key` → `workflow_template(id).is_some()`，§8.2） |
+| `GET /api/track-templates` 响应形状 | **不变**（#1209 兑现 `track_templates.rs:39` 的承诺） |
+| `GET/PUT /api/track-templates/{id}` | 行为**不变**；`known_template` 的**实现**换一行（`is_workflow_template_key` → `workflow_template(id).is_some()`，§8.2） |
 | 「读不触发播种」 | **不变**（§7），但断言强度按 §7 的 v2 版本提高 |
 | 「已播种 ⇒ report 是权威」 | 语句不变，但 §2.3 不再把它包装成「只剩 2 处权威」；且 §8.1b 记了 #1230 自己在这条上的一个洞 |
 | `input_schema` 仍走 `resolve_trusted_workflow` | **形状与实现都不变**（v3 撤回 v2 的「改走 `admit_template`」，见 §8.2 的 m5 裁决） |
@@ -1904,13 +1904,13 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 | 面 | 改名的影响 |
 |---|---|
-| `GET /api/wave-templates` 的响应 | **零影响。** 该端点的 `WaveTemplate` 里根本没有 `workflow_id` 字段（§1.5 的 v4 复读，实测该文件里 `workflow_id` 只出现在 `:32`/`:57`/`:62` 三处注释）。#1230 S1 的 `:39` 承诺照旧兑现 |
-| `GET/PUT /api/wave-templates/{id}` | **零影响。** `WaveTemplateDefinition` 是 `{id, title, tasks, seeded}` |
+| `GET /api/track-templates` 的响应 | **零影响。** 该端点的 `TrackTemplate` 里根本没有 `workflow_id` 字段（§1.5 的 v4 复读，实测该文件里 `workflow_id` 只出现在 `:32`/`:57`/`:62` 三处注释）。#1230 S1 的 `:39` 承诺照旧兑现 |
+| `GET/PUT /api/track-templates/{id}` | **零影响。** `TrackTemplateDefinition` 是 `{id, title, tasks, seeded}` |
 | #1230 碰过的三处注释 | **有影响**：`:32`/`:57`/`:62` 里的 `workflow_id` 拼写要跟改。这三行落在 #1230 S1 也改过的模块头/doc 区，是**内容冲突**，人裁 |
 | #1230 S2（设置页 astryx 重写 + Templates 二级导航与模板编辑器，已并进 `1230-s1@3b9cc03c`）| **仍然未评估。** 它属于 `fe/`，而 `fe/` 正是 §3.2 类别 1/2/3 都要改的目录之一 ⇒ **可能有新的接触面**。本文**不假装评估过它**。**合流前必须在合并树上跑 §3.2 那条残留 grep**（验收 B10）——那条 grep 覆盖全仓，所以它同时也是对 S2 的扫描 |
 
 **没有任何一个 #1230 S1 的面在统一后需要改响应形状**，且需要改实现的只剩**一处一行**
-（`known_template` 的 predicate；v2 说两处，v3 撤回了 `list_wave_templates` 那处）。
+（`known_template` 的 predicate；v2 说两处，v3 撤回了 `list_track_templates` 那处）。
 #1230 改的是「内容的权威」，#1209 改的是「准入的判据」，两者正交——正交不等于零接触面。
 
 ---
@@ -1919,14 +1919,14 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 ### 明确不做
 
-1. **用户自建 template。** `as_template` 已经是 `CreateWaveRequest` 的公开字段
-   （`waves.rs:224`），overlay 那条路「已经存在一半」（#1209 正文）。本设计**不**把它接上。
+1. **用户自建 template。** `as_template` 已经是 `CreateTrackRequest` 的公开字段
+   （`tracks.rs:224`），overlay 那条路「已经存在一半」（#1209 正文）。本设计**不**把它接上。
    谁若假设本次之后可以建自定义模板，会撞上：名册仍是 Rust 常量
    （`workflow_templates.rs:25-38`），`admit_template` 只认名册，
-   自建的 `as_template` wave 不会出现在 `GET /api/wave-templates` 里，也不能作为
+   自建的 `as_template` track 不会出现在 `GET /api/track-templates` 里，也不能作为
    `workflow_id` 传入。
 2. **模板 CRUD（新建/删除）。** #1230 只做「编辑已有三个」；本设计不扩。
-   而且 system area 的 wave 通过 API 不可删（`waves.rs:3060-3092`，判定在 `:3085-3092`，
+   而且 system area 的 track 通过 API 不可删（`tracks.rs:3060-3092`，判定在 `:3085-3092`，
    2026-09-01 裁定）。
 3. **第二个插件。** 见 §6 末段：结构上已就绪，但 `trusted_forge_plugin`
    （`forge_trust.rs:1-8`）的信任策略不在本次范围。
@@ -1938,7 +1938,7 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 7. **数据回填 / 清洗。** §5.1 第二条：老数据里若存在非模板 id，
    `bound_workflow` 的 fail-safe 已经覆盖，不需要回填也不需要清洗。
    **v4 收窄措辞**：v3 这条写的是「数据迁移」，改名之后**是有一条迁移的**
-   （§3.3 的 `ALTER TABLE waves RENAME COLUMN`）。那条迁移是纯改名，
+   （§3.3 的 `ALTER TABLE tracks RENAME COLUMN`）。那条迁移是纯改名，
    不回填、不清洗、不丢数据——本条否定的是**回填/清洗**，不是**迁移文件**。
    （这是 CLAUDE.md「Statement Widened Past Carrier」的同一个形状：
    v3 的句子写得比它的载体宽。）
@@ -1969,20 +1969,20 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 | 风险 | 严重度 | 缓解 |
 |---|---|---|
 | **变更 A 是公开插件契约破坏**，伤到运行时装入的第三方插件 | **中**（v1 记为「低」，判定错，见 §5.3） | 同一 PR 改 `manifest.rs:93-100` 的字段文档 + **`docs/deploy-and-upgrade.md` 新增的「插件兼容性」一节**（§5.3 缓解 2，v3 已把 v2 的「release note」换成这个具名落点；**v4 更正本格漏改的旧措辞**，通道 A n4）+ 该节内联的升级前 `jq` 扫描；可选的 spawn-time warn |
-| 变更 B/C 打红切片外的**文案断言** | 低（吵，不是正确性风险） | **v5 更正为三条**（v4 说两条）：`wave_workflow_templates.rs:586`、`forge_workflow_e2e.rs:427`（这两条被**变更 B** 打红）、**`forge_workflow_e2e.rs:203`**（`contains("workflow_id")`，被**变更 C** 打红，v4 的任何清单里都没有它）。§10.3 给了前两条的**三条腿**替代断言（v2 的单腿版检测不到回退），第三条改成 `contains("template_id")` 且**不加**三条腿 |
+| 变更 B/C 打红切片外的**文案断言** | 低（吵，不是正确性风险） | **v5 更正为三条**（v4 说两条）：`track_workflow_templates.rs:586`、`forge_workflow_e2e.rs:427`（这两条被**变更 B** 打红）、**`forge_workflow_e2e.rs:203`**（`contains("workflow_id")`，被**变更 C** 打红，v4 的任何清单里都没有它）。§10.3 给了前两条的**三条腿**替代断言（v2 的单腿版检测不到回退），第三条改成 `contains("template_id")` 且**不加**三条腿 |
 | **测试 #8 按 v2 配方写成假绿**（stub 带 required schema ⇒ 撞 required-input 400 而非准入 400） | **高（若不处置：整个 `:779` 保证失去唯一的定向反例）** | §10.2「关于 #8 的测试设计」的 v3 警告框：stub 去掉 `input_schema` 或带合法 input + 断言拒绝**理由** + 零播种副作用 |
 | **合并树上 `WORKFLOW_TEMPLATE_KEYS` 漏改**（8 处编辑只改了 2 处，git 无冲突提示） | **中**（v4 下调，通道 A n5，判定成立：CI 触发于 `pull_request`、构建的是 PR 的 merge commit（`.github/workflows/ci.yml:3`），所以**后落地的那个 PR 必然自动变红**。v3 的「中高」偏高。验收 A7 仍然保留——它更早、更本地、且能在合并前就指出漏了哪一处） | §8.2 的**形状**结论（6 test + 1 生产 + 1 import，四个基线复测；**v5 已删除全部行号**，合流时重跑 grep）+ §10.1 的 PR-1 验收 **A7** 的合并树 grep |
-| 与 #1230 S1 的合并冲突 | **中高**（v1 记为「中」，且低估了面：三个文件人裁，不是一个） | §8.2 的逐文件规则；`wave_workflow_templates.rs` 与 `workflow_templates.rs` 都是同锚点冲突；两侧「并集校验」双向查；**生成物两侧都不取、从合并树重新生成**（v5 更正 v4 那条「全取 #1230 侧」的规则——它建立在一句已经变假的「#1209 对 wire 零改动」上） |
+| 与 #1230 S1 的合并冲突 | **中高**（v1 记为「中」，且低估了面：三个文件人裁，不是一个） | §8.2 的逐文件规则；`track_workflow_templates.rs` 与 `workflow_templates.rs` 都是同锚点冲突；两侧「并集校验」双向查；**生成物两侧都不取、从合并树重新生成**（v5 更正 v4 那条「全取 #1230 侧」的规则——它建立在一句已经变假的「#1209 对 wire 零改动」上） |
 | **#1209 先落地 ⇒ release 构建 dead_code 红** | **高（必然发生，若不处置）** | §8.2 的 `workflow_templates.rs` 手术：删两个符号、加一个有生产调用方的 `workflow_template()` |
-| 合并后 `wave_templates.rs` 模块头出现互相打脸的句子 | 中 | §8.2 要求合并后整篇重读；`:39` 那句承诺可机检（`WaveTemplate` 字段集合 + zod schema 不动） |
+| 合并后 `track_templates.rs` 模块头出现互相打脸的句子 | 中 | §8.2 要求合并后整篇重读；`:39` 那句承诺可机检（`TrackTemplate` 字段集合 + zod schema 不动） |
 | `:779` 换马甲而评审看不出来 | 中 | §4.3 的**语义**判据 + 测试 #8/#9（路由级，不是 grep） |
 | 搬动播种位置引入回归（§4.2） | 中 | 测试 #13；且搬动后的顺序仍不保证「任何非 201 都无写」，§4.2 已把注释改写到与行为一致 |
-| S1 与 #1230 都动 `wave_workflow_templates.rs`，rebase 后门禁证据作废 | 中 | 合并后完整重跑 `cargo nextest --features calm-server/codex-e2e`（CLAUDE.md「Rebase Invalidates Gate Evidence」） |
-| **（v4，v5 升级）改名后手写列名的 SQL 在运行时才炸** | **高（若不处置）。v5 上调影响面：v4 只列了三处并把 `today.rs` 归为「编译器抓」——那正是本仓 Card-Column-SELECT 教训点名的误分类，两个通道独立抓到，是本轮的 BLOCKER** | §3.3 现在点名**五处生产站点**（`db/rows.rs:87`、`:94`、`db/sqlite/wave.rs:184`、**`routes/today.rs:149`、`:162`**）+ 10 个词法 SELECT 消费点 + 4 处测试侧原始 SQL；验收从「一次 create+read 往返」扩成 **往返 + Today launchpad 两条腿 + 迁移保值 fixture**（§10.1 PR-2 的 A5/A6/A7） |
-| **（v5）PR-2 的改名扫描漏掉一个非类型检查站点** | **中高**（后果按站点而异：`wire.ts` 的 `Omit` 是类型层静默失效、`wave-fs-viewers/schemas.ts` 是旧 snapshot 静默 null、oracle 是判据与代码脱节；**共同点是没有任何东西会红**） | §3.2 类别 2 的站点表 + **PR-2 收尾的残留 `git grep` + 显式 allowlist**（那条 grep 才是真保证，站点表只是方向）；§3.2 末段已把这条不确定性写诚实 |
+| S1 与 #1230 都动 `track_workflow_templates.rs`，rebase 后门禁证据作废 | 中 | 合并后完整重跑 `cargo nextest --features calm-server/codex-e2e`（CLAUDE.md「Rebase Invalidates Gate Evidence」） |
+| **（v4，v5 升级）改名后手写列名的 SQL 在运行时才炸** | **高（若不处置）。v5 上调影响面：v4 只列了三处并把 `today.rs` 归为「编译器抓」——那正是本仓 Card-Column-SELECT 教训点名的误分类，两个通道独立抓到，是本轮的 BLOCKER** | §3.3 现在点名**五处生产站点**（`db/rows.rs:87`、`:94`、`db/sqlite/track.rs:184`、**`routes/today.rs:149`、`:162`**）+ 10 个词法 SELECT 消费点 + 4 处测试侧原始 SQL；验收从「一次 create+read 往返」扩成 **往返 + Today launchpad 两条腿 + 迁移保值 fixture**（§10.1 PR-2 的 A5/A6/A7） |
+| **（v5）PR-2 的改名扫描漏掉一个非类型检查站点** | **中高**（后果按站点而异：`wire.ts` 的 `Omit` 是类型层静默失效、`track-fs-viewers/schemas.ts` 是旧 snapshot 静默 null、oracle 是判据与代码脱节；**共同点是没有任何东西会红**） | §3.2 类别 2 的站点表 + **PR-2 收尾的残留 `git grep` + 显式 allowlist**（那条 grep 才是真保证，站点表只是方向）；§3.2 末段已把这条不确定性写诚实 |
 | **（v5）`WEB_COMPAT_VERSION` 三处漂移** | **中高**（三种漂移后果见 §3.6，**今天全部是绿的**：Rust 侧断言字面量、两个前端各读自己的常量） | §3.6 要求 PR-2 加一条比较三处导出值的 CI 静态门禁（选项 a），并给出成对的正例/反例；测试 #15 保留但**不再自称三方 lockstep pin** |
 | **（v5）历史事件读取器把整行跳过** | **中**（比丢字段更糟，但只在「有人为了防 fail-open 而删掉 `#[serde(default)]`」时才发生） | §3.4 明写两条方向相反的坏路 + 点名真正的读取者 `events.rs:577`（`Err` 分支 `:578-585` 只记日志并跳过行）；裁决是 **alias + 保留 `default`**，两条都躲开 |
-| **（v4）改名后历史事件静默丢字段** | **高（若不处置：replay 出来的 wave 丢掉模板归属且无报错）** | §3.4 的 `#[serde(alias)]`（Rust）+ zod 两侧；§10.2 新增测试 #14（拿一条真的旧 golden 喂进去，断言字段还在）；oracle 新增一行 |
+| **（v4）改名后历史事件静默丢字段** | **高（若不处置：replay 出来的 track 丢掉模板归属且无报错）** | §3.4 的 `#[serde(alias)]`（Rust）+ zod 两侧；§10.2 新增测试 #14（拿一条真的旧 golden 喂进去，断言字段还在）；oracle 新增一行 |
 | **（v4）旧浏览器 bundle 半工作** | **高（若不处置：缓存里的 `web/` bundle 一直发旧字段，拿一串 400）** | §3.6 把 `WEB_COMPAT_VERSION` 16→17 **三处一起改**（v5 撤回 v4「lockstep」这个用词——今天没有任何门禁比较它们）+ **PR-2 新建一条比较三处导出值的 CI 静态门禁**（验收 B6）；§10.2 的测试 #15 只钉服务端 floor |
 | **（v4）`productMajor` 裁决落空** | **中高（若只写进升级说明）** | §5.3 的实现指令 (a)：改 `package.rs:307` 的默认值，让 `package.rs:546` / `manifest.rs:302` 两条既有断言变成 pin |
 | **（v4）切片被改名的机械 diff 淹没，`:779` 的判据看不见了** | **中高**（这正是 v1 当初把改名推迟的理由，那条理由今天仍然成立，只是不再压过一致性） | §10.1 的**两 PR 切法**：PR-1 只做统一（判据清晰、可评审），PR-2 只做改名（大 diff、零概念） |
@@ -2000,15 +2000,15 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 | 序 | 丢了会怎样 | 是什么 | 详见 |
 |---|---|---|---|
-| **1** | **生产 Today 页面在运行时炸**（`no such column`），`cargo build` / `clippy` / 单元测试全绿 | `routes/today.rs:149` 的 UPDATE 与 `:162` 的 INSERT 把列名写成字面 SQL。DB 列改名后它们**编译干净**。手写列名的生产站点一共**五处**（另三处：`db/rows.rs:87`、`:94`、`db/sqlite/wave.rs:184`） | §3.3 |
-| **2** | **历史事件里的模板归属静默消失**，replay 出来的 wave 少一个字段且无报错 | `calm_types::Wave` 的新字段必须带 `#[serde(alias = "workflow_id")]` 且**保留 `#[serde(default)]`**。读取者是 `events.rs:577`，它的 `Err` 分支会**跳过整行**（`:578-585`）——所以不能靠删 `default` 来防 | §3.4 |
-| **3** | **旧 FS snapshot 静默变成 `template_id=null`** | Zod 读取器有**三个**，不是两个。第三个是 `web/src/wave-fs-viewers/schemas.ts:152`/`:160`，读旧 `wave.json`。它有 `.default(null)`，机械改名 = fail-open | §3.4 |
+| **1** | **生产 Today 页面在运行时炸**（`no such column`），`cargo build` / `clippy` / 单元测试全绿 | `routes/today.rs:149` 的 UPDATE 与 `:162` 的 INSERT 把列名写成字面 SQL。DB 列改名后它们**编译干净**。手写列名的生产站点一共**五处**（另三处：`db/rows.rs:87`、`:94`、`db/sqlite/track.rs:184`） | §3.3 |
+| **2** | **历史事件里的模板归属静默消失**，replay 出来的 track 少一个字段且无报错 | `calm_types::Track` 的新字段必须带 `#[serde(alias = "workflow_id")]` 且**保留 `#[serde(default)]`**。读取者是 `events.rs:577`，它的 `Err` 分支会**跳过整行**（`:578-585`）——所以不能靠删 `default` 来防 | §3.4 |
+| **3** | **旧 FS snapshot 静默变成 `template_id=null`** | Zod 读取器有**三个**，不是两个。第三个是 `web/src/track-fs-viewers/schemas.ts:152`/`:160`，读旧 `track.json`。它有 `.default(null)`，机械改名 = fail-open | §3.4 |
 | **4** | **缓存里的生产 bundle 一直发旧字段名、一路拿 400**（= `upgrade-stability.md:29` 禁止的「部分工作」） | `WEB_COMPAT_VERSION` 16→17 **三处**（`routes/version.rs:21-22`、`web/src/api/version.ts:100`、`fe/web/src/app/providers/public.tsx:9`）。**今天没有任何 CI 门禁比较这三处**，三种漂移全绿——PR-2 必须补一条静态门禁 | §3.6 |
 | **5** | **一整类改名站点没人告诉你漏了** | 非类型检查站点（字面 SQL、`Omit<..,'workflow_input'>` 的字符串键、oracle YAML、字符串名册、注释/CSS/aria-label）。**唯一的真保证是 PR-2 收尾的残留 `git grep` + allowlist**，不是本文的站点表 | §3.2 类别 2 |
 | **6** | **`productMajor` 裁决完全落空**，机器照判 `Preserving` | 改 `package.rs:307` 的默认值 `Ok(0)`→`Ok(1)`。**pin 只有 `package.rs:546` 一条**（`manifest.rs:302` 是 parser fixture，改默认值它不会红） | §5.3 |
-| **7** | **测试 #8 是一个永远绿的假测试**（检测不到它唯一的存在理由） | stub 插件**不要带 `input_schema`**（别抄 `wave_templates_read.rs:106`），否则会先撞 required-input 400 而不是准入 400 | §10.2 警告框 |
-| **8** | **测试 #9 丢掉鉴别力** | 正例腿断言 `status == 201`，**不是**「正文不含 known wave template」。v3 弱化过一次，那个弱版对「换措辞的特例」是绿的 | §10.2「#9 的形状」 |
-| **9** | **PR-1 交付一段提前撒谎的契约注释** | `wave_templates.rs` 模块头：PR-1 落**临时文本**（说 `workflow_id`），PR-2 才落最终文本（说 `template_id`） | §3.9 方框 |
+| **7** | **测试 #8 是一个永远绿的假测试**（检测不到它唯一的存在理由） | stub 插件**不要带 `input_schema`**（别抄 `track_templates_read.rs:106`），否则会先撞 required-input 400 而不是准入 400 | §10.2 警告框 |
+| **8** | **测试 #9 丢掉鉴别力** | 正例腿断言 `status == 201`，**不是**「正文不含 known track template」。v3 弱化过一次，那个弱版对「换措辞的特例」是绿的 | §10.2「#9 的形状」 |
+| **9** | **PR-1 交付一段提前撒谎的契约注释** | `track_templates.rs` 模块头：PR-1 落**临时文本**（说 `workflow_id`），PR-2 才落最终文本（说 `template_id`） | §3.9 方框 |
 | **10** | **合并树静默编译不过，而 git 不给任何冲突提示** | `WORKFLOW_TEMPLATE_KEYS` / `is_workflow_template_key` 在 #1230 侧有 6 test + 1 生产 + 1 import；**合流时对当时的 #1230 HEAD 重跑 grep**，不要照抄任何行号 | §8.2 |
 | **11** | **合并把改名整个丢掉** | OpenAPI/FE 生成物：**两侧都不取**，先合 Rust，再重新生成，由 `ci.yml:1190/1194` 裁决 | §8.2 末段 |
 | **12** | **升级后回不去** | breaking 路径**会**自动备份（`apply.rs:375-376`），但 `POST /upgrade/rollback` **拒绝**回滚一次 breaking apply（`apply.rs:1266`）。文档要写手工恢复步骤，且**不要**教人 `cp` 三件套 | §3.7 |
@@ -2018,28 +2018,28 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 这份文档经过五轮双通道评审，下面这些条目**每一条都是某一轮里被抓到的一个具体错误的处置**。
 **实现时按顺序核对，不要凭记忆重写。**
 
-1. **测试 #9 的正例腿断言 `status == 201`，不是「正文不含 known wave template」**
+1. **测试 #9 的正例腿断言 `status == 201`，不是「正文不含 known track template」**
    （§10.2「#9 的形状」）。v3 把它弱化过，那次弱化只丢了鉴别力：一个换了措辞的特例
    （`if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`）
    会让弱版 #9 保持绿，而 §10.1 的 PR-1 验收 A3 明说这种改动必须红。
 2. **测试 #8 的 stub 插件不要带 `input_schema`**（§10.2 的警告框）。照抄
-   `wave_templates_read.rs:106` 会造出一个永远绿的假测试——它检测不到它唯一的存在理由。
+   `track_templates_read.rs:106` 会造出一个永远绿的假测试——它检测不到它唯一的存在理由。
 3. **`WEB_COMPAT_VERSION` 16→17，三处一起改，并且 PR-2 要补一条比较三处的 CI 静态门禁**
    （§3.6）。**v5 更正**：v4 把这一步叫「三处 lockstep」，
    但**今天没有任何东西比较这三处**——三种漂移全部是绿的。
-4. **`calm_types::Wave` 的新字段要带 `#[serde(alias = "workflow_id")]`（并保留 `#[serde(default)]`），
-   而 `CreateWaveRequest` **绝不能**带**（§3.4 / §3.5）。这条不对称是有意的。
-   **v5 删除 v4 的 `WaveRow` 指令**：`crates/calm-truth/src/db/rows.rs:99` 只 derive
+4. **`calm_types::Track` 的新字段要带 `#[serde(alias = "workflow_id")]`（并保留 `#[serde(default)]`），
+   而 `CreateTrackRequest` **绝不能**带**（§3.4 / §3.5）。这条不对称是有意的。
+   **v5 删除 v4 的 `TrackRow` 指令**：`crates/calm-truth/src/db/rows.rs:99` 只 derive
    `Debug, sqlx::FromRow`，加 serde attribute 轻则无效重则编译失败，
    而且本来就无事可做——`FromRow` 按列名绑定，迁移已经就地改了列名。
 5. **`package.rs:307` 的默认值 0→1**（§5.3 的实现指令 a）。只在升级说明里写
    「打包时设 `NEIGE_PRODUCT_MAJOR`」等于什么都没做。
    **pin 是 `package.rs:546`，单数**（§5.3 的 v5 方框）。
-6. **播种块搬到阶段 1 的第 5 步之后；阶段 2 的顺序是 folder claim → wave_create_tx → 显式 fork；
+6. **播种块搬到阶段 1 的第 5 步之后；阶段 2 的顺序是 folder claim → track_create_tx → 显式 fork；
    并且还有阶段 0（serde extractor）与阶段 3（事务后 materialize / harness start）**
    （§4.4 的四个阶段）。不要按 v3 那棵 9 级单树、也不要按 v4 那两棵树写测试期望。
 7. **DB 列改名后，**五处**手写列名字符串要一起改**（§3.3）：
-   `db/rows.rs:87`、`:94`、`db/sqlite/wave.rs:184`、**`routes/today.rs:149`、`:162`**。
+   `db/rows.rs:87`、`:94`、`db/sqlite/track.rs:184`、**`routes/today.rs:149`、`:162`**。
    它们**编译期不报错，运行时才炸**。**v5 更正**：v4 写「三处」并把 `today.rs` 归为机械改名。
 8. **两个前端都要改**（§1.6）：`web/` 是今天在跑的那个，`fe/` 是还没上生产的那个。
    **`web/src/api/wire.ts:96-106` 是手写的，不是生成物**，它的 `Omit` 键是字符串字面量。
@@ -2055,32 +2055,32 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 
 ### §10.1 §决策 D7 — 切片
 
-用户明确不喜欢碎片化，且本次改动规模不大（核心是 `waves.rs` 一段 54 行换成 ~30 行）。
+用户明确不喜欢碎片化，且本次改动规模不大（核心是 `tracks.rs` 一段 54 行换成 ~30 行）。
 
 #### S1 — 统一 create 路径（唯一必做切片）
 
 * **范围**：新增 `workflow_template()` 与 `admit_template()`；删除
-  `WORKFLOW_TEMPLATE_KEYS` / `is_workflow_template_key`；重写 `waves.rs:761-793`
+  `WORKFLOW_TEMPLATE_KEYS` / `is_workflow_template_key`；重写 `tracks.rs:761-793`
   并把 `:799-814` 的播种块搬到 `:899` 之前（§4.2）；删除 `:770-772` 的空白守卫；
-  删除 `:779`；改写 `wave_templates.rs` 的词汇缝段落与 `manifest.rs:93-100` 的字段文档；
-  **`list_wave_templates` 不动**（v3 撤回，§8.2）；改两处旧文案断言；
+  删除 `:779`；改写 `track_templates.rs` 的词汇缝段落与 `manifest.rs:93-100` 的字段文档；
+  **`list_track_templates` 不动**（v3 撤回，§8.2）；改两处旧文案断言；
   新增测试 #8/#9/#12/#13 并加强 #10；写 `docs/deploy-and-upgrade.md` 的插件兼容性一节。
 * **文件**（v1 漏了后三个；v3 又补两个）：
-  * `crates/calm-server/src/routes/waves.rs`
-  * `crates/calm-server/src/routes/wave_templates.rs`（**只改模块头的词汇缝段落**）
+  * `crates/calm-server/src/routes/tracks.rs`
+  * `crates/calm-server/src/routes/track_templates.rs`（**只改模块头的词汇缝段落**）
   * **`crates/calm-server/src/workflow_templates.rs`**（§8.2 的 dead-code 手术 + test mod）
   * **`crates/calm-server/src/plugin_host/manifest.rs`**（`:93-100` 的字段文档，§5.3）
   * ~~**`docs/deploy-and-upgrade.md`**~~ —— **v5 移到 PR-2**（§5.3 的归属更正）：
     该节引用的 400 正文是 PR-2 拼写，且备份姿态是 PR-2 的迁移 + breaking 判决的后果；
     **PR-1 单独落地是 `preserving`**，写这一节就是发一份描述自己并不产生的东西的文档
-  * `crates/calm-server/tests/cases/wave_workflow_templates.rs`（+4 case，改 `:586`）
+  * `crates/calm-server/tests/cases/track_workflow_templates.rs`（+4 case，改 `:586`）
   * **`crates/calm-server/tests/forge_workflow_e2e.rs`**（改 `:421-429`——注释 `:421-422`
     + 断言块 `:423-429`，其中文案在 `:427`；v2 写的 `:425-429` 与 §10.3 自相矛盾，v3 更正）
-  * `crates/calm-server/tests/cases/wave_templates_read.rs`（可能 +1 case）
+  * `crates/calm-server/tests/cases/track_templates_read.rs`（可能 +1 case）
 * **可能被动到、但预期不需要改的第五个读播种路径的文件**（v3 新增，通道 A n3）：
-  `crates/calm-server/tests/cases/wave_workspace_materialize.rs:224-259`
-  （`seeded_workflow_template_waves_are_materialized`，POST `workflow_id: "small-change"`
-  并断言每个 wave 行都被物化）。它走的是 **201** 路径，搬位后仍绿——
+  `crates/calm-server/tests/cases/track_workspace_materialize.rs:224-259`
+  （`seeded_workflow_template_tracks_are_materialized`，POST `workflow_id: "small-change"`
+  并断言每个 track 行都被物化）。它走的是 **201** 路径，搬位后仍绿——
   列在这里是为了让实现者**事先**知道它存在，而不是从 CI 里才发现。
 * **不碰**：无。**v4 删掉了 v3 这一格的「不碰：FE、OpenAPI、wire、迁移」**——
   §3 的改名把这四样**全部**拉了进来。
@@ -2089,8 +2089,8 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
   `productMajor` 默认值 + **两个前端** + OpenAPI 生成物重跑 + oracle 加一行。
 * **v4 新增的文件**（在上面那张清单之外；层号对应 §3.2 的表）：
   * `crates/calm-truth/src/model.rs`（层 3）
-  * `crates/calm-truth/src/db/rows.rs`、`crates/calm-truth/src/db/sqlite/wave.rs`（层 5，**手写列名**）
-  * `crates/calm-truth/migrations/00NN_waves_rename_workflow_id_to_template_id.sql`（**新建**，层 5）
+  * `crates/calm-truth/src/db/rows.rs`、`crates/calm-truth/src/db/sqlite/track.rs`（层 5，**手写列名**）
+  * `crates/calm-truth/migrations/00NN_tracks_rename_workflow_id_to_template_id.sql`（**新建**，层 5）
   * `crates/calm-types/src/model.rs`（层 4，**加 `serde(alias)`**）
   * `crates/calm-server/src/operation/spec_harness_start_adapter.rs`、
     `crates/calm-server/src/routes/today.rs`（层 6）
@@ -2099,21 +2099,21 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
     `crates/neige-app/src/manifest.rs` 的解析断言）
   * OpenAPI 生成物 6 个（**跑生成器，不手改**，§3.2 层 7）
   * `web/` 与 `fe/` 的 wire schema / 调用点 / 测试（§3.2 层 8 的完整清单）
-  * `fe/e2e/wave-create.spec.ts`（**七处命中**：`:57,59,60,141,142,143,154`——v4 只列了四处）
+  * `fe/e2e/track-create.spec.ts`（**七处命中**：`:57,59,60,141,142,143,154`——v4 只列了四处）
   * **oracle 三份**（v4 只列了一份）：`docs/oracle/gates-types.yaml:1424`、
     `docs/oracle/a11y-contract.yaml:596`、`docs/oracle/pages-shared.yaml:3542,3586,3590`
-  * `crates/calm-server/tests/goldens/events/wave_updated.{full,min}.json`（`Wave` 的产物）
+  * `crates/calm-server/tests/goldens/events/track_updated.{full,min}.json`（`Track` 的产物）
   * **（v5 新增）** `crates/calm-server/src/plugin_host/workflow_input.rs`——模块名、
     `WORKFLOW_INPUT_MAX_BYTES`、`validate_workflow_input`、以及 `:247/:253/:264/:274/:278`
     产出的 `workflow_input.<key>:` 错误词汇（矩阵行 10 的正文来源）
   * **（v5 新增）** `crates/calm-server/src/routes/today.rs`——**两处字面 SQL**（`:149`、`:162`）
-  * **（v5 新增）** `crates/calm-truth/src/db/rows.rs:94`（`WAVE_SELECT_COLUMNS_W`，v4 写成 `:95`）
+  * **（v5 新增）** `crates/calm-truth/src/db/rows.rs:94`（`TRACK_SELECT_COLUMNS_W`，v4 写成 `:95`）
   * **（v5 新增）** `web/src/api/wire.ts:96-106`（**手写，不是生成物**）、
-    `web/src/wave-fs-viewers/schemas.ts:152,160`（**第三个 Zod reader**）
+    `web/src/track-fs-viewers/schemas.ts:152,160`（**第三个 Zod reader**）
   * **（v5 新增）** `crates/calm-server/tests/forge_workflow_e2e.rs:203`（**第三条文案断言**，§10.3）
   * **（v5 新增）** 测试侧原始 SQL 四处：`forge_workflow_e2e.rs:160,176`、
-    `tests/support/spec_turn.rs:121`、`operation/child_wave_adapter.rs:1350`（在 test mod 内）
-  * **（v5 新增）** 字符串名册：`crates/calm-server/tests/cases/wave_projection_policy_patch.rs:155`
+    `tests/support/spec_turn.rs:121`、`operation/child_track_adapter.rs:1350`（在 test mod 内）
+  * **（v5 新增）** 字符串名册：`crates/calm-server/tests/cases/track_projection_policy_patch.rs:155`
   * **（v5 新增）** 注释 / 文档 / CSS：`web/src/shared/components/issueUrl.ts:1,6,57` + 其测试、
     `fe/core/domain/issue-url.ts:2,48` + 其测试、`web/src/calm.css:4414`、
     `fe/web/src/features/area/README.md:71`、
@@ -2132,10 +2132,10 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
 * **规模**：**本文继续不给行数**（v2 在这一格被两个通道判错过，理由是「没有测量依据」）。
   能测的两件事写在这里：(1) **v5 更正为可复现的数字**（v4 的「170」复现不出来）——
   `git grep -l 'workflow_id' -- 'crates/**/*.rs' | wc -l` = **168**，
-  `git grep -l 'NewWave {' -- '*.rs' | wc -l` = **147**，
+  `git grep -l 'NewTrack {' -- '*.rs' | wc -l` = **147**，
   其中绝大多数是编译器会逐个报错的结构体字面量填充位（§3.2 类别 3）；
   **但类别 2 的站点编译器一个都抓不到**（§3.2 的诚实标注）；
-  (2) 核心生产改动仍然只是 `waves.rs` 一段 54 行换成 ~25 行。
+  (2) 核心生产改动仍然只是 `tracks.rs` 一段 54 行换成 ~25 行。
   **这两个数字放在一起正好说明为什么要切成两个 PR。**
 
 **⚠️ v4 的切片裁决：改成两个 PR。**
@@ -2146,8 +2146,8 @@ v1 把改名单独切出去的理由是「零行为、大 diff，混进来会淹
 
 | PR | 内容 | 判据 |
 |---|---|---|
-| **PR-1（概念）** | §2/§4/§5/§7 的全部内容：`admit_template`、删 `:779`、删两个符号、播种搬位、`manifest.rs:93-100` 字段文档、`wave_templates.rs` 模块头的**临时文本**（§3.9 方框）、测试 #8/#9/#12/#13 并加强 #10、§10.3 的三条腿（用 `workflow_id` 拼写）。**不碰 `docs/`、不碰 wire、不碰迁移** | **`:779` 消失且没换马甲。** diff 小、判据清晰、可逐行评审 |
-| **PR-2（拼写）** | §3 的全部内容：类别 1/2/3 三类站点的改名 + `0079` 迁移 + `Wave` 的 `serde(alias)` + **三个 Zod reader 的 normalize** + `WEB_COMPAT_VERSION`/`API_VERSION` + **三处版本常量的 CI 静态门禁**（§3.6 选项 a）+ `productMajor` 默认值 + 两个前端 + 生成物重跑 + oracle 三份 + `docs/deploy-and-upgrade.md`（插件兼容性一节 **+ 备份小节**）+ `wave_templates.rs` 模块头的最终文本 + 测试 **#14/#15/#16/#17/#18** + **收尾残留 grep** | **零概念变化、机械可核。** 评审方式是「编译器 + 生成物 diff + 五条新测试 + 残留 grep」，不是逐行读 |
+| **PR-1（概念）** | §2/§4/§5/§7 的全部内容：`admit_template`、删 `:779`、删两个符号、播种搬位、`manifest.rs:93-100` 字段文档、`track_templates.rs` 模块头的**临时文本**（§3.9 方框）、测试 #8/#9/#12/#13 并加强 #10、§10.3 的三条腿（用 `workflow_id` 拼写）。**不碰 `docs/`、不碰 wire、不碰迁移** | **`:779` 消失且没换马甲。** diff 小、判据清晰、可逐行评审 |
+| **PR-2（拼写）** | §3 的全部内容：类别 1/2/3 三类站点的改名 + `0079` 迁移 + `Track` 的 `serde(alias)` + **三个 Zod reader 的 normalize** + `WEB_COMPAT_VERSION`/`API_VERSION` + **三处版本常量的 CI 静态门禁**（§3.6 选项 a）+ `productMajor` 默认值 + 两个前端 + 生成物重跑 + oracle 三份 + `docs/deploy-and-upgrade.md`（插件兼容性一节 **+ 备份小节**）+ `track_templates.rs` 模块头的最终文本 + 测试 **#14/#15/#16/#17/#18** + **收尾残留 grep** | **零概念变化、机械可核。** 评审方式是「编译器 + 生成物 diff + 五条新测试 + 残留 grep」，不是逐行读 |
 
 **⚠️ v5 更正两处（通道 A m5 + 通道 B M6，都判定成立）**：
 
@@ -2158,7 +2158,7 @@ v1 把改名单独切出去的理由是「零行为、大 diff，混进来会淹
   所以 PR-2 是**五**条新测试。
 * `docs/deploy-and-upgrade.md` 从 PR-1 移到 PR-2（上面的文件表）。
 
-**切线画在哪：PR-1 落地后 `POST /api/waves` 的字段仍叫 `workflow_id`，
+**切线画在哪：PR-1 落地后 `POST /api/tracks` 的字段仍叫 `workflow_id`，
 但它已经只有一个含义了。** PR-2 只换拼写。
 
 **PR-1 自己的错误文案，明写（v5 新增，通道 A m7，判定成立）。**
@@ -2166,12 +2166,12 @@ v4 的 §4.4 变更 B 给的新文案用的是 PR-2 的字段名，于是 PR-1 �
 **PR-1 落的是：**
 
 ```
-wave create: `workflow_id` must reference a known wave template; got `{id}`
+track create: `workflow_id` must reference a known track template; got `{id}`
 ```
 
 **PR-2 再把它改成 `` `template_id` ``。** 也就是说这句文案在两个 PR 里各改一次。
 **§10.3 的三条腿在两个阶段都成立**——它们钉的是
-「`known wave template` 在场 / `registered trusted workflow` 不在场 / 被拒的 id 被点名」，
+「`known track template` 在场 / `registered trusted workflow` 不在场 / 被拒的 id 被点名」，
 **没有一条钉字段名**。**明说这一点，免得有人「好心」在 PR-1 加一条断言字段名的第四条腿，
 然后在 PR-2 把它打红。**
 
@@ -2200,7 +2200,7 @@ PR-1 单独发布是 `preserving`、PR-2 再来一次 `breaking`，用户吃两�
   A2. 测试 #8 绿：running∧trusted 插件声明名册外 id，create 400。
      **反例**：若谁给 `admit_template` 加一条 `.or_else(|| resolve_trusted_workflow(..))`
      兜底，这条必须红；
-  A3. 测试 #9 绿：`GET /api/wave-templates` 列出的**每一个** id，`POST /api/waves`
+  A3. 测试 #9 绿：`GET /api/track-templates` 列出的**每一个** id，`POST /api/tracks`
      **返回 201**（**v4 恢复 `== 201`，撤回 v3 的弱化；理由见 §10.2「#9 的形状」**）。
      **反例**：任何让写口特别拒绝一个已列出 id 的改动必须红——**包括换了措辞的特例**
      （`if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`），
@@ -2212,12 +2212,12 @@ PR-1 单独发布是 `preserving`、PR-2 再来一次 `breaking`，用户吃两�
      **行 18–20 属于 PR-2**（由 #16 承担，见下面的 B5）；
      **行 13 / 14 / 17 / P1 是有意不钉的**——13/14 是 `ensure` 内部失败的两种形状、
      17 是阶段 2 事务内的显式 fork 400、**P1 是阶段 3 的物化失败**
-     （它其实**已经**被 `wave_workspace_materialize.rs:270-313` 钉住了，
+     （它其实**已经**被 `track_workspace_materialize.rs:270-313` 钉住了，
      只是钉的是「孤儿状态是已知的」，不是「无副作用」）。
      §10.2 #13 的「不在范围内」一栏（以及 §4.2 的裁决）明确拒绝为 13/14/17 写「无副作用」断言。
      v3 一边写「逐行有断言」、一边在 §10.2 #13 里亲手把行 17 排除掉，是本文内部的一处自相矛盾；
-  A5. `WaveTemplate` 字段集合与 `fe/core/domain/wave.ts:198-211` 未变——兑现
-     `wave_templates.rs:39` 的承诺，可机检。**v4 复查：§3 的改名不影响这条**
+  A5. `TrackTemplate` 字段集合与 `fe/core/domain/track.ts:198-211` 未变——兑现
+     `track_templates.rs:39` 的承诺，可机检。**v4 复查：§3 的改名不影响这条**
      （该端点的响应里没有 `workflow_id` 字段，§1.5 的 v4 复读）；
   A6. `cargo build --release -p calm-server --locked`（复刻 `ci.yml:901`）与
      `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings`
@@ -2240,9 +2240,9 @@ PR-1 单独发布是 `preserving`、PR-2 再来一次 `breaking`，用户吃两�
 ##### PR-2 的验收（B1–B10）—— 判据是「零概念变化、机械可核」
 
   B1. **（往返，针对 §3.3 手写列名站点 #1/#2/#3）** 一次**真跑的往返**：
-     `POST /api/waves {template_id:"small-change"}` → 201 → `GET /api/waves/{id}`
+     `POST /api/tracks {template_id:"small-change"}` → 201 → `GET /api/tracks/{id}`
      → 响应里 `template_id == "small-change"`。
-     **正例/反例成对**：改完 `db/rows.rs:87`/`:94` 与 `db/sqlite/wave.rs:184` 之后必绿；
+     **正例/反例成对**：改完 `db/rows.rs:87`/`:94` 与 `db/sqlite/track.rs:184` 之后必绿；
      **漏改其中任何一处**，这条必须红（`sqlx` 的列名错误发生在**运行时**，
      `cargo build` 与 `clippy` 都是绿的，CLAUDE.md「Card Column Add SELECT Audit」）。
      **v5 的诚实标注**：**这一条碰不到 `today.rs`**——它是 B2 存在的全部理由。
@@ -2256,11 +2256,11 @@ PR-1 单独发布是 `preserving`、PR-2 再来一次 `breaking`，用户吃两�
      应用 `0079` → 断言新列值**逐字保留** ∧ 旧列**不存在**。
      **反例**：把 `RENAME COLUMN` 写成 `ADD COLUMN` + `DROP COLUMN`（丢值）⇒ 必须红。
   B4. **（v5 新增；测试 #14）** 历史兼容读：Rust 侧 + **三个** Zod parser 各一条。
-     **反例**：拿掉 `calm_types::Wave` 上的 `#[serde(alias = "workflow_id")]` ⇒ Rust 那条红；
-     把 `web/src/wave-fs-viewers/schemas.ts` 的 normalize 去掉 ⇒ 第三条红
+     **反例**：拿掉 `calm_types::Track` 上的 `#[serde(alias = "workflow_id")]` ⇒ Rust 那条红；
+     把 `web/src/track-fs-viewers/schemas.ts` 的 normalize 去掉 ⇒ 第三条红
      （**这一条是 v4 完全没有的**，v4 只安排了「两个前端各一条」）。
   B5. **（v5 新增；测试 #16）** 旧拼写拒绝：矩阵行 18/19/20 三种输入参数化，全部 400。
-     **反例**：给 `CreateWaveRequest` 加回一个 `workflow_id` 字段（哪怕只是 `#[serde(alias)]`）
+     **反例**：给 `CreateTrackRequest` 加回一个 `workflow_id` 字段（哪怕只是 `#[serde(alias)]`）
      ⇒ 必须红。**这是 §3.5 整个拒绝策略的唯一 pin**，v4 把它从 PR-2 的内容栏里漏掉了。
   B6. **（v5 新增；§3.6 选项 a）** 三处 `WEB_COMPAT_VERSION` 的 CI 静态门禁。
      **正例/反例成对**：三处都是 17 ⇒ 绿；**任意一处**改回 16 ⇒ 红。
@@ -2273,7 +2273,7 @@ PR-1 单独发布是 `preserving`、PR-2 再来一次 `breaking`，用户吃两�
   B8. **（生成物）** `cd web && npm run gen:api`（`ci.yml:1186-1187`）与
      `cargo run --bin emit-openapi > fe/core/api/generated/openapi.json`（`ci.yml:1190`）
      之后 `git diff --exit-code`（`ci.yml:1194`，覆盖 7 个产物）**为绿**。
-     **反例**：手改了产物而没重跑生成器 ⇒ 红；改了 `CreateWaveRequest` 而没重跑 ⇒ 红。
+     **反例**：手改了产物而没重跑生成器 ⇒ 红；改了 `CreateTrackRequest` 而没重跑 ⇒ 红。
   B9. **（两个前端）** `fe/` 与 `web/` 各自的 vitest 都绿。
      **反例**：只改了 `fe/` 而没改 `web/` ⇒ `web/src/api/schemas.test.ts` 与
      `web/src/shared/components/NewTaskForm.issueDev.test.tsx` 必须红（§1.6 的理由）。
@@ -2307,31 +2307,31 @@ artifact**。检查方式：release 前确认两个 PR 的 commit 都在待发�
 
 | # | 不变量 | 钉它的测试 | 位置 | 该测试**断言了**什么（逐字核过） | 生产侧变异 ⇒ 变红 |
 |---|---|---|---|---|---|
-| 1 | 未知 id ⇒ 400，**且拒绝理由是准入而不是 registry** | `unknown_workflow_id_still_400s` | `tests/cases/wave_workflow_templates.rs:568-589` | 状态码 400（`:582`）+ 错误子串（`:586`，**本切片要改成 §10.3 的三条腿**） | (a) 把 `ok_or_else(..)?` 换成 `unwrap_or(None)`；(b) **NEW：把错误文案「恢复 registry 措辞」**（改回 `registered trusted workflow`）——v2 版断言对 (b) 是绿的，v3 版必须红 |
+| 1 | 未知 id ⇒ 400，**且拒绝理由是准入而不是 registry** | `unknown_workflow_id_still_400s` | `tests/cases/track_workflow_templates.rs:568-589` | 状态码 400（`:582`）+ 错误子串（`:586`，**本切片要改成 §10.3 的三条腿**） | (a) 把 `ok_or_else(..)?` 换成 `unwrap_or(None)`；(b) **NEW：把错误文案「恢复 registry 措辞」**（改回 `registered trusted workflow`）——v2 版断言对 (b) 是绿的，v3 版必须红 |
 | 2 | 无绑定 template ⇒ 201 + fork | `investigation_and_small_change_auto_fork_without_plugin` | 同上 `:450` | 201 + fork 到模板 report | 让 `admit_template` 在 `binding.is_none()` 时返回 `None` |
-| 3 | 有绑定 template ⇒ `plugin_scope` 落库 | `git_forge_workflow_registers_and_wave_create_binds` | `tests/forge_workflow_e2e.rs:120` | 201（`:155`）、`workflow_id` 回显（`:156`）、`plugin_scope`（`:157`）、`workflow_input` 回显（`:158`）、DB 里的 `workflow_id`（`:165`）与 `plugin_scope`（`:172`）。**不断言模板 report 被 fork**——v1 把 `:120-171` 当成 fork 的 pin，错 | 删掉 `p.plugin_scope = bound_plugin.map(..)` 那行 |
-| 4 | 绑定插件 **untrusted** ⇒ 仍 201，`plugin_scope=null` | 同文件（无独立测试名，在 `git_forge_workflow_registers_and_wave_create_binds` 尾部） | `tests/forge_workflow_e2e.rs:434-454` | 201（`:449`）、`workflow_id` 回显（`:450`）、`plugin_scope` 为 null（`:451-454`）。两处 v1 说错了：(a) **只测 untrusted**，`stop(PLUGIN_ID)` 在 `:456-459` 且其后**没有再 create**，所以「stopped ⇒ 201」这一半**今天无人钉住**；(b) 注释 `:446-448` 说「the template report is still forked」，但这段**没有任何 fork 断言**——fork 由 `wave_workflow_templates.rs:450` 的测试 #2 承担 | 让 `admit_template` 要求 `binding.is_some()` |
-| 5 | 每个 key 只播种一个 wave（幂等） | `matching_workflow_id_seeds_one_wave_per_template_key` | `tests/cases/wave_workflow_templates.rs:209` | 每个 key 恰好一个 system-area 模板 wave | 去掉 `lookup` 早退（`waves.rs:450-453`） |
-| 6 | 用户 area 里伪造同 key overlay 不能劫持 fork | `stolen_user_area_template_key_does_not_hijack_auto_fork` | 同上 `:481` | fork 源仍是 system area 的那一个 | 去掉 `lookup_workflow_template_wave` 的 `wave.area_id == system.id` 过滤（`waves.rs:505-507`） |
+| 3 | 有绑定 template ⇒ `plugin_scope` 落库 | `git_forge_workflow_registers_and_track_create_binds` | `tests/forge_workflow_e2e.rs:120` | 201（`:155`）、`workflow_id` 回显（`:156`）、`plugin_scope`（`:157`）、`workflow_input` 回显（`:158`）、DB 里的 `workflow_id`（`:165`）与 `plugin_scope`（`:172`）。**不断言模板 report 被 fork**——v1 把 `:120-171` 当成 fork 的 pin，错 | 删掉 `p.plugin_scope = bound_plugin.map(..)` 那行 |
+| 4 | 绑定插件 **untrusted** ⇒ 仍 201，`plugin_scope=null` | 同文件（无独立测试名，在 `git_forge_workflow_registers_and_track_create_binds` 尾部） | `tests/forge_workflow_e2e.rs:434-454` | 201（`:449`）、`workflow_id` 回显（`:450`）、`plugin_scope` 为 null（`:451-454`）。两处 v1 说错了：(a) **只测 untrusted**，`stop(PLUGIN_ID)` 在 `:456-459` 且其后**没有再 create**，所以「stopped ⇒ 201」这一半**今天无人钉住**；(b) 注释 `:446-448` 说「the template report is still forked」，但这段**没有任何 fork 断言**——fork 由 `track_workflow_templates.rs:450` 的测试 #2 承担 | 让 `admit_template` 要求 `binding.is_some()` |
+| 5 | 每个 key 只播种一个 track（幂等） | `matching_workflow_id_seeds_one_track_per_template_key` | `tests/cases/track_workflow_templates.rs:209` | 每个 key 恰好一个 system-area 模板 track | 去掉 `lookup` 早退（`tracks.rs:450-453`） |
+| 6 | 用户 area 里伪造同 key overlay 不能劫持 fork | `stolen_user_area_template_key_does_not_hijack_auto_fork` | 同上 `:481` | fork 源仍是 system area 的那一个 | 去掉 `lookup_workflow_template_track` 的 `track.area_id == system.id` 过滤（`tracks.rs:505-507`） |
 | 7 | 显式 `fork_report_from` 优先 | `explicit_fork_report_from_is_not_overwritten` | 同上 `:383` | fork 源是调用方指定的那个 | 把 `if fork_report_from.is_none()` 改成无条件赋值 |
-| 8 | **NEW**：受信运行插件声明的非模板 workflow id ⇒ 400 | **PROPOSED** `plugin_declared_non_template_workflow_id_is_rejected` | 新增到 `tests/cases/wave_workflow_templates.rs` | — | 在 `admit_template` 里加回 `.or_else(\|\| resolve_trusted_workflow(..))` 兜底 |
+| 8 | **NEW**：受信运行插件声明的非模板 workflow id ⇒ 400 | **PROPOSED** `plugin_declared_non_template_workflow_id_is_rejected` | 新增到 `tests/cases/track_workflow_templates.rs` | — | 在 `admit_template` 里加回 `.or_else(\|\| resolve_trusted_workflow(..))` 兜底 |
 | 9 | **NEW**：读口列表与写口准入是同一个集合（路由 × 路由） | **PROPOSED** `create_accepts_exactly_the_listed_templates` | 新增，驱动真路由 | — | 任何让写口特别接受一个未列出 id、或特别拒绝一个已列出 id 的改动 |
-| 10 | 读不触发播种（INV-1209-SEED v2，§7） | #1230 S1 带了弱版本，**本切片加强** | #1230 侧 `tests/cases/wave_workflow_templates.rs` 的那条 read-only case | 今天只断言：未播种态下两个 GET 之后 `kind=="template"` 的 overlay 仍为空 | 见下文「#10 的形状」的 5 条变异清单 |
-| 11 | 读口 `input_schema` 与 create 的接受面一致 | `bound_template_carries_the_plugin_input_schema` + `unbound_templates_carry_no_input_schema` | `tests/cases/wave_templates_read.rs:243`、`:333` | 绑定态有 schema / 无绑定态无 schema | 让读口不走 `resolve_trusted_workflow`（例如硬编码 id 白名单） |
-| 12 | **NEW**：空白 `workflow_id` ⇒ 以**准入**理由 400，且零播种副作用（今天 Rust 侧零覆盖，§4.1 删了那道守卫） | **PROPOSED** `blank_workflow_id_is_rejected` | 新增到 `tests/cases/wave_workflow_templates.rs` | — | **v3 更正**：有人把守卫「恢复」成一个 **skip**（`if id.trim().is_empty() { /* 当作没选模板 */ }` ⇒ 201、`plugin_scope=null`、不 fork） |
-| 13 | **NEW**：**事务前**的 4xx 不留播种副作用（§4.2） | **PROPOSED** `pre_transaction_4xx_with_template_does_not_seed`（参数化） | 新增到 `tests/cases/wave_workflow_templates.rs` | — | 把播种块搬回 `waves.rs:761` 之后、cwd/area 校验之前（即今天的顺序） |
-| 14 | **NEW（v4，§3.4；v5 从「2 个 parser」扩到「3 个 parser」）**：历史事件 / 旧 snapshot 里的旧字段名仍然读得出来 | **PROPOSED** `legacy_wave_payload_keeps_its_template_id` | **四条**：Rust 侧一条 + **三个 Zod parser 各一条**（`fe/core/api/schemas.ts`、`web/src/api/schemas.ts`、**`web/src/wave-fs-viewers/schemas.ts`**） | — | Rust：**拿掉 `calm_types::Wave` 上的 `#[serde(alias = "workflow_id")]`** ⇒ 旧 golden 解析出 `template_id: None` ⇒ 必须红。**每个 Zod parser 各自**：去掉它的 normalize ⇒ 那一条红。**四条要能各自独立变红**——共用一个 helper 会让「只漏改第三个 reader」这个真实的回归方向变绿 |
+| 10 | 读不触发播种（INV-1209-SEED v2，§7） | #1230 S1 带了弱版本，**本切片加强** | #1230 侧 `tests/cases/track_workflow_templates.rs` 的那条 read-only case | 今天只断言：未播种态下两个 GET 之后 `kind=="template"` 的 overlay 仍为空 | 见下文「#10 的形状」的 5 条变异清单 |
+| 11 | 读口 `input_schema` 与 create 的接受面一致 | `bound_template_carries_the_plugin_input_schema` + `unbound_templates_carry_no_input_schema` | `tests/cases/track_templates_read.rs:243`、`:333` | 绑定态有 schema / 无绑定态无 schema | 让读口不走 `resolve_trusted_workflow`（例如硬编码 id 白名单） |
+| 12 | **NEW**：空白 `workflow_id` ⇒ 以**准入**理由 400，且零播种副作用（今天 Rust 侧零覆盖，§4.1 删了那道守卫） | **PROPOSED** `blank_workflow_id_is_rejected` | 新增到 `tests/cases/track_workflow_templates.rs` | — | **v3 更正**：有人把守卫「恢复」成一个 **skip**（`if id.trim().is_empty() { /* 当作没选模板 */ }` ⇒ 201、`plugin_scope=null`、不 fork） |
+| 13 | **NEW**：**事务前**的 4xx 不留播种副作用（§4.2） | **PROPOSED** `pre_transaction_4xx_with_template_does_not_seed`（参数化） | 新增到 `tests/cases/track_workflow_templates.rs` | — | 把播种块搬回 `tracks.rs:761` 之后、cwd/area 校验之前（即今天的顺序） |
+| 14 | **NEW（v4，§3.4；v5 从「2 个 parser」扩到「3 个 parser」）**：历史事件 / 旧 snapshot 里的旧字段名仍然读得出来 | **PROPOSED** `legacy_track_payload_keeps_its_template_id` | **四条**：Rust 侧一条 + **三个 Zod parser 各一条**（`fe/core/api/schemas.ts`、`web/src/api/schemas.ts`、**`web/src/track-fs-viewers/schemas.ts`**） | — | Rust：**拿掉 `calm_types::Track` 上的 `#[serde(alias = "workflow_id")]`** ⇒ 旧 golden 解析出 `template_id: None` ⇒ 必须红。**每个 Zod parser 各自**：去掉它的 normalize ⇒ 那一条红。**四条要能各自独立变红**——共用一个 helper 会让「只漏改第三个 reader」这个真实的回归方向变绿 |
 | 15 | **NEW（v4，§3.6；v5 更名并降低 claim）**：**服务端**的兼容 floor 真的抬了 | **PROPOSED** `web_compat_floor_is_above_the_previous_bundle` | 新增到 `tests/cases/version.rs` 附近 | — | 把 `WEB_COMPAT_VERSION` 改回 16 ⇒ 必须红。断言 `GET /api/version` 的 `minWebCompatVersion` **严格大于** 16（把 16 写成测试里的字面量常量，配一句注释说明它是历史值、不要跟着改）。**⚠️ v5：它不是「三方 lockstep pin」**——它看不见任何前端，两个 bundle 的漂移由 §3.6 选项 (a) 的 CI 静态门禁承担（验收 B6） |
-| 16 | **NEW（v4，§3.5）**：写口只认识一个拼写 | **PROPOSED** `old_field_spelling_is_an_unknown_field` | 新增到 `tests/cases/wave_workflow_templates.rs` | — | 给 `CreateWaveRequest` 加回一个 `workflow_id` 字段（哪怕只是 `#[serde(alias)]`）⇒ 必须红。参数化到矩阵行 18/19/20 三种输入。**这是 §3.5 整个拒绝策略的唯一 pin**（v4 把它从 PR-2 的内容栏里漏了） |
-| 17 | **NEW（v5，§3.3）**：`RENAME COLUMN` 真的保值 | **PROPOSED** `rename_migration_preserves_column_values` | 新增到 `crates/calm-truth` 的迁移测试族（形状抄 `wave_plugin_scope_migration_tests.rs` 的「停在某个版本」配方，但**停在 `0078`**） | — | 停在 `0078` → 写入两列**非 NULL** 的旧列值 → 应用 `0079` → 断言新列值逐字保留 ∧ 旧列不存在。**变异**：把迁移写成 `ADD COLUMN` + `DROP COLUMN`（丢值）⇒ 必须红；只 rename 一列 ⇒ 必须红。**没有这条，「迁移不丢数据」这句话在本设计里没有载体** |
+| 16 | **NEW（v4，§3.5）**：写口只认识一个拼写 | **PROPOSED** `old_field_spelling_is_an_unknown_field` | 新增到 `tests/cases/track_workflow_templates.rs` | — | 给 `CreateTrackRequest` 加回一个 `workflow_id` 字段（哪怕只是 `#[serde(alias)]`）⇒ 必须红。参数化到矩阵行 18/19/20 三种输入。**这是 §3.5 整个拒绝策略的唯一 pin**（v4 把它从 PR-2 的内容栏里漏了） |
+| 17 | **NEW（v5，§3.3）**：`RENAME COLUMN` 真的保值 | **PROPOSED** `rename_migration_preserves_column_values` | 新增到 `crates/calm-truth` 的迁移测试族（形状抄 `track_plugin_scope_migration_tests.rs` 的「停在某个版本」配方，但**停在 `0078`**） | — | 停在 `0078` → 写入两列**非 NULL** 的旧列值 → 应用 `0079` → 断言新列值逐字保留 ∧ 旧列不存在。**变异**：把迁移写成 `ADD COLUMN` + `DROP COLUMN`（丢值）⇒ 必须红；只 rename 一列 ⇒ 必须红。**没有这条，「迁移不丢数据」这句话在本设计里没有载体** |
 | 18 | **NEW（v5，§3.3，本轮 BLOCKER 的 pin）**：Today launchpad 的两条字面 SQL 都还能跑 | **PROPOSED** `today_launchpad_survives_the_column_rename`（两条腿） | 新增到 `routes/today.rs` 的路由测试 | — | (a) 空库 ⇒ 走 `today.rs:162` 的 INSERT；(b) 预置一个 `purpose IS NULL AND title='Today'` 的旧行 ⇒ 走 `:149` 的 UPDATE。**变异**：只把两处中的**一处**留成旧列名 ⇒ **恰好一条腿红**。这条成对性本身就是「必须测两条腿」的证明 |
 
 #### 关于 #8 的测试设计（最重要的一条）
 
 它必须**驱动真路由**：注册并 spawn 一个受信 stub 插件，其 manifest 声明
-`workflows: [{"id": "not-a-template"}]`，然后 `POST /api/waves` 带
+`workflows: [{"id": "not-a-template"}]`，然后 `POST /api/tracks` 带
 `workflow_id: "not-a-template"`，断言 400。
-stub 的搭法可以抄 `tests/cases/wave_templates_read.rs:77-167`（`boot(running: bool)`，
+stub 的搭法可以抄 `tests/cases/track_templates_read.rs:77-167`（`boot(running: bool)`，
 那里已经有一个「受信 + running」的 stub 插件 boot 流程；`Manifest::parse` 在 `:98`，
 `json!` 字面量 `:99` 起，`"input_schema": stub_input_schema()` 在 **`:106`**，
 `"workflows": [ { "id": ISSUE_DEVELOPMENT } ]` 在 **`:107`**）。
@@ -2339,17 +2339,17 @@ stub 的搭法可以抄 `tests/cases/wave_templates_read.rs:77-167`（`boot(runn
 > **⚠️ v3：照 v2 的配方直接抄会造出一个假绿测试。这是第 2 轮最锋利的一条
 > （通道 B M3），重扫判定成立——而 #8 正是整个「删掉 `:779`」保证所依赖的那条测试。**
 >
-> 那个 stub 的 manifest **带 `input_schema`**（`wave_templates_read.rs:106` →
+> 那个 stub 的 manifest **带 `input_schema`**（`track_templates_read.rs:106` →
 > `stub_input_schema()` 在 `:57-64`，`"required": ["issue_url"]` 在 `:61`）。
 > 于是一个**不带 input** 的 `POST` 会先撞上 required-input 400
-> （`waves.rs:977-990`，正是 §4.4 行 6/16 的那条），**而不是**准入 400。
+> （`tracks.rs:977-990`，正是 §4.4 行 6/16 的那条），**而不是**准入 400。
 > 后果：即便有人把「非模板插件 fallback」原封不动加回去（= `:779` 换马甲），
 > 这个测试**照样绿**——它检测不到它唯一存在的理由。
 >
 > **必须三条一起做**：
 > 1. **stub 不带 `input_schema`**（或者 `POST` 带上通过该 schema 的合法 input）——
 >    抄 boot 流程可以，**不要**抄 `stub_input_schema()`；
-> 2. 断言的不只是状态码，还有**拒绝理由**：正文含 `known wave template`
+> 2. 断言的不只是状态码，还有**拒绝理由**：正文含 `known track template`
 >    **且不含** `requires \`workflow_input\``、**且不含** `registered trusted workflow`；
 > 3. 同时断言**零播种副作用**（复用 #13 的 helper）——准入 400 发生在播种之前。
 >    **⚠️ v4 降级这一条（通道 A m5，重扫判定成立）**：v3 把它写成三条「硬要求」之一，
@@ -2369,12 +2369,12 @@ stub 的搭法可以抄 `tests/cases/wave_templates_read.rs:77-167`（`boot(runn
 #### #9 的形状（v2 重写：删掉假门禁那一半）
 
 v1 的 #9 有一半是假门禁（通道 A 提出，重扫**判定成立**）：v1 断言
-`GET /api/wave-templates` 的 id 集合 == `WORKFLOW_TEMPLATE_KEYS`，但
-`list_wave_templates` 直接遍历 `WORKFLOW_TEMPLATES`（`wave_templates.rs:103-104`），
+`GET /api/track-templates` 的 id 集合 == `WORKFLOW_TEMPLATE_KEYS`，但
+`list_track_templates` 直接遍历 `WORKFLOW_TEMPLATES`（`track_templates.rs:103-104`），
 统一后 `admit_template` 也遍历同一个数组。**不存在能编译通过又让两者不等的单点变异。**
 v1 声称的变异（「名册里加一个 key 而不加常量内容 ⇒ 红」）实际是经**另一条**机制变红的：
 `workflow_template_report` 返回 `None`（`workflow_templates.rs:49`）→
-`seed_workflow_template_wave` 抛 `CalmError::Internal`（`waves.rs:523-527`）→ POST 腿 500。
+`seed_workflow_template_track` 抛 `CalmError::Internal`（`tracks.rs:523-527`）→ POST 腿 500。
 和集合相等那一半无关。
 
 v2 的 #9 **不引用任何 Rust 常量**，只对比两条路由。但 v2 写的那个形状有两处毛病，
@@ -2382,10 +2382,10 @@ v2 的 #9 **不引用任何 Rust 常量**，只对比两条路由。但 v2 写�
 
 **毛病 1（通道 A J3）：「每个列出的 id ⇒ 201」这条腿在生产里是假的。**
 当 git-forge running ∧ trusted 时，`issue-development` **会被列出**
-（`routes/wave_templates.rs:100-111`），而一个**不带 `workflow_input`** 的 POST 是
-**400**——这正是本文自己矩阵的行 6（`waves.rs:986-989` + `plugins/git-forge/manifest.json:299`
+（`routes/track_templates.rs:100-111`），而一个**不带 `workflow_input`** 的 POST 是
+**400**——这正是本文自己矩阵的行 6（`tracks.rs:986-989` + `plugins/git-forge/manifest.json:299`
 的 `"required": ["issue_url", "repo", "issue_number"]`）。
-v2 的测试之所以会绿，只是因为 `tests/cases/wave_workflow_templates.rs:46` 的 `boot()`
+v2 的测试之所以会绿，只是因为 `tests/cases/track_workflow_templates.rs:46` 的 `boot()`
 **不启动任何插件**——一条**未言明的前提**。而测试 #8 马上就要在**同一个文件**里
 引入一个受信 running 的 stub 插件；谁把 fixture 提到共享 helper，#9 就会因为
 **与准入无关**的理由变红。
@@ -2399,37 +2399,37 @@ v2 的测试之所以会绿，只是因为 `tests/cases/wave_workflow_templates.
 > **v3 错在哪（通道 A M1，重扫判定成立）。** v2 断言「每个列出的 id ⇒ 201」，
 > 通道 A 在第 2 轮说这条腿「在生产里是假的」（git-forge running 时
 > `issue-development` 无 input 会 400），v3 于是把它弱化成
-> 「正文不含 `known wave template`」。**但 v3 在同一段里还钉了另一个前提：
-> `boot()`（`tests/cases/wave_workflow_templates.rs:46`）不启动任何插件。
+> 「正文不含 `known track template`」。**但 v3 在同一段里还钉了另一个前提：
+> `boot()`（`tests/cases/track_workflow_templates.rs:46`）不启动任何插件。
 > 那个前提把原来的反对意见整个消掉了**——没有 running 插件时
-> `resolve_trusted_workflow` 返回 `None`（`waves.rs:937-950`），
+> `resolve_trusted_workflow` 返回 `None`（`tracks.rs:937-950`），
 > `validate_workflow_input_binding(None, None)` 走 `:962-970` 的早退 `Ok(())`
-> （**实测 `waves.rs:972` 就是 `(None, None) => Ok(())`**），
+> （**实测 `tracks.rs:972` 就是 `(None, None) => Ok(())`**），
 > `issue-development` **根本走不到** `:977-990` 的 required-input 臂。
 > **所以在写死的前提下，每个列出的 id 都必须 201。**
 >
 > 弱化的代价是纯损失：一个换了措辞的特例
 > ——`if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`
-> ——正文里没有 `known wave template`，**弱版 #9 保持绿**，
+> ——正文里没有 `known track template`，**弱版 #9 保持绿**，
 > 而 §10.1 的 PR-1 验收 **A3** 白纸黑字说这种改动必须红。
 
 ```
-let listed: Set<String> = GET /api/wave-templates 返回的 id 集合;
+let listed: Set<String> = GET /api/track-templates 返回的 id 集合;
 assert!(!listed.is_empty());                       // 空集会让下面的全称量词平凡为真
 
 // 正方向：全集，断言状态码本身
 for id in &listed {
-    let (status, body) = POST /api/waves { template_id: id, /* 无 template_input */ };
+    let (status, body) = POST /api/tracks { template_id: id, /* 无 template_input */ };
     assert_eq!(status, 201, "listed template `{id}` was not creatable: {body}");
 }
 
 // 负方向：抽样，不是集合相等
-assert POST { template_id: "definitely-not-a-template" } == 400 + `known wave template`
-assert POST { template_id: "issue-development-x" }       == 400 + `known wave template`   // 近似串
+assert POST { template_id: "definitely-not-a-template" } == 400 + `known track template`
+assert POST { template_id: "issue-development-x" }       == 400 + `known track template`   // 近似串
 ```
 
 * **前提，显式写进测试的文档注释里，并且这次它是承重的**：本 case 依赖
-  `boot()`（`tests/cases/wave_workflow_templates.rs:46`）不启动任何插件。
+  `boot()`（`tests/cases/track_workflow_templates.rs:46`）不启动任何插件。
   **`== 201` 的正确性依赖它**（见上面的方框）。
   若将来该 harness 长出插件 fixture，本 case 必须显式使用「无插件」的那一支；
   **若前提被放宽**，断言改成显式允许清单，而**不是**退回 v3 的弱版：
@@ -2456,21 +2456,21 @@ assert POST { template_id: "issue-development-x" }       == 400 + `known wave te
 
 #### #10 的形状（INV-1209-SEED v2 的可执行版本）
 
-对 `GET /api/wave-templates` 与 `GET /api/wave-templates/{id}` 各跑一遍，
+对 `GET /api/track-templates` 与 `GET /api/track-templates/{id}` 各跑一遍，
 **每遍在两种起始状态下各跑一次**：
 
 ```
 // 起始状态 A：未播种（今天 #1230 只测了这个）
-// 起始状态 B：已播种（先 POST /api/waves {workflow_id:"small-change"} 触发 ensure）
-let before = snapshot(&repo).await;   // areas / waves / cards / **全部** overlays
+// 起始状态 B：已播种（先 POST /api/tracks {workflow_id:"small-change"} 触发 ensure）
+let before = snapshot(&repo).await;   // areas / tracks / cards / **全部** overlays
                                       // + area_folders + (events.count, events.max_id)
-                                      // + 三个模板 wave 的 report payload（或 doc_rev）
+                                      // + 三个模板 track 的 report payload（或 doc_rev）
 let (status, _) = get(app, uri).await;
 assert_eq!(status, OK);
 assert_eq!(snapshot(&repo).await, before);
 ```
 
-`snapshot` 是新 helper，不复用 `seeded_templates`（`tests/cases/wave_workflow_templates.rs:168-184`）
+`snapshot` 是新 helper，不复用 `seeded_templates`（`tests/cases/track_workflow_templates.rs:168-184`）
 ——后者只枚举 overlay，正是 §7 列出的那批漏网改动能溜过去的原因。
 **v3 相对 v2 多了三张表**（`area_folders`、`events` 的 `(count, max_id)`、
 以及**不再筛** `kind=="template"` 的全部 overlay），理由见 §7 的改名段：
@@ -2485,20 +2485,20 @@ v2 版快照看不见的写。
 > |---|---|---|
 > | areas | **有** | `areas_list()`（`:293`） |
 > | area_folders | **有** | `area_folders_list_all()`（`:316`） |
-> | waves | **有，但按 area 分片** | `waves_by_area(area_id)`（`:322`）对 `areas_list()` 的每个 area 跑一遍 |
-> | cards | **有，但按 wave / 按 area 分片** | `cards_by_wave(wave_id)`（`:380`）对上一行枚举出的每个 wave 跑一遍 |
-> | **全部** overlays | **没有** | 只有 `overlays_by_kind(entity_kind)`（`:436`，参数是**entity kind** 不是 overlay kind；既有 helper 传的是 `"view"`，见 `wave_workflow_templates.rs:169`）。**helper 必须自己枚举全部 entity kind 并逐个调**，并在文档注释里写明这份枚举是**手工维护**的——新增一种 entity kind 而不更新它，#10 会静默失去覆盖 |
+> | tracks | **有，但按 area 分片** | `tracks_by_area(area_id)`（`:322`）对 `areas_list()` 的每个 area 跑一遍 |
+> | cards | **有，但按 track / 按 area 分片** | `cards_by_track(track_id)`（`:380`）对上一行枚举出的每个 track 跑一遍 |
+> | **全部** overlays | **没有** | 只有 `overlays_by_kind(entity_kind)`（`:436`，参数是**entity kind** 不是 overlay kind；既有 helper 传的是 `"view"`，见 `track_workflow_templates.rs:169`）。**helper 必须自己枚举全部 entity kind 并逐个调**，并在文档注释里写明这份枚举是**手工维护**的——新增一种 entity kind 而不更新它，#10 会静默失去覆盖 |
 > | events 的 `(count, max_id)` | **没有 count** | `events_latest_id()`（`:830`）只给 max_id；count 用 `events_raw_window_since(0, probe_limit)`（`:780-784`，返回 `(count, max_id)`，**注意它是 bounded probe，`probe_limit` 要给得足够大**） |
-> | 三个模板 wave 的 report | **有** | 走既有的 report 读路径（同 §8.1b 用的那条） |
+> | 三个模板 track 的 report | **有** | 走既有的 report 读路径（同 §8.1b 用的那条） |
 >
 > **可实现，但不是「两条 SELECT」**，实现者要按上表逐项接线。
 > **两处最容易写错**：全 overlay 那栏（会不自觉地退回 `overlays_by_kind("view")`
 > 从而复现 v3 要修的那个漏洞）和 events count 那栏（`events_latest_id` 只有 max_id，
 > 单靠它检测不到「删一行再加一行」）。
 
-**变异清单（每条都必须让 #10 红）**：在 `list_wave_templates` 开头加
+**变异清单（每条都必须让 #10 红）**：在 `list_track_templates` 开头加
 `ensure_workflow_templates`；在 GET 里 `ensure_system_area`；在 GET 里改写某个模板
-report 的 summary；在 GET 里建一个不带 overlay 的 wave；只在「已播种」分支里写一次；
+report 的 summary；在 GET 里建一个不带 overlay 的 track；只在「已播种」分支里写一次；
 **（v3 新增）**在 GET 里 `log_pure_event` 记一条纯事件。最后三条今天是绿的。
 
 **#10 不覆盖的（诚实记账）**：起始状态 C = 「已播种但 report 读不出来」。
@@ -2515,28 +2515,28 @@ report 的 summary；在 GET 里建一个不带 overlay 的 wave；只在「已�
 * **输入统一用三个空格 `"   "`**——与 §4.4 行 2 一致。v2 的矩阵写三个空格、
   变异描述却说空串，v3 统一到 `"   "`（`trim()` 语义下两者同类，但文档不该自相矛盾）。
 * **必须排除「因为别的校验才 400」**：请求用**合法**的 `area_id`、省略 `cwd`、不带
-  `workflow_input`，并断言正文含 `known wave template` **且**回显了那个空白 id。
+  `workflow_input`，并断言正文含 `known track template` **且**回显了那个空白 id。
 * **必须断言零播种副作用**（复用 #13 的 helper）。
 * **变异（v3 更正，v2 的「让名册查找对空串返回 `Some(..)`」不是现实的生产编辑）**：
   有人把被删的守卫「恢复」成一个 **skip** ——
   `if id.trim().is_empty() { /* 当作没选模板 */ }` ⇒ 201、`plugin_scope=null`、不 fork。
-  这是删掉 `waves.rs:770-772` 之后**真正会招来的**回归方向，且**只有 #12 会红**
+  这是删掉 `tracks.rs:770-772` 之后**真正会招来的**回归方向，且**只有 #12 会红**
   （#1 `unknown_workflow_id_still_400s` 发的是 `"missing-workflow"`，不受影响）。
   按 v2 的写法，#12 与 #1 之间不存在任何能让前者红、后者绿的单点变异——那才是真问题。
 
 **#13 `pre_transaction_4xx_with_template_does_not_seed`**（通道 A J4，判定成立）：
 
 * **参数化到三条事务前的 4xx**（v2 只有第一条）：
-  1. `area_id` 不存在 ⇒ 404（`waves.rs:863-867`）——矩阵行 12；
-  2. `cwd` 非绝对路径 ⇒ 400（`waves.rs:823-828`）——矩阵行 12a；
-  3. **显式给一个不是 git 仓库的绝对路径 `cwd`** ⇒ 400（`waves.rs:843-847`）——矩阵行 12b。
+  1. `area_id` 不存在 ⇒ 404（`tracks.rs:863-867`）——矩阵行 12；
+  2. `cwd` 非绝对路径 ⇒ 400（`tracks.rs:823-828`）——矩阵行 12a；
+  3. **显式给一个不是 git 仓库的绝对路径 `cwd`** ⇒ 400（`tracks.rs:843-847`）——矩阵行 12b。
      **v4 更正（通道 A n2，判定成立）**：v3 这条腿写的是「`attach_folder` 目标」，
-     **归因错了**。`waves.rs:843` 的守卫是 `if !cwd_omitted`，**只看 `cwd` 给没给**，
+     **归因错了**。`tracks.rs:843` 的守卫是 `if !cwd_omitted`，**只看 `cwd` 给没给**，
      与 `attach_folder` 无关（实测）。测试要**显式不设** `attach_folder`
      才能证明这条腿测的是 cwd 校验；把它写成「设 `attach_folder: true`」
      会让人以为守卫在那个字段上，下一轮又要重扫一次。
 * 每条都带一个**名册内**的 `workflow_id`，断言状态码 + `snapshot` 与请求前逐字节相等。
-* **变异**：把播种块搬回今天的位置（`waves.rs:761` 之后）⇒ 三条**全部**变红。
+* **变异**：把播种块搬回今天的位置（`tracks.rs:761` 之后）⇒ 三条**全部**变红。
 * **不在 #13 范围内**：矩阵行 17（显式 fork 的事务内 400）与 409/500——
   它们在事务内判定、在播种之后，§4.2 已裁决接受并记账，**不给它们写「无副作用」的断言**
   （写了就是钉一句代码不打算说的话）。
@@ -2588,7 +2588,7 @@ report 的 summary；在 GET 里建一个不带 overlay 的 wave；只在「已�
 
 ### §10.3 旧文案断言改钉什么（§4.4 变更 B 的落地）—— **v5：是三条，不是两条**
 
-`crates/calm-server/tests/cases/wave_workflow_templates.rs:586` 与
+`crates/calm-server/tests/cases/track_workflow_templates.rs:586` 与
 `crates/calm-server/tests/forge_workflow_e2e.rs:427` 都断言错误正文含
 `must reference a registered trusted workflow`。变更 B 之后两条都会红。
 
@@ -2620,10 +2620,10 @@ untrusted + 非模板 = 与未知 id 完全相同的 400。这个「区分」不
 > （A J2、B m2），我重扫**判定成立、v2 错**。v2 说「两处都改成断言
 > `.contains("missing-workflow")`」，但：
 > * 两个调用点发的都是 `workflow_id: "missing-workflow"`
->   （`tests/cases/wave_workflow_templates.rs:577`、`tests/forge_workflow_e2e.rs:415`——
+>   （`tests/cases/track_workflow_templates.rs:577`、`tests/forge_workflow_e2e.rs:415`——
 >   `grep -rn "missing-workflow" crates/calm-server/tests/` 全仓只有这两行）；
-> * **今天的**消息本来就回显 id（`crates/calm-server/src/routes/waves.rs:765`：
->   `` wave create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}` ``）。
+> * **今天的**消息本来就回显 id（`crates/calm-server/src/routes/tracks.rs:765`：
+>   `` track create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}` ``）。
 >
 > 所以 `.contains("missing-workflow")` 在变更 B **之前和之后都绿**。
 > 也就是说：本文用整个 §4.4「变更 B」论证了旧文案陈述的是一个**不再是准入判据**的东西，
@@ -2632,12 +2632,12 @@ untrusted + 非模板 = 与未知 id 完全相同的 400。这个「区分」不
 **裁决（v3，v4 只改字段拼写）**：两处都改成**三条腿**的断言。
 **v4 注**：变更 C（§3）之后新文案里那个字段名是 `template_id`，
 所以这两条 case 发出去的请求体也要跟改；三条腿的**结构**一个字不变
-（`known wave template` 在场 / `registered trusted workflow` 不在场 / 被拒的 id 被点名），
+（`known track template` 在场 / `registered trusted workflow` 不在场 / 被拒的 id 被点名），
 因为它们钉的是**准入判据的措辞**，与字段拼写正交。
 
 ```rust
 let error = body["error"].as_str().unwrap_or("");
-assert!(error.contains("known wave template"), "body={body}");        // 新判据在场
+assert!(error.contains("known track template"), "body={body}");        // 新判据在场
 assert!(!error.contains("registered trusted workflow"), "body={body}"); // 旧判据不在场
 assert!(error.contains("missing-workflow"), "body={body}");           // 被拒的 id 被点名
 ```
@@ -2678,7 +2678,7 @@ assert!(error.contains("missing-workflow"), "body={body}");           // 被拒�
 类别 1 与类别 3 的站点漏改了，编译器会逐个报错；
 **类别 2 的站点漏改了，没有任何东西会红**——
 `today.rs` 那两行字面 SQL 会在生产的 Today 页面上炸，
-`wave-fs-viewers/schemas.ts` 会让旧 snapshot 静默丢掉模板归属，
+`track-fs-viewers/schemas.ts` 会让旧 snapshot 静默丢掉模板归属，
 `wire.ts` 的 `Omit` 会在类型层悄悄失效，三份 oracle 会与代码脱节。
 **所以 PR-2 的完成判据不是「本文那张站点表都改完了」——那张表证明不了自己是全集，
 而是「残留 grep 在一份每项都有理由的 allowlist 之外零输出」（验收 B10）。**
@@ -2704,15 +2704,15 @@ assert!(error.contains("missing-workflow"), "body={body}");           // 被拒�
 
 | # | 来源 | 发现 | 裁决 | v5 做了什么 |
 |---|---|---|---|---|
-| **T1** | **A/B1 + B/M2（两个通道独立发现，本轮 BLOCKER）** | `routes/today.rs:149`（UPDATE）与 `:162`（INSERT）把列名写成字面 SQL；改名后**编译干净、运行期炸**。v4 把 `today.rs` 归进「机械、编译器抓」，§3.3 说「三处」，§10.0 item 7 根本没提它 | **ACCEPTED（本轮最重要的一条）** | 实测两行内容逐字确认。§3.3 改成**五处生产站点**的表，每行给「谁会告诉我漏了」；`today.rs` 从机械类移进运行期风险类；顺带更正 `WAVE_SELECT_COLUMNS_W` 是 `:94` 不是 v4 写的 `:95`，并列出它俩的 **10 个词法 SELECT 消费点**与 4 处测试侧原始 SQL。验收从「一次往返」扩成 **B1 往返 + B2 Today 两条腿 + B3 迁移保值**；新增测试 #17/#18；§10.0 前言把它排在第 1 位 |
+| **T1** | **A/B1 + B/M2（两个通道独立发现，本轮 BLOCKER）** | `routes/today.rs:149`（UPDATE）与 `:162`（INSERT）把列名写成字面 SQL；改名后**编译干净、运行期炸**。v4 把 `today.rs` 归进「机械、编译器抓」，§3.3 说「三处」，§10.0 item 7 根本没提它 | **ACCEPTED（本轮最重要的一条）** | 实测两行内容逐字确认。§3.3 改成**五处生产站点**的表，每行给「谁会告诉我漏了」；`today.rs` 从机械类移进运行期风险类；顺带更正 `TRACK_SELECT_COLUMNS_W` 是 `:94` 不是 v4 写的 `:95`，并列出它俩的 **10 个词法 SELECT 消费点**与 4 处测试侧原始 SQL。验收从「一次往返」扩成 **B1 往返 + B2 Today 两条腿 + B3 迁移保值**；新增测试 #17/#18；§10.0 前言把它排在第 1 位 |
 | **T2** | **B/M1 + A/M4,M5,M7,n1** | §3.2 的「完整调用方清单」不完整：oracle 三份不是一份、`web/src/api/wire.ts` 是手写不是生成物、`plugin_host/workflow_input.rs` 整个模块一次都没出现、`fe/e2e` 坐标不全、字符串名册、注释/CSS/aria-label、生成物漏两个 | **ACCEPTED，且改的是结构不是内容** | 逐条实测全部成立。§3.2 **按通道 B 的处方重构成三类**（语义 / 非类型检查 / 机械构造），每一类的组织原则是「谁来抓」。**关键改动是加了一条 PR-2 收尾的残留 `git grep` + 五项显式 allowlist（每项附理由）**，并在节末明写「这张表不能证明是全集，真保证是那条 grep」 |
-| **T3** | **B/M3 + A/M1（两个通道独立发现）** | §3.4 / §10.0 item 4 要求 `Wave` **和 `WaveRow`** 都加 `#[serde(alias)]`；`WaveRow` 只 derive `Debug, sqlx::FromRow`，加 serde attribute 不可编译，且本来无事可做 | **ACCEPTED** | 实测 `crates/calm-truth/src/db/rows.rs:99` 确为 `#[derive(Debug, sqlx::FromRow)]`。删掉 `WaveRow` 指令；载体收敛为 `calm_types::Wave`（`crates/calm-types/src/model.rs:339`，经 `WaveUpdatedPayload`（`event.rs:83`）`flatten` 进历史事件）。§10.0 item 4 同步 |
-| **T4** | **B/M3（第三个 Zod reader）** | zod 侧不是两个 reader 是三个；`web/src/wave-fs-viewers/schemas.ts:152,160` 读旧 `wave.json`/FS snapshot，机械改名 ⇒ 旧 snapshot 静默 `template_id=null` | **ACCEPTED（这条只有通道 B 看到）** | 实测 `:160` 是 `z.unknown().default(null)`、`:152` 是 `.nullable().default(null)`——正是 fail-open 的形状。§3.4 改成三 reader 表，要求同形的单向 normalize，并禁止「把旧键做成 schema 的可选字段」（那是写口方案 B 的前端版）。测试 #14 从「两个前端各一条」改成 **Rust + 三个 parser 四条，且必须各自独立变红** |
+| **T3** | **B/M3 + A/M1（两个通道独立发现）** | §3.4 / §10.0 item 4 要求 `Track` **和 `TrackRow`** 都加 `#[serde(alias)]`；`TrackRow` 只 derive `Debug, sqlx::FromRow`，加 serde attribute 不可编译，且本来无事可做 | **ACCEPTED** | 实测 `crates/calm-truth/src/db/rows.rs:99` 确为 `#[derive(Debug, sqlx::FromRow)]`。删掉 `TrackRow` 指令；载体收敛为 `calm_types::Track`（`crates/calm-types/src/model.rs:339`，经 `TrackUpdatedPayload`（`event.rs:83`）`flatten` 进历史事件）。§10.0 item 4 同步 |
+| **T4** | **B/M3（第三个 Zod reader）** | zod 侧不是两个 reader 是三个；`web/src/track-fs-viewers/schemas.ts:152,160` 读旧 `track.json`/FS snapshot，机械改名 ⇒ 旧 snapshot 静默 `template_id=null` | **ACCEPTED（这条只有通道 B 看到）** | 实测 `:160` 是 `z.unknown().default(null)`、`:152` 是 `.nullable().default(null)`——正是 fail-open 的形状。§3.4 改成三 reader 表，要求同形的单向 normalize，并禁止「把旧键做成 schema 的可选字段」（那是写口方案 B 的前端版）。测试 #14 从「两个前端各一条」改成 **Rust + 三个 parser 四条，且必须各自独立变红** |
 | **T5** | **A/m3 + A/m4** | §3.4 的 fail-open 证据引的是 goldens（测试数据）而不是读取者；测试 #14 没点名载体 | **ACCEPTED，且发现失败模式更糟** | 实测 `Event::from_kind_and_payload` 的调用点在 `crates/calm-truth/src/db/sqlite/events.rs:577`（`events_since` 追赶路径），其 `Err` 分支（`:578-585`）只 `tracing::error!` 然后**跳过整行**。§3.4 因此写出**两条方向相反的坏路**（缺键静默 `None` / 删 `default` 后整行被跳），裁决改为 **alias + 保留 `default`**。§10.2 新增「#14 的形状」，点名 `event_serde_goldens.rs:11-27` 的 `wire`/`canonical` 三步契约，并写明「不说清会怎样」 |
 | **T6** | **B/M4** | 三处 `WEB_COMPAT_VERSION` 数目确为三，但 **CI 从不比较它们**：Rust 侧断言字面量（`tests/cases/version.rs:148,153`）、两个前端各读自己的本地常量；计划测试 #15 只能证明服务端 floor | **ACCEPTED（v4 的「三处 lockstep」是名不副实）** | 实测三处都是 `16`，且 `version.rs:148`/`:153` 确实是字面量断言。§3.6 加了**三种漂移后果表**（今天全绿），并把「PR-2 必须二选一：(a) 比较三处导出值的 CI 静态门禁 / (b) 单一源生成」写成硬要求，推荐 (a)。#15 更名为 `web_compat_floor_is_above_the_previous_bundle` 并降低 claim；(b) 进 §9 非目标 12 |
-| **T7** | **B/M5** | §4.4 不是两棵树：事务在 `waves.rs:1609` 提交后还有 `materialize_workspace`（`:1620-1633`，可返回非 2xx 而副作用已提交）与 spec-harness start（`:1660-1676`）；旧拼写 400 发生在 serde extractor、函数体之前 | **ACCEPTED（v4 漏了一整段）** | 实测四个坐标全部成立，且 P1 的孤儿结果**今天就被 `wave_workspace_materialize.rs:270-313` 明确钉住**（注释 `:293-306` 逐字写着「不要靠放松断言来修」）。§4.4 改成**四个阶段**（0 serde extractor / 1 事务前 / 2 事务内 / 3 事务后），矩阵新增行 P1；`waves.rs:759-760` 的注释改写文本再加一句 |
+| **T7** | **B/M5** | §4.4 不是两棵树：事务在 `tracks.rs:1609` 提交后还有 `materialize_workspace`（`:1620-1633`，可返回非 2xx 而副作用已提交）与 spec-harness start（`:1660-1676`）；旧拼写 400 发生在 serde extractor、函数体之前 | **ACCEPTED（v4 漏了一整段）** | 实测四个坐标全部成立，且 P1 的孤儿结果**今天就被 `track_workspace_materialize.rs:270-313` 明确钉住**（注释 `:293-306` 逐字写着「不要靠放松断言来修」）。§4.4 改成**四个阶段**（0 serde extractor / 1 事务前 / 2 事务内 / 3 事务后），矩阵新增行 P1；`tracks.rs:759-760` 的注释改写文本再加一句 |
 | **T8** | **B/M5 的尾巴** | 横切错误的载体写错：v4 写「任何 `await?`」，但 `materialize` 是同步 `?`、`resolve_trusted_workflow(...).await` **根本没有 `?`** | **ACCEPTED** | 实测两处都成立。改为「**任何可失败的 DB / FS 操作**」，并把两个反例写进正文——这条修的不是措辞，是一个会让人按错模型写测试期望的判据 |
-| **T9** | **B/M5 + A（矩阵）** | 「统一后」在同一张表里同时指 PR-1 后与 PR-2 后；行 6/8/9/10/11 在终态仍承诺旧的 `workflow_input`/`workflow_id` 错误串 | **ACCEPTED** | 矩阵拆成 **今天 / PR-1 后 / PR-2 后** 三组列，先给通用映射规则（含旧串的正文一律换，状态码与顺序不变），再逐行标例外。行 10 尤其点名：它的正文产生处**不在 `waves.rs`**，在 `plugin_host/workflow_input.rs` —— 正是 T2 里 v4 整个漏掉的那个模块 |
+| **T9** | **B/M5 + A（矩阵）** | 「统一后」在同一张表里同时指 PR-1 后与 PR-2 后；行 6/8/9/10/11 在终态仍承诺旧的 `workflow_input`/`workflow_id` 错误串 | **ACCEPTED** | 矩阵拆成 **今天 / PR-1 后 / PR-2 后** 三组列，先给通用映射规则（含旧串的正文一律换，状态码与顺序不变），再逐行标例外。行 10 尤其点名：它的正文产生处**不在 `tracks.rs`**，在 `plugin_host/workflow_input.rs` —— 正是 T2 里 v4 整个漏掉的那个模块 |
 | **T10** | **A/M3 + B/MINOR2（两个通道独立发现）** | §8.2 自称「对 `7b85caa3` 复测」的 `1230-s1` 坐标**在任何提交上都复现不出来**（`7b85caa3` 与 `b93fb767` 逐字节相同；`d51571d7` 又是另一组），来自 dirty working tree | **ACCEPTED（一条自称 OBSERVED 的数据不可复现，本仓有专门的记忆条目）** | 实测本轮 HEAD 已经是**第四个**基线 `3b9cc03c`。**处置不是更新坐标，是删掉全部 `1230-s1` 行号**——四轮四变，文档承载不了另一条活分支的坐标。只留「6 test + 1 生产 + 1 import」这个在四个基线上都成立的形状，外加「合流时对当时的 HEAD 重跑 grep」这条动作。文首新增「v5 的记账纪律」，§8 开头新增基线声明（通道 A n2 也提了这个位置问题） |
 | **T11** | **A/M2 + B/MINOR1（两个通道独立发现）** | §5.3 说 `productMajor` 有两条 pin；`manifest.rs:302` 是空的——它只解析一段硬编码 `"productMajor": 0` 的字节串（`:275`），从不调 `product_major()` | **ACCEPTED（v4 自己造了一个假门禁）** | 逐行实测：`package.rs:508` 的 `with_env_removed("NEIGE_PRODUCT_MAJOR", …)` 包住函数体 ⇒ `:546` 是真 pin（v4 写的 `:507` 差一行，一并更正）；`manifest.rs:271` 那条是纯 parser fixture ⇒ 永远绿。§5.3 改成**单数**：package smoke 是 pin，manifest 测试是 fixture，**且不许被算作门禁**。验收 B7 同步 |
 | **T12** | **A/M6 + B/MINOR2 尾巴** | §8.2 仍写「#1209 对 wire 零改动（§3）」——v3 为真、v4 为假；照字面执行的人会整份取走 #1230 的生成物，永不与改名和解 | **ACCEPTED** | 规则整条重写：**两侧生成物都不取** → 先合 Rust → 从合并树重新生成（`ci.yml:1186-1187` + `:1190`）→ 由 `ci.yml:1194` 的 `git diff --exit-code` 裁决 → **不许手改产物让它绿** |
@@ -2721,11 +2721,11 @@ assert!(error.contains("missing-workflow"), "body={body}");           // 被拒�
 | **T15** | **A/m5 + B/M6** | PR-2 内容栏只列 #14/#15，判据栏却写「三条新测试」；#16 是 §3.5 整个拒绝策略的唯一 pin | **ACCEPTED** | 切片表的 PR-2 内容栏补 #16，并因 T1 新增 #17/#18 ⇒ **五条新测试**，判据栏同步 |
 | **T16** | **B/M6 第三点** | 「升级前备份」只有一句占位符，落在名为「插件兼容性」的小节下，没有命令、没有目标路径、没有 `calm.db/-wal/-shm` 一致性方法 | **ACCEPTED（发现成立），但 v5 逐行读代码后改写了它的前提** | 见下面第 2 张表的 **X1**——通道 A 的证据主张有一半是错的，我驳回并给了更准的版本。落点改到 `docs/deploy-and-upgrade.md:344` 的「## 8. Pre-flight checklist」，在 `allowBreaking: true` 那条之前，自成小节，三段可执行内容（自动备份的事实 / 在线备份命令 / 手工恢复三步），外加更正该文件 `:26` 的错误括注 |
 | **T17** | **A/m1** | §8.1b 宣布的「合流硬前提」**已经被上游满足了而文档不知道**：`current_definition` 已 `?` 上抛，注释逐字复述了本文的发现 | **ACCEPTED（结案）** | 实测 `1230-s1@3b9cc03c` 的 `current_definition`：两个 `?` 都在，降级分支没了，注释写着 "A *read failure* on it is an error, never a reason to answer with the constants"。§8.1b 加 **CLOSED 方框**；§7 的状态 C 备案作废；§11「仍需人裁」移除相关条目 |
-| **T18** | **A/m7** | PR-1 自己的错误文案从未被写出来（§4.4 变更 B 给的是 PR-2 字段名） | **ACCEPTED** | §10.1 明写 PR-1 落 ``wave create: `workflow_id` must reference a known wave template; got `{id}` ``，PR-2 再改一次；并**明说 §10.3 的三条腿在两个阶段都成立**（没有一条钉字段名），免得有人加第四条腿然后在 PR-2 把它打红 |
+| **T18** | **A/m7** | PR-1 自己的错误文案从未被写出来（§4.4 变更 B 给的是 PR-2 字段名） | **ACCEPTED** | §10.1 明写 PR-1 落 ``track create: `workflow_id` must reference a known track template; got `{id}` ``，PR-2 再改一次；并**明说 §10.3 的三条腿在两个阶段都成立**（没有一条钉字段名），免得有人加第四条腿然后在 PR-2 把它打红 |
 | **T19** | **A/m7 尾巴** | §10.3 说「两条」旧文案断言；还有第三条 `forge_workflow_e2e.rs:203` 的 `contains("workflow_id")`，不在任何文件清单里 | **ACCEPTED** | 实测该行确为 `body["error"].as_str().unwrap_or("").contains("workflow_id")`。§10.3 加方框说明它**只被变更 C 打红、不被变更 B 打红**，处置是改成 `template_id` 且**不要**给它加三条腿；文件清单补入 |
 | **T20** | **A/m9 + A 的 §3.8 裁定** | 「manifest `workflows[]` 不改名」不在 §9 非目标里；且 §3.8 给的理由（「有文档的适配边界」）恰是人刚推翻过的那一招 | **ACCEPTED（结论对，理由换）** | §3.8 按 §5.3 已有的 **schema vs 接受语义** 重写：改 `workflows[]` 是 Tier A **schema** 破坏（`upgrade-stability.md:9` + `manifest.rs:93-100`/`:467-475`，第三方 manifest 解析期就炸），而 D4-A 只改接受语义、schema 一字节不动。**并诚实记下残余命名债**（D4-A 后该数组每个合法值都是 template key，容器名变怪），进 §9 非目标 11 + 跟进 issue |
-| **T21** | **A/m6 + B/M2 尾巴** | 带字面列名的测试 fixture 未记账；`wave_plugin_scope_migration_tests.rs` 那一族跑在历史 schema 上，改与不改取决于它停在哪 | **ACCEPTED** | §3.3 单列四处测试侧原始 SQL（含 `child_wave_adapter.rs:1350`——**实测在 `#[cfg(test)] mod tests` 内，该 mod 自 `:499` 起**，通道 B 归类为测试是对的）。`wave_plugin_scope_migration_tests.rs:66` 进 §3.2 的 allowlist 第 2 项，理由是它**故意**停在 `0075`（该文件 `:60-64` 的注释自己写明了） |
-| **T22** | **B/M1 尾巴** | 「170 个 Rust 文件」不可复现 | **ACCEPTED** | v5 复跑，通道 B 的数字逐个复现：`workflow_id` 173/168、`workflow_input` 165/162、`NewWave {` 147。§3.2 **附上产生它们的命令**，并明写「这些数字只用来说明为什么切两个 PR，不用来说明覆盖度」 |
+| **T21** | **A/m6 + B/M2 尾巴** | 带字面列名的测试 fixture 未记账；`track_plugin_scope_migration_tests.rs` 那一族跑在历史 schema 上，改与不改取决于它停在哪 | **ACCEPTED** | §3.3 单列四处测试侧原始 SQL（含 `child_track_adapter.rs:1350`——**实测在 `#[cfg(test)] mod tests` 内，该 mod 自 `:499` 起**，通道 B 归类为测试是对的）。`track_plugin_scope_migration_tests.rs:66` 进 §3.2 的 allowlist 第 2 项，理由是它**故意**停在 `0075`（该文件 `:60-64` 的注释自己写明了） |
+| **T22** | **B/M1 尾巴** | 「170 个 Rust 文件」不可复现 | **ACCEPTED** | v5 复跑，通道 B 的数字逐个复现：`workflow_id` 173/168、`workflow_input` 165/162、`NewTrack {` 147。§3.2 **附上产生它们的命令**，并明写「这些数字只用来说明为什么切两个 PR，不用来说明覆盖度」 |
 | **T23** | **A/m8 + B「DB 与版本号核证摘要」** | 迁移号核证 | **ACCEPTED（正面确认）** | 两个通道独立确认：最新是 `0078_cards_role_assistant.sql`，`0079` 空闲；`0059:6` / `0061:8` 是两列的创建者；`0076` 重放顺序安全的说明正确；**仓内无 `.sqlx` / `SQLX_OFFLINE` / `query!`，不需要 `cargo sqlx prepare`**。§3.3 把 `00NN` 定为 `0079` 并注明「rebase 后要复查撞号」——这是本文唯一允许留到实现期的坐标 |
 | **T24** | **A（`tool_visibility` 复核）+ B（MCP 面）** | 两个通道独立复核 `mcp_server/tool_visibility.rs` 干净、无 MCP 工具面暴露该字段 | **正面确认，不动** | §3.2 类别 1 把这条写成**显式的「不要动」**（七处命中 = 两条注释 + 五处测试结构体字面量；真 gate 只读 `plugin_scope`，`:109`），免得实现者「顺手」改坏它 |
 | **T25** | 两个通道的其它正面确认 | v4 的核心推理（D2 重开、alias 的不对称、`productMajor` 空指令的发现、两 PR 建议、`compute_verdict` 比的是 target vs installed、§1.5 新模块头的最终语义与 D4-A 一致）以及新材料里绝大多数行号引用 | **不动** | v5 **没有**碰这些结论。唯一被改的是它们的**归属与时序**（模块头进 PR-2、`productMajor` 的 pin 收敛为单数） |
@@ -2768,21 +2768,21 @@ v5 的做法仍然是**两个方向都验**——本轮 24 条采纳、1 条驳�
 
 | # | 来源 | 发现 | 裁决 | v4 做了什么 |
 |---|---|---|---|---|
-| S1 | **B/M1** | §4.4 的错误优先级树与真实事务控制流不符：显式 fork 校验被排在 folder claim 之前；「DB/IO 永远是第 9 级」为假 | **ACCEPTED（本轮最实在的一条）** | 独立复核：`enforce_folder_claim_tx` 在 `waves.rs:1391`（其上注释明写 "Must stay first"）、`wave_create_tx` `:1401-1402`、显式 fork 校验 `:1408` 起。§4.4 拆成**两棵树**（事务前 1–6 / 事务内 T1–T4），并把 generic DB/IO 标成**每个 `await?` 都可能发生的横切错误**而不是固定末级。行 17 在「无 folder 冲突」前提下仍成立，明写 |
-| S2 | **B/M1 的尾巴 + A/n1** | §4.4 说今天的播种在「第 1 步之后」；实为第 2 步之后 | **ACCEPTED** | 实测：`validate_workflow_input_binding` 在 `waves.rs:790`，播种块 `:799-814`。改为「第 2 步之后 → 搬到第 5 步之后」 |
+| S1 | **B/M1** | §4.4 的错误优先级树与真实事务控制流不符：显式 fork 校验被排在 folder claim 之前；「DB/IO 永远是第 9 级」为假 | **ACCEPTED（本轮最实在的一条）** | 独立复核：`enforce_folder_claim_tx` 在 `tracks.rs:1391`（其上注释明写 "Must stay first"）、`track_create_tx` `:1401-1402`、显式 fork 校验 `:1408` 起。§4.4 拆成**两棵树**（事务前 1–6 / 事务内 T1–T4），并把 generic DB/IO 标成**每个 `await?` 都可能发生的横切错误**而不是固定末级。行 17 在「无 folder 冲突」前提下仍成立，明写 |
+| S2 | **B/M1 的尾巴 + A/n1** | §4.4 说今天的播种在「第 1 步之后」；实为第 2 步之后 | **ACCEPTED** | 实测：`validate_workflow_input_binding` 在 `tracks.rs:790`，播种块 `:799-814`。改为「第 2 步之后 → 搬到第 5 步之后」 |
 | S3 | **B/M2** | §5.3 的「不动 `productMajor` ⇒ preserving」与仓库自己的兼容性定义冲突：文档自称 breaking、机器判 `Preserving` | **ACCEPTED（发现成立），但处置由人裁决** | 见第 2 张表的 H1。§5.3 整段重写：先写清 v3 错在哪（同一个词指两件相反的事）、写出 Tier A 的「manifest schema vs 接受语义」分辨（它其实**支持** Tier D 那一支）、再说明为什么不走那一支。**并纠正 v3 的一处事实错误**：`compute_verdict` 比的是 target 与 **installed** 的 `product_major`（`preflight.rs:206`），装上后 installed 也更新（`installed.rs:48`），所以不是「每次升级都被拒」而是**一次** |
-| S4 | **A/M1** | 测试 #9 的正例腿被 v3 弱化成「正文不含 `known wave template`」，漏掉了它要防的回归类 | **ACCEPTED，撤回 v3 的弱化** | 复核：v3 自己钉的前提（`boot()` 不起插件）把第 2 轮那条反对意见整个消掉了——无 running 插件 ⇒ `resolve_trusted_workflow` 返回 `None` ⇒ `validate_workflow_input_binding(None,None)` 走 `waves.rs:972` 的 `(None,None) => Ok(())` 早退 ⇒ `issue-development` 走不到 `:977-990`。§10.2「#9 的形状」恢复 `assert_eq!(status, 201)`，并给出「前提被放宽时」的显式允许清单版本；§10.1 验收 #3 同步，反例点名那个换措辞的特例 |
-| S5 | **A/m2** | §10.2 #10 的 snapshot 不是「同一个 sqlx helper 加两条 SELECT」：trait 上**没有** all-overlays 访问器，也**没有** events count | **ACCEPTED** | 复核 `crates/calm-truth/src/db/mod.rs`：`overlays_by_kind(entity_kind)`（`:436`，既有 helper 传的是 `"view"`，`wave_workflow_templates.rs:169`）、`area_folders_list_all`（`:316`）、`events_latest_id`（`:830`，**只有 max_id**）、`events_raw_window_since(since,limit) -> (count, max_id)`（`:780-784`）。§10.2 加了一张**逐栏点名访问器**的表 + 两处最容易写错的地方 |
-| S6 | **A/m4** | §2.2 的「名册唯一查找入口」在合并后为假：`current_definition` 回落分支开手写了一次 `WORKFLOW_TEMPLATES.iter().find(..)` | **ACCEPTED** | 复核 `1230-s1@b93fb767 routes/wave_templates.rs:270-274`（`Ok(Definition {` 在 `:270`、`.find` 在 `:273`）。§2.2 的 claim 收窄为「唯一的**可失败查找 helper**」；§8.2 把它列为**第 8 个站点**并明写**验收 #7 的 grep 抓不到它**（它不用那两个符号）；合并规则 = 两侧都不动 |
+| S4 | **A/M1** | 测试 #9 的正例腿被 v3 弱化成「正文不含 `known track template`」，漏掉了它要防的回归类 | **ACCEPTED，撤回 v3 的弱化** | 复核：v3 自己钉的前提（`boot()` 不起插件）把第 2 轮那条反对意见整个消掉了——无 running 插件 ⇒ `resolve_trusted_workflow` 返回 `None` ⇒ `validate_workflow_input_binding(None,None)` 走 `tracks.rs:972` 的 `(None,None) => Ok(())` 早退 ⇒ `issue-development` 走不到 `:977-990`。§10.2「#9 的形状」恢复 `assert_eq!(status, 201)`，并给出「前提被放宽时」的显式允许清单版本；§10.1 验收 #3 同步，反例点名那个换措辞的特例 |
+| S5 | **A/m2** | §10.2 #10 的 snapshot 不是「同一个 sqlx helper 加两条 SELECT」：trait 上**没有** all-overlays 访问器，也**没有** events count | **ACCEPTED** | 复核 `crates/calm-truth/src/db/mod.rs`：`overlays_by_kind(entity_kind)`（`:436`，既有 helper 传的是 `"view"`，`track_workflow_templates.rs:169`）、`area_folders_list_all`（`:316`）、`events_latest_id`（`:830`，**只有 max_id**）、`events_raw_window_since(since,limit) -> (count, max_id)`（`:780-784`）。§10.2 加了一张**逐栏点名访问器**的表 + 两处最容易写错的地方 |
+| S6 | **A/m4** | §2.2 的「名册唯一查找入口」在合并后为假：`current_definition` 回落分支开手写了一次 `WORKFLOW_TEMPLATES.iter().find(..)` | **ACCEPTED** | 复核 `1230-s1@b93fb767 routes/track_templates.rs:270-274`（`Ok(Definition {` 在 `:270`、`.find` 在 `:273`）。§2.2 的 claim 收窄为「唯一的**可失败查找 helper**」；§8.2 把它列为**第 8 个站点**并明写**验收 #7 的 grep 抓不到它**（它不用那两个符号）；合并规则 = 两侧都不动 |
 | S7 | **B/n3 + A/m3** | §8.2 的「6 处 + 1 import」与它自己那张 7 行表矛盾 | **ACCEPTED（措辞）** | 改为「**6 个 test 使用点 + 1 个生产使用点 + 1 处 import**」。**并 v4 复测**：在 `1230-s1` 的**当前** HEAD `7b85caa3` 上同一条 grep 给出同样的 **6+1+1** 形状、**全部新坐标**（坐标 **v5 已判定不可复现并全部删除**，见 T10）。结论：形状可写进设计，行号不可 |
 | S8 | **B/n4** | §5.3 的 `jq` 扫描循环在插件根目录为空/不存在时会报错 | **ACCEPTED** | 复核 `plugin_host/registry.rs:118-130` 明写容忍缺失目录。循环里加 `[ -f "$m" ] || continue`，并给出**成对**的正例/反例（3 个 manifest 含 1 个越界 ⇒ 1 行输出；目录不存在 ⇒ 零输出 + 退出码 0） |
 | S9 | **A/m1** | §10.1 验收 #4「矩阵逐行有断言」为假：行 13/14 无测试，行 17 被 §10.2 #13 明确拒绝——而那条拒绝是 v3 自己加的 | **ACCEPTED（v3 的内部自相矛盾）** | 验收 #4 改写为「行 1–12b/15/16/18–20 落到 §10.2 的编号；13/14/17 **有意不钉**（§4.2 的裁决）」 |
 | S10 | **A/m5** | §10.2 #8 的第 3 条「零播种副作用」不鉴别任何东西 | **ACCEPTED（降级，不删除）** | 复核成立：名册外 id 在正确代码与被点名的变异下**都不播种**。警告框里把它从「三条硬要求之一」降为**便宜的保险**，并写明真正承重的是第 1、2 条腿；同时说明它仍能抓住「fallback 被塞进播种分支」那个变体 |
-| S11 | **A/n2** | 矩阵行 12b 与 #13 第 3 条腿把 400 归给 `attach_folder`；实际 `waves.rs:843` 只看 `!cwd_omitted` | **ACCEPTED** | 实测 `sed -n '843,847p'` 确认守卫条件。行 12b 与 #13 第 3 条腿都改成「显式给一个不是 git 仓库的绝对路径 `cwd`」，并要求测试**显式不设** `attach_folder` |
+| S11 | **A/n2** | 矩阵行 12b 与 #13 第 3 条腿把 400 归给 `attach_folder`；实际 `tracks.rs:843` 只看 `!cwd_omitted` | **ACCEPTED** | 实测 `sed -n '843,847p'` 确认守卫条件。行 12b 与 #13 第 3 条腿都改成「显式给一个不是 git 仓库的绝对路径 `cwd`」，并要求测试**显式不设** `attach_folder` |
 | S12 | **A/n3** | §5.3 引「九个 compatibility 字段（`:74`）」，实际在 `docs/deploy-and-upgrade.md:73` | **ACCEPTED** | 实测第 73 行是 `` `compatibility { ... }` (9 fields sourced from ``。§5.3 重写时该引用已随整段改掉；相关论证现在直接引 `preflight.rs:287-296` 的 `compatibility_breaks` 源码，比引文档更稳 |
 | S13 | **A/n4** | §9 风险表仍写缓解「release note」，§5.3 早已换成具名的 `docs/deploy-and-upgrade.md` 一节 | **ACCEPTED** | 该格改为具名落点 + 内联 `jq` 扫描 |
 | S14 | **A/n5** | §8.2 说 #1230-first 的破坏「静默到编译期」、只有验收 #7 守着；但 CI 触发于 `pull_request` 并构建 merge commit，后落地的 PR 必然自动红，「中高」偏高 | **ACCEPTED（下调，不删门禁）** | 复核 `.github/workflows/ci.yml:3` 的 `pull_request` 触发。风险等级 中高 → **中**，理由写进格子；验收 #7 保留，理由是它**更早、更本地，且能指出漏了哪一处**（CI 只告诉你编译不过） |
-| S15 | 两个通道的正面确认 | 测试 #8 真的会红、§10.3 三条腿可证伪、§8.1b 是真门禁、`jq` 过滤器对真 manifest 可用、§8.2 的 7 站点表在 `b93fb767` 上逐字复现、`list_wave_templates` 的撤回是自洽的、v3 的四条引用驳回全部正确 | **不动** | v4 **没有**碰这些结论。唯一的例外是 §8.2 的站点表：**措辞**按 S7 改、**坐标**按 S7 复测——表本身没有被判错 |
+| S15 | 两个通道的正面确认 | 测试 #8 真的会红、§10.3 三条腿可证伪、§8.1b 是真门禁、`jq` 过滤器对真 manifest 可用、§8.2 的 7 站点表在 `b93fb767` 上逐字复现、`list_track_templates` 的撤回是自洽的、v3 的四条引用驳回全部正确 | **不动** | v4 **没有**碰这些结论。唯一的例外是 §8.2 的站点表：**措辞**按 S7 改、**坐标**按 S7 复测——表本身没有被判错 |
 
 #### 第 2 张表 — 人的决定（不是评审发现）
 
@@ -2820,25 +2820,25 @@ D5 `input_schema` 留在插件、D6 播种不对称、§8 的合流策略）。
 
 | # | 来源 | 发现 | 裁决 | v3 做了什么 |
 |---|---|---|---|---|
-| R1 | A J2 + B m2 | §10.3 的 `.contains("missing-workflow")` 变更 B 前后都绿，不是 pin | **ACCEPTED** | 复核：两个调用点都发 `missing-workflow`（`wave_workflow_templates.rs:577`、`forge_workflow_e2e.rs:415`，全仓仅此两处），今天的消息本就回显 id（`waves.rs:765`）。§10.3 改成**三条腿**（`known wave template` 在场 + `registered trusted workflow` 不在场 + id 被点名）；§10.2 #1 的变异列点名「恢复 registry 措辞」 |
-| R2 | A J3 + B M4 | 测试 #9 的「每个列出 id ⇒ 201」腿在生产里为假；负方向只有两个 sentinel | **ACCEPTED** | 复核：`waves.rs:986-989` + `manifest.json:299` 使 `issue-development` 无 input ⇒ 400；`boot()`（`:46`）不起插件是未言明前提，而 #8 正要在同文件引入受信 stub。§10.2「#9 的形状」重写为「**没有列出的 id 会以 unknown-template 400 被拒**」+ 显式无插件前提 + **把负方向诚实标注为抽样**；§10.1 验收 #3 同步；「一句话总结」的口号也改了 |
-| R3 | A J4 + **B M2** | 搬位改变的 4xx 副作用面不止 area-404；**B 另找到事务内的显式 fork 400** | **ACCEPTED（两半都成立）** | 复核：`waves.rs:823-828`（cwd 形状）、`:843-847`（attached）今天同样先播种再 400；`waves.rs:1408` 的 fork 分支在**事务内**，`:1410-1418`（源不存在）与 `:1424-1430`（跨 area）都是 `BadRequest`。§4.4 补行 **12a / 12b / 17**；前提 4 允许行 17 破例；§4.2 把「事务内还有什么」从两类改成三类；#13 参数化到三条**事务前** 4xx。**行 17 裁决：接受残余、不前移**（前移=事务外再抄一遍判据，撞 Mirror Code；播种幂等，代价有界）——**这是判断，不是发现** |
+| R1 | A J2 + B m2 | §10.3 的 `.contains("missing-workflow")` 变更 B 前后都绿，不是 pin | **ACCEPTED** | 复核：两个调用点都发 `missing-workflow`（`track_workflow_templates.rs:577`、`forge_workflow_e2e.rs:415`，全仓仅此两处），今天的消息本就回显 id（`tracks.rs:765`）。§10.3 改成**三条腿**（`known track template` 在场 + `registered trusted workflow` 不在场 + id 被点名）；§10.2 #1 的变异列点名「恢复 registry 措辞」 |
+| R2 | A J3 + B M4 | 测试 #9 的「每个列出 id ⇒ 201」腿在生产里为假；负方向只有两个 sentinel | **ACCEPTED** | 复核：`tracks.rs:986-989` + `manifest.json:299` 使 `issue-development` 无 input ⇒ 400；`boot()`（`:46`）不起插件是未言明前提，而 #8 正要在同文件引入受信 stub。§10.2「#9 的形状」重写为「**没有列出的 id 会以 unknown-template 400 被拒**」+ 显式无插件前提 + **把负方向诚实标注为抽样**；§10.1 验收 #3 同步；「一句话总结」的口号也改了 |
+| R3 | A J4 + **B M2** | 搬位改变的 4xx 副作用面不止 area-404；**B 另找到事务内的显式 fork 400** | **ACCEPTED（两半都成立）** | 复核：`tracks.rs:823-828`（cwd 形状）、`:843-847`（attached）今天同样先播种再 400；`tracks.rs:1408` 的 fork 分支在**事务内**，`:1410-1418`（源不存在）与 `:1424-1430`（跨 area）都是 `BadRequest`。§4.4 补行 **12a / 12b / 17**；前提 4 允许行 17 破例；§4.2 把「事务内还有什么」从两类改成三类；#13 参数化到三条**事务前** 4xx。**行 17 裁决：接受残余、不前移**（前移=事务外再抄一遍判据，撞 Mirror Code；播种幂等，代价有界）——**这是判断，不是发现** |
 | R4 | A J5 + B M6 | F11 的缓解 2/3 无产物、无归属、不在文件清单；`productMajor` 未裁 | **ACCEPTED** | 复核：无 `CHANGELOG`、无 `docs/release*`、`grep -n plugin docs/deploy-and-upgrade.md` 零输出——全部属实。§5.3 把 2/3 落到**具名文件** `docs/deploy-and-upgrade.md`（新建「插件兼容性」一节）+ **内联 jq 扫描命令**；§10.1 文件清单补入该文件。**`productMajor` 裁决：不动**——`deploy-and-upgrade.md:242` 的 `breaking` 三条判据（productMajor / wire / 破坏性迁移）本变更一条不占，撞上去会让每次升级被 `allowBreaking=false` 拒掉。**这是判断，不是发现** |
-| R5 | A J6 + B M5 | `workflow_templates.rs` 的合并手术是 7 处不是 2 处；这一对**不是**顺序无关 | **ACCEPTED（本轮第二锋利）** | 复核实测：`1230-s1` 里 `WORKFLOW_TEMPLATE_KEYS` 在 `:451`/`:470`/`:627`/`:677`，`is_workflow_template_key` 在 `:628`/`:637`，生产调用方 `routes/wave_templates.rs:298`（`fn` `:297`、import `:122`）= **6 + 1 import**。§8.2 换上实测清单 + 三种落地顺序的逐一结论 + **§10.1 新增验收 #7：在合并后的树上 grep 两个符号必须零输出**（并成对给出「只在本分支跑必绿」这个反例） |
+| R5 | A J6 + B M5 | `workflow_templates.rs` 的合并手术是 7 处不是 2 处；这一对**不是**顺序无关 | **ACCEPTED（本轮第二锋利）** | 复核实测：`1230-s1` 里 `WORKFLOW_TEMPLATE_KEYS` 在 `:451`/`:470`/`:627`/`:677`，`is_workflow_template_key` 在 `:628`/`:637`，生产调用方 `routes/track_templates.rs:298`（`fn` `:297`、import `:122`）= **6 + 1 import**。§8.2 换上实测清单 + 三种落地顺序的逐一结论 + **§10.1 新增验收 #7：在合并后的树上 grep 两个符号必须零输出**（并成对给出「只在本分支跑必绿」这个反例） |
 | R6 | A J1（**实跑**） | §8.2 的 clippy 论断为假：`--all-targets` 的 `--lib` 目标不带 `cfg(test)`，dead_code 照常发 | **ACCEPTED** | **我独立复跑了玩具 crate**（`pub(crate) mod` + `pub const` + 只被 `#[cfg(test)]` 用的 `pub fn`），`cargo clippy --all-targets` 输出两条 `never used`。§8.2 改写为「lint 作业（`ci.yml:304-305`）**先**红，release 构建（`:901`）**也**红」；§10.1 验收 #6 的理由更正（两条都留是因为复刻两个 CI 作业，不是因为 clippy 瞎）。**结论不变：仍然删符号。** 元教训入文首：这条链 v1 提出、v2 标「独立复核成立」，到 v3 才有人真的跑（CLAUDE.md「Review Cannot Replace Execution」） |
 | R7 | A m1 + B m3 | #12 的变异不现实（与 #1 近乎重复）；空白 id 空串 vs 三空格自相矛盾 | **ACCEPTED** | §10.2 新增「#12 / #13 的形状」：变异改述为**「守卫被恢复成 skip ⇒ 201/`plugin_scope=null`/不 fork」**（这才是删守卫真正招来的回归，且只有 #12 会红）；输入统一为 `"   "`；补「合法 area/省略 cwd/无 input」前提 + 断言具体准入错误 + 零播种副作用 |
 | A m2 | A only | INV-SEED 缺起始状态 C（已播种但读不出） | **ACCEPTED，但换了处置方式** | 复核：若 #1230 用「读时修复」关 F13，一次 GET 就写库而 #10 两态全绿——活岔路属实。**不给 #10 加人造损坏态**，改为对 §8.1b 下**硬裁决：必须朝 500 上抛**（见 R9）。代价写进 §7：若 #1230 坚持降级，#10 必须补状态 C |
-| A m5 | A only | 读口调 `admit_template` 是冗余可失败查找，失败模式是静默「无 schema」 | **ACCEPTED，且 v3 撤回了 v2 的改动** | 复核 `routes/wave_templates.rs:100-111`：循环本就遍历 `WORKFLOW_TEMPLATES`，准入已成立。**规则改为「`list_wave_templates` 这一行两侧都不动」**，继续直接调共享解析器 `resolve_trusted_workflow`。附带收益：与 #1230 少一个接触点（§8.3 的「两处实现改一行」降为一处） |
-| B M3 | B only | **测试 #8 按 v2 配方会假绿** | **ACCEPTED（本轮最锋利）** | 复核：`wave_templates_read.rs` 的 stub manifest 带 `"input_schema": stub_input_schema()`（`:106`，`required: ["issue_url"]` 在 `:61`）；无 input 的 POST 撞 `waves.rs:977-990` 的 required-input 400 ⇒ 即便把插件 fallback 加回去测试仍绿。§10.2 加了警告框 + 三条硬要求（stub 去掉 schema 或带合法 input；断言**拒绝理由**；断言零播种副作用）+ 成对变异判据；§9 风险表新增一行 |
-| B M1 | B only | 矩阵把 area-404 的优先级写反了；行 3/9/10 缺插件前提 | **ACCEPTED** | 复核：准入在 `waves.rs:761`，area 查找在 `:863-867` ⇒「未知 id + 不存在 area」是 **400**。§4.4 新增**错误优先级树**（9 级，含事务内三类）；前提 1 改写为「它的作用是让第 5 步不触发，**不是**优先级断言」；新增前提 6（默认无 running∧trusted 插件）；行 3/9/10 各自补前提 |
-| B M7 | B only | F13 只是一段话，不在任何切片门禁里 | **ACCEPTED（升级为合流硬前提）** | §8.1b 从「建议裁决」改写为**裁决 + 归属 + 门禁**：`current_definition` 必须 `?` 上抛 500（`1230-s1 routes/wave_templates.rs:256-258`，回落分支 `:270-278`）；归属 #1230 作者；门禁 = #1230 侧一条真路由测试（坏掉 report 载荷 ⇒ GET 500 且库不被改写）；合流前必须已落。与 A m2 用同一条裁决关闭 |
+| A m5 | A only | 读口调 `admit_template` 是冗余可失败查找，失败模式是静默「无 schema」 | **ACCEPTED，且 v3 撤回了 v2 的改动** | 复核 `routes/track_templates.rs:100-111`：循环本就遍历 `WORKFLOW_TEMPLATES`，准入已成立。**规则改为「`list_track_templates` 这一行两侧都不动」**，继续直接调共享解析器 `resolve_trusted_workflow`。附带收益：与 #1230 少一个接触点（§8.3 的「两处实现改一行」降为一处） |
+| B M3 | B only | **测试 #8 按 v2 配方会假绿** | **ACCEPTED（本轮最锋利）** | 复核：`track_templates_read.rs` 的 stub manifest 带 `"input_schema": stub_input_schema()`（`:106`，`required: ["issue_url"]` 在 `:61`）；无 input 的 POST 撞 `tracks.rs:977-990` 的 required-input 400 ⇒ 即便把插件 fallback 加回去测试仍绿。§10.2 加了警告框 + 三条硬要求（stub 去掉 schema 或带合法 input；断言**拒绝理由**；断言零播种副作用）+ 成对变异判据；§9 风险表新增一行 |
+| B M1 | B only | 矩阵把 area-404 的优先级写反了；行 3/9/10 缺插件前提 | **ACCEPTED** | 复核：准入在 `tracks.rs:761`，area 查找在 `:863-867` ⇒「未知 id + 不存在 area」是 **400**。§4.4 新增**错误优先级树**（9 级，含事务内三类）；前提 1 改写为「它的作用是让第 5 步不触发，**不是**优先级断言」；新增前提 6（默认无 running∧trusted 插件）；行 3/9/10 各自补前提 |
+| B M7 | B only | F13 只是一段话，不在任何切片门禁里 | **ACCEPTED（升级为合流硬前提）** | §8.1b 从「建议裁决」改写为**裁决 + 归属 + 门禁**：`current_definition` 必须 `?` 上抛 500（`1230-s1 routes/track_templates.rs:256-258`，回落分支 `:270-278`）；归属 #1230 作者；门禁 = #1230 侧一条真路由测试（坏掉 report 载荷 ⇒ GET 500 且库不被改写）；合流前必须已落。与 A m2 用同一条裁决关闭 |
 | B m1 | B only | INV-SEED 的快照撑不起「a read stays a read」的措辞 | **ACCEPTED（两头都收）** | 复核 `log_pure_event`（`crates/calm-truth/src/db/mod.rs:683`，doc `:669` 起明写「the event itself is the only write」）。§7 把不变量**改名**为「不得物化 template 播种状态」并删掉「一次读不能触发写」这个更宽的引用；**同时**把快照扩到 `area_folders` + `events(count,max_id)` + **全部** overlay（不再筛 `kind=="template"`）；#10 的变异清单加「GET 里记一条 pure event」 |
-| B m4 | B only | 「同一 resolver ⇒ 不可能广告后拒收」过强 | **ACCEPTED** | 复核 `waves.rs:941-943` 每次重采样 running；`wave_templates_read.rs:260-264` 自己演示了 stop 后 schema 消失。§6 第 3 点收窄为「**同一运行态快照内**判据相同」，并把跨请求竞态记为**已接受**（后果是一个 400，不是错误的 wave） |
+| B m4 | B only | 「同一 resolver ⇒ 不可能广告后拒收」过强 | **ACCEPTED** | 复核 `tracks.rs:941-943` 每次重采样 running；`track_templates_read.rs:260-264` 自己演示了 stop 后 schema 消失。§6 第 3 点收窄为「**同一运行态快照内**判据相同」，并把跨请求竞态记为**已接受**（后果是一个 400，不是错误的 track） |
 | B n1 | B only | `TemplateAdmission` 的说明自相矛盾 | **ACCEPTED** | §2.2 的注释改成陈述 "Admission" 的意图，并注明 v2 的自相矛盾 |
 | B n2 | B only | numstat 写成 `+4/−4`（实为 `2/2`）；基线已前移 | **ACCEPTED** | §8.1 改为 `2 2` 并附两个 hunk 头；文首新增基线段（`0b4b022f`）+ 逐文件核对「新提交没碰本文引用的任何文件」 |
-| A n1 | A only | §8.2 对 `waves.rs` 的 `PREDICTED` 今天就能定 | **ACCEPTED** | 该条规则改标 **MEASURED**：两个 hunk `@@ -443,7 +443,7 @@`、`@@ -484,7 +484,7 @@`，与 `:761-814` 不相交，是今天可验证的事实 |
+| A n1 | A only | §8.2 对 `tracks.rs` 的 `PREDICTED` 今天就能定 | **ACCEPTED** | 该条规则改标 **MEASURED**：两个 hunk `@@ -443,7 +443,7 @@`、`@@ -484,7 +484,7 @@`，与 `:761-814` 不相交，是今天可验证的事实 |
 | A n2 | A only | 应提一句 system-area 目标的 201→404 翻转 | **ACCEPTED** | §4.2 补一段，并说明不可达（`area_create_system_tx` 用 `new_id()`，`crates/calm-truth/src/db/sqlite/area.rs:73`）+ 不为它写测试 |
-| A n3 | A only | `wave_workspace_materialize.rs` 是第五个读播种路径的文件，不在清单 | **ACCEPTED** | §10.1 新增「预期不需要改、但事先知会」一栏，坐标 `:224-259`（`Entry point 2 of 5` 注释在 `:224`，`async fn` 在 `:227`） |
+| A n3 | A only | `track_workspace_materialize.rs` 是第五个读播种路径的文件，不在清单 | **ACCEPTED** | §10.1 新增「预期不需要改、但事先知会」一栏，坐标 `:224-259`（`Entry point 2 of 5` 注释在 `:224`，`async fn` 在 `:227`） |
 | A m3 | A only | `manifest.json` 的 `required` 是 `:299` 不是 `:298`（且这条错在 v2 的勘误表**内部**） | **ACCEPTED** | 实测 `:299` 是 `"required": ["issue_url", "repo", "issue_number"],`。§4.4 行 6 与 §11 勘误表都已改 |
 | **R10** | A m4 | 「勘误表没扫干净的其它 ±1 漂移」6 条 | **部分 REJECTED —— 6 条里 4 条是通道自己漂了** | 见下方「对通道 A m4 的逐条反驳」 |
 
@@ -2846,11 +2846,11 @@ D5 `input_schema` 留在插件、D6 播种不对称、§8 的合流策略）。
 
 | A 说 | 实测 | 裁决 |
 |---|---|---|
-| `known_template` 的 `fn` 在 `1230-s1 wave_templates.rs:296`（文档写 `:297-301` 是错的） | `grep -n 'fn known_template'` ⇒ **`297:fn known_template(id: &str) -> Result<()> {`**，`298` 是 `is_workflow_template_key(id)` | **REJECTED**，v2 坐标正确 |
+| `known_template` 的 `fn` 在 `1230-s1 track_templates.rs:296`（文档写 `:297-301` 是错的） | `grep -n 'fn known_template'` ⇒ **`297:fn known_template(id: &str) -> Result<()> {`**，`298` 是 `is_workflow_template_key(id)` | **REJECTED**，v2 坐标正确 |
 | `current_definition` 的回落分支 `Ok(Definition {` 在 `:269`（文档写 `:270-278`） | 逐行数 `sed -n '250,280p'`：`:266-269` 是四行 `//` 注释，**`:270` 才是 `Ok(Definition {`** | **REJECTED**，v2 坐标正确 |
 | `find_workflow_conflict` 调用在 `mod.rs:1115-1120`（文档写 `:1114-1119`） | `sed -n '1110,1124p'`：**`1114: match find_workflow_conflict(`**，实参 `1115-1118`，`1119: ) {` | **REJECTED**，v2 坐标正确 |
-| 「does not declare an input_schema」臂在 `waves.rs:972-975`（文档写 `:973-976`） | **`972` 是 `(None, None) => Ok(()),`**；`973` 才是 `(None, Some(_)) => Err(...`，格式串在 `974`（`grep -n` 佐证），臂止于 `976` | **REJECTED**，v2 坐标正确 |
-| trusted-stub manifest 在 `wave_templates_read.rs:99-100`，`:107` 是它的 `input_schema` 行 | `grep -n`：`98: Manifest::parse(`、`99: &json!({`、**`106: "input_schema": stub_input_schema(),`**、**`107: "workflows": [ { "id": ISSUE_DEVELOPMENT } ],`** | **REJECTED 其结论**（`:107` 确实是 workflows 行，v2 在 §5.1 表里用它指「声明 workflow 的站点」是对的）；**ACCEPTED 其动机**：§10.2 的「manifest 在 `:107`」措辞含混，v3 改为逐行给 `:98`/`:99`/`:106`/`:107` |
+| 「does not declare an input_schema」臂在 `tracks.rs:972-975`（文档写 `:973-976`） | **`972` 是 `(None, None) => Ok(()),`**；`973` 才是 `(None, Some(_)) => Err(...`，格式串在 `974`（`grep -n` 佐证），臂止于 `976` | **REJECTED**，v2 坐标正确 |
+| trusted-stub manifest 在 `track_templates_read.rs:99-100`，`:107` 是它的 `input_schema` 行 | `grep -n`：`98: Manifest::parse(`、`99: &json!({`、**`106: "input_schema": stub_input_schema(),`**、**`107: "workflows": [ { "id": ISSUE_DEVELOPMENT } ],`** | **REJECTED 其结论**（`:107` 确实是 workflows 行，v2 在 §5.1 表里用它指「声明 workflow 的站点」是对的）；**ACCEPTED 其动机**：§10.2 的「manifest 在 `:107`」措辞含混，v3 改为逐行给 `:98`/`:99`/`:106`/`:107` |
 | §10.1 写 `forge_workflow_e2e.rs`（改 `:425-429`）与 §10.3 的 `:421-422`+`:427` 自相矛盾 | 实测：注释 `:421-422`、`assert!` 块 `:423-429`、文案 `:427` | **ACCEPTED**：§10.1 改为 `:421-429` 并注明构成 |
 
 **这条本身是本轮最值得记住的一课**：通道给的「引用漂移修正」如果不复核就照抄，
@@ -2876,19 +2876,19 @@ D5 `input_schema` 留在插件、D6 播种不对称、§8 的合流策略）。
 | # | 来源 | 发现 | 裁决 | v2 做了什么 |
 |---|---|---|---|---|
 | F1 | A+B | 错误分类矩阵有多行错（无 404、happy path 无条件 201、缺前提、状态码与正文混列、「ensure 后找不到」以偏概全） | **ACCEPTED** | §4.4 整表重建：拆状态码/正文两列、前提统一前置（5 条）、补 area-404 行与 required-input 行、把 `ensure` 内部失败与「lookup miss」拆成两行、点名**两处**有意变更（A: 201→400；B: 错误正文） |
-| F2 | A+B | 新文案打红 `wave_workflow_templates.rs:586` 与 `forge_workflow_e2e.rs:427`；后者不在文件清单里，且其立意在统一后死掉 | **ACCEPTED** | §10.3 新增：两处改钉「正文点名被拒的 id」；`forge_workflow_e2e.rs:421-422` 的注释改写；§10.1 文件清单补入 `forge_workflow_e2e.rs`。**否决了「直接删掉文案断言」**（400 有六种来源，只看状态码不够） |
+| F2 | A+B | 新文案打红 `track_workflow_templates.rs:586` 与 `forge_workflow_e2e.rs:427`；后者不在文件清单里，且其立意在统一后死掉 | **ACCEPTED** | §10.3 新增：两处改钉「正文点名被拒的 id」；`forge_workflow_e2e.rs:421-422` 的注释改写；§10.1 文件清单补入 `forge_workflow_e2e.rs`。**否决了「直接删掉文案断言」**（400 有六种来源，只看状态码不够） |
 | F3 | A+B | 「只剩 2 处权威、Rust 常量降为 bootstrap」不成立 | **ACCEPTED** | §2.3 重写为 5 类（名册 / 可编辑内容 / 不可编辑 intro+contract / binding 声明 / binding 生效），点名 3 类会漂移，**删掉所有「只剩 N 处权威」的口号**。A 与 B 在此不冲突，B 更完整，采 B 的分类 + A 的 `restamp` 精确条件 |
 | F4 | A+B | INV-1209-SEED 被计数断言钉不住（全称量化 / 只枚举 overlay / 只测未播种态） | **ACCEPTED** | §7 收窄为「这两条路由 × 两种起始状态 × 快照相等」；§10.2 #10 给出 snapshot 测试形状 + 5 条必须变红的变异；**明写「其它端点不许播种」本切片钉不住**（拒绝写真空不变量） |
-| F5 | A only | #1209 先落地则 `is_workflow_template_key` / `WORKFLOW_TEMPLATE_KEYS` 变死代码，release 构建必红 | **ACCEPTED**（**最重要的一条**） | 独立复核全部成立：生产调用点只有 `waves.rs:779`/`:800`；其余在 `#[cfg(test)] mod tests`（`workflow_templates.rs:372` 起）；`pub(crate) mod`（`lib.rs:635`）；`RUSTFLAGS: "-D warnings"`（`ci.yml:15`）；`cargo build --release -p calm-server`（`ci.yml:901`、`:1012`）；~~`clippy --all-targets`（`:305`）抓不到~~ ← **v3 实跑推翻，见 R6：clippy 其实先红**。§8.2 给出**顺序无关**的解：删两个符号、新增 `workflow_template()`（有生产调用方）；§10.1 验收 #6 加了 release 构建 |
-| F6 | A only | `ensure` 早于 cwd 校验与 area 404，4xx 也会先播种 6 行，打脸 `waves.rs:759-760` 的注释 | **ACCEPTED**（采纳「本切片搬动」而非「记账」） | 新增 §4.2：播种块移到 area 404 与 cwd 校验之后；同时把 `:759-760` 的注释改写成**搬动后仍然为真**的版本（事务内 409/500 之后播种仍在，诚实写出）；pin = 测试 #13 |
+| F5 | A only | #1209 先落地则 `is_workflow_template_key` / `WORKFLOW_TEMPLATE_KEYS` 变死代码，release 构建必红 | **ACCEPTED**（**最重要的一条**） | 独立复核全部成立：生产调用点只有 `tracks.rs:779`/`:800`；其余在 `#[cfg(test)] mod tests`（`workflow_templates.rs:372` 起）；`pub(crate) mod`（`lib.rs:635`）；`RUSTFLAGS: "-D warnings"`（`ci.yml:15`）；`cargo build --release -p calm-server`（`ci.yml:901`、`:1012`）；~~`clippy --all-targets`（`:305`）抓不到~~ ← **v3 实跑推翻，见 R6：clippy 其实先红**。§8.2 给出**顺序无关**的解：删两个符号、新增 `workflow_template()`（有生产调用方）；§10.1 验收 #6 加了 release 构建 |
+| F6 | A only | `ensure` 早于 cwd 校验与 area 404，4xx 也会先播种 6 行，打脸 `tracks.rs:759-760` 的注释 | **ACCEPTED**（采纳「本切片搬动」而非「记账」） | 新增 §4.2：播种块移到 area 404 与 cwd 校验之后；同时把 `:759-760` 的注释改写成**搬动后仍然为真**的版本（事务内 409/500 之后播种仍在，诚实写出）；pin = 测试 #13 |
 | F7 | A+B | `ResolvedTemplate.title` 是无消费者的出厂标题副本 | **ACCEPTED** | §2.2 删字段；并采纳 B 的补充建议把结构体改名 `ResolvedTemplate` → `TemplateAdmission`、函数 `resolve_template` → `admit_template`（它回答准入，不回答「模板现在长什么样」） |
 | F8 | A only | 测试 #9 的集合相等腿是假门禁，变异列归错机制 | **ACCEPTED** | §10.2「#9 的形状」重写：删掉「读口 == Rust 常量」腿，改成**路由 × 路由**；变异列更正为「让写口特别接受未列出 id / 特别拒绝已列出 id」；并说明真正的漂移已被 F12 的派生消除，不需要相等测试 |
 | F9 | A only | `trim().is_empty()` 守卫在新草图里结果中性且无测试钉 | **ACCEPTED** | §4.1 删除该守卫，并明写代价（今天 Rust 侧零覆盖）；§10.2 新增测试 #12 补 pin |
 | F10 | A + B(NIT) | §4.2 的机械判据可被重新伪装的特例满足 | **ACCEPTED** | 原 §4.2 → §4.3，机械判据换成**语义判据 + 路由级集合测试（#8/#9）**；grep 降级为「必要不充分」；B 的 NIT（草图里那句「只被 and_then/map 消费」本就不符合草图）一并更正 |
 | F11 | B only | 201→400 是**公开插件契约破坏**，不是低风险 | **ACCEPTED** | 独立复核 `manifest.rs:93-100` 的字段文档确实承诺了这个能力，`forge_trust.rs:1-8` 确实是 env 可配。§5.3 重新定级为 breaking，缓解升级为硬要求（改字段文档 + release note + 升级前扫描），可选 spawn-time warn（留人裁）；**明确否决**「过渡期先警告后拒绝」并给出理由 |
 | F12 | B only | 「单一名册」实为两个可独立漂移的数组 | **ACCEPTED**，且与 F5 合并成同一个编辑 | §2.3 类别 1 + §8.2：删 `WORKFLOW_TEMPLATE_KEYS`，`workflow_template()` 从 `WORKFLOW_TEMPLATES` 派生，#1230 的 `known_template` 改走同一入口 |
-| F13 | B only | #1230 的 `current_definition` 在 report 读失败时静默回落常量并报 `seeded:false` | **ACCEPTED（记为 #1230 的 pre-merge 裁决项，不在 #1209 范围）** | 新增 §8.1b：给出建议裁决（上抛 500 或三态化），并说明 **#1209 不依赖它被修好**（本设计只依赖 `waves.rs:805-812` 的 fork 事实，不经过 `current_definition`） |
-| F14 | B only | #1230 合流面被低估：测试文件同锚点追加；`b93fb767` 的 parent 不是当前 main；无 #1209 实现 diff | **ACCEPTED** | §8 开头更正 parent（`d27014d8` vs `6e0339b0`）并给所有 #1209 侧判断打上 `PREDICTED，待实现 diff 复核`；§8.2 把 `wave_workflow_templates.rs` 列为人裁文件（本 worktree 589 行，#1230 从 EOF 追加 402 行，同锚点）。人裁文件从 1 个变成 **3 个**（+`workflow_templates.rs`，见 F5） |
+| F13 | B only | #1230 的 `current_definition` 在 report 读失败时静默回落常量并报 `seeded:false` | **ACCEPTED（记为 #1230 的 pre-merge 裁决项，不在 #1209 范围）** | 新增 §8.1b：给出建议裁决（上抛 500 或三态化），并说明 **#1209 不依赖它被修好**（本设计只依赖 `tracks.rs:805-812` 的 fork 事实，不经过 `current_definition`） |
+| F14 | B only | #1230 合流面被低估：测试文件同锚点追加；`b93fb767` 的 parent 不是当前 main；无 #1209 实现 diff | **ACCEPTED** | §8 开头更正 parent（`d27014d8` vs `6e0339b0`）并给所有 #1209 侧判断打上 `PREDICTED，待实现 diff 复核`；§8.2 把 `track_workflow_templates.rs` 列为人裁文件（本 worktree 589 行，#1230 从 EOF 追加 402 行，同锚点）。人裁文件从 1 个变成 **3 个**（+`workflow_templates.rs`，见 F5） |
 | F15 | B only | §5.2 的 C 方案里「manifest 严格 unknown-field 解析 + 字段白名单」是发明的 | **ACCEPTED** | 独立复核：`manifest.rs:15-20` 明写容忍未知字段；`:467-475` 明写 `WorkflowDescriptor` 忽略额外键，测试在 `:1407-1416`；`:761-765` 是「connector 不得声明 workflows」而非白名单。§5.2 删掉该论据，换成真实成本（内容权威归属 / picker 展示 / 生命周期 / 名册运行时化） |
 | F16 | A(m6) + B(MINOR 1,2) | 引用漂移 | **ACCEPTED（逐条核，部分更正**通道给的坐标**）** | 见下方「引用更正清单」 |
 
@@ -2899,30 +2899,30 @@ v2 采用的是我自己读到的坐标：
 
 | 位置 | v1 写的 | v2 更正为 |
 |---|---|---|
-| contract prefix 定义 | `workflow_templates.rs:99-105` | `crates/calm-types/src/wave_report.rs:137-144`（`:104` 是调用点） |
-| `report_startup_read_required` | 未引 | `crates/calm-types/src/wave_report.rs:184-187` |
-| `restamp` 取常量 / 早退 | `:581-604`、`:592-594` | 取常量 `waves.rs:586-590`、早退 `:592-594`、整函数 `:581-613` |
+| contract prefix 定义 | `workflow_templates.rs:99-105` | `crates/calm-types/src/track_report.rs:137-144`（`:104` 是调用点） |
+| `report_startup_read_required` | 未引 | `crates/calm-types/src/track_report.rs:184-187` |
+| `restamp` 取常量 / 早退 | `:581-604`、`:592-594` | 取常量 `tracks.rs:586-590`、早退 `:592-594`、整函数 `:581-613` |
 | git-forge `workflows` | `manifest.json:305-309` | `:302-306`（`input_schema` 在 `:273-300`，`required` 在 **`:299`** —— v2 这里写 `:298`，是**勘误表内部自己漂了一行**，v3 更正，见 R10 上方的 A m3） |
-| `CreateWaveRequest.workflow_id` | `waves.rs:209` | `:210`（struct `:197`、`deny_unknown_fields` `:196`、`as_template` `:224` 原本就对） |
-| `wave_templates.rs` 模块头 | `:1-43` | `:1-39`（`:41` 起是 `use`） |
-| schema 违反的 400 | `waves.rs:988-989` | `:992-993` |
-| required 缺失的 400 | `waves.rs:981-985` | `:986-989`（整臂 `:977-990`） |
-| §6 的 schema 校验点 | `waves.rs:986-989` | `:992-993` |
+| `CreateTrackRequest.workflow_id` | `tracks.rs:209` | `:210`（struct `:197`、`deny_unknown_fields` `:196`、`as_template` `:224` 原本就对） |
+| `track_templates.rs` 模块头 | `:1-43` | `:1-39`（`:41` 起是 `use`） |
+| schema 违反的 400 | `tracks.rs:988-989` | `:992-993` |
+| required 缺失的 400 | `tracks.rs:981-985` | `:986-989`（整臂 `:977-990`） |
+| §6 的 schema 校验点 | `tracks.rs:986-989` | `:992-993` |
 | MCP 读 `plugin_scope` | `tool_visibility.rs:114-128` | `:109` |
-| system-area fork 过滤 | `waves.rs:507-509` | `:505-507` |
-| 播种写入 | `waves.rs:446-455`、`:459-484` | 循环 `:449-455`、建 area `:459-485`、建 wave+落 report `:517-579` |
-| 迁移测试里的 `workflow_id` 列 | `wave_plugin_scope_migration_tests.rs:78-83` | `:65-72`（`:76-85` 是 manifest fixture） |
+| system-area fork 过滤 | `tracks.rs:507-509` | `:505-507` |
+| 播种写入 | `tracks.rs:446-455`、`:459-484` | 循环 `:449-455`、建 area `:459-485`、建 track+落 report `:517-579` |
+| 迁移测试里的 `workflow_id` 列 | `track_plugin_scope_migration_tests.rs:78-83` | `:65-72`（`:76-85` 是 manifest fixture） |
 | `bound_workflow` | `spec_harness_start_adapter.rs:161-177`、fail-safe `:181-188` | `:162-180`、fail-safe `:181-190` |
 | `WorkflowDescriptor` | `manifest.rs:473-475` | `:472-475`（doc 从 `:467` 起） |
 | `#1230` 版 `current_definition` | `:256-279` | 命中分支 `:256-264`，回落分支 `:270-278` |
-| `#1230` 的 read-only 测试 | 「#1230 追加段」 | `1230-s1` `tests/cases/wave_workflow_templates.rs:634-665`，helper `:168-184` |
-| trusted-stub boot 配方 | `wave_templates_read.rs:39-167` | `:77-167`（`boot(running: bool)`，manifest 在 `:107`） |
+| `#1230` 的 read-only 测试 | 「#1230 追加段」 | `1230-s1` `tests/cases/track_workflow_templates.rs:634-665`，helper `:168-184` |
+| trusted-stub boot 配方 | `track_templates_read.rs:39-167` | `:77-167`（`boot(running: bool)`，manifest 在 `:107`） |
 | `forge_workflow_e2e` 各断言 | `:157`、`:167-171`、`:441-453` | `:155`/`:156`/`:157`/`:158`/`:165`/`:172`；untrusted 段 `:434-454`；stop `:456-459` |
 | `find_workflow_conflict` 调用点 | `mod.rs:1085-1122` | `:1114-1119`（注释里的三个消费者在 `:1093-1095`，原本就对） |
 | §8.1 文件表 | 缺 `openapi-contract.test.ts` | 已补（`git show --numstat b93fb767` 的 9 个文件全列） |
 | §5.1 扫描 | 4 个站点 | 13 行的完整表（`rg 'workflows:\|"workflows"' crates/ plugins/`） |
-| `fe/.../new-wave/public.tsx` | `:248-256` | `:247-256` |
-| `waves.rs:3060-3092` | — | 判定在 `:3085-3092`（原范围不错，补精确行） |
+| `fe/.../new-track/public.tsx` | `:248-256` | `:247-256` |
+| `tracks.rs:3060-3092` | — | 判定在 `:3085-3092`（原范围不错，补精确行） |
 
 ### 通道分歧与本文的判断（明写）
 

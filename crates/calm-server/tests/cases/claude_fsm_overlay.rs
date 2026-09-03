@@ -16,11 +16,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -37,8 +37,8 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -53,7 +53,7 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "claude".into(),
             sort: None,
@@ -72,8 +72,8 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
     repo.seed_card_role_cache(&cache).await.unwrap();
     assert_eq!(cache.get(&card.id), Some(CardRole::Worker));
 
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -88,17 +88,17 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
             std::env::temp_dir().join("calm-plugins-data-claude-fsm-overlay"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     calm_server::card_fsm::spawn(
         repo_dyn.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wave_area_cache),
+        calm_server::state::WriteContext::new(cache.clone(), track_area_cache),
     );
     tokio::task::yield_now().await;
 

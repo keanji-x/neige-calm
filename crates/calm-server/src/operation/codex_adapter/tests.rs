@@ -11,7 +11,7 @@ use std::sync::Arc;
 struct WorkerLeaseHarness {
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     adapter: CodexWorkerAdapter,
-    wave_id: String,
+    track_id: String,
     events: EventBus,
     repo_root: tempfile::TempDir,
 }
@@ -34,9 +34,9 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         repo.as_ref(),
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "workspace leases".into(),
@@ -59,21 +59,21 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
             SharedCodexAppServer::new_stub(full_repo),
             None,
             CardRoleCache::new(),
-            WaveAreaCache::new(),
+            TrackAreaCache::new(),
             std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         ),
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         events: EventBus::new(),
         repo_root,
     }
 }
 
-fn worker_payload(wave_id: &str, key: &str) -> Value {
+fn worker_payload(track_id: &str, key: &str) -> Value {
     serde_json::to_value(CodexWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: wave_id.to_string(),
-        idempotency_key: format!("{wave_id}:{key}"),
+        track_id: track_id.to_string(),
+        idempotency_key: format!("{track_id}:{key}"),
         goal: format!("do {key}"),
         cwd: None,
         context: Value::Null,
@@ -86,8 +86,8 @@ fn worker_payload(wave_id: &str, key: &str) -> Value {
 fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
     let payload = CodexWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
-        wave_id: "wave-hash".into(),
-        idempotency_key: "wave-hash:task-a".into(),
+        track_id: "track-hash".into(),
+        idempotency_key: "track-hash:task-a".into(),
         goal: "do task-a".into(),
         cwd: None,
         context: json!({ "from": "legacy" }),
@@ -101,8 +101,8 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
 
     let legacy_without_cwd = json!({
         "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
-        "wave_id": "wave-hash",
-        "idempotency_key": "wave-hash:task-a",
+        "track_id": "track-hash",
+        "idempotency_key": "track-hash:task-a",
         "goal": "do task-a",
         "context": { "from": "legacy" },
     });
@@ -112,8 +112,8 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
     );
 
     let task_with_cwd = crate::model::Task {
-        id: "wave-hash:task-a".into(),
-        wave_id: "wave-hash".into(),
+        id: "track-hash:task-a".into(),
+        track_id: "track-hash".into(),
         key: "task-a".into(),
         kind: crate::model::TaskKind::Codex,
         goal: "do task-a".into(),
@@ -191,15 +191,15 @@ async fn prepare_worker_with_task_key(
     key: &str,
     task_key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>) {
-    let payload = worker_payload(&harness.wave_id, key);
-    let task_id = format!("{}:{key}", harness.wave_id);
+    let payload = worker_payload(&harness.track_id, key);
+    let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
         "INSERT OR IGNORE INTO tasks \
-         (id, wave_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
+         (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, 'codex', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
-    .bind(&harness.wave_id)
+    .bind(&harness.track_id)
     .bind(task_key)
     .execute(harness.repo.pool())
     .await
@@ -298,7 +298,7 @@ async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
         "leased cwd leaf is left for git worktree add"
     );
     let row = sqlx::query(
-        "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE lease_id = ?1",
+        "SELECT state, path, card_id, track_id FROM workspace_leases WHERE lease_id = ?1",
     )
     .bind(&lease_id)
     .fetch_one(harness.repo.pool())
@@ -307,7 +307,7 @@ async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
     assert_eq!(row.get::<String, _>("state"), "held");
     assert_eq!(row.get::<String, _>("path"), cwd);
     assert_eq!(row.get::<String, _>("card_id"), card_id);
-    assert_eq!(row.get::<String, _>("wave_id"), harness.wave_id);
+    assert_eq!(row.get::<String, _>("track_id"), harness.track_id);
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
 

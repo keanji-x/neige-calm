@@ -3,7 +3,7 @@
 //!
 //! Module map:
 //! ```text
-//! model         entity types + DTOs (Area/Wave/Card/Overlay/Terminal/Plugin)
+//! model         entity types + DTOs (Area/Track/Card/Overlay/Terminal/Plugin)
 //! error         CalmError + Result alias + IntoResponse
 //! event         Event enum + EventBus (broadcast fan-out)
 //! db            Repo trait
@@ -12,7 +12,7 @@
 //!               `sqlite::memory:`)
 //! routes        HTTP API
 //!   ├ areas.rs       (track B)
-//!   ├ waves.rs       (track B)
+//!   ├ tracks.rs       (track B)
 //!   ├ cards.rs       (track B)
 //!   ├ overlays.rs    (track B)
 //!   ├ plugins.rs     (M2 stub)
@@ -48,7 +48,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Kernel-owned purpose marker for the area's inert conversation wave.
+/// Kernel-owned purpose marker for the area's inert conversation track.
 pub const AREA_CHAT_PURPOSE: &str = "area-chat";
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
@@ -217,7 +217,7 @@ pub async fn assert_worker_sessions_card_id_complete_on_boot(
 /// is only sound because the atomic claim writer makes overlap
 /// unreachable. Legacy databases predate that writer and can hold
 /// overlap; on such a table the answer differs from the longest-prefix
-/// rule those rows were written under, i.e. a wave would silently land
+/// rule those rows were written under, i.e. a track would silently land
 /// in the wrong area. `?`-propagated from `main` so serving never starts
 /// on an unresolvable folder table — see
 /// [`calm_truth::db::sqlite::assert_area_folders_disjoint`] for why the
@@ -620,24 +620,24 @@ pub mod task_context;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;
+pub mod track_area_cache;
 pub mod validation;
-pub mod wave_area_cache;
 // #1147 S2 — managed workspace root derivation + materialization (D2/D3).
 pub mod workspace_materialize;
-// #1147 S5 — safe recycling of managed wave workspaces (design §生命周期).
+// #1147 S5 — safe recycling of managed track workspaces (design §生命周期).
 pub mod workspace_recycle;
 // #1147 S3 — the "is anything on disk" predicate that gates a workspace
 // re-point (design §更换与冻结).
 pub mod workspace_repoint;
-// #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
-pub use calm_types::wave_fs_dto;
+// #679 PR1 — `track_fs_dto` moved wholesale to calm-types (pure TS DTOs).
+pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
 /// The template roster and its report recipes.
 ///
-/// `pub` for the same reason `routes::waves::spec_harness_card_payload` is: an
+/// `pub` for the same reason `routes::tracks::spec_harness_card_payload` is: an
 /// integration test that transcribes kilobytes of production prose by hand
 /// stops being a test of that prose and becomes a change detector. #1300 S2's
-/// characterization test (`wave_template_waves::
+/// characterization test (`track_template_tracks::
 /// creating_from_a_template_instantiates_its_recipe`) therefore **derives** the
 /// report a template must instantiate to from this module.
 ///
@@ -645,7 +645,7 @@ pub mod report_backlinks;
 /// is what limits it:
 ///
 ///   * **Can see** — any divergence between the *value* this module produces
-///     and what a created wave actually ends up holding: a dropped field, a
+///     and what a created track actually ends up holding: a dropped field, a
 ///     lost fence, a missing contract prefix, a normalization applied to the
 ///     wrong thing.
 ///   * **Cannot see** — anything that moves *both* sides at once, because both
@@ -662,7 +662,7 @@ pub mod report_backlinks;
 /// that other source drifts. "Production reads exactly this module" is not an
 /// oracle-visible property.
 ///
-/// Part of the second bullet is closed, and part is accepted. `wave_template_waves::
+/// Part of the second bullet is closed, and part is accepted. `track_template_tracks::
 /// each_template_key_names_its_own_recipe` holds a small hand-written table of
 /// `(key, title, ordered task keys)` — the one table in that file not derived
 /// from production — and checks it against both the picker read and a real
@@ -682,20 +682,20 @@ pub mod report_backlinks;
 /// this whole arrangement exists to avoid — so the table stays at identities
 /// only, and those gaps are a decision rather than an oversight.
 pub mod templates;
-pub mod wave_fs_view;
-pub mod wave_lifecycle;
-pub mod wave_report;
-pub mod wave_report_doc;
-mod wave_report_edit_guard;
-mod wave_report_guard;
+pub mod track_fs_view;
+pub mod track_lifecycle;
+pub mod track_report;
+pub mod track_report_doc;
+mod track_report_edit_guard;
+mod track_report_guard;
 /// #1252 S1 — write-origin vocabulary. Since step 2 it runs on all three
-/// production wave-report write paths: each builds a `WriteOrigin` and calls
+/// production track-report write paths: each builds a `WriteOrigin` and calls
 /// `verify_legacy_write_arguments`, which refuses the write on any
 /// disagreement with `policy_for` and supplies the recorder probe. Deleting
 /// the legacy parameters is step 3; see the module docs for what blocks it.
-pub mod wave_report_origin;
-pub mod wave_report_read;
-pub mod wave_vcs;
+pub mod track_report_origin;
+pub mod track_report_read;
+pub mod track_vcs;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {

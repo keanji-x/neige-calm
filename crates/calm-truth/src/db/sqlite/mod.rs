@@ -8,7 +8,7 @@
 //!
 //! ## Sync engine — internal layout
 //!
-//! Every entity write the trait exposes (`area_create`, `wave_update`,
+//! Every entity write the trait exposes (`area_create`, `track_update`,
 //! `card_create`, ...) is implemented as a thin wrapper around a `_tx`-
 //! suffixed free function that takes `&mut Transaction<'_, Sqlite>` and
 //! does the actual SQL. The wrappers each open their own one-shot
@@ -31,8 +31,8 @@ use std::time::Duration;
 use super::Repo;
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
-use crate::wave_area_cache::WaveAreaCache;
-use crate::wave_vcs;
+use crate::track_area_cache::TrackAreaCache;
+use crate::track_vcs;
 use calm_types::model::AreaFolder;
 
 /// Per-connection SQLite busy-handler budget installed by [`SqlxRepo::open`].
@@ -68,9 +68,9 @@ mod session_repo_impl;
 mod session_row;
 mod task;
 mod task_projection;
-mod wave;
-mod wave_tree;
-mod wave_workspace;
+mod track;
+mod track_tree;
+mod track_workspace;
 
 pub use area::{
     area_create_system_tx, area_create_tx, area_delete_tx, area_folder_create_tx,
@@ -91,9 +91,9 @@ pub use out_of_domain::{
     worker_flow_item_insert_tx, worker_flow_items_delete_by_card_tx,
 };
 pub use overlay::{
-    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
     overlay_delete_subtree_by_area_tx, overlay_delete_tx, overlay_upsert_tx,
-    wave_has_template_overlay_tx,
+    track_has_template_overlay_tx,
 };
 pub use session_mirror::{
     session_delete_tx, session_prepare_deferred_spec_tx, session_start_runtime_tx,
@@ -111,37 +111,37 @@ pub use session_projection::{
 pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use session_row::{
     session_commit_exit_tx, session_get_by_active_token_hash, session_get_by_id, session_get_tx,
-    session_insert_tx, session_mark_wave_root_tx, session_mcp_token_set_tx,
+    session_insert_tx, session_mark_track_root_tx, session_mcp_token_set_tx,
     session_record_activity_by_thread_tx, session_record_activity_tx, session_set_liveness_tx,
     session_state_transition_tx, worker_session_status_transition_allowed,
 };
 pub use task::{
-    SuccessReportFlip, TaskReporter, require_wave_exists_tx, status_detail_class,
+    SuccessReportFlip, TaskReporter, require_track_exists_tx, status_detail_class,
     status_detail_with_reason, task_apply_gate_result_tx, task_cancel_tx, task_claim_pending_tx,
     task_complete_from_worker_tx, task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx,
-    task_mark_running_tx, task_mark_sub_wave_running_tx, task_report_success_from_worker_tx,
+    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
     task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
-    task_update_pending_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
-    wave_require_task_gates_tx, worker_op_targets_card_tx,
+    task_update_pending_tx, tasks_by_track_tx, track_lifecycle_and_budget_tx,
+    track_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
     evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
-pub use wave::{
-    AttachedInheritedPath, WaveWorkspacePlan, wave_create_tx, wave_delete_tx, wave_require_leaf_tx,
-    wave_update_tx,
+pub use track::{
+    AttachedInheritedPath, TrackWorkspacePlan, track_create_tx, track_delete_tx,
+    track_require_leaf_tx, track_update_tx,
 };
-pub use wave_tree::{
-    DEFAULT_TREE_TASK_BUDGET, MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare,
-    WAVE_BOUNDED_PATH_SQL, WAVE_ROOT_DEPTH_SQL, WAVE_TREE_MEMBERS_SQL,
-    WAVE_TREE_SPEC_INVENTORY_SQL, WaveTreeTerm, WaveTreeTermOutcome, can_add_tree_member,
-    deterministic_share, wave_tree_budget, wave_tree_member_count, wave_tree_spec_inventory,
-    wave_tree_spec_inventory_by_member, wave_tree_term,
+pub use track_tree::{
+    DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,
+    TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL, TRACK_TREE_SPEC_INVENTORY_SQL, TrackTreeTerm,
+    TrackTreeTermOutcome, TreeShare, can_add_tree_member, deterministic_share, track_tree_budget,
+    track_tree_member_count, track_tree_spec_inventory, track_tree_spec_inventory_by_member,
+    track_tree_term,
 };
-pub use wave_workspace::{
-    wave_workspace_freeze_tx, wave_workspace_read_tx, wave_workspace_write_tx,
+pub use track_workspace::{
+    track_workspace_freeze_tx, track_workspace_read_tx, track_workspace_write_tx,
 };
 
 use infra::check_no_unknown_future_migrations;
@@ -162,14 +162,14 @@ pub struct SqlxRepo {
     /// production while the repo-local view backs the test-only raw
     /// path.
     card_role_cache: CardRoleCache,
-    /// #234 — write-through `WaveId -> AreaId` cache, same rationale as
-    /// `card_role_cache` above: the raw `RepoSyncDomainRaw` wave write
-    /// paths (`wave_create` / `wave_delete`) keep this in sync via the
+    /// #234 — write-through `TrackId -> AreaId` cache, same rationale as
+    /// `card_role_cache` above: the raw `RepoSyncDomainRaw` track write
+    /// paths (`track_create` / `track_delete`) keep this in sync via the
     /// `_tx` helpers, while production `write_with_event` callers thread
-    /// `AppState::wave_area_cache` (a separate instance that
+    /// `AppState::track_area_cache` (a separate instance that
     /// `AppState::new` seeds from the same pool). Both converge on
-    /// the persisted `waves` table.
-    wave_area_cache: WaveAreaCache,
+    /// the persisted `tracks` table.
+    track_area_cache: TrackAreaCache,
     /// #926 — process-lifetime keepalive for in-memory databases.
     ///
     /// sqlx maps `sqlite::memory:` / `mode=memory` URLs to a NAMED
@@ -351,7 +351,7 @@ impl SqlxRepo {
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
 
-        wave_vcs::backfill_existing_waves(&pool).await?;
+        track_vcs::backfill_existing_tracks(&pool).await?;
 
         // PR3 (#136): seed the repo-local role cache from the freshly-
         // migrated table. This is the backing store for the gated raw
@@ -360,13 +360,13 @@ impl SqlxRepo {
         // which `AppState::new` re-seeds from the same pool.
         let card_role_cache = CardRoleCache::new();
         card_role_cache.seed_from_db(&pool).await?;
-        let wave_area_cache = WaveAreaCache::new();
-        wave_area_cache.seed_from_db(&pool).await?;
+        let track_area_cache = TrackAreaCache::new();
+        track_area_cache.seed_from_db(&pool).await?;
 
         Ok(Self {
             pool,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             _memory_cache_anchor: memory_cache_anchor,
         })
     }
@@ -399,11 +399,11 @@ impl SqlxRepo {
         &self.card_role_cache
     }
 
-    /// #234 — borrow the repo's wave→area cache. Mirrors
+    /// #234 — borrow the repo's track→area cache. Mirrors
     /// [`card_role_cache`](Self::card_role_cache). `AppState::new`
     /// re-seeds its own clone from the same pool.
-    pub fn wave_area_cache(&self) -> &WaveAreaCache {
-        &self.wave_area_cache
+    pub fn track_area_cache(&self) -> &TrackAreaCache {
+        &self.track_area_cache
     }
 }
 
@@ -434,7 +434,7 @@ pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Resul
 /// [`crate::area_folder_claim::find_owner`] leans on that: it takes the
 /// *first* matching row instead of the longest-prefix match, because at
 /// most one row can match. Databases written before that landed can
-/// still carry overlap (the wave-attach path's in-tx insert was gated on
+/// still carry overlap (the track-attach path's in-tx insert was gated on
 /// the request flag, never on the scan result). On such a table
 /// `find_owner` answers `/a` where the old longest-prefix rule answered
 /// `/a/b`, i.e. it silently re-owns a real user directory — and every
@@ -448,7 +448,7 @@ pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Resul
 /// table stops the process before it serves a request. Refusing to boot
 /// costs the operator nothing they need — the fix is a `DELETE` against
 /// `area_folders` via sqlite3 or the admin CLI, neither of which needs
-/// calm-server running — whereas booting anyway would route waves and
+/// calm-server running — whereas booting anyway would route tracks and
 /// `GET /api/areas/resolve` to an arbitrarily-chosen area for as long as
 /// nobody notices.
 ///
@@ -505,13 +505,13 @@ impl Repo for SqlxRepo {
 mod tests;
 
 #[cfg(test)]
-mod sub_wave_tree_tests;
+mod sub_track_tree_tests;
 #[cfg(test)]
 mod task_context_migration_tests;
 #[cfg(test)]
 mod task_liveness_deadline_tests;
 #[cfg(test)]
-mod wave_tree_budget_tests;
+mod track_tree_budget_tests;
 
 #[cfg(test)]
 mod workspace_lease_lookup_tests;
@@ -536,16 +536,16 @@ mod worker_flow_cursor_tests;
 mod session_record_activity_tests;
 
 #[cfg(test)]
-mod wave_template_input_tests;
+mod track_template_input_tests;
 
 #[cfg(test)]
-mod wave_plugin_scope_migration_tests;
+mod track_plugin_scope_migration_tests;
 
 #[cfg(test)]
-mod wave_workspace_migration_tests;
+mod track_workspace_migration_tests;
 
 #[cfg(test)]
-mod wave_template_rename_migration_tests;
+mod track_template_rename_migration_tests;
 
 #[cfg(test)]
 mod pool_tx_repair_tests;
@@ -562,17 +562,17 @@ mod pool_memory_anchor_tests;
 #[cfg(test)]
 mod proposal_withdraw_upgrade_tests;
 
-// #1016 — `wave_detail` ships `cards` / `overlays` as
+// #1016 — `track_detail` ships `cards` / `overlays` as
 // `json_group_array(json_object(…))`. The shape file pins what that buys
 // (escaping, NULL, bool, empty group, and the fact that a corrupt `payload`
 // errors instead of becoming card structure); the precision file pins
 // `cards.sort`, a REAL that `json_object` renders with only 15 significant
 // digits unless it goes through `printf('%!.17g', …)`.
 #[cfg(test)]
-mod wave_detail_json_shape_tests;
+mod track_detail_json_shape_tests;
 #[cfg(test)]
-mod wave_detail_sort_precision_tests;
+mod track_detail_sort_precision_tests;
 // …and the order file pins what the aggregate does NOT give for free: its
 // input order is arbitrary, so both arrays state their own.
 #[cfg(test)]
-mod wave_detail_order_tests;
+mod track_detail_order_tests;

@@ -41,16 +41,16 @@ export { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './builtins/re
 // from CARDS and whether the conversation drawer exists are the same question,
 // so app must ask the entry's own predicate rather than re-implement it.
 export { isSpecHarnessPayload } from './builtins/spec.js';
-// The wave-assistant discriminator, on the same terms (#1189): app decides
+// The track-assistant discriminator, on the same terms (#1189): app decides
 // whether a card opens the conversation drawer, and it must decide it with the
 // entry's own predicate rather than a second copy of the payload check.
 export { isAssistantHarnessPayload } from './builtins/assistant.js';
 export type {
   UnknownCardSlot,
   VisibleCardSlot,
-  WaveCardPartition,
+  TrackCardPartition,
 } from './builtins/headless-filter.js';
-export { partitionWaveCards } from './builtins/headless-filter.js';
+export { partitionTrackCards } from './builtins/headless-filter.js';
 export { BoardHost } from './ui/board-host.js';
 export type { BoardHostItem } from './ui/board-host.js';
 export { GRID_COLS, GRID_MARGIN, GRID_ROW_HEIGHT, layoutToPositions, packCards, reconcileLayout } from './ui/layout.js';

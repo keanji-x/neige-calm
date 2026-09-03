@@ -3,15 +3,15 @@
 //! Coverage:
 //!
 //!   1. **Repo round-trip** — `card_create_with_id_tx` stores and
-//!      `cards_by_wave` / `card_get` hydrate the `deletable` bit
+//!      `cards_by_track` / `card_get` hydrate the `deletable` bit
 //!      correctly for both `true` and `false`.
 //!   2. **Migration backfill** — existing spec cards (minted via
-//!      `POST /api/waves`) come back from `card_get` with
+//!      `POST /api/tracks`) come back from `card_get` with
 //!      `deletable = false` after migration 0013 runs, even though no
 //!      caller passed the bit explicitly through the wire.
 //!   3. **REST DELETE guard** — `DELETE /api/cards/:id` returns 403 on
 //!      an undeletable (spec) card; 204 on a deletable worker card.
-//!   4. **Wave delete cascade** — `DELETE /api/waves/:id` still
+//!   4. **Track delete cascade** — `DELETE /api/tracks/:id` still
 //!      cascades through to undeletable cards; the guard is scoped to
 //!      `/api/cards/:id` only.
 //!   5. **CardPatch deletable rejection** — `PATCH /api/cards/:id`
@@ -33,7 +33,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewArea, NewCard, NewOverlay, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewOverlay, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -73,8 +73,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -86,11 +86,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-deletable-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -168,27 +171,27 @@ async fn insert_held_workspace_lease(
     boot: &Boot,
     lease_id: &str,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
 ) -> String {
     let lease_path = boot
         .tmp
         .path()
         .join("workspace-leases")
-        .join(wave_id)
+        .join(track_id)
         .join(card_id);
     std::fs::create_dir_all(&lease_path).unwrap();
     let lease_path = lease_path.to_str().unwrap().to_string();
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
     )
     .bind(lease_id)
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(&lease_path)
     .bind("owner-delete-test")
     .bind(60_000_i64)
@@ -207,7 +210,7 @@ async fn insert_held_workspace_lease(
 async fn card_create_with_id_tx_round_trips_deletable_bit() {
     // Both `true` (default for user-facing Worker cards) and `false` (kernel
     // owned) round-trip cleanly through INSERT → SELECT and through
-    // both repo accessors (`card_get`, `cards_by_wave`).
+    // both repo accessors (`card_get`, `cards_by_track`).
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
@@ -219,8 +222,8 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -241,7 +244,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         &mut tx,
         calm_server::model::new_id(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -261,7 +264,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         &mut tx,
         calm_server::model::new_id(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -293,8 +296,8 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         .expect("undeletable card");
     assert!(!got_undeletable.deletable);
 
-    // `cards_by_wave` hydrates both.
-    let listed = repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    // `cards_by_track` hydrates both.
+    let listed = repo.cards_by_track(track.id.as_str()).await.unwrap();
     assert_eq!(listed.len(), 2);
     let by_id: std::collections::HashMap<_, _> = listed
         .iter()
@@ -305,42 +308,42 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
 }
 
 // ---------------------------------------------------------------------------
-// (2) Migration backfill — spec cards minted by `POST /api/waves` come
+// (2) Migration backfill — spec cards minted by `POST /api/tracks` come
 // back with deletable=false. The migration's `UPDATE ... WHERE role =
-// 'spec'` covers legacy rows; the wave-create route also passes
+// 'spec'` covers legacy rows; the track-create route also passes
 // `deletable: false` explicitly so fresh rows inherit the same shape.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn spec_card_minted_by_wave_create_is_undeletable() {
+async fn spec_card_minted_by_track_create_is_undeletable() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create returned: {body}");
-    let wave_id = body
+    assert_eq!(status, StatusCode::CREATED, "track create returned: {body}");
+    let track_id = body
         .get("id")
         .and_then(Value::as_str)
-        .expect("wave id in response")
+        .expect("track id in response")
         .to_string();
 
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
-    // Issue #229 PR B — wave create now mints two cards in the same tx:
-    // the spec card (PR6) and the wave-report card (PR B). Both are
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
+    // Issue #229 PR B — track create now mints two cards in the same tx:
+    // the spec card (PR6) and the track-report card (PR B). Both are
     // kernel-owned (`deletable = false`); the report card sorts ahead
-    // (`sort = -1.0`) so the WaveGrid renders it at the top.
+    // (`sort = -1.0`) so the TrackGrid renders it at the top.
     assert_eq!(
         cards.len(),
         2,
-        "wave create mints spec + wave-report; got {} cards",
+        "track create mints spec + track-report; got {} cards",
         cards.len(),
     );
     assert!(
         cards.iter().all(|c| !c.deletable),
-        "both spec and wave-report cards must be undeletable; got: {:?}",
+        "both spec and track-report cards must be undeletable; got: {:?}",
         cards
             .iter()
             .map(|c| (c.kind.clone(), c.deletable))
@@ -353,8 +356,8 @@ async fn spec_card_minted_by_wave_create_is_undeletable() {
         "spec card kind is codex; got {kinds:?}"
     );
     assert!(
-        kinds.contains(&"wave-report"),
-        "wave-report card present; got {kinds:?}"
+        kinds.contains(&"track-report"),
+        "track-report card present; got {kinds:?}"
     );
 }
 
@@ -365,17 +368,17 @@ async fn spec_card_minted_by_wave_create_is_undeletable() {
 #[tokio::test]
 async fn delete_card_returns_403_for_undeletable_spec_card() {
     let boot = boot().await;
-    // Mint a wave (and thus its spec card).
+    // Mint a track (and thus its spec card).
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
-    // Find the spec card by kind (PR B adds a wave-report card alongside).
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
+    // Find the spec card by kind (PR B adds a track-report card alongside).
     let spec_card = cards
         .iter()
         .find(|c| c.kind == "codex")
@@ -402,19 +405,19 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
 #[tokio::test]
 async fn delete_card_returns_204_for_deletable_worker_card() {
     let boot = boot().await;
-    // Wave + user-facing Worker card.
+    // Track + user-facing Worker card.
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
 
     let (status, body) = post(
         boot.app.clone(),
-        &format!("/api/waves/{wave_id}/cards"),
+        &format!("/api/tracks/{track_id}/cards"),
         json!({"kind": "plugin:t:v"}),
     )
     .await;
@@ -441,16 +444,16 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-card-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
 
     let (status, body) = post(
         boot.app.clone(),
-        &format!("/api/waves/{wave_id}/cards"),
+        &format!("/api/tracks/{track_id}/cards"),
         json!({"kind": "plugin:t:v"}),
     )
     .await;
@@ -461,7 +464,7 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
     );
     let card_id = body["id"].as_str().unwrap().to_string();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &wave_id).await;
+    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
     assert!(std::path::Path::new(&lease_path).is_dir());
 
     let status = delete(boot.app.clone(), &format!("/api/cards/{card_id}")).await;
@@ -488,22 +491,22 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
 }
 
 // ---------------------------------------------------------------------------
-// (4) Wave delete cascade — undeletable cards still go away when their
-// parent wave is deleted. The guard scopes to `/api/cards/:id` only.
+// (4) Track delete cascade — undeletable cards still go away when their
+// parent track is deleted. The guard scopes to `/api/cards/:id` only.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn wave_delete_cascades_to_undeletable_spec_card() {
+async fn track_delete_cascades_to_undeletable_spec_card() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let spec_card = cards
         .iter()
         .find(|c| c.kind == "codex")
@@ -511,30 +514,30 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
     let spec_card_id = spec_card.id.as_str().to_string();
     assert!(!spec_card.deletable);
 
-    // The wave-delete route surfaces the cascade through the FK chain.
+    // The track-delete route surfaces the cascade through the FK chain.
     // Spec cards carry a terminal, and `terminals.card_id` is ON DELETE
     // RESTRICT (migration 0011); the route's terminal-reap step handles
-    // that. We just assert the end state: wave gone, card gone, no 403
+    // that. We just assert the end state: track gone, card gone, no 403
     // leak from the per-card guard.
-    let status = delete(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(
         status,
         StatusCode::NO_CONTENT,
-        "wave delete must succeed even with an undeletable child card"
+        "track delete must succeed even with an undeletable child card"
     );
 
-    let after_wave = boot.repo.wave_get(&wave_id).await.unwrap();
-    assert!(after_wave.is_none());
+    let after_track = boot.repo.track_get(&track_id).await.unwrap();
+    assert!(after_track.is_none());
     let after_card = boot.repo.card_get(&spec_card_id).await.unwrap();
-    assert!(after_card.is_none(), "spec card cascade-deleted with wave");
+    assert!(after_card.is_none(), "spec card cascade-deleted with track");
 }
 
 #[tokio::test]
-async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
+async fn acceptance_20_track_delete_route_refuses_descendant_and_names_child() {
     let boot = boot().await;
     let parent = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: boot.area_id.clone().into(),
             title: "parent".into(),
             sort: None,
@@ -549,7 +552,7 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
         .unwrap();
     let child = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: boot.area_id.clone().into(),
             title: "child".into(),
             sort: None,
@@ -562,7 +565,7 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(parent.id.as_str())
         .bind(child.id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
@@ -570,12 +573,12 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
         .unwrap();
 
     let (status, body) =
-        delete_with_body(boot.app.clone(), &format!("/api/waves/{}", parent.id)).await;
+        delete_with_body(boot.app.clone(), &format!("/api/tracks/{}", parent.id)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(body.to_string().contains(child.id.as_str()), "{body}");
     assert!(
         boot.repo
-            .wave_get(parent.id.as_str())
+            .track_get(parent.id.as_str())
             .await
             .unwrap()
             .is_some()
@@ -583,23 +586,23 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
 }
 
 #[tokio::test]
-async fn rest_wave_create_cannot_set_parent_wave_id() {
+async fn rest_track_create_cannot_set_parent_track_id() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app,
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": boot.area_id,
             "title": "forged child",
             "cwd": attached_repo_fixture("forged-child"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
-            "parent_wave_id": "wave-forged-parent"
+            "parent_track_id": "track-forged-parent"
         }),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
@@ -607,37 +610,37 @@ async fn rest_wave_create_cannot_set_parent_wave_id() {
 }
 
 #[tokio::test]
-async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
+async fn track_delete_releases_active_workspace_lease_rows_before_cascade() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-wave-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        "/api/tracks",
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-track-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &wave_id).await;
+    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     assert!(std::path::Path::new(&lease_path).is_dir());
 
-    let status = delete(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
-        "wave delete does not remove non-wave-root lease artifacts"
+        "track delete does not remove non-track-root lease artifacts"
     );
     let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE wave_id = ?1")
-            .bind(&wave_id)
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE track_id = ?1")
+            .bind(&track_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(remaining, 0, "wave cascade removes released lease rows");
+    assert_eq!(remaining, 0, "track cascade removes released lease rows");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
             .fetch_one(&pool)
@@ -647,20 +650,20 @@ async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
 }
 
 #[tokio::test]
-async fn area_delete_releases_wave_workspace_lease_rows_before_cascade() {
+async fn area_delete_releases_track_workspace_lease_rows_before_cascade() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-area-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &wave_id).await;
+    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     assert!(std::path::Path::new(&lease_path).is_dir());
 
@@ -670,7 +673,7 @@ async fn area_delete_releases_wave_workspace_lease_rows_before_cascade() {
 
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
-        "area delete does not remove non-wave-root lease artifacts"
+        "area delete does not remove non-track-root lease artifacts"
     );
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE lease_id = ?1")
@@ -688,20 +691,20 @@ async fn area_delete_releases_wave_workspace_lease_rows_before_cascade() {
 }
 
 #[tokio::test]
-async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
+async fn track_delete_route_sweeps_card_track_and_view_overlays() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-454-route-overlay-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: wave_id.clone().into(),
+            track_id: track_id.clone().into(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -712,8 +715,8 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
 
     for (entity_kind, entity_id) in [
         ("card", card.id.as_str()),
-        ("wave", wave_id.as_str()),
-        ("view", wave_id.as_str()),
+        ("track", track_id.as_str()),
+        ("view", track_id.as_str()),
     ] {
         boot.repo
             .overlay_upsert(NewOverlay {
@@ -727,7 +730,7 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
             .unwrap();
     }
 
-    let status = delete(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     assert!(
@@ -739,14 +742,14 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
     );
     assert!(
         boot.repo
-            .overlays_for("wave", &wave_id)
+            .overlays_for("track", &track_id)
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
         boot.repo
-            .overlays_for("view", &wave_id)
+            .overlays_for("view", &track_id)
             .await
             .unwrap()
             .is_empty()
@@ -763,15 +766,15 @@ async fn patch_card_with_deletable_returns_400() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
-    let wave_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
     let (status, body) = post(
         boot.app.clone(),
-        &format!("/api/waves/{wave_id}/cards"),
+        &format!("/api/tracks/{track_id}/cards"),
         json!({"kind": "plugin:t:v"}),
     )
     .await;

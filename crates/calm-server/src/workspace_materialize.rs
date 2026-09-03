@@ -1,8 +1,8 @@
 //! #1147 S2 — managed workspace roots: path derivation + materialization.
 //!
-//! Design `docs/1147-workspace-design.md` D2/D3. A managed wave workspace is a
+//! Design `docs/1147-workspace-design.md` D2/D3. A managed track workspace is a
 //! server-created, server-owned git repository at
-//! `<workspace-root>/<area_id>/<wave_id>`. Every step below is load-bearing and
+//! `<workspace-root>/<area_id>/<track_id>`. Every step below is load-bearing and
 //! was measured, not guessed — see the per-step comments.
 
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{CalmError, Result};
-use crate::model::{WaveWorkspace, WaveWorkspaceKind};
+use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 use crate::operation::workspace_lease::ensure_workspace_worktree_root_excluded;
 
 /// Author stamped on the init commit. Explicit so the produced repository does
@@ -95,17 +95,17 @@ pub(crate) fn neige_git_command() -> Command {
     command
 }
 
-/// `<workspace-root>/<area_id>/<wave_id>`.
+/// `<workspace-root>/<area_id>/<track_id>`.
 ///
-/// Directory names are ids, never slugs: D2 also fixes "renaming a wave does
+/// Directory names are ids, never slugs: D2 also fixes "renaming a track does
 /// not move its directory", so a title-derived name would start lying the
-/// first time the wave is renamed.
-pub fn managed_workspace_path(workspace_root: &Path, area_id: &str, wave_id: &str) -> PathBuf {
-    workspace_root.join(area_id).join(wave_id)
+/// first time the track is renamed.
+pub fn managed_workspace_path(workspace_root: &Path, area_id: &str, track_id: &str) -> PathBuf {
+    workspace_root.join(area_id).join(track_id)
 }
 
 /// Short, stable digest of a workspace path, for use inside an idempotency key
-/// (#1147 S2 red-team B1, extended to child-wave bootstraps in S4).
+/// (#1147 S2 red-team B1, extended to child-track bootstraps in S4).
 ///
 /// Both call sites submit a `spec-harness-start` payload that contains a `cwd`.
 /// The operation runtime treats "same idempotency key, different payload hash"
@@ -131,7 +131,7 @@ pub(crate) fn workspace_key_digest(path: &str) -> String {
 /// It was, for one gate run. Design D3 says the attached branch "only
 /// validates", and this is the single contract point every create entry shares,
 /// so it looks like the right home. **Measured: 202 tests fail.** Attached
-/// waves are the default shape of nearly every fixture in the suite, and they
+/// tracks are the default shape of nearly every fixture in the suite, and they
 /// point at strings (`/parent-cwd`, `""`, a bare tempdir) rather than at real
 /// Git work trees — because until #1147 S3 nothing ever looked. Making this the
 /// enforcement point therefore is not "add a check", it is "rewrite every
@@ -139,27 +139,27 @@ pub(crate) fn workspace_key_digest(path: &str) -> String {
 /// of its own.
 ///
 /// So validation lives at the two entry points where a **user** names a
-/// directory — `POST /api/waves`'s attached branch and
-/// `PATCH /api/waves/{id}` — and those are the two this slice opens. The
-/// kernel-derived attached paths (an area chat wave adopting an existing
-/// `area_folders` claim, a child wave inheriting an attached parent) are NOT
+/// directory — `POST /api/tracks`'s attached branch and
+/// `PATCH /api/tracks/{id}` — and those are the two this slice opens. The
+/// kernel-derived attached paths (an area chat track adopting an existing
+/// `area_folders` claim, a child track inheriting an attached parent) are NOT
 /// validated; see the design's 已知缺口 N18.
 pub fn materialize_workspace(
-    workspace: &WaveWorkspace,
+    workspace: &TrackWorkspace,
     workspace_root: &Path,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<()> {
     match workspace.kind {
-        WaveWorkspaceKind::Managed => {
-            materialize_managed_workspace(workspace_root, Path::new(&workspace.path), wave_id)
+        TrackWorkspaceKind::Managed => {
+            materialize_managed_workspace(workspace_root, Path::new(&workspace.path), track_id)
         }
-        WaveWorkspaceKind::Attached => Ok(()),
+        TrackWorkspaceKind::Attached => Ok(()),
     }
 }
 
 /// #1147 S3 — design D3's other half: *"Attached 创建只做校验：绝对路径、目录
 /// 存在、是 Git 仓库"*. Until this slice only the first third existed
-/// (`create_wave`'s `starts_with('/')`), which was survivable while the new FE
+/// (`create_track`'s `starts_with('/')`), which was survivable while the new FE
 /// had no way to attach anything. This slice adds that way, so the gap had to
 /// close with it.
 ///
@@ -167,7 +167,7 @@ pub fn materialize_workspace(
 ///
 /// Without this, attaching a path that does not exist — or exists but is not a
 /// repository — is accepted with a 201, and the first `kind: codex` task then
-/// dies inside `git_repo_root_for_wave_cwd` leaving nothing but `spawn-failed`
+/// dies inside `git_repo_root_for_track_cwd` leaving nothing but `spawn-failed`
 /// in `tasks.status_detail`. That is issue #1147's opening paragraph,
 /// reproduced by the FE entry point this slice adds. The error text below is
 /// git's own, surfaced verbatim.
@@ -176,7 +176,7 @@ pub fn materialize_workspace(
 ///
 /// `rev-parse --show-toplevel` succeeds from a subdirectory too, and that is
 /// deliberate: the worker path derives the repository root itself
-/// (`git_repo_root_for_wave_cwd`), so a subdirectory is a directory work can
+/// (`git_repo_root_for_track_cwd`), so a subdirectory is a directory work can
 /// actually happen in. Refusing it would reject a legitimate cwd for a reason
 /// nothing downstream cares about.
 ///
@@ -248,7 +248,7 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
 ///    by git 2.39.5 (`unknown switch 'c'`).
 /// 3. An **empty initial commit**. Without it `git worktree add` fails outright
 ///    (`not a valid object name: 'HEAD'`), so the very first codex worker in a
-///    managed wave cannot start — the whole point of this slice.
+///    managed track cannot start — the whole point of this slice.
 ///    `commit.gpgsign` and `core.hooksPath` are forced off for this one
 ///    invocation because a global `commit.gpgsign=true` makes the empty commit
 ///    fail hard, and a global hooks path would run user hooks inside a
@@ -265,9 +265,9 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
 pub fn materialize_managed_workspace(
     workspace_root: &Path,
     path: &Path,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<()> {
-    materialize_managed_workspace_inner(workspace_root, path, wave_id, InitCommit::Create)
+    materialize_managed_workspace_inner(workspace_root, path, track_id, InitCommit::Create)
 }
 
 /// Mutation seam for §5 test 1. Production has exactly one caller
@@ -297,9 +297,9 @@ enum InitCommit {
 /// therefore permanently un-materializable — a 500 on every subsequent
 /// `ensure`, forever.
 ///
-/// Keyed by path so unrelated waves never contend. Entries are never evicted:
-/// one `Arc<Mutex<()>>` per wave workspace over a process lifetime is bounded
-/// by the number of waves, and dropping entries would need reference counting
+/// Keyed by path so unrelated tracks never contend. Entries are never evicted:
+/// one `Arc<Mutex<()>>` per track workspace over a process lifetime is bounded
+/// by the number of tracks, and dropping entries would need reference counting
 /// that buys nothing here.
 fn path_lock(path: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -311,7 +311,7 @@ fn path_lock(path: &Path) -> Arc<Mutex<()>> {
 fn materialize_managed_workspace_inner(
     workspace_root: &Path,
     path: &Path,
-    wave_id: &str,
+    track_id: &str,
     init_commit: InitCommit,
 ) -> Result<()> {
     if !path.is_absolute() {
@@ -336,17 +336,17 @@ fn materialize_managed_workspace_inner(
     })?;
 
     match read_owner_marker(path)? {
-        // Ours, and for this wave. Re-running the steps below is idempotent,
+        // Ours, and for this track. Re-running the steps below is idempotent,
         // and — because the marker proves we created everything here — it is
         // also safe to repair a half-built directory left by a crash.
-        Some(owner) if owner == wave_id => {}
-        // Ours, but for a *different* wave. Should be unreachable (the path
-        // contains the wave id), so treat it as corruption rather than
+        Some(owner) if owner == track_id => {}
+        // Ours, but for a *different* track. Should be unreachable (the path
+        // contains the track id), so treat it as corruption rather than
         // something to clean up.
         Some(owner) => {
             return Err(CalmError::Internal(format!(
-                "materialize workspace: {} is the managed workspace of wave `{owner}`, \
-                 not `{wave_id}`; refusing to take it over",
+                "materialize workspace: {} is the managed workspace of track `{owner}`, \
+                 not `{track_id}`; refusing to take it over",
                 path.display()
             )));
         }
@@ -367,14 +367,14 @@ fn materialize_managed_workspace_inner(
             // Empty and unclaimed: claim it *before* writing anything else, so
             // a crash at any later point leaves a directory we can prove is
             // ours and repair, instead of an unmarked non-empty brick.
-            write_owner_marker(path, wave_id)?;
+            write_owner_marker(path, track_id)?;
         }
     }
 
     // Steady state — ours, and a resolvable `HEAD` means `init` and the initial
     // commit both completed — costs exactly one `rev-parse`. That matters
     // because the worker lease path calls this on every acquisition (red-team
-    // B5) purely so an un-materialized wave repairs itself rather than
+    // B5) purely so an un-materialized track repairs itself rather than
     // spawn-failing forever.
     //
     // Otherwise run `git init`: it is idempotent on a healthy repository and
@@ -413,7 +413,7 @@ fn materialize_managed_workspace_inner(
         // Re-assert the marker: `git init` preserves unknown files under an
         // existing `.git/`, but rewriting it costs nothing and covers the case
         // where the marker was lost along with a partially wiped `.git`.
-        write_owner_marker(path, wave_id)?;
+        write_owner_marker(path, track_id)?;
     }
 
     if init_commit == InitCommit::Create && !git_head_resolves(path) {
@@ -473,9 +473,9 @@ fn assert_physically_inside_root(workspace_root: &Path, path: &Path) -> Result<(
             "materialize workspace: {} resolves to {}, which is outside the managed \
              workspace root {}. Two things reach this: a symlink under the root \
              (which would put worker output where the recycle path's prefix assertion \
-             cannot see it), or a workspace root that has MOVED since this wave was \
+             cannot see it), or a workspace root that has MOVED since this track was \
              created — `CALM_WORKSPACE_ROOT` or `$HOME` changed — in which case the \
-             stored path is simply no longer under the configured root and this wave \
+             stored path is simply no longer under the configured root and this track \
              has no migration path (issue #1147 N4).",
             path.display(),
             real_path.display(),
@@ -543,7 +543,7 @@ fn read_owner_marker(path: &Path) -> Result<Option<String>> {
     }
 }
 
-fn write_owner_marker(path: &Path, wave_id: &str) -> Result<()> {
+fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let marker = owner_marker_path(path);
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -553,7 +553,7 @@ fn write_owner_marker(path: &Path, wave_id: &str) -> Result<()> {
             ))
         })?;
     }
-    std::fs::write(&marker, format!("{wave_id}\n")).map_err(|error| {
+    std::fs::write(&marker, format!("{track_id}\n")).map_err(|error| {
         CalmError::Internal(format!(
             "materialize workspace: write ownership marker {}: {error}",
             marker.display()

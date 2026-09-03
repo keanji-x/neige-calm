@@ -690,7 +690,7 @@ mod tests {
                 "parked": false
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id", "card_id"]);
+        assert_no_reserved_context(&payload, &["track_id", "card_id"]);
     }
 
     #[test]
@@ -701,9 +701,9 @@ mod tests {
         let payload = lower(
             "git.commit",
             &json!({
-                "message": "neige: worker card-1 @ wave wave-1",
+                "message": "neige: worker card-1 @ track track-1",
                 "idem": "step-1",
-                "branch": "neige/wave-1/card-1"
+                "branch": "neige/track-1/card-1"
             }),
         )
         .expect("lower commit");
@@ -715,8 +715,8 @@ mod tests {
                     "-c",
                     expected_commit_script,
                     "sh",
-                    "neige: worker card-1 @ wave wave-1",
-                    "neige/wave-1/card-1"
+                    "neige: worker card-1 @ track track-1",
+                    "neige/track-1/card-1"
                 ],
                 "idem_key": "git.commit:step-1",
                 "event_spec": {
@@ -740,13 +740,13 @@ mod tests {
                         "-c",
                         expected_output_probe_script,
                         "sh",
-                        "neige/wave-1/card-1"
+                        "neige/track-1/card-1"
                     ]
                 },
                 "parked": false
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id", "card_id"]);
+        assert_no_reserved_context(&payload, &["track_id", "card_id"]);
         assert_supported_event_kind(&payload);
         assert!(expected_commit_script.contains("git add -A || exit 1"));
         assert!(expected_commit_script.contains("git commit -m \"$1\" || exit 1"));
@@ -765,7 +765,7 @@ mod tests {
         let payload = lower(
             "git.commit",
             &json!({
-                "message": "neige: worker card-1 @ wave wave-1",
+                "message": "neige: worker card-1 @ track track-1",
                 "idem": "step-1"
             }),
         )
@@ -777,7 +777,7 @@ mod tests {
                 "-c",
                 GIT_COMMIT_SCRIPT,
                 "sh",
-                "neige: worker card-1 @ wave wave-1"
+                "neige: worker card-1 @ track track-1"
             ])
         );
         assert_eq!(
@@ -792,9 +792,9 @@ mod tests {
         let payload = lower(
             "git.commit",
             &json!({
-                "message": "neige: worker card-1 @ wave wave-1",
+                "message": "neige: worker card-1 @ track track-1",
                 "idem": "step-1",
-                "branch": "neige/wave-1/card-1"
+                "branch": "neige/track-1/card-1"
             }),
         )
         .expect("lower commit");
@@ -910,7 +910,7 @@ mod tests {
                 "parked": true
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&payload, &["track_id"]);
         assert_supported_event_kind(&payload);
         assert!(payload["probe"]["output_probe_argv"].is_array());
     }
@@ -986,7 +986,7 @@ mod tests {
                 "parked": true
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&payload, &["track_id"]);
         assert_supported_event_kind(&payload);
     }
 
@@ -1029,7 +1029,7 @@ mod tests {
                 "parked": true
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id", "artifact_path"]);
+        assert_no_reserved_context(&payload, &["track_id", "artifact_path"]);
         assert_supported_event_kind(&payload);
     }
 
@@ -1108,8 +1108,8 @@ mod tests {
             attempt_payload,
             expected_payload("gh.pr.checks:owner/repo:42:7")
         );
-        assert_no_reserved_context(&payload, &["wave_id"]);
-        assert_no_reserved_context(&attempt_payload, &["wave_id"]);
+        assert_no_reserved_context(&payload, &["track_id"]);
+        assert_no_reserved_context(&attempt_payload, &["track_id"]);
         assert_supported_event_kind(&payload);
         assert_supported_event_kind(&attempt_payload);
     }
@@ -1176,7 +1176,7 @@ mod tests {
                 "parked": true
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id", "subject"]);
+        assert_no_reserved_context(&payload, &["track_id", "subject"]);
         assert_supported_event_kind(&payload);
 
         let payload = lower(
@@ -1243,7 +1243,7 @@ mod tests {
                 "parked": true
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id", "subject"]);
+        assert_no_reserved_context(&payload, &["track_id", "subject"]);
         assert_supported_event_kind(&payload);
     }
 
@@ -1342,7 +1342,7 @@ mod tests {
                 "parked": false
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id", "artifact_path"]);
+        assert_no_reserved_context(&payload, &["track_id", "artifact_path"]);
         assert_supported_event_kind(&payload);
     }
 
@@ -1389,7 +1389,7 @@ mod tests {
             })
         );
         assert!(payload["probe"]["output_probe_argv"].is_null());
-        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&payload, &["track_id"]);
         assert_supported_event_kind(&payload);
     }
 

@@ -231,7 +231,7 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
                     Some(reference) => {
                         check_string_cap(&format!("refs[{index}]"), reference, errors);
                         if !matches!(parse_destination(reference), Some((_, Some(_)))) {
-                            errors.push(format!("refs[{index}]: must be a neige://wave/<wave>#b_xxxx block reference"));
+                            errors.push(format!("refs[{index}]: must be a neige://wave/<track>#b_xxxx block reference"));
                         }
                     }
                     None => errors.push(format!("refs[{index}]: must be a string")),
@@ -253,12 +253,12 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
         && !value.is_null()
         && !matches!(value.as_str(), Some("in-wave" | "sub-wave"))
     {
-        errors.push("spawn: must be one of \"in-wave\" | \"sub-wave\"".into());
+        errors.push("spawn: must be one of \"in-track\" | \"sub-track\"".into());
     }
     if matches!(map.get("spawn").and_then(Value::as_str), Some("sub-wave"))
         && !matches!(map.get("kind").and_then(Value::as_str), Some("codex"))
     {
-        errors.push("spawn: \"sub-wave\" requires kind \"codex\"".into());
+        errors.push("spawn: \"sub-track\" requires kind \"codex\"".into());
     }
 }
 

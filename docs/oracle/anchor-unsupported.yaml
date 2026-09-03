@@ -40,7 +40,7 @@
     "locations": [
       "crates/calm-types/src/model.rs:358-397"
     ],
-    "reason": "#1209 PR-2 —— 兼容读的 Rust 载体是 calm_types::Wave 上的 serde alias，无 TS/CSS AST 锚点；同条判据的三个 zod 载体已由 TS 锚点覆盖",
+    "reason": "#1209 PR-2 —— 兼容读的 Rust 载体是 calm_types::Track 上的 serde alias，无 TS/CSS AST 锚点；同条判据的三个 zod 载体已由 TS 锚点覆盖",
     "expiry": "2026-12-31"
   }
 ]

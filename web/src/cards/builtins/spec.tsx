@@ -6,7 +6,7 @@ import {
 } from './schemaVersions';
 
 declare module '../../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     spec: SpecCardData;
   }
 }

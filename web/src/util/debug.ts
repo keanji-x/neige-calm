@@ -3,10 +3,10 @@
 // Disable:
 //   localStorage.removeItem('calm.debug') ; location.reload()
 //
-// Sprinkled `dlog(scope, ...)` callsites in eventBridge, router, WaveGrid,
+// Sprinkled `dlog(scope, ...)` callsites in eventBridge, router, TrackGrid,
 // TerminalCard, and XtermView trace the multi-step card-create flow + RGL
 // layout activity. They were instrumental in finding the original twitch
-// (PR #12) and the WaveGrid dual-state feedback loop. Kept gated rather
+// (PR #12) and the TrackGrid dual-state feedback loop. Kept gated rather
 // than removed so the next person debugging a similar issue doesn't have
 // to re-instrument from scratch.
 

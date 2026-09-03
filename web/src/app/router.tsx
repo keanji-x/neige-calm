@@ -3,7 +3,7 @@
 // Routes:
 //   /                  → TodayPage
 //   /area/$areaId      → AreaPage
-//   /wave/$waveId      → WavePage
+//   /track/$trackId      → TrackPage
 //
 // The root route renders <CalmApp /> as a layout shell; CalmApp owns
 // Sidebar + TitleBar and emits an <Outlet /> for the matched route.
@@ -16,7 +16,7 @@
 // Route loaders prime the relevant TanStack Query cache entries via
 // `queryClient.ensureQueryData(...)` using the same `{ queryKey, queryFn }`
 // factories exported from `api/queries.ts`, so cache shape stays in lock-step
-// with the hook call sites. The wave/area loaders intentionally do this
+// with the hook call sites. The track/area loaders intentionally do this
 // without blocking the route commit: selection feedback (URL commit + Sidebar
 // active highlight) is instant, and the route component owns its brief in-page
 // loading state. The parallel prefetch usually fills the cache before the lazy
@@ -39,23 +39,23 @@ import {
   useAreasQuery,
   useDeleteCardMutation,
   useDeleteAreaMutation,
-  useDeleteWaveMutation,
+  useDeleteTrackMutation,
   useOverlaysByKindQuery,
   useUpdateAreaMutation,
-  useUpdateWaveMutation,
-  useWaveDetailQuery,
-  useWavesByAreaQuery,
-  waveDetailQueryOptions,
-  wavesByAreaQueryOptions,
+  useUpdateTrackMutation,
+  useTrackDetailQuery,
+  useTracksByAreaQuery,
+  trackDetailQueryOptions,
+  tracksByAreaQueryOptions,
 } from '../api/queries';
-import { adaptCard, adaptArea, adaptWave } from '../api/adapt';
+import { adaptCard, adaptArea, adaptTrack } from '../api/adapt';
 import * as api from '../api/calm';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
 import { dlog } from '../util/debug';
-import type { Area, Wave, WaveCardSlot } from '../types';
+import type { Area, Track, TrackCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
 import { getEntry } from '../cards/registry';
 import type { CardCreateStrategy, CardKindClaim } from '../cards/registry';
@@ -74,8 +74,8 @@ const TodayPage = lazy(() =>
 const AreaPage = lazy(() =>
   import('../pages/Area').then((m) => ({ default: m.AreaPage })),
 );
-const WavePage = lazy(() =>
-  import('../pages/Wave').then((m) => ({ default: m.WavePage })),
+const TrackPage = lazy(() =>
+  import('../pages/Track').then((m) => ({ default: m.TrackPage })),
 );
 const SettingsPage = lazy(() =>
   import('../pages/Settings').then((m) => ({ default: m.SettingsPage })),
@@ -90,8 +90,8 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  // Today fans out to per-area wave lists on the page itself; we
-  // conservatively prefetch only the areas list here. The area → waves
+  // Today fans out to per-area track lists on the page itself; we
+  // conservatively prefetch only the areas list here. The area → tracks
   // fan-out stays lazy (the page uses `useQueries`) so a slow area
   // doesn't block the calendar.
   loader: () => queryClient.ensureQueryData(areasQueryOptions()),
@@ -104,33 +104,33 @@ const areaRoute = createRoute({
   loader: ({ params }) => {
     // Non-blocking: prime the cache but do NOT await, so the route commits
     // immediately and the sidebar's active-row highlight is instant.
-    // AreaComponent renders with an empty wave list until wavesQ resolves.
+    // AreaComponent renders with an empty track list until tracksQ resolves.
     // `.catch` keeps a fetch failure (404/5xx/offline) from becoming an
     // unhandled rejection; the error is still recorded on the query so the
     // component can surface it.
     void queryClient
-      .ensureQueryData(wavesByAreaQueryOptions(params.areaId))
+      .ensureQueryData(tracksByAreaQueryOptions(params.areaId))
       .catch(() => {});
   },
   component: AreaComponent,
 });
 
-const waveRoute = createRoute({
+const trackRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/wave/$waveId',
+  path: '/track/$trackId',
   loader: ({ params }) => {
     // Non-blocking: prime the cache but do NOT await, so the route commits
     // immediately and the sidebar's active-row highlight is instant.
-    // WaveComponent renders its own loading state (returns null while
+    // TrackComponent renders its own loading state (returns null while
     // detailQ.isLoading) until the primed query resolves.
     // `.catch` keeps a fetch failure (404/5xx/offline) from becoming an
     // unhandled rejection; the error is still recorded on the query so the
     // component can surface it (MissingShell / empty state).
     void queryClient
-      .ensureQueryData(waveDetailQueryOptions(params.waveId))
+      .ensureQueryData(trackDetailQueryOptions(params.trackId))
       .catch(() => {});
   },
-  component: WaveComponent,
+  component: TrackComponent,
 });
 
 const settingsRoute = createRoute({
@@ -146,7 +146,7 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   areaRoute,
-  waveRoute,
+  trackRoute,
   settingsRoute,
 ]);
 
@@ -178,36 +178,36 @@ function IndexComponent() {
   // the system area out of Today's calendar/clock fan-out as well.
   const kernelAreas = (areasQ.data ?? []).filter((c) => c.kind === 'user');
 
-  // Today's calendar + clock want a flat wave list across all areas.
-  // One query per area keeps cache granularity sensible (a wave moving
+  // Today's calendar + clock want a flat track list across all areas.
+  // One query per area keeps cache granularity sensible (a track moving
   // between areas invalidates only the two affected lists).
-  const waveQueries = useQueries({
+  const trackQueries = useQueries({
     queries: kernelAreas.map((c) => ({
-      queryKey: queryKeys.wavesInArea(c.id),
-      queryFn: () => api.wavesInArea(c.id),
+      queryKey: queryKeys.tracksInArea(c.id),
+      queryFn: () => api.tracksInArea(c.id),
     })),
   });
 
-  // Workspace-wide wave overlays — fed into adaptWave so the Sidebar's
+  // Workspace-wide track overlays — fed into adaptTrack so the Sidebar's
   // status indicators ("waiting on you" / "running") are accurate for
-  // every wave, not just whichever wave the user has opened. eventBridge
-  // invalidates this snapshot on overlay.set/.deleted and on wave/area
+  // every track, not just whichever track the user has opened. eventBridge
+  // invalidates this snapshot on overlay.set/.deleted and on track/area
   // deletes (where the kernel may not cascade individual events).
-  const waveOverlaysQ = useOverlaysByKindQuery('wave');
-  const overlaysByWaveId = new Map<string, typeof waveOverlaysQ.data>();
-  for (const o of waveOverlaysQ.data ?? []) {
-    if (o.entity_kind !== 'wave') continue;
-    const cur = overlaysByWaveId.get(o.entity_id);
+  const trackOverlaysQ = useOverlaysByKindQuery('track');
+  const overlaysByTrackId = new Map<string, typeof trackOverlaysQ.data>();
+  for (const o of trackOverlaysQ.data ?? []) {
+    if (o.entity_kind !== 'track') continue;
+    const cur = overlaysByTrackId.get(o.entity_id);
     if (cur) cur.push(o);
-    else overlaysByWaveId.set(o.entity_id, [o]);
+    else overlaysByTrackId.set(o.entity_id, [o]);
   }
 
   const areas: Area[] = kernelAreas.map(adaptArea);
-  const waves: Wave[] = [];
-  for (const q of waveQueries) {
+  const tracks: Track[] = [];
+  for (const q of trackQueries) {
     if (!q.data) continue;
     for (const w of q.data) {
-      waves.push(adaptWave(w, overlaysByWaveId.get(w.id) ?? []));
+      tracks.push(adaptTrack(w, overlaysByTrackId.get(w.id) ?? []));
     }
   }
 
@@ -215,7 +215,7 @@ function IndexComponent() {
 
   return (
     <TodayPage
-      waves={waves}
+      tracks={tracks}
       areas={areas}
       onGo={go}
       todayTerminalId={todayTerm.today?.terminalId ?? null}
@@ -229,11 +229,11 @@ function AreaComponent() {
   const go = useGo();
   const { areaId } = useParams({ from: areaRoute.id });
   const areasQ = useAreasQuery();
-  const wavesQ = useWavesByAreaQuery(areaId);
+  const tracksQ = useTracksByAreaQuery(areaId);
   const updateArea = useUpdateAreaMutation();
   const deleteArea = useDeleteAreaMutation();
-  const deleteWave = useDeleteWaveMutation();
-  const updateWave = useUpdateWaveMutation();
+  const deleteTrack = useDeleteTrackMutation();
+  const updateTrack = useUpdateTrackMutation();
 
   const kernelArea = areasQ.data?.find((c) => c.id === areaId);
   if (!kernelArea) {
@@ -245,21 +245,21 @@ function AreaComponent() {
     return <MissingShell label="Area" onGo={go} />;
   }
   const area = adaptArea(kernelArea);
-  const waves: Wave[] = (wavesQ.data ?? []).map((w) => adaptWave(w, []));
+  const tracks: Track[] = (tracksQ.data ?? []).map((w) => adaptTrack(w, []));
 
   return (
     <AreaPage
       area={area}
-      waves={waves}
+      tracks={tracks}
       onGo={go}
-      onWaveCreated={(wave) => {
+      onTrackCreated={(track) => {
         // Issue #250 PR 3 — the NewTaskForm inside AreaPage owns the
-        // wave-create POST end-to-end (cwd + area auto-inference +
+        // track-create POST end-to-end (cwd + area auto-inference +
         // theme stamping + folder-conflict surfacing). All this
         // callback needs to do is navigate. The cwd-empty stopgap
         // from PR 2 is gone — the form refuses to submit without a
         // valid absolute path.
-        go({ name: 'wave', id: wave.id });
+        go({ name: 'track', id: track.id });
       }}
       onRenameArea={async (cId, name) => {
         try {
@@ -276,16 +276,16 @@ function AreaComponent() {
           console.warn('[Calm] area delete failed:', err);
         }
       }}
-      onDeleteWave={async (waveId) => {
+      onDeleteTrack={async (trackId) => {
         try {
-          await deleteWave.mutateAsync({ id: waveId, areaId: area.id });
+          await deleteTrack.mutateAsync({ id: trackId, areaId: area.id });
         } catch (err) {
-          console.warn('[Calm] wave delete failed:', err);
+          console.warn('[Calm] track delete failed:', err);
         }
       }}
-      onPinWave={async (waveId, pin) => {
-        await updateWave.mutateAsync({
-          id: waveId,
+      onPinTrack={async (trackId, pin) => {
+        await updateTrack.mutateAsync({
+          id: trackId,
           body: { pinned_at: pin ? Date.now() : null },
         });
       }}
@@ -298,17 +298,17 @@ function SettingsComponent() {
   return <SettingsPage onGo={go} />;
 }
 
-function WaveComponent() {
+function TrackComponent() {
   const go = useGo();
-  const { waveId } = useParams({ from: waveRoute.id });
-  const detailQ = useWaveDetailQuery(waveId);
+  const { trackId } = useParams({ from: trackRoute.id });
+  const detailQ = useTrackDetailQuery(trackId);
   const areasQ = useAreasQuery();
   const qc = useQueryClient();
-  const updateWave = useUpdateWaveMutation();
-  const deleteWave = useDeleteWaveMutation();
+  const updateTrack = useUpdateTrackMutation();
+  const deleteTrack = useDeleteTrackMutation();
   const deleteCard = useDeleteCardMutation();
-  dlog('WaveComponent', 'render', {
-    waveId,
+  dlog('TrackComponent', 'render', {
+    trackId,
     detailLoaded: !!detailQ.data,
     cardsCount: detailQ.data?.cards.length,
     detailFetchStatus: detailQ.fetchStatus,
@@ -316,32 +316,32 @@ function WaveComponent() {
   });
 
   const detail = detailQ.data;
-  // Wave detail is the source of truth for "does this wave exist?".
+  // Track detail is the source of truth for "does this track exist?".
   // `detailQ.data` may be a keepPreviousData placeholder for the
-  // previously-viewed wave while THIS wave's detail is still fetching — the
+  // previously-viewed track while THIS track's detail is still fetching — the
   // non-blocking route loader commits the URL before data lands. Treat an
-  // absent OR mismatched (stale-placeholder) detail as "loading this wave"
-  // so we never render the previous wave under this wave's URL. Only a
-  // settled miss (no data, not loading/fetching) is a truly missing wave.
-  if (!detail || detail.wave.id !== waveId) {
+  // absent OR mismatched (stale-placeholder) detail as "loading this track"
+  // so we never render the previous track under this track's URL. Only a
+  // settled miss (no data, not loading/fetching) is a truly missing track.
+  if (!detail || detail.track.id !== trackId) {
     if (!detail && !detailQ.isLoading && !detailQ.isFetching) {
-      return <MissingShell label="Wave" onGo={go} />;
+      return <MissingShell label="Track" onGo={go} />;
     }
     return null;
   }
-  const kernelArea = areasQ.data?.find((c) => c.id === detail.wave.area_id);
+  const kernelArea = areasQ.data?.find((c) => c.id === detail.track.area_id);
   if (!kernelArea) {
     if (areasQ.isLoading) return null;
     return <MissingShell label="Area" onGo={go} />;
   }
   const area = adaptArea(kernelArea);
-  const uiWave = adaptWave(detail.wave, detail.overlays);
-  uiWave.cards = detail.cards.map((k): WaveCardSlot => {
+  const uiTrack = adaptTrack(detail.track, detail.overlays);
+  uiTrack.cards = detail.cards.map((k): TrackCardSlot => {
     // Issue #229 PR A — propagate the kernel's `deletable` bit so
-    // `WaveGrid` can suppress the close X on kernel-owned cards.
+    // `TrackGrid` can suppress the close X on kernel-owned cards.
     // OpenAPI emits `deletable: boolean`, so the field is always set
     // on fresh wire payloads; legacy event-log replays may omit it,
-    // and the slot's `deletable?` default + WaveGrid's
+    // and the slot's `deletable?` default + TrackGrid's
     // `card.deletable !== false` check both treat undefined as
     // "user-deletable" (matches the DB DEFAULT of 1).
     const adapted = adaptCard(k);
@@ -362,14 +362,14 @@ function WaveComponent() {
   });
 
   return (
-    <WavePage
-      wave={uiWave}
+    <TrackPage
+      track={uiTrack}
       area={area}
       onGo={go}
       onAddCard={async (wId, type) => {
         // #177 — click-time host-theme read; see the matching
         // comment on `onCreateCardWithBody` below. Same rationale
-        // (no `useTheme()` here → no theme-driven wave-subtree
+        // (no `useTheme()` here → no theme-driven track-subtree
         // re-render → XtermView stays mounted across the toggle).
         const theme: 'light' | 'dark' =
           typeof document !== 'undefined' &&
@@ -382,7 +382,7 @@ function WaveComponent() {
         // #177 — read the resolved theme at click-time from
         // `<html data-theme>` rather than subscribing to
         // ThemeContext via `useTheme()` in this component.
-        // Subscribing would re-render the wave subtree on every
+        // Subscribing would re-render the track subtree on every
         // theme toggle and trip TanStack Router's `<Match>`
         // Suspense boundary, remounting any live XtermView and
         // wiping its `pendingThemeRef`. `ThemeProvider` mirrors
@@ -399,24 +399,24 @@ function WaveComponent() {
         const target = detail.cards[idx];
         if (!target) return;
         try {
-          await deleteCard.mutateAsync({ id: target.id, waveId: detail.wave.id });
+          await deleteCard.mutateAsync({ id: target.id, trackId: detail.track.id });
         } catch (err) {
           console.warn('[Calm] card delete failed:', err);
         }
       }}
-      onRenameWave={async (wId, title) => {
+      onRenameTrack={async (wId, title) => {
         try {
-          await updateWave.mutateAsync({ id: wId, body: { title } });
+          await updateTrack.mutateAsync({ id: wId, body: { title } });
         } catch (err) {
-          console.warn('[Calm] wave rename failed:', err);
+          console.warn('[Calm] track rename failed:', err);
         }
       }}
-      onDeleteWave={async (wId) => {
+      onDeleteTrack={async (wId) => {
         try {
-          await deleteWave.mutateAsync({ id: wId, areaId: area.id });
+          await deleteTrack.mutateAsync({ id: wId, areaId: area.id });
           go({ name: 'area', areaId: area.id });
         } catch (err) {
-          console.warn('[Calm] wave delete failed:', err);
+          console.warn('[Calm] track delete failed:', err);
         }
       }}
     />
@@ -424,7 +424,7 @@ function WaveComponent() {
 }
 
 /**
- * Schema-driven card create. The Wave page hands us the kind + the
+ * Schema-driven card create. The Track page hands us the kind + the
  * SchemaForm values; we look up the right kernel sequence per kind.
  *
  * Today zero-config entries and schema-backed entries both flow through here.
@@ -434,13 +434,13 @@ function WaveComponent() {
  */
 export async function addCardWithValues(
   qc: ReturnType<typeof useQueryClient>,
-  waveId: string,
+  trackId: string,
   type: AddPanelKind,
   values: Record<string, string>,
   theme: 'light' | 'dark',
 ): Promise<void> {
   const entry = getEntry(type);
-  if (!entry) return addCardOfKind(qc, waveId, type, theme);
+  if (!entry) return addCardOfKind(qc, trackId, type, theme);
   let input: unknown;
   try {
     input = entry.addPanel?.createSchema?.parse?.(values) ?? values;
@@ -451,7 +451,7 @@ export async function addCardWithValues(
     );
     throw err;
   }
-  await createFromEntry(qc, waveId, entry, input, theme);
+  await createFromEntry(qc, trackId, entry, input, theme);
 }
 
 export class CatalogCreateNotImplemented extends Error {
@@ -500,7 +500,7 @@ function isCreateContractError(err: unknown): boolean {
 
 async function createFromEntry(
   qc: ReturnType<typeof useQueryClient>,
-  waveId: string,
+  trackId: string,
   entry: NonNullable<ReturnType<typeof getEntry>>,
   input: unknown,
   theme: 'light' | 'dark',
@@ -518,21 +518,21 @@ async function createFromEntry(
         throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
       }
       const title = (input as { title?: string }).title || undefined;
-      const card = await api.createCard(waveId, {
+      const card = await api.createCard(trackId, {
         kind: entry.claim.kind,
         title,
         payload: entry.create.buildPayload(input as never),
       });
       result = { cardId: card.id, raw: card };
     } else if (entry.create.mode === 'atomic') {
-      result = await entry.create.submit(waveId, input as never, {
+      result = await entry.create.submit(trackId, input as never, {
         themeRgb: rgb,
       });
     } else {
       assertRouterCreateAllowed(entry);
       throw new Error(`MissingCreateStrategy(${entry.type})`);
     }
-    await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    await qc.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
     dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
   } catch (err) {
     if (isCreateContractError(err)) throw err;
@@ -543,7 +543,7 @@ async function createFromEntry(
 
 async function addCardOfKind(
   qc: ReturnType<typeof useQueryClient>,
-  waveId: string,
+  trackId: string,
   type: AddPanelKind,
   theme: 'light' | 'dark',
 ): Promise<void> {
@@ -560,5 +560,5 @@ async function addCardOfKind(
   // `--terminal-fg/-bg` daemon argv.
   const entry = getEntry(type);
   if (!entry) return;
-  await createFromEntry(qc, waveId, entry, {}, theme);
+  await createFromEntry(qc, trackId, entry, {}, theme);
 }

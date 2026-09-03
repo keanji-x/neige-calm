@@ -19,16 +19,16 @@ pub(crate) fn card_is_plain_chat(
     marked && (!require_worker_codex || (card.kind == "codex" && role == Some(CardRole::Worker)))
 }
 
-/// Whether a card carries the persisted wave-assistant marker (#1189).
+/// Whether a card carries the persisted track-assistant marker (#1189).
 ///
 /// Same shape as [`card_is_plain_chat`] and same fail-closed reading of
 /// `require_assistant_codex`, but a *different* marker value and a different
 /// role. The two must never be conflated: a plain chat has no MCP token and no
-/// wave authority at all, while an assistant holds a token that reaches the
+/// track authority at all, while an assistant holds a token that reaches the
 /// block channel. Answering one question with the other's predicate would
 /// either strand the assistant outside the harness routes or hand an area chat
 /// the assistant's surface.
-pub(crate) fn card_is_wave_assistant(
+pub(crate) fn card_is_track_assistant(
     card: &Card,
     role: Option<CardRole>,
     require_assistant_codex: bool,
@@ -48,19 +48,19 @@ pub(crate) fn card_is_wave_assistant(
 /// a worker the worker-flow machinery owns?" — the answer is the same for both
 /// flavours and the distinction between them is irrelevant there.
 pub(crate) fn card_is_lazy_conversation(card: &Card) -> bool {
-    card_is_plain_chat(card, None, false) || card_is_wave_assistant(card, None, false)
+    card_is_plain_chat(card, None, false) || card_is_track_assistant(card, None, false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{CardId, WaveId};
+    use crate::ids::{CardId, TrackId};
     use serde_json::json;
 
     fn card(kind: &str) -> Card {
         Card {
             id: CardId::from("card-chat"),
-            wave_id: WaveId::from("wave-chat"),
+            track_id: TrackId::from("track-chat"),
             title: None,
             kind: kind.into(),
             sort: 0.0,
@@ -85,7 +85,7 @@ mod tests {
     /// is what opens the MCP-backed harness routes.
     #[test]
     fn the_two_conversation_markers_never_answer_for_each_other() {
-        assert!(card_is_wave_assistant(
+        assert!(card_is_track_assistant(
             &assistant_card("codex"),
             Some(CardRole::Assistant),
             true
@@ -95,18 +95,18 @@ mod tests {
             Some(CardRole::Assistant),
             false
         ));
-        assert!(!card_is_wave_assistant(
+        assert!(!card_is_track_assistant(
             &card("codex"),
             Some(CardRole::Worker),
             false
         ));
         // Role and kind still constrain the strict reading.
-        assert!(!card_is_wave_assistant(
+        assert!(!card_is_track_assistant(
             &assistant_card("codex"),
             Some(CardRole::Worker),
             true
         ));
-        assert!(!card_is_wave_assistant(
+        assert!(!card_is_track_assistant(
             &assistant_card("terminal"),
             Some(CardRole::Assistant),
             true

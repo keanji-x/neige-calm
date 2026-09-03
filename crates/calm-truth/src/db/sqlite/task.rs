@@ -5,37 +5,37 @@ use crate::error::{CalmError, Result};
 use crate::model::*;
 
 // ---------------------------------------------------------------------------
-// Tasks (issue #644 — wave-scoped task plan, migration 0041)
+// Tasks (issue #644 — track-scoped task plan, migration 0041)
 //
 // The `_tx` helpers run inside the caller's eventized write so the row
 // writes and the `plan.updated` event land (or roll back) together —
-// same shape as `wave_update_tx` above. Reads are mirrored on
+// same shape as `track_update_tx` above. Reads are mirrored on
 // `RepoRead` for the tool layer's pre-checks and `calm.plan.list`.
 // ---------------------------------------------------------------------------
 
 /// Shared SELECT column list for `tasks` rows. One spelling so the
 /// `FromRow` mapping can't drift between the pool reads and the in-tx
 /// reads.
-pub(super) const TASK_COLUMNS: &str = "id, wave_id, key, kind, goal, context_json, acceptance_criteria, \
+pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
      running_deadline_ms, context_stale_at_ms, declared_by, spawn, created_at_ms, updated_at_ms, \
      finished_at_ms";
 
-/// In-tx read of a wave's full plan, in scheduler order
+/// In-tx read of a track's full plan, in scheduler order
 /// (`priority DESC, created_at_ms ASC, key ASC` — design §5.2). Used by
 /// `calm.plan.upsert` so dep/cycle/mutability validation sees state
 /// consistent with the rows it is about to write.
-pub async fn tasks_by_wave_tx(
+pub async fn tasks_by_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<Vec<Task>> {
     let sql = format!(
-        "SELECT {TASK_COLUMNS} FROM tasks WHERE wave_id = ?1 \
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE track_id = ?1 \
          ORDER BY priority DESC, created_at_ms ASC, key ASC"
     );
     let rows = sqlx::query_as::<_, Task>(&sql)
-        .bind(wave_id)
+        .bind(track_id)
         .fetch_all(&mut **tx)
         .await?;
     Ok(rows)
@@ -89,16 +89,16 @@ pub async fn task_get_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<O
     Ok(row)
 }
 
-/// Sub-wave parents are long-lived orchestration rows, not workers. They do
+/// Sub-track parents are long-lived orchestration rows, not workers. They do
 /// not own a worker card and deliberately have no running deadline.
-pub async fn task_mark_sub_wave_running_tx(
+pub async fn task_mark_sub_track_running_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     now: i64,
 ) -> Result<u64> {
     Ok(sqlx::query(
         "UPDATE tasks SET status='running',worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1 \
-         WHERE id=?2 AND status='dispatched' AND spawn='sub-wave' AND child_wave_id IS NOT NULL",
+         WHERE id=?2 AND status='dispatched' AND spawn='sub-wave' AND child_track_id IS NOT NULL",
     )
     .bind(now)
     .bind(id)
@@ -107,19 +107,22 @@ pub async fn task_mark_sub_wave_running_tx(
     .rows_affected())
 }
 
-/// In-tx wave-existence guard for the plan writers. `tasks.wave_id`
-/// deliberately has no FK to `waves` (design §2 — events-outlive-rows
+/// In-tx track-existence guard for the plan writers. `tasks.track_id`
+/// deliberately has no FK to `tracks` (design §2 — events-outlive-rows
 /// convention), so without this check a delete/upsert race could insert
-/// plan rows for a wave whose row was just removed. Surfaced as
+/// plan rows for a track whose row was just removed. Surfaced as
 /// `Conflict` so the tool layer maps it onto the 409-style vocabulary.
-pub async fn require_wave_exists_tx(tx: &mut Transaction<'_, Sqlite>, wave_id: &str) -> Result<()> {
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
-        .bind(wave_id)
+pub async fn require_track_exists_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &str,
+) -> Result<()> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_optional(&mut **tx)
         .await?;
     if exists.is_none() {
         return Err(CalmError::Conflict(format!(
-            "wave {wave_id} was deleted concurrently"
+            "track {track_id} was deleted concurrently"
         )));
     }
     Ok(())
@@ -141,44 +144,44 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
-/// Issue #644 PR-B — in-tx read of one wave's lifecycle plus its raw
+/// Issue #644 PR-B — in-tx read of one track's lifecycle plus its raw
 /// `task_budget` override. The scheduler's claim tx re-checks
-/// schedulability against this (not the pre-claim snapshot) so a wave
+/// schedulability against this (not the pre-claim snapshot) so a track
 /// moved to Blocked/Canceled/Done between the ready-set pass and the
 /// claim can never have new work claimed (review F4), and the budget is
 /// revalidated in the same tx so a PATCH that shrank it mid-window
-/// cannot over-fill the wave (round-2 review F1). `None` = the wave row
+/// cannot over-fill the track (round-2 review F1). `None` = the track row
 /// is gone (concurrent delete); the inner `Option<i64>` is the nullable
 /// `task_budget` column (NULL = kernel default).
-pub async fn wave_lifecycle_and_budget_tx(
+pub async fn track_lifecycle_and_budget_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
-) -> Result<Option<(WaveLifecycle, Option<i64>)>> {
-    // #679 PR1 — `WaveLifecycle` lost its `sqlx::Type` derive when it
+    track_id: &str,
+) -> Result<Option<(TrackLifecycle, Option<i64>)>> {
+    // #679 PR1 — `TrackLifecycle` lost its `sqlx::Type` derive when it
     // moved to calm-types; decode TEXT and parse via `TryFrom<String>`.
     let row: Option<(String, Option<i64>)> =
-        sqlx::query_as("SELECT lifecycle, task_budget FROM waves WHERE id = ?1")
-            .bind(wave_id)
+        sqlx::query_as("SELECT lifecycle, task_budget FROM tracks WHERE id = ?1")
+            .bind(track_id)
             .fetch_optional(&mut **tx)
             .await?;
     row.map(|(lifecycle, budget)| {
-        WaveLifecycle::try_from(lifecycle)
+        TrackLifecycle::try_from(lifecycle)
             .map(|lifecycle| (lifecycle, budget))
-            .map_err(|e| CalmError::Internal(format!("waves.lifecycle decode: {e}")))
+            .map_err(|e| CalmError::Internal(format!("tracks.lifecycle decode: {e}")))
     })
     .transpose()
 }
 
-/// Issue #644 PR-C — the wave-level gate policy flag
-/// (`waves.require_task_gates`, §6.6), read inside `calm.plan.upsert`'s
-/// tx for the rule-6 check. A gone wave row reads as `false` — the
-/// caller's `require_wave_exists_tx` already errored that case loudly.
-pub async fn wave_require_task_gates_tx(
+/// Issue #644 PR-C — the track-level gate policy flag
+/// (`tracks.require_task_gates`, §6.6), read inside `calm.plan.upsert`'s
+/// tx for the rule-6 check. A gone track row reads as `false` — the
+/// caller's `require_track_exists_tx` already errored that case loudly.
+pub async fn track_require_task_gates_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<bool> {
-    let row: Option<(i64,)> = sqlx::query_as("SELECT require_task_gates FROM waves WHERE id = ?1")
-        .bind(wave_id)
+    let row: Option<(i64,)> = sqlx::query_as("SELECT require_task_gates FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_optional(&mut **tx)
         .await?;
     Ok(row.is_some_and(|(v,)| v != 0))
@@ -220,10 +223,10 @@ pub async fn task_claim_pending_tx(
             .await?;
         for reference in context {
             sqlx::query(
-                "INSERT INTO task_ref_index (task_id, dst_wave_id, block_id) VALUES (?1, ?2, ?3)",
+                "INSERT INTO task_ref_index (task_id, dst_track_id, block_id) VALUES (?1, ?2, ?3)",
             )
             .bind(id)
-            .bind(reference.wave_id.as_str())
+            .bind(reference.track_id.as_str())
             .bind(&reference.block_id)
             .execute(&mut **tx)
             .await?;
@@ -356,7 +359,7 @@ pub async fn worker_op_targets_card_tx(
 /// The two-sided `worker_card_id` guard from round 1 only protects
 /// rows that already carry a stamp; an UNSTAMPED `dispatched` row (the
 /// report-beat-the-running-stamp window) would otherwise accept any
-/// same-wave worker that echoes the task id. The ownership proof for
+/// same-track worker that echoes the task id. The ownership proof for
 /// that window is the worker-spawn operation's immutable target card
 /// ([`worker_op_targets_card_tx`], round-4 review F1/F2) — NOT the
 /// reporting card's payload, which is mutable via
@@ -395,8 +398,8 @@ impl<'a> TaskReporter<'a> {
 /// [`task_start_verifying_from_worker_tx`]), never straight to `done` —
 /// the worker's self-report is a claim, not evidence (§3/§6).
 ///
-/// `wave_id` is part of the guard so a caller can never flip another
-/// wave's row even if it echoes a foreign task id.
+/// `track_id` is part of the guard so a caller can never flip another
+/// track's row even if it echoes a foreign task id.
 ///
 /// The card guard is two-sided (review F3 + round-2 F2 + round-4 F1):
 /// besides the COALESCE stamp, a [`TaskReporter::Card`] caller only
@@ -410,7 +413,7 @@ impl<'a> TaskReporter<'a> {
 pub async fn task_complete_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    wave_id: &str,
+    track_id: &str,
     reporter: TaskReporter<'_>,
     now: i64,
 ) -> Result<u64> {
@@ -422,7 +425,7 @@ pub async fn task_complete_from_worker_tx(
                worker_card_id = COALESCE(worker_card_id, ?1),
                updated_at_ms = ?2,
                finished_at_ms = ?2
-           WHERE id = ?3 AND wave_id = ?4
+           WHERE id = ?3 AND track_id = ?4
              AND status IN ('dispatched', 'running')
              AND gate_json IS NULL
              AND (?1 IS NULL OR worker_card_id = ?1
@@ -431,7 +434,7 @@ pub async fn task_complete_from_worker_tx(
     .bind(worker_card_id)
     .bind(now)
     .bind(id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(owns_key)
     .execute(&mut **tx)
     .await?;
@@ -457,13 +460,13 @@ pub enum SuccessReportFlip {
 /// runner instead of terminalizing it. Identical guards to
 /// [`task_complete_from_worker_tx`] except the gate condition is
 /// inverted (`gate_json IS NOT NULL`). `gate_result_json` from any
-/// prior wave of the plan is untouched (rows can only re-enter
+/// prior track of the plan is untouched (rows can only re-enter
 /// `verifying` via a fresh report on a non-terminal row, which the
 /// status guard already excludes).
 pub async fn task_start_verifying_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    wave_id: &str,
+    track_id: &str,
     reporter: TaskReporter<'_>,
     now: i64,
 ) -> Result<u64> {
@@ -474,7 +477,7 @@ pub async fn task_start_verifying_from_worker_tx(
                status_detail = NULL,
                worker_card_id = COALESCE(worker_card_id, ?1),
                updated_at_ms = ?2
-           WHERE id = ?3 AND wave_id = ?4
+           WHERE id = ?3 AND track_id = ?4
              AND status IN ('dispatched', 'running')
              AND gate_json IS NOT NULL
              AND (?1 IS NULL OR worker_card_id = ?1
@@ -483,7 +486,7 @@ pub async fn task_start_verifying_from_worker_tx(
     .bind(worker_card_id)
     .bind(now)
     .bind(id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(owns_key)
     .execute(&mut **tx)
     .await?;
@@ -498,14 +501,14 @@ pub async fn task_start_verifying_from_worker_tx(
 pub async fn task_report_success_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    wave_id: &str,
+    track_id: &str,
     reporter: TaskReporter<'_>,
     now: i64,
 ) -> Result<SuccessReportFlip> {
-    if task_complete_from_worker_tx(tx, id, wave_id, reporter, now).await? > 0 {
+    if task_complete_from_worker_tx(tx, id, track_id, reporter, now).await? > 0 {
         return Ok(SuccessReportFlip::Done);
     }
-    if task_start_verifying_from_worker_tx(tx, id, wave_id, reporter, now).await? > 0 {
+    if task_start_verifying_from_worker_tx(tx, id, track_id, reporter, now).await? > 0 {
         return Ok(SuccessReportFlip::Verifying);
     }
     Ok(SuccessReportFlip::None)
@@ -689,7 +692,7 @@ fn fold_reason_tail(reason: impl Iterator<Item = char>) -> String {
 pub async fn task_fail_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    wave_id: &str,
+    track_id: &str,
     reporter: TaskReporter<'_>,
     status_detail: &str,
     now: i64,
@@ -702,7 +705,7 @@ pub async fn task_fail_from_worker_tx(
                worker_card_id = COALESCE(worker_card_id, ?2),
                updated_at_ms = ?3,
                finished_at_ms = ?3
-           WHERE id = ?4 AND wave_id = ?5
+           WHERE id = ?4 AND track_id = ?5
              AND status IN ('dispatched', 'running')
              AND (?2 IS NULL OR worker_card_id = ?2
                   OR (worker_card_id IS NULL AND ?6))"#,
@@ -711,7 +714,7 @@ pub async fn task_fail_from_worker_tx(
     .bind(worker_card_id)
     .bind(now)
     .bind(id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(owns_key)
     .execute(&mut **tx)
     .await?;
@@ -728,7 +731,9 @@ mod status_detail_tests {
     fn class_is_the_head_and_survives_a_reason_tail() {
         assert_eq!(status_detail_class("spawn-failed"), "spawn-failed");
         assert_eq!(
-            status_detail_class("spawn-failed: wave w1 cwd /home/kenji is not a git repository: x"),
+            status_detail_class(
+                "spawn-failed: track w1 cwd /home/kenji is not a git repository: x"
+            ),
             "spawn-failed"
         );
         // A bare colon (no space) is not a separator — gate details and

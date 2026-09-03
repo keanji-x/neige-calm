@@ -13,11 +13,11 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
 use calm_server::harness::HarnessRegistry;
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
+use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolRegistry, auth, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewPlugin, NewTrack, now_ms};
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
@@ -33,8 +33,8 @@ use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedDaemonStat
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_area_cache::WaveAreaCache;
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::track_area_cache::TrackAreaCache;
+use calm_server::track_report::TrackReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -48,7 +48,7 @@ use super::event_queries::*;
 use super::forge_env::{EnvGuard, ForgeTestEnv};
 use super::gh_shim::{seed_shim_issue_body, write_gh_shim};
 use super::git_helpers::{
-    clone_for_wave, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha,
+    clone_for_track, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha,
     seed_rust_micro_crate,
 };
 use super::spec_turn::spec_identity;
@@ -101,9 +101,9 @@ pub struct Fixture {
     pub events: EventBus,
     pub write: WriteContext,
     pub cache: CardRoleCache,
-    pub wave_area_cache: WaveAreaCache,
+    pub track_area_cache: TrackAreaCache,
     pub area_id: AreaId,
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub spec_card_id: CardId,
     pub report_card_id: CardId,
     pub codex: Arc<CodexClient>,
@@ -115,7 +115,7 @@ pub struct Fixture {
     pub ctx: Arc<AppContext>,
     pub registry: Arc<ToolRegistry>,
     pub used_injected_plan: AtomicBool,
-    pub wave_cwd: PathBuf,
+    pub track_cwd: PathBuf,
     pub origin_repo: PathBuf,
     /// Kernel MCP UDS socket — exposed so tests can drive scripted setup
     /// `tools/call`s over the same wire real agent sessions use (#840 d2).
@@ -214,14 +214,14 @@ pub async fn boot_forge_e2e_fixture(
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
-    let wave_cwd = tmp.path().join("wave-cwd");
+    let track_cwd = tmp.path().join("track-cwd");
     let origin_repo = tmp.path().join("origin.git");
 
     match spec.repo_seed {
         RepoSeed::ReadmeOnly => init_bare_origin(&origin_repo, &tmp.path().join("seed")),
         RepoSeed::RustMicroCrate => seed_rust_micro_crate(&origin_repo, &tmp.path().join("seed")),
     }
-    clone_for_wave(&origin_repo, &wave_cwd);
+    clone_for_track(&origin_repo, &track_cwd);
     if let Some(issue) = &spec.issue_body {
         // The gh shim keys state by the `--repo` selector string. The capstone
         // goal pins the CLONE gitdir selector (forge_pr_goal precedent — the
@@ -229,7 +229,7 @@ pub async fn boot_forge_e2e_fixture(
         // both plausible selectors so scripted/agent calls agree wherever the
         // steered goal points them.
         seed_shim_issue_body(&origin_repo, issue.number, &issue.body);
-        seed_shim_issue_body(&wave_cwd.join(".git"), issue.number, &issue.body);
+        seed_shim_issue_body(&track_cwd.join(".git"), issue.number, &issue.body);
     }
     let origin_main_initial =
         git_stdout_no_cwd(["--git-dir", path_str(&origin_repo), "rev-parse", "main"]);
@@ -242,8 +242,8 @@ pub async fn boot_forge_e2e_fixture(
     let repo_dyn: Arc<dyn Repo> = sqlx_repo.clone();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    let write = WriteContext::new(cache.clone(), wave_area_cache.clone());
+    let track_area_cache = TrackAreaCache::new();
+    let write = WriteContext::new(cache.clone(), track_area_cache.clone());
     let proxy = active_proxy_value();
     if let Some(proxy) = proxy.as_deref() {
         repo_dyn
@@ -264,31 +264,31 @@ pub async fn boot_forge_e2e_fixture(
         })
         .await
         .expect("create area");
-    let wave = repo_dyn
-        .wave_create(NewWave {
+    let track = repo_dyn
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: spec.template_id.clone(),
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
     if !spec.require_task_gates {
-        sqlx::query("UPDATE waves SET require_task_gates = 0 WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
+            .bind(track.id.as_str())
             .execute(sqlx_repo.pool())
             .await
-            .expect("disable task gates for fixture wave");
+            .expect("disable task gates for fixture track");
     }
     repo_dyn
-        .seed_wave_area_cache(&wave_area_cache)
+        .seed_track_area_cache(&track_area_cache)
         .await
-        .expect("seed wave/area cache");
+        .expect("seed track/area cache");
     repo_dyn
         .seed_card_role_cache(&cache)
         .await
@@ -297,7 +297,7 @@ pub async fn boot_forge_e2e_fixture(
     // placeholder (it never boots a real harness). The RealSpecTurn path drives
     // the real `spec-harness-start` op, whose AppServerInteract phase requires
     // the production-faithful spec card shape: a kind:"codex" card whose payload
-    // is the `spec_harness_card_payload` JSON object (routes/waves.rs:657) — the
+    // is the `spec_harness_card_payload` JSON object (routes/tracks.rs:657) — the
     // adapter mutates that object in place (codex_thread_id, appserver_sock, …).
     let (spec_kind, spec_payload) = match spec.plan_source {
         PlanSource::Injected => ("spec".to_string(), Value::Null),
@@ -322,7 +322,7 @@ pub async fn boot_forge_e2e_fixture(
     };
     let spec_card = repo_dyn
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: spec_kind,
             sort: None,
@@ -330,7 +330,7 @@ pub async fn boot_forge_e2e_fixture(
         })
         .await
         .expect("create spec card");
-    cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     // `card_create` persists `cards.role = 'worker'` unconditionally
     // (`card_create_tx` → `card_create_with_id_tx(.., CardRole::Worker, ..)`),
     // independent of kind. Production mints the spec card with
@@ -339,36 +339,36 @@ pub async fn boot_forge_e2e_fixture(
     // `got=Worker`.
     //
     // #1189 §3.6 dropped the `RealSpecTurn`-only condition this used to
-    // carry: the recorder gate now resolves session → card → {role, wave}
+    // carry: the recorder gate now resolves session → card → {role, track}
     // through a live `cards` read on EVERY report write, injected paths
     // included, so a persisted role that contradicts the fixture's own
     // story denies writes the test never meant to deny.
     super::mcp::set_persisted_card_role(repo_dyn.as_ref(), spec_card.id.as_str(), CardRole::Spec)
         .await;
-    // Production `routes::waves::create_wave` atomically mints the wave-report
-    // card alongside the spec card for EVERY wave (waves.rs) — no production
-    // wave ever lacks one. This fixture bypasses that route (direct
-    // `repo.wave_create` above), so it mints the report card here to match;
+    // Production `routes::tracks::create_track` atomically mints the track-report
+    // card alongside the spec card for EVERY track (tracks.rs) — no production
+    // track ever lacks one. This fixture bypasses that route (direct
+    // `repo.track_create` above), so it mints the report card here to match;
     // otherwise the spec agent's `calm.report.write` trips the
-    // `wave has no wave-report card (invariant violation)` guard.
+    // `track has no track-report card (invariant violation)` guard.
     let report_card = repo_dyn
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
-            kind: "wave-report".into(),
+            kind: "track-report".into(),
             sort: Some(-1.0),
-            payload: serde_json::to_value(WaveReportPayload::initial())
-                .expect("wave report payload"),
+            payload: serde_json::to_value(TrackReportPayload::initial())
+                .expect("track report payload"),
         })
         .await
         .expect("create report card");
     cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
-        wave.id.clone(),
+        track.id.clone(),
     );
     if matches!(spec.plan_source, PlanSource::Injected) {
-        seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
+        seed_spec_session(&sqlx_repo, track.id.as_str(), spec_card.id.as_str()).await;
     }
 
     let plugin_host = boot_plugin_host(
@@ -468,7 +468,7 @@ pub async fn boot_forge_e2e_fixture(
                     shared.clone(),
                     Some(server.clone()),
                     cache.clone(),
-                    wave_area_cache.clone(),
+                    track_area_cache.clone(),
                     std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
                 )) as Arc<dyn ProviderAdapter>,
                 Arc::new(SpecHarnessStartAdapter::new(
@@ -477,7 +477,7 @@ pub async fn boot_forge_e2e_fixture(
                     harness.clone(),
                     plugin_host.clone(),
                     cache.clone(),
-                    wave_area_cache.clone(),
+                    track_area_cache.clone(),
                     Some(server.shim_config.socket_path.clone()),
                 )) as Arc<dyn ProviderAdapter>,
             ],
@@ -500,9 +500,9 @@ pub async fn boot_forge_e2e_fixture(
 
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: sqlx_repo
+        track_vcs: sqlx_repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: write.clone(),
         daemon_token_hash: Some(daemon_token_hash),
@@ -521,9 +521,9 @@ pub async fn boot_forge_e2e_fixture(
         events,
         write,
         cache,
-        wave_area_cache,
+        track_area_cache,
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,
         codex,
@@ -535,7 +535,7 @@ pub async fn boot_forge_e2e_fixture(
         ctx,
         registry: Arc::new(registry),
         used_injected_plan: AtomicBool::new(false),
-        wave_cwd,
+        track_cwd,
         origin_repo,
         socket_path,
         daemon_token,
@@ -596,7 +596,7 @@ pub async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
         .await
         .expect("read report card")
         .expect("report card");
-    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+    let report: TrackReportPayload = serde_json::from_value(report.payload).unwrap();
     let handler = fx
         .registry
         .lookup(TOOL_REPORT_BLOCKS_UPSERT)
@@ -624,7 +624,7 @@ pub async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
 }
 
 pub fn task_id(fx: &Fixture, key: &str) -> String {
-    format!("{}:{key}", fx.wave_id.as_str())
+    format!("{}:{key}", fx.track_id.as_str())
 }
 
 pub async fn wait_for_worker_success(
@@ -701,9 +701,9 @@ pub async fn assert_worker_commit_landed(
     let row = wait_for_worktree_committed_event(fx, budget).await;
     assert_eq!(row.actor, ActorId::KernelDispatcher);
     assert_eq!(row.scope_kind, "card");
-    assert_eq!(row.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(row.scope_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(row.scope_card.as_deref(), Some(worker_card_id));
-    assert_eq!(row.payload["wave_id"], fx.wave_id.as_str());
+    assert_eq!(row.payload["track_id"], fx.track_id.as_str());
     assert_eq!(row.payload["card_id"], worker_card_id);
 
     let head = git_stdout(worker_cwd, ["rev-parse", "HEAD"]);
@@ -719,7 +719,7 @@ pub async fn assert_worker_commit_landed(
     assert_eq!(row.payload["commit_sha"], head);
     assert_eq!(
         row.payload["branch"],
-        format!("neige/{}/{}", fx.wave_id.as_str(), worker_card_id)
+        format!("neige/{}/{}", fx.track_id.as_str(), worker_card_id)
     );
 
     let marker_at_head = git_stdout(worker_cwd, ["show", "HEAD:FORGE_E2E.md"]);
@@ -764,13 +764,13 @@ pub async fn wait_for_first_worktree_committed_event(
     let deadline = Instant::now() + budget;
     loop {
         let rows: Vec<RawCommittedEventRowWithId> = sqlx::query_as(
-            "SELECT id, actor, scope_kind, scope_wave, scope_card, payload \
+            "SELECT id, actor, scope_kind, scope_track, scope_card, payload \
                  FROM events WHERE kind = 'worktree.committed' ORDER BY id ASC",
         )
         .fetch_all(fx.repo.pool())
         .await
         .expect("worktree.committed event rows");
-        if let Some((id, actor, scope_kind, scope_wave, scope_card, payload)) =
+        if let Some((id, actor, scope_kind, scope_track, scope_card, payload)) =
             rows.into_iter().next()
         {
             return (
@@ -778,7 +778,7 @@ pub async fn wait_for_first_worktree_committed_event(
                 CommittedEventRow {
                     actor: serde_json::from_str(&actor).expect("event actor json"),
                     scope_kind,
-                    scope_wave,
+                    scope_track,
                     scope_card,
                     payload: serde_json::from_str(&payload).expect("event payload json"),
                 },
@@ -805,16 +805,16 @@ pub async fn wait_for_first_forge_event(
     let deadline = Instant::now() + budget;
     loop {
         let rows: Vec<(i64, Option<String>, String)> = sqlx::query_as(
-            "SELECT id, scope_wave, payload FROM events WHERE kind = ?1 ORDER BY id ASC",
+            "SELECT id, scope_track, payload FROM events WHERE kind = ?1 ORDER BY id ASC",
         )
         .bind(kind)
         .fetch_all(fx.repo.pool())
         .await
         .unwrap_or_else(|e| panic!("{kind} event rows: {e}"));
-        if let Some((id, scope_wave, payload)) = rows.into_iter().next() {
+        if let Some((id, scope_track, payload)) = rows.into_iter().next() {
             return (
                 id,
-                scope_wave,
+                scope_track,
                 serde_json::from_str(&payload).expect("event payload json"),
             );
         }
@@ -1064,7 +1064,7 @@ pub async fn shutdown_shared_codex(shared: &Arc<SharedCodexAppServer>) {
     }
 }
 
-pub async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
+pub async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) {
     let mut tx = repo.pool().begin().await.expect("begin spec session tx");
     session_start_runtime_tx(
         &mut tx,
@@ -1085,12 +1085,12 @@ pub async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &st
     )
     .await
     .expect("seed spec session");
-    sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+    sqlx::query("UPDATE tracks SET root_session_id = ?1 WHERE id = ?2")
         .bind(SPEC_SESSION_ID)
-        .bind(wave_id)
+        .bind(track_id)
         .execute(&mut *tx)
         .await
-        .expect("mark spec session as wave root");
+        .expect("mark spec session as track root");
     tx.commit().await.expect("commit spec session tx");
 }
 

@@ -1,0 +1,40 @@
+{
+  "description": "#1209 PR-2 — rows persisted before the rename spell the template key `workflow_id`. `calm_types::Track` carries a deserialize-only `serde(alias)`, so replay still recovers the template attribution; re-serialization emits only the new `template_id` spelling. Step 3 (canonical is a serde fixed point) is what proves the alias is one-way. Deleting the alias makes step 1 hydrate `template_id: null` and this test goes red.",
+  "wire": {
+    "ev": "track.updated",
+    "data": {
+      "id": "track-01",
+      "area_id": "area-01",
+      "title": "Golden Track",
+      "sort": 1.5,
+      "workflow_id": "small-change",
+      "created_at": 1000,
+      "updated_at": 2000
+    }
+  },
+  "canonical": {
+    "ev": "track.updated",
+    "data": {
+      "id": "track-01",
+      "area_id": "area-01",
+      "title": "Golden Track",
+      "sort": 1.5,
+      "created_at": 1000,
+      "updated_at": 2000,
+      "archived_at": null,
+      "pinned_at": null,
+      "lifecycle": "draft",
+      "cwd": "",
+      "template_id": "small-change",
+      "plugin_scope": null,
+      "purpose": null,
+      "template_input": null,
+      "terminal_at": null,
+      "workspace": {
+        "kind": "attached",
+        "path": "",
+        "frozen_at": null
+      }
+    }
+  }
+}

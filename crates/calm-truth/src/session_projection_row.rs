@@ -9,7 +9,7 @@ use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
 
 /// Projection semantics: the card's current worker-session pointer is the winner.
-pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT ws.id, ws.wave_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
+pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
                   ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
                   ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
                   ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
@@ -25,7 +25,7 @@ pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT ws.id, ws.
 
 const PROJECTABLE_RUNTIMES_FOR_CARDS_BINDINGS: &str = "{card_id_bindings}";
 
-pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
+pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
                   ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
                   ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
                   ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
@@ -36,7 +36,7 @@ pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_
            FROM worker_sessions ws
            JOIN cards c ON c.session_id = ws.id"#;
 
-pub(crate) const WS_CARD_KEYED_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
+pub(crate) const WS_CARD_KEYED_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
                   ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
                   ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
                   ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
@@ -148,7 +148,7 @@ pub(crate) fn run_status_from_db(value: &str) -> Result<WorkerSessionState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::ids::{CardId, WaveId};
+    use calm_types::ids::{CardId, TrackId};
     use calm_types::worker::{LivenessTag, SessionMode, WorkerSessionId};
     use serde_json::json;
 
@@ -159,7 +159,7 @@ mod tests {
     ) -> WorkerSession {
         WorkerSession {
             id: WorkerSessionId::from("ws-1"),
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             provider,
             mode: SessionMode::Resumable,
             contract,

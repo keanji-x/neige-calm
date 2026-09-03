@@ -1,7 +1,7 @@
 // GitHub issue URL → structured `template_input` fields — issue #891
 // slice ③ (design §3.1).
 //
-// The issue-dev wave form asks the user for exactly two things: a GitHub
+// The issue-dev track form asks the user for exactly two things: a GitHub
 // issue URL and a working directory. Everything else in the
 // `issue-development` workflow's `template_input` is derived, and this
 // parser is the derivation: `{repo, issue_number, issue_url}` out of the
@@ -14,7 +14,7 @@
 //     GitHub Enterprise hosts are rejected in v1: the shipped
 //     `issue-development` workflow drives the `gh` forge tools against
 //     github.com, so accepting an enterprise URL here would create a
-//     wave that can never pass the workflow's repo cross-check.
+//     track that can never pass the workflow's repo cross-check.
 //   * Scheme + host are matched case-insensitively (`HTTPS://GITHUB.COM`
 //     is the same authority per RFC 3986 — scheme and host are
 //     case-insensitive) and `issue_url` is normalized to the lowercase

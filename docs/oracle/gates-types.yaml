@@ -1322,8 +1322,8 @@
   kind: gate
   family: wire-types
   statement: >
-    areaSchema / waveSchema / cardSchema / overlaySchema 各自的 infer 类型必须等于
-    生成的 Area / Wave / Card / Overlay
+    areaSchema / trackSchema / cardSchema / overlaySchema 各自的 infer 类型必须等于
+    生成的 Area / Track / Card / Overlay
   why: >
     逐 entity 钉住让回归容易定位——`Card.payload` 的漂移会先在这里亮，而不是在整个
     wireEventSchema 上给一坨天书报错。
@@ -1419,9 +1419,9 @@
     后加的 wire 字段必须在 zod 侧带 `.default(...)`，与 Rust 侧的 `#[serde(default)]`
     对齐，使旧 event-log / replay fixture 无需迁移即可解析
   why: >
-    已知的成对默认值：area.kind → 'user'（#175）、wave.lifecycle → 'draft'（#145，与
-    migration 0012 的 DB DEFAULT 一致）、wave.cwd → ''（#250 PR2）、
-    wave.template_id / purpose / terminal_at → null、wave.template_input → null（#891）、
+    已知的成对默认值：area.kind → 'user'（#175）、track.lifecycle → 'draft'（#145，与
+    migration 0012 的 DB DEFAULT 一致）、track.cwd → ''（#250 PR2）、
+    track.template_id / purpose / terminal_at → null、track.template_input → null（#891）、
     pinned_at → null。理由一致："不要为了加一个字段就逼所有录制会话重写 fixture"。
     每条默认值都有配对的测试断言旧 payload 解析后拿到那个默认值。
   source: web/src/api/schemas.ts:19-215
@@ -1440,23 +1440,23 @@
     被**改名**的 wire 字段必须留一条**只读、单向**的反序列化兼容读：Rust 侧在被改名的
     字段上加 serde alias 且**保留** serde default；zod 侧三个读取器**各自**持有一份
     `normalizeLegacyTemplateKeys`，读入时把旧键搬到新键再交给 schema。
-    写口（`CreateWaveRequest`）**不许**带别名——旧拼写在那里必须被 serde 层直接拒掉。
+    写口（`CreateTrackRequest`）**不许**带别名——旧拼写在那里必须被 serde 层直接拒掉。
   why: >
     GATE-WIRE-007 只覆盖「后加字段」，改名是它没覆盖的一种情况，而改名的失败方向更隐蔽：
     旧 event-log 行里写的是旧键，新代码找不到新键 ⇒ serde default 静默给出 None，
-    replay 出来的 wave 丢掉模板归属且**一个错都不报**（#1209 §3.4）。反方向（为了防这个
+    replay 出来的 track 丢掉模板归属且**一个错都不报**（#1209 §3.4）。反方向（为了防这个
     而删掉 default）更糟：反序列化直接失败，而 `events_since` 的 Err 分支会**跳过整行**。
-    zod 侧同理，且第三个读取器 web/src/wave-fs-viewers/schemas.ts 读的是磁盘上已经写死的
+    zod 侧同理，且第三个读取器 web/src/track-fs-viewers/schemas.ts 读的是磁盘上已经写死的
     旧快照文件，它的 .default(null) 让机械改名变成 fail-open。
     三个读取器不共用 helper 是刻意的：共用会让「只漏改第三个读取器」这个真实回归方向变绿。
     写口那侧必须硬失败（deny_unknown_fields ⇒ axum 的 422 extractor rejection，
     #1209 §3.5 预测的是 400，实测是 422，判据不变）：请求是有活人在另一端的活契约，拒绝可观测可修；
     事件日志是不可变历史，拒绝它等于弄坏 replay（#1209 §3.5）。
   source: crates/calm-types/src/model.rs:358-397 ; fe/core/api/schemas.ts:90-113 ;
-    web/src/api/schemas.ts:120-143 ; web/src/wave-fs-viewers/schemas.ts:163-186
+    web/src/api/schemas.ts:120-143 ; web/src/track-fs-viewers/schemas.ts:163-186
   authoritative_test: crates/calm-server/tests/cases/event_serde_goldens.rs:219-258 ;
     fe/core/api/schemas.contract.test.ts:939-988 ; web/src/api/schemas.test.ts:933-980 ;
-    web/src/wave-fs-viewers/schemas.test.ts:106-159
+    web/src/track-fs-viewers/schemas.test.ts:106-159
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core
@@ -1473,7 +1473,7 @@
   why: >
     注释把这条写成了显式的测试约定（#136 PR4："两条一组，每个新变体一个 happy parse
     加一个缺字段 safeParse"）。缺了 reject 那一半，schema 退化成宽松形状时没人会发现。
-    覆盖面包括 dispatcher/task 生命周期、proposal 通道（#955）、wave.report_edited（#247，
+    覆盖面包括 dispatcher/task 生命周期、proposal 通道（#955）、track.report_edited（#247，
     含 author 判别式的四个取值 + #955 的 plugin 臂 author_plugin_id）、
     harness transcript 事件、plugin.tool.registered / forge.issue.read。
   source: web/src/api/schemas.test.ts:277-283,513-518

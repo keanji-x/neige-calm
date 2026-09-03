@@ -15,12 +15,12 @@ stack_smoke_create_area() {
   printf '%s\n' "$area_id"
 }
 
-stack_smoke_create_wave() {
-  local area_id=$1 body wave_id
+stack_smoke_create_track() {
+  local area_id=$1 body track_id
   body="$(AREA_ID="$area_id" WORKSPACE="$WORKSPACE" \
-    node -e 'process.stdout.write(JSON.stringify({area_id:process.env.AREA_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[216,219,226],bg:[15,20,24]},title:"Tier 1 smoke wave"}))')"
-  wave_id="$(post_id /api/waves "$body")"
-  printf '%s\n' "$wave_id"
+    node -e 'process.stdout.write(JSON.stringify({area_id:process.env.AREA_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[216,219,226],bg:[15,20,24]},title:"Tier 1 smoke track"}))')"
+  track_id="$(post_id /api/tracks "$body")"
+  printf '%s\n' "$track_id"
 }
 
 stack_smoke_card_ids() {
@@ -33,13 +33,13 @@ if (!Array.isArray(cards)) {
   process.exit(2);
 }
 const spec = cards.find((c) => c.kind === "codex" && c.payload?.spec_harness === true);
-const report = cards.find((c) => c.kind === "wave-report");
+const report = cards.find((c) => c.kind === "track-report");
 if (typeof spec?.id !== "string") {
-  console.error("spec card missing from wave cards");
+  console.error("spec card missing from track cards");
   process.exit(2);
 }
 if (typeof report?.id !== "string") {
-  console.error("wave-report card missing from wave cards");
+  console.error("track-report card missing from track cards");
   process.exit(2);
 }
 process.stdout.write(`${spec.id}\t${report.id}\n`);
@@ -47,7 +47,7 @@ process.stdout.write(`${spec.id}\t${report.id}\n`);
 }
 
 case_run() {
-  local auth_probe_status area_id wave_id cards_json spec_card_id report_card_id code
+  local auth_probe_status area_id track_id cards_json spec_card_id report_card_id code
 
   autologin_probe
   auth_probe_status="$AUTH_PROBE_STATUS"
@@ -56,13 +56,13 @@ case_run() {
 
   expect_2xx GET /api/areas -
   area_id="$(stack_smoke_create_area)"
-  wave_id="$(stack_smoke_create_wave "$area_id")"
+  track_id="$(stack_smoke_create_track "$area_id")"
 
-  expect_2xx GET "/api/waves/$wave_id/cards" -
+  expect_2xx GET "/api/tracks/$track_id/cards" -
   cards_json="$API_BODY"
   IFS=$'\t' read -r spec_card_id report_card_id \
     < <(stack_smoke_card_ids "$cards_json") \
-    || fail "wave $wave_id did not contain spec and report cards"
+    || fail "track $track_id did not contain spec and report cards"
 
   api GET "/api/cards/e2e-missing-$RUN_ID/harness/items" - \
     || fail "curl failed for bogus card GET"
@@ -72,6 +72,6 @@ case_run() {
   [[ "$code" == "not_found" ]] \
     || fail "bogus card GET returned 404 without code=not_found: $(body_preview "$API_BODY")"
 
-  printf 'Smoke OK area=%s wave=%s spec_card=%s report_card=%s\n' \
-    "$area_id" "$wave_id" "$spec_card_id" "$report_card_id"
+  printf 'Smoke OK area=%s track=%s spec_card=%s report_card=%s\n' \
+    "$area_id" "$track_id" "$spec_card_id" "$report_card_id"
 }

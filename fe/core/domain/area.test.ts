@@ -94,7 +94,7 @@ describe('area folders', () => {
 });
 
 /*
- * #1147 S3 — `POST /api/waves` answers a folder clash with a structured body
+ * #1147 S3 — `POST /api/tracks` answers a folder clash with a structured body
  * that has no `error` key, so `core/api/client.ts` normalises it to the bare
  * status text ("Conflict"). These are what turns that into a sentence.
  */

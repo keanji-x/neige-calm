@@ -4,15 +4,15 @@ use sqlx::Row;
 use super::{
     SqlxRepo, area_create_tx, area_delete_tx, area_update_tx, begin_immediate_tx, card_create_tx,
     card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_wave_tx, overlay_delete_subtree_by_area_tx, overlay_delete_tx,
+    overlay_delete_card_overlays_by_track_tx, overlay_delete_subtree_by_area_tx, overlay_delete_tx,
     overlay_upsert_tx, session_commit_exit_tx, session_insert_tx,
     session_record_activity_by_thread_tx, session_record_activity_tx, session_set_liveness_tx,
-    session_state_transition_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    session_state_transition_tx, track_create_tx, track_delete_tx, track_update_tx,
     worker_session_from_row,
 };
 use crate::db::RepoSyncDomainRaw;
 use crate::error::{CalmError, Result};
-use crate::ids::{AreaId, WaveId};
+use crate::ids::{AreaId, TrackId};
 use crate::model::*;
 use crate::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo, Tx as SessionTx};
 use calm_types::worker::{Liveness, WorkerSession, WorkerSessionId, WorkerSessionState};
@@ -36,7 +36,7 @@ impl SessionRepo for SqlxRepo {
 
     async fn session_get(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
         let row = sqlx::query(
-            r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+            r#"SELECT id, track_id, provider, mode, contract, parent_session_id,
                       requester_session_id, state, mcp_token_hash, thread_id,
                       agent_session_id, active_turn_id, terminal_run_id, card_id,
                       handle_state_json, liveness, liveness_probed_at_ms,
@@ -54,7 +54,7 @@ impl SessionRepo for SqlxRepo {
 
     async fn sessions_nonterminal(&self) -> Result<Vec<WorkerSession>> {
         let rows = sqlx::query(
-            r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+            r#"SELECT id, track_id, provider, mode, contract, parent_session_id,
                       requester_session_id, state, mcp_token_hash, thread_id,
                       agent_session_id, active_turn_id, terminal_run_id, card_id,
                       handle_state_json, liveness, liveness_probed_at_ms,
@@ -63,7 +63,7 @@ impl SessionRepo for SqlxRepo {
                       updated_at_ms, completed_at_ms
                FROM worker_sessions
                WHERE state IN ('starting', 'running', 'idle', 'turn_pending')
-               ORDER BY wave_id ASC, created_at_ms ASC, id ASC"#,
+               ORDER BY track_id ASC, created_at_ms ASC, id ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -149,9 +149,9 @@ impl SessionRepo for SqlxRepo {
         Ok(CommitExitOutcome::Committed(session))
     }
 
-    async fn session_list_by_wave(&self, wave_id: &WaveId) -> Result<Vec<WorkerSession>> {
+    async fn session_list_by_track(&self, track_id: &TrackId) -> Result<Vec<WorkerSession>> {
         let rows = sqlx::query(
-            r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+            r#"SELECT id, track_id, provider, mode, contract, parent_session_id,
                       requester_session_id, state, mcp_token_hash, thread_id,
                       agent_session_id, active_turn_id, terminal_run_id, card_id,
                       handle_state_json, liveness, liveness_probed_at_ms,
@@ -159,10 +159,10 @@ impl SessionRepo for SqlxRepo {
                       last_activity_ms, last_thread_status, created_at_ms,
                       updated_at_ms, completed_at_ms
                FROM worker_sessions
-               WHERE wave_id = ?1
+               WHERE track_id = ?1
                ORDER BY created_at_ms ASC, id ASC"#,
         )
-        .bind(wave_id.as_str())
+        .bind(track_id.as_str())
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(worker_session_from_row).collect()
@@ -172,20 +172,20 @@ impl SessionRepo for SqlxRepo {
         // The soundness predicate lives entirely here (#741-4 DR-4). Two arms,
         // both gated on a POSITIVE dead signal AND the mid-respawn exclusion
         // (no active planner-contract session). NEVER converges on absence or
-        // a just-created wave.
+        // a just-created track.
         //
-        //  * Failed-start (Draft): the wave is still `draft` AND its
+        //  * Failed-start (Draft): the track is still `draft` AND its
         //    *most-recent* `spec-harness-start` operation resolved to
-        //    `phase='failed'`. The op→wave link is the immutable
-        //    `payload_json.wave_id` (`idempotency_key` is None and
+        //    `phase='failed'`. The op→track link is the immutable
+        //    `payload_json.track_id` (`idempotency_key` is None and
         //    `target_type/id` is later rewritten to the spec card, so neither
         //    is a reliable key — the payload is stamped once at insert and
         //    never changes). Start/reset re-submit `spec-harness-start` with a
-        //    FRESH op id, so a wave can carry a STALE `failed` start-op AND a
+        //    FRESH op id, so a track can carry a STALE `failed` start-op AND a
         //    NEWER retry (`pending`/`running`/`succeeded`) start-op at once;
         //    during the retry's setup window (new op submitted, planner session
         //    not yet created) `no_active_planner` is momentarily true. Keying
-        //    on the LATEST start-op — `rowid = MAX(rowid)` over this wave's
+        //    on the LATEST start-op — `rowid = MAX(rowid)` over this track's
         //    start-ops — closes that hole: `rowid` is SQLite's monotonic
         //    insertion order (the `operations` table is rowid-backed, not
         //    `WITHOUT ROWID`; `id` is a random uuid-v4 and `created_at_ms` is
@@ -193,7 +193,7 @@ impl SessionRepo for SqlxRepo {
         //    reliably). If the latest start-op is non-failed (retry in flight
         //    or a success), or there is no start-op row yet, the signal is NOT
         //    positive ⇒ left.
-        //  * Lost-root (Planning): the wave is `planning` AND its root session
+        //  * Lost-root (Planning): the track is `planning` AND its root session
         //    is NULL or points at a terminal/missing session. A `Resumable`
         //    (codex) root that is still alive is `is_active_authority` ⇒ caught
         //    by the active-planner exclusion below, so a codex root is never
@@ -204,12 +204,12 @@ impl SessionRepo for SqlxRepo {
         let active = "('starting', 'running', 'idle', 'turn_pending')";
         let no_active_planner = format!(
             "NOT EXISTS (SELECT 1 FROM worker_sessions ws \
-               WHERE ws.wave_id = w.id AND ws.contract = 'planner' \
+               WHERE ws.track_id = w.id AND ws.contract = 'planner' \
                  AND ws.state IN {active})"
         );
         let sql = format!(
-            r#"SELECT w.id AS wave_id, w.area_id AS area_id, w.lifecycle AS lifecycle
-                FROM waves w
+            r#"SELECT w.id AS track_id, w.area_id AS area_id, w.lifecycle AS lifecycle
+                FROM tracks w
                WHERE w.lifecycle = 'draft'
                   -- Keep in sync with calm_server::AREA_CHAT_PURPOSE.
                   AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
@@ -217,28 +217,28 @@ impl SessionRepo for SqlxRepo {
                       SELECT 1 FROM operations o
                        WHERE o.kind = 'spec-harness-start'
                          AND o.phase = 'failed'
-                         AND json_extract(o.payload_json, '$.wave_id') = w.id
+                         AND json_extract(o.payload_json, '$.track_id') = w.id
                          -- The inner MAX subquery limits candidates to start ops
-                         -- for this wave's real spec card. Equality to that MAX
+                         -- for this track's real spec card. Equality to that MAX
                          -- therefore implies o is a spec op; repeating the join
                          -- here would create an unverifiable third-defense illusion.
                          AND o.rowid = (
                              SELECT MAX(o2.rowid) FROM operations o2
                               WHERE o2.kind = 'spec-harness-start'
-                                AND json_extract(o2.payload_json, '$.wave_id') = w.id
+                                AND json_extract(o2.payload_json, '$.track_id') = w.id
                                 AND json_type(o2.payload_json, '$.spec_card_id') = 'text'
                                 AND EXISTS (
                                     SELECT 1 FROM cards c2
                                      WHERE c2.id = json_extract(o2.payload_json, '$.spec_card_id')
-                                       AND c2.wave_id = w.id
+                                       AND c2.track_id = w.id
                                        AND c2.role = 'spec'
                                 )
                          )
                   )
                   AND {no_active_planner}
                UNION ALL
-               SELECT w.id AS wave_id, w.area_id AS area_id, w.lifecycle AS lifecycle
-                 FROM waves w
+               SELECT w.id AS track_id, w.area_id AS area_id, w.lifecycle AS lifecycle
+                 FROM tracks w
                 WHERE w.lifecycle = 'planning'
                   -- Keep in sync with calm_server::AREA_CHAT_PURPOSE.
                   AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
@@ -251,21 +251,21 @@ impl SessionRepo for SqlxRepo {
                       )
                   )
                   AND {no_active_planner}
-               ORDER BY wave_id ASC"#
+               ORDER BY track_id ASC"#
         );
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| {
-                let wave_id: String = row.try_get("wave_id")?;
+                let track_id: String = row.try_get("track_id")?;
                 let area_id: String = row.try_get("area_id")?;
                 let lifecycle_raw: String = row.try_get("lifecycle")?;
-                let lifecycle = WaveLifecycle::try_from(lifecycle_raw.clone()).map_err(|e| {
+                let lifecycle = TrackLifecycle::try_from(lifecycle_raw.clone()).map_err(|e| {
                     CalmError::Internal(format!(
-                        "dead_root_candidates: unknown wave lifecycle {lifecycle_raw:?}: {e}"
+                        "dead_root_candidates: unknown track lifecycle {lifecycle_raw:?}: {e}"
                     ))
                 })?;
                 Ok(DeadRootCandidate {
-                    wave_id: WaveId::from(wave_id),
+                    track_id: TrackId::from(track_id),
                     area_id: AreaId::from(area_id),
                     lifecycle,
                 })
@@ -313,34 +313,34 @@ impl RepoSyncDomainRaw for SqlxRepo {
         Ok(())
     }
 
-    // ---------------------------------------------------------------- waves
-    async fn wave_create(&self, p: NewWave) -> Result<Wave> {
+    // ---------------------------------------------------------------- tracks
+    async fn track_create(&self, p: NewTrack) -> Result<Track> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = wave_create_tx(
+        let out = track_create_tx(
             &mut tx,
             p,
             None,
-            &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-            &self.wave_area_cache,
+            &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+            &self.track_area_cache,
         )
         .await?;
         tx.commit().await?;
         Ok(out)
     }
 
-    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave> {
+    async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = wave_update_tx(&mut tx, id, p).await?;
+        let out = track_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
-    async fn wave_delete(&self, id: &str) -> Result<()> {
+    async fn track_delete(&self, id: &str) -> Result<()> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        overlay_delete_card_overlays_by_wave_tx(&mut tx, id).await?;
-        overlay_delete_by_entity_tx(&mut tx, "wave", id).await?;
+        overlay_delete_card_overlays_by_track_tx(&mut tx, id).await?;
+        overlay_delete_by_entity_tx(&mut tx, "track", id).await?;
         overlay_delete_by_entity_tx(&mut tx, "view", id).await?;
-        wave_delete_tx(&mut tx, id, &self.wave_area_cache).await?;
+        track_delete_tx(&mut tx, id, &self.track_area_cache).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -348,7 +348,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
     // ---------------------------------------------------------------- cards
     async fn card_create(&self, p: NewCard) -> Result<Card> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = if p.kind == "wave-report" {
+        let out = if p.kind == "track-report" {
             // Raw domain fixtures and kernel-side callers have no role
             // parameter; preserve their report-mint semantics by making the
             // required role explicit at the guarded insert boundary.

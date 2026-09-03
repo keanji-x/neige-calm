@@ -49,17 +49,17 @@ describe('INV-APP-084 the index loader primes areas and nothing else', () => {
     expect(paths).toEqual(['/api/areas']);
   });
 
-  it('leaves the area → waves fan-out off the loader so one slow area cannot block the commit', async () => {
+  it('leaves the area → tracks fan-out off the loader so one slow area cannot block the commit', async () => {
     const { transport, paths } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
-    expect(paths.filter((path) => path.endsWith('/waves'))).toEqual([]);
+    expect(paths.filter((path) => path.endsWith('/tracks'))).toEqual([]);
   });
 
   it('gives the other routes no loader at all', () => {
     const { transport } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    for (const path of ['/area/$areaId', '/wave/$waveId', '/settings']) {
+    for (const path of ['/area/$areaId', '/track/$trackId', '/settings']) {
       expect(routeByPath(tree, path).options.loader).toBeUndefined();
     }
   });
@@ -92,7 +92,7 @@ describe('route registration', () => {
 
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
-      '/', '/area/$areaId', '/area/$areaId/new', '/wave/$waveId',
+      '/', '/area/$areaId', '/area/$areaId/new', '/track/$trackId',
       '/settings', '/settings/plugins', '/settings/appearance', '/settings/about',
     ]);
   });
@@ -127,8 +127,8 @@ describe('route registration', () => {
     const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
       'today': { name: 'today' },
       'area': { name: 'area', areaId: 'c1' },
-      'new-wave': { name: 'new-wave', areaId: 'c1' },
-      'wave': { name: 'wave', waveId: 'w1' },
+      'new-track': { name: 'new-track', areaId: 'c1' },
+      'track': { name: 'track', trackId: 'w1' },
       'settings': { name: 'settings' },
       'settings-plugins': { name: 'settings-plugins' },
       'settings-appearance': { name: 'settings-appearance' },
@@ -157,12 +157,12 @@ describe('route registration', () => {
 
 describe('route parameter codec', () => {
   it('percent-encodes ids on output and decodes them on input', () => {
-    expect(pathFor({ name: 'wave', waveId: 'a/b %' })).toBe('/wave/a%2Fb%20%25');
-    expect(routeParamFromPath('/wave/a%2Fb%20%25', '/wave/')).toBe('a/b %');
+    expect(pathFor({ name: 'track', trackId: 'a/b %' })).toBe('/track/a%2Fb%20%25');
+    expect(routeParamFromPath('/track/a%2Fb%20%25', '/track/')).toBe('a/b %');
   });
 
   it('treats malformed percent escapes as an unmatched parameter instead of throwing', () => {
-    expect(routeParamFromPath('/wave/%', '/wave/')).toBeUndefined();
+    expect(routeParamFromPath('/track/%', '/track/')).toBeUndefined();
   });
 });
 
@@ -170,7 +170,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('conversation pending accounting', () => {
   const conversation = {
-    id: 'c1', waveId: 'w1', waveTitle: 'Wave', title: null, kind: 'shared-spec' as const,
+    id: 'c1', trackId: 'w1', trackTitle: 'Track', title: null, kind: 'shared-spec' as const,
     state: 'idle' as const, updatedAt: 0, turns: 0,
   };
 

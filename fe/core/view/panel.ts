@@ -1,6 +1,6 @@
 // The panel view vocabulary, and the traversal panel renderers will run.
 //
-// #1234 — the wave page's panel exists twice in the DOM (a desktop panel card
+// #1234 — the track page's panel exists twice in the DOM (a desktop panel card
 // and a mobile drill-down list), and the two are hand-copied: the same fact is
 // spelled differently on each side, or is missing from one. The fix is not a
 // shared component — the two surfaces compose their rows differently and must
@@ -9,7 +9,7 @@
 //
 // This module holds the vocabulary of that view model plus `paintModule` /
 // `paintPanel`, the traversals S1b's renderers are meant to share. Since S1b-3b
-// the **desktop panel is one of those renderers**: `features/wave/page`'s
+// the **desktop panel is one of those renderers**: `features/track/page`'s
 // `desktop-painter.tsx` is a `RowPainter`, and `public.tsx` produces the panel
 // card's **row modules** by calling that file's `paintDesktopPanel` wrapper —
 // which calls `paintPanel` — instead of spelling their DOM inline. The panel
@@ -50,7 +50,7 @@ export type RowStatus = Readonly<{
    * The claim is about the row text and stops there: an **accessible name** may
    * be more than the row text, and today the desktop's is — the dot's
    * `aria-label` is `Status: ${phrase}` while its `title` is the bare phrase
-   * (`wave/page/desktop-painter.tsx`'s `statusDot`). That prefix is **renderer
+   * (`track/page/desktop-painter.tsx`'s `statusDot`). That prefix is **renderer
    * chrome and is not in this field**, deliberately: it is a labelling decision about one
    * platform's graphic, not wording about the run.
    *
@@ -71,7 +71,7 @@ export type RowStatus = Readonly<{
  * `public.tsx`; without them here, each of S1b's two painters would re-invent
  * them — the same failure mode as `taskStatusPhrase`, which was written once
  * per surface until #1234 moved it down. This slice moves them down: they are
- * this type's fields, produced by `wave-page.ts`. Since S1b-3b the desktop
+ * this type's fields, produced by `track-page.ts`. Since S1b-3b the desktop
  * painter reads them from here and spells none of its own. The mobile Cards row
  * (S1b-4a) writes no wording at all — both of its actions are unsupported there,
  * so it is handed none. The mobile Task row (S1b-4b) consumes **both** fields
@@ -122,7 +122,7 @@ export type RowModuleView = Readonly<{
   empty: string;
 }>;
 
-export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
+export type TrackPageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
 
 /**
  * Whether a renderer offers an action at all. `why` is the reason it is
@@ -189,7 +189,7 @@ export type RowPainter<T> = Readonly<{
  * and which will then be their single shared one. Its callers are `paintPanel`,
  * this module's own unit tests, and S1b-2's `checkProjection`. The **desktop**
  * production renderer reaches it through `paintPanel` as of S1b-3b
- * (`wave/page/public.tsx` → `paintDesktopPanel` → `paintPanel`); **both** mobile
+ * (`track/page/public.tsx` → `paintDesktopPanel` → `paintPanel`); **both** mobile
  * pages reach it directly through `paintMobileModule` — Cards since S1b-4a,
  * Tasks since S1b-4b — one call per drill-down.
  *
@@ -220,7 +220,7 @@ export type RowPainter<T> = Readonly<{
  *    Tasks since S1b-4b). "Every surface" is a claim about today's two, not a
  *    rule this module can enforce on a third.
  *  - Nothing in *this file* forces a renderer to call it. What forces the
- *    desktop is a per-surface argument: `wave/page/desktop-entry.test.tsx`
+ *    desktop is a per-surface argument: `track/page/desktop-entry.test.tsx`
  *    mocks `paintDesktopPanel`, and holds both that the page calls it with the
  *    whole view and that the panel it shows is the value handed back. (The
  *    page's marker-literal source scan sits beside that as a narrower guard —
@@ -232,7 +232,7 @@ export type RowPainter<T> = Readonly<{
  *  - Whether a supported action is actually wired to a live handler is **not
  *    checked by the projection framework** — not here and not by S1b-2 (see
  *    `ActionSupport`). It is not unchecked everywhere: for the desktop's three
- *    actions `wave/page/public.test.tsx` drives the real page and asserts the
+ *    actions `track/page/public.test.tsx` drives the real page and asserts the
  *    payload reaching the callback the action names. That cover is positive
  *    only — an extra, spurious callback on the same gesture is not excluded —
  *    and `tools/projection/public.ts`'s standing list keeps the exact terms.
@@ -262,7 +262,7 @@ export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T
  * drill-down menu (S1b-4b): the module sequence drives navigation, one entry per
  * module, rather than a painted sequence of trees.
  *
- * **The desktop does reach this** (S1b-3b): `wave/page/public.tsx` renders the
+ * **The desktop does reach this** (S1b-3b): `track/page/public.tsx` renders the
  * **row modules** of its panel card as `paintDesktopPanel(painter, view)`,
  * which calls this, and composes no row itself. The card around them is still
  * the page's — `Referenced by` and `Conversations` sit beside the painted
@@ -272,7 +272,7 @@ export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T
  * this docstring as saying every renderer goes through here: the mobile one
  * does not.
  */
-export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): readonly T[] {
+export function paintPanel<T>(painter: RowPainter<T>, view: TrackPageView): readonly T[] {
   return view.rowModules.map((module) => paintModule(painter, module));
 }
 
@@ -284,9 +284,9 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
  * To be precise about the present: `checkProjection` (S1b-2) reads this table in
  * full — every marker here has a selector in `tools/projection/public.ts`, and
  * `FIELD` below is its closed value domain — and
- * `features/wave/page/desktop-painter.tsx` writes every one of them into the
+ * `features/track/page/desktop-painter.tsx` writes every one of them into the
  * desktop panel *by way of this table*, never as a literal;
- * `features/wave/page/mobile-painter.tsx` does the same for both mobile pages,
+ * `features/track/page/mobile-painter.tsx` does the same for both mobile pages,
  * through `ui/mobile-list`'s marker channels (which, like
  * `ui/panel-card`'s, spell the attribute names themselves — see below).
  *

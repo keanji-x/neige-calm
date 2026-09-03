@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem } from '../api/generated/wire.js';
 import {
-  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, WAVE_RENAME_TOOL,
-  WAVE_TOOL_PREFIX,
+  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, TRACK_RENAME_TOOL,
+  TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
 import type { ApiFailure } from '../api/types.js';
@@ -11,16 +11,16 @@ import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE,
   areaConversationCardId, areaConversationFailure, areaConversationsOperation,
-  createAreaConversationOperation, createWaveConversationOperation,
+  createAreaConversationOperation, createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurn, isLiveConversation, mergeTranscript, readableCommand,
-  reconcileUserEchoes, toAreaConversation, toWaveConversation, waveConversationCardId,
-  waveConversationsOperation,
+  reconcileUserEchoes, toAreaConversation, toTrackConversation, trackConversationCardId,
+  trackConversationsOperation,
   type Conversation, type ConversationKind, type ConversationTurn,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
-    id: 'c1', waveId: 'w1', waveTitle: 'Ship the rewrite', title: null,
+    id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null,
     kind: 'codex', state: 'idle', updatedAt: 0, turns: 0,
     ...overrides,
   };
@@ -32,8 +32,8 @@ describe('conversationName', () => {
       .toBe('Why the resolver drops a hop');
   });
 
-  it('falls back to the kind, never to the wave', () => {
-    const nameless = conversation({ waveTitle: 'Ship the rewrite' });
+  it('falls back to the kind, never to the track', () => {
+    const nameless = conversation({ trackTitle: 'Ship the rewrite' });
     expect(conversationName(nameless)).toBe('Codex');
     expect(conversationName(nameless)).not.toBe('Ship the rewrite');
   });
@@ -79,19 +79,19 @@ describe('conversationNameFrom', () => {
 
 describe('area conversations', () => {
   const row = {
-    id: 'card-9', waveId: 'chat-wave', title: null, kind: 'shared-chat',
+    id: 'card-9', trackId: 'chat-track', title: null, kind: 'shared-chat',
     state: 'idle' as const, updatedAt: 42,
   };
 
-  it('names a nameless area conversation Chat, never after its hidden wave', () => {
+  it('names a nameless area conversation Chat, never after its hidden track', () => {
     expect(conversationName(toAreaConversation(row))).toBe('Chat');
   });
 
   it('leaves what the server does not send absent rather than inventing it', () => {
     const conversation = toAreaConversation(row);
-    expect(conversation.waveTitle).toBeUndefined();
+    expect(conversation.trackTitle).toBeUndefined();
     expect(conversation.turns).toBeUndefined();
-    expect(Object.hasOwn(conversation, 'waveTitle')).toBe(false);
+    expect(Object.hasOwn(conversation, 'trackTitle')).toBe(false);
     expect(Object.hasOwn(conversation, 'turns')).toBe(false);
   });
 
@@ -112,7 +112,7 @@ describe('area conversations', () => {
   it('decodes a list row into the app\'s own shape', () => {
     const parsed = areaConversationsOperation('c1').responseSchema.parse([row]);
     expect(parsed).toEqual([{
-      id: 'card-9', waveId: 'chat-wave', title: null, kind: 'shared-chat',
+      id: 'card-9', trackId: 'chat-track', title: null, kind: 'shared-chat',
       state: 'idle', updatedAt: 42,
     }]);
   });
@@ -165,18 +165,18 @@ describe('area conversations', () => {
   });
 });
 
-describe('wave conversations', () => {
+describe('track conversations', () => {
   const row = {
-    id: 'card-3', waveId: 'wave-1', title: null, kind: 'wave-assistant',
+    id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
     state: 'starting' as const, updatedAt: 7,
   };
 
   it('decodes a list row into the app\'s own shape', () => {
-    const operation = waveConversationsOperation('wave 1');
+    const operation = trackConversationsOperation('track 1');
     expect(operation.method).toBe('GET');
-    expect(operation.path).toBe('/api/waves/wave%201/conversations');
+    expect(operation.path).toBe('/api/tracks/track%201/conversations');
     expect(operation.responseSchema.parse([row])).toEqual([{
-      id: 'card-3', waveId: 'wave-1', title: null, kind: 'wave-assistant',
+      id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
       state: 'starting', updatedAt: 7,
     }]);
   });
@@ -189,16 +189,16 @@ describe('wave conversations', () => {
    * hand the renderer a state nobody defined behaviour for.
    */
   it('rejects a row whose session state is not one the kernel can produce', () => {
-    expect(waveConversationsOperation('w').responseSchema.safeParse([{ ...row, state: 'dormant' }]).success)
+    expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...row, state: 'dormant' }]).success)
       .toBe(false);
-    expect(waveConversationsOperation('w').responseSchema.safeParse([{ ...row, state: null }]).success)
+    expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...row, state: null }]).success)
       .toBe(true);
   });
 
-  it('leaves the wave title absent rather than inventing one, and names the row Assistant', () => {
-    const conversation = toWaveConversation(row);
+  it('leaves the track title absent rather than inventing one, and names the row Assistant', () => {
+    const conversation = toTrackConversation(row);
     expect(conversationName(conversation)).toBe('Assistant');
-    expect(Object.hasOwn(conversation, 'waveTitle')).toBe(false);
+    expect(Object.hasOwn(conversation, 'trackTitle')).toBe(false);
     expect(Object.hasOwn(conversation, 'turns')).toBe(false);
   });
 
@@ -209,36 +209,36 @@ describe('wave conversations', () => {
    * chat's presentation, which is the exact mistake #1189 §4.1 warns about.
    */
   it('does not collapse into the area chat kind', () => {
-    expect(toWaveConversation(row).kind).not.toBe(toAreaConversation({ ...row, kind: 'shared-chat' }).kind);
+    expect(toTrackConversation(row).kind).not.toBe(toAreaConversation({ ...row, kind: 'shared-chat' }).kind);
   });
 
-  it('posts the first message to the wave, carrying the key as a header', () => {
-    const operation = createWaveConversationOperation('wave 1', 'hello', 'key-a');
+  it('posts the first message to the track, carrying the key as a header', () => {
+    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a');
     expect(operation.method).toBe('POST');
-    expect(operation.path).toBe('/api/waves/wave%201/conversations');
+    expect(operation.path).toBe('/api/tracks/track%201/conversations');
     expect(operation.body).toEqual({ text: 'hello' });
     expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
-    expect(operation.responseSchema.parse(row).kind).toBe('wave-assistant');
+    expect(operation.responseSchema.parse(row).kind).toBe('track-assistant');
   });
 
   /*
    * A golden, and the value is the server's: it is copied from
-   * `the_derived_card_id_depends_only_on_wave_and_idempotency_key` in
+   * `the_derived_card_id_depends_only_on_track_and_idempotency_key` in
    * `crates/calm-server/src/conversation_keys.rs`, whose doc comment names this
    * function as the mirror it must be written against.
    *
    * The last assertion is the one that would survive a plausible mistake. The
    * two derivations differ **only** in the namespace inside the hashed string —
-   * the visible `conv-` prefix is deliberately identical — so a wave derivation
+   * the visible `conv-` prefix is deliberately identical — so a track derivation
    * that reused the area prefix produces a perfectly well-shaped id that names
    * another endpoint's card, and a draft that adopted it would open an area chat
    * as if it were the words just typed.
    */
   it('derives the same card id the server does, from its own namespace', () => {
-    expect(waveConversationCardId('wave-1', 'key-a')).toBe('conv-9778c6de9be6196b5b44fdd411e5c305');
-    expect(waveConversationCardId('wave-1', 'key-b')).not.toBe(waveConversationCardId('wave-1', 'key-a'));
-    expect(waveConversationCardId('wave-2', 'key-a')).not.toBe(waveConversationCardId('wave-1', 'key-a'));
-    expect(waveConversationCardId('id-1', 'key-a')).not.toBe(areaConversationCardId('id-1', 'key-a'));
+    expect(trackConversationCardId('track-1', 'key-a')).toBe('conv-55cef7267426fe78493bdd46ca6b1220');
+    expect(trackConversationCardId('track-1', 'key-b')).not.toBe(trackConversationCardId('track-1', 'key-a'));
+    expect(trackConversationCardId('track-2', 'key-a')).not.toBe(trackConversationCardId('track-1', 'key-a'));
+    expect(trackConversationCardId('id-1', 'key-a')).not.toBe(areaConversationCardId('id-1', 'key-a'));
   });
 });
 
@@ -255,7 +255,7 @@ describe('wave conversations', () => {
  */
 describe('CONVERSATION_STATE_SOURCE', () => {
   const KINDS: readonly ConversationKind[] = [
-    'terminal', 'codex', 'claude', 'shared-spec', 'shared-chat', 'wave-assistant',
+    'terminal', 'codex', 'claude', 'shared-spec', 'shared-chat', 'track-assistant',
   ];
 
   it('decides every kind, and only those', () => {
@@ -268,13 +268,13 @@ describe('CONVERSATION_STATE_SOURCE', () => {
      somebody has to make here. */
   it('names the listed kinds as the server\'s to report', () => {
     expect(KINDS.filter((kind) => CONVERSATION_STATE_SOURCE[kind] === 'server'))
-      .toEqual(['shared-chat', 'wave-assistant']);
+      .toEqual(['shared-chat', 'track-assistant']);
   });
 });
 
 function item(overrides: Partial<HarnessItem> = {}): HarnessItem {
   return {
-    id: 7, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+    id: 7, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
     turn_id: 'turn', item_uuid: 'item', item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ completedAtMs: 99, item: { text: 'answer' } }), created_at_ms: 50,
     ...overrides,
@@ -286,8 +286,8 @@ describe('harnessItemToTurn', () => {
     expect(harnessItemToTurn(item())).toEqual({ id: '7', author: 'agent', text: 'answer', atMs: 99 });
   });
 
-  it('strips the injected wave diff and user marker', () => {
-    const text = '## Wave state changes since your last turn\nchanged\n\n---\n\nUser says:\nhello';
+  it('strips the injected track diff and user marker', () => {
+    const text = '## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\nhello';
     expect(harnessItemToTurn(item({
       item_type: 'userMessage', params: JSON.stringify({ item: { content: [{ type: 'text', text }] } }),
     }))).toMatchObject({ author: 'you', text: 'hello' });
@@ -310,9 +310,9 @@ describe('harnessItemToTurn', () => {
       item({ id, item_type: itemType, params, created_at_ms: 1786763298839 });
 
     it('reads a real agent message', () => {
-      const row = captured(6, 'agentMessage', '{"completedAtMs":1786763298838,"item":{"id":"msg_0276","memoryCitation":null,"phase":"commentary","text":"我先确认这个 Wave 的当前状态。","type":"agentMessage"},"threadId":"01a0","turnId":"01a0"}');
+      const row = captured(6, 'agentMessage', '{"completedAtMs":1786763298838,"item":{"id":"msg_0276","memoryCitation":null,"phase":"commentary","text":"我先确认这个 Track 的当前状态。","type":"agentMessage"},"threadId":"01a0","turnId":"01a0"}');
       expect(harnessItemToTurn(row)).toEqual({
-        id: '6', author: 'agent', text: '我先确认这个 Wave 的当前状态。', atMs: 1786763298838,
+        id: '6', author: 'agent', text: '我先确认这个 Track 的当前状态。', atMs: 1786763298838,
       });
     });
 
@@ -322,7 +322,7 @@ describe('harnessItemToTurn', () => {
         item: {
           clientId: null,
           content: [{
-            text: '## Wave state changes since your last turn (HEAD 32f19e5d -> 552cbdc9)\n- report.md edited\n\n---\n\nUser says:\nhello',
+            text: '## Track state changes since your last turn (HEAD 32f19e5d -> 552cbdc9)\n- report.md edited\n\n---\n\nUser says:\nhello',
             text_elements: [], type: 'text',
           }],
           id: '01a0', type: 'userMessage',
@@ -337,7 +337,7 @@ describe('harnessItemToTurn', () => {
 
 describe('harnessItemToActivity', () => {
   const row = (overrides: Partial<HarnessItem>): HarnessItem => ({
-    id: 7, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+    id: 7, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
     turn_id: 'turn', item_uuid: 'uuid', item_type: 'commandExecution', method: 'item/completed',
     params: '{}', created_at_ms: 50, ...overrides,
   });
@@ -429,15 +429,15 @@ describe('harnessItemToActivity', () => {
   /* MCP tools have no stdout at all; their reason is the `error` member, and
      both spellings of it are on our wire. */
   it.each([
-    ['an object with a message', { message: 'wave is not attached' }],
-    ['a bare string', 'wave is not attached'],
+    ['an object with a message', { message: 'track is not attached' }],
+    ['a bare string', 'track is not attached'],
   ])('reads the mcp error when it is %s', (_label, error) => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall',
       params: JSON.stringify({
         item: { tool: REPORT_WRITE_TOOLS[0], error, status: 'failed', durationMs: 45, type: 'mcpToolCall' },
       }),
-    }))).toMatchObject({ state: 'failed', detail: 'wave is not attached', durationMs: 45 });
+    }))).toMatchObject({ state: 'failed', detail: 'track is not attached', durationMs: 45 });
   });
 
   /*
@@ -479,8 +479,8 @@ describe('harnessItemToActivity', () => {
   /* The one-line case the rule must leave exactly where it was: with nothing
      after it, the last non-empty line *is* the first one. */
   it('still says a single-line error whole', () => {
-    expect(harnessItemToActivity(mcpFailure('wave is not attached')))
-      .toMatchObject({ state: 'failed', detail: 'wave is not attached' });
+    expect(harnessItemToActivity(mcpFailure('track is not attached')))
+      .toMatchObject({ state: 'failed', detail: 'track is not attached' });
   });
 
   /* The payload **carries** a `durationMs` here, and that is the whole point: a
@@ -534,32 +534,32 @@ describe('harnessItemToActivity', () => {
     }))?.verb).toBe(done);
   });
 
-  // #1211 S3 — `calm.wave.rename` is the first `calm.wave.*` tool that WRITES.
-  // It used to fall into the prefix bucket and read out as "Read the wave",
+  // #1211 S3 — `calm.track.rename` is the first `calm.track.*` tool that WRITES.
+  // It used to fall into the prefix bucket and read out as "Read the track",
   // which is exactly backwards on the one line a user scans to find out who
-  // named their wave.
-  it('renders the wave rename as a write, not as a look at the wave', () => {
-    expect(WAVE_RENAME_TOOL.startsWith(WAVE_TOOL_PREFIX)).toBe(true);
+  // named their track.
+  it('renders the track rename as a write, not as a look at the track', () => {
+    expect(TRACK_RENAME_TOOL.startsWith(TRACK_TOOL_PREFIX)).toBe(true);
     const started = harnessItemToActivity(row({
       item_type: 'mcpToolCall', method: 'item/started',
-      params: JSON.stringify({ item: { tool: WAVE_RENAME_TOOL } }),
+      params: JSON.stringify({ item: { tool: TRACK_RENAME_TOOL } }),
     }));
     const done = harnessItemToActivity(row({
       item_type: 'mcpToolCall',
-      params: JSON.stringify({ item: { tool: WAVE_RENAME_TOOL, status: 'completed' } }),
+      params: JSON.stringify({ item: { tool: TRACK_RENAME_TOOL, status: 'completed' } }),
     }));
-    expect(started).toMatchObject({ verb: 'Naming the wave', target: null, state: 'running' });
-    expect(done).toMatchObject({ verb: 'Named the wave', target: null, state: 'done' });
+    expect(started).toMatchObject({ verb: 'Naming the track', target: null, state: 'running' });
+    expect(done).toMatchObject({ verb: 'Named the track', target: null, state: 'done' });
     for (const activity of [started, done]) {
       expect(activity?.verb).not.toMatch(/read/i);
     }
   });
 
-  it('still reads the other `calm.wave.*` tools as looks', () => {
+  it('still reads the other `calm.track.*` tools as looks', () => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall',
-      params: JSON.stringify({ item: { tool: `${WAVE_TOOL_PREFIX}state`, status: 'completed' } }),
-    }))).toMatchObject({ verb: 'Read the wave', state: 'done' });
+      params: JSON.stringify({ item: { tool: `${TRACK_TOOL_PREFIX}state`, status: 'completed' } }),
+    }))).toMatchObject({ verb: 'Read the track', state: 'done' });
   });
 
   it('is running while only `item/started` has arrived', () => {
@@ -627,7 +627,7 @@ describe('harnessItemToActivity', () => {
 
 describe('buildTranscript', () => {
   const row = (id: number, itemType: string, method: string, item: unknown, uuid = `u${id}`): HarnessItem => ({
-    id, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
+    id, runtime_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
     item_uuid: uuid, item_type: itemType, method,
     params: JSON.stringify({ completedAtMs: 1000 + id, item }), created_at_ms: 1000 + id,
   });
@@ -703,7 +703,7 @@ describe('buildTranscript', () => {
      so making one of them load-bearing here would mean weakening the other. */
   it('renders nothing for a method the transcript does not understand', () => {
     const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
-      id: 2, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
+      id: 2, runtime_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
       item_uuid: null, item_type: null, method,
       params: JSON.stringify({
         threadId: 't', turnId: 'turn-plan-1', explanation: null,
@@ -738,7 +738,7 @@ describe('buildTranscript', () => {
     expect(buildTranscript([
       row(1, 'agentMessage', 'item/completed', { text: '' }),
       row(2, 'userMessage', 'item/completed', {
-        content: [{ text: '## Wave state changes since your last turn\nchanged\n\n---\n\nUser says:\n' }],
+        content: [{ text: '## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\n' }],
       }),
     ])).toEqual([]);
   });

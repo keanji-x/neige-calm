@@ -110,7 +110,7 @@ one_call_plus_comment='pub fn a() { persist_report(1); }
 pub fn unrelated() {}
 '
 newline_call='pub fn a() {
-    crate::wave_report::persist_report
+    crate::track_report::persist_report
         (1);
 }
 '
@@ -120,7 +120,7 @@ let_binding='pub fn a() {
 }
 '
 macro_path_arg='pub fn a() {
-    invoke!(crate::wave_report::persist_report, 1);
+    invoke!(crate::track_report::persist_report, 1);
 }
 '
 prose_only='//! This module used to reach persist_report; it no longer does.
@@ -134,7 +134,7 @@ prose_moved_to_code='pub fn a() { unrelated(1); } // now calls persist_report
 # block-comment token. The filter that also dropped `*` / `/*` / `*/` scored each
 # of these zero.
 block_open_prefix_call='pub fn a() {
-    /* harmless */ crate::wave_report::persist_report(1);
+    /* harmless */ crate::track_report::persist_report(1);
 }
 '
 block_close_prefix_call='pub fn a() {
@@ -152,8 +152,8 @@ toggle_idiom_call='pub fn a() {
 # An ordinary doc comment that happens to quote the alias shape. Prose, not an
 # import; the alias rule must not fire on it.
 alias_shaped_prose='/// Do not do this:
-/// use crate::wave_report::persist_report as save;
-// Example: use crate::wave_report::persist_report_with_shadow as save2;
+/// use crate::track_report::persist_report as save;
+// Example: use crate::track_report::persist_report_with_shadow as save2;
 pub fn a() { unrelated(1); }
 '
 reaches_into_fixture_tree='#[path = "../../../tests/fixtures/ci-ratchets/probe/inert.rs"]

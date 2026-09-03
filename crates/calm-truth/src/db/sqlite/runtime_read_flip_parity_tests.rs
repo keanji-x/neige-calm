@@ -119,12 +119,12 @@ async fn card_delete_removes_placeholder_worker_session() {
     assert_eq!(remaining_ws, 0);
 
     let root_refs: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE root_session_id IN (?1, ?2)")
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE root_session_id IN (?1, ?2)")
             .bind(active.id.as_str())
             .bind(placeholder.id.as_str())
             .fetch_one(repo.pool())
             .await
-            .expect("count wave root refs to deleted worker sessions");
+            .expect("count track root refs to deleted worker sessions");
     assert_eq!(root_refs, 0);
 }
 

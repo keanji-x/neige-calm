@@ -22,12 +22,12 @@ use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams, TokenUsage,
 };
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -112,8 +112,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "token usage".into(),
@@ -128,15 +128,15 @@ async fn boot() -> Boot {
         .unwrap();
 
     let role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    wave_area_cache.insert(wave.id.clone(), area.id);
+    let track_area_cache = TrackAreaCache::new();
+    track_area_cache.insert(track.id.clone(), area.id);
 
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -186,24 +186,24 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-token-usage"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: spec_card.wave_id.clone(),
+        track_id: spec_card.track_id.clone(),
         card_id: spec_card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),
         repo: repo_dyn,
         events,
         card_role_cache: role_cache,
-        wave_area_cache,
+        track_area_cache,
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -459,13 +459,13 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
     let snapshot = HarnessSnapshot::from_value_strict(stored);
     let rehydrated = SpecHarness::run(SpecHarnessParams {
         runtime_id: boot.runtime_id.clone(),
-        wave_id: boot.spec_card.wave_id.clone(),
+        track_id: boot.spec_card.track_id.clone(),
         card_id: boot.spec_card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),
         repo: boot.repo.clone(),
         events: EventBus::new(),
         card_role_cache: CardRoleCache::new(),
-        wave_area_cache: WaveAreaCache::new(),
+        track_area_cache: TrackAreaCache::new(),
         daemon: SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None),
         config: HarnessConfig::default(),
         snapshot,

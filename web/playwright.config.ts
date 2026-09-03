@@ -14,7 +14,7 @@
 //     don't set `webServer` here either; booting the full kernel +
 //     sqlite seed from playwright would be slower than the human dev
 //     loop and would race with `make dev` if already running. Specs:
-//     `golden-path.spec.ts`, `wave-create.spec.ts`.
+//     `golden-path.spec.ts`, `track-create.spec.ts`.
 //
 //   * `a11y` — issue #56 slice 5. Targets the in-process replay binary
 //     (`cargo run --features fixtures --bin replay -- --serve`) spawned by the `replay-setup`
@@ -78,7 +78,7 @@ export default defineConfig({
   // Two retries in CI helps with flaky animation timings; locally we fail
   // fast so the dev loop stays tight.
   retries: process.env.CI ? 2 : 0,
-  // One worker keeps area/wave seed state predictable — multiple workers
+  // One worker keeps area/track seed state predictable — multiple workers
   // would mutate the same MockRepo concurrently.
   workers: 1,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',

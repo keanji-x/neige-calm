@@ -100,7 +100,7 @@ describe('the a11y failure report (#1161)', () => {
   /*
    * The case the attribute selector is blind to, and the reason the CSS scan
    * exists. `ui/dialog/public.tsx:139` puts `display: none` on `.dialog-body`
-   * whenever a child view is showing, and #1161's missing `Create wave` button
+   * whenever a child view is showing, and #1161's missing `Create track` button
    * lives inside it — so a report that said "no hidden subtree holds anything
    * queryable" here would be actively wrong about the one thing it is for.
    */

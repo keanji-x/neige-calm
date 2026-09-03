@@ -15,12 +15,12 @@
 
 use std::sync::Arc;
 
-use calm_server::db::sqlite::{SqlxRepo, area_create_tx, card_create_tx, wave_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, area_create_tx, card_create_tx, track_create_tx};
 use calm_server::db::{RepoEventWrite, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::events_prune::{EVENTS_PRUNE_KINDS, EventsRetentionPolicy, prune_events_once};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewWave};
+use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::replay::derive_layout_positions;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -51,12 +51,12 @@ async fn insert_event(pool: &sqlx::SqlitePool, kind: &str, payload: &str, at: i6
     .expect("insert event")
 }
 
-fn layout_overlay_payload(wave_id: &str, positions: serde_json::Value) -> String {
+fn layout_overlay_payload(track_id: &str, positions: serde_json::Value) -> String {
     serde_json::json!({
-        "id": format!("kernel:view:{wave_id}:layout"),
+        "id": format!("kernel:view:{track_id}:layout"),
         "plugin_id": "kernel",
         "entity_kind": "view",
-        "entity_id": wave_id,
+        "entity_id": track_id,
         "kind": "layout",
         "payload": {"schemaVersion": 1, "positions": positions},
         "updated_at": 0
@@ -93,12 +93,12 @@ async fn event_exists(pool: &sqlx::SqlitePool, id: i64) -> bool {
     n == 1
 }
 
-/// Seed a real area + wave + card through the production write path
-/// (structural events stamped `at = now_ms()`), returning the wave id.
-async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
+/// Seed a real area + track + card through the production write path
+/// (structural events stamped `at = now_ms()`), returning the track id.
+async fn seed_track_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
     let write = calm_server::state::WriteContext::new(
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
     );
     let (area, _) = write_with_event_typed(
         repo.as_ref(),
@@ -126,8 +126,8 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
     .expect("create area");
 
     let area_id = area.id.clone();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    let (wave, _) = write_with_event_typed(
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    let (track, _) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
         EventScope::System,
@@ -136,9 +136,9 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
         &write,
         move |tx| {
             Box::pin(async move {
-                let wave = wave_create_tx(
+                let track = track_create_tx(
                     tx,
-                    NewWave {
+                    NewTrack {
                         template_input: None,
                         area_id,
                         title: "w".into(),
@@ -150,21 +150,21 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
-                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &wave_area_cache,
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    &track_area_cache,
                 )
                 .await?;
                 Ok((
-                    wave.clone(),
-                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+                    track.clone(),
+                    Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(track, None)),
                 ))
             })
         },
     )
     .await
-    .expect("create wave");
+    .expect("create track");
 
-    let wave_id = wave.id.clone();
+    let track_id = track.id.clone();
     let card_role_cache = calm_server::card_role_cache::CardRoleCache::new();
     write_with_event_typed(
         repo.as_ref(),
@@ -178,7 +178,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                 let card = card_create_tx(
                     tx,
                     NewCard {
-                        wave_id,
+                        track_id,
                         title: None,
                         kind: "terminal".into(),
                         sort: None,
@@ -194,7 +194,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
     .await
     .expect("create card");
 
-    wave.id.as_str().to_string()
+    track.id.as_str().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
             .expect("open in-memory repo"),
     );
     let bus = EventBus::new();
-    let wave_id = seed_wave_with_card(&repo, &bus).await;
+    let track_id = seed_track_with_card(&repo, &bus).await;
     let pool = repo.pool();
 
     // Layout quad: superseded old write, then the LATEST write per quad
@@ -223,7 +223,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     let layout_old = insert_event(
         pool,
         "overlay.set",
-        &layout_overlay_payload(&wave_id, p1),
+        &layout_overlay_payload(&track_id, p1),
         old(90),
     )
     .await;
@@ -239,7 +239,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     let layout_latest = insert_event(
         pool,
         "overlay.set",
-        &layout_overlay_payload(&wave_id, p2.clone()),
+        &layout_overlay_payload(&track_id, p2.clone()),
         old(45),
     )
     .await;
@@ -303,7 +303,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let fold_before = derive_layout_positions(&repo, &wave_id)
+    let fold_before = derive_layout_positions(&repo, &track_id)
         .await
         .expect("fold before prune");
     assert_eq!(
@@ -317,7 +317,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         .await
         .expect("prune pass");
 
-    let fold_after = derive_layout_positions(&repo, &wave_id)
+    let fold_after = derive_layout_positions(&repo, &track_id)
         .await
         .expect("fold after prune");
     assert_eq!(

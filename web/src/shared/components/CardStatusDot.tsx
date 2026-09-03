@@ -3,8 +3,8 @@ import type { FsmState } from '../../types';
 // ---------------- CardStatusDot ----------------
 //
 // 6-state dot used by per-card status bars (today: codex; later: terminal,
-// plugin). Mirrors `WaveGlyph`'s sizing so a dot inside a card header reads
-// as the same visual language as the dot beside a wave row in the sidebar.
+// plugin). Mirrors `TrackGlyph`'s sizing so a dot inside a card header reads
+// as the same visual language as the dot beside a track row in the sidebar.
 //
 // Colors deliberately use the same `--accent / --warn / --text-3` palette
 // the rest of the app pulls from `calm.css`. We don't introduce new tokens
@@ -16,10 +16,10 @@ function colorFor(state: FsmState): string {
   switch (state) {
     case 'Working':
     case 'Starting':
-      // Active = accent (live pulse on the wave row uses the same token).
+      // Active = accent (live pulse on the track row uses the same token).
       return 'var(--accent)';
     case 'AwaitingInput':
-      // Needs-you halo. Matches WaveGlyph's "waiting" treatment.
+      // Needs-you halo. Matches TrackGlyph's "waiting" treatment.
       return 'var(--warn)';
     case 'Errored':
       // Distinct from AwaitingInput conceptually but the existing palette
@@ -28,7 +28,7 @@ function colorFor(state: FsmState): string {
       return 'var(--warn)';
     case 'Idle':
     case 'Done':
-      // Calm dim dot — same as WaveGlyph idle.
+      // Calm dim dot — same as TrackGlyph idle.
       return 'var(--text-3, oklch(60% 0.005 245))';
   }
 }
@@ -68,9 +68,9 @@ export function CardStatusDot({
       // — semantically image-like, conveying meaning beyond the
       // surrounding text — so `img` is the right shoe-horn until
       // we promote it to a real `<output>` or `<status>` element.
-      // Surfaced by PR6: the new spec card on the wave page made
+      // Surfaced by PR6: the new spec card on the track page made
       // the `Starting` dot visible to the a11y-axe scan of
-      // `/calm/wave/<id>`, which previously had no rendered card.
+      // `/calm/track/<id>`, which previously had no rendered card.
       role="img"
       className={className}
       title={title ?? state}

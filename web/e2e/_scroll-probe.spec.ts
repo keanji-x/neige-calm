@@ -61,11 +61,11 @@ async function installProbe(page: Page) {
           ? { exists: true, scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
           : { exists: false };
       }
-      const fwElems = document.querySelectorAll('.wave-card');
+      const fwElems = document.querySelectorAll('.track-card');
       let activeCardSelector: string | null = null;
       fwElems.forEach((el, i) => {
         if (el.matches(':focus-within')) {
-          activeCardSelector = `.wave-card:nth-of-type(${i + 1})`;
+          activeCardSelector = `.track-card:nth-of-type(${i + 1})`;
         }
       });
       (window as any).__wheelLog.push({
@@ -220,29 +220,29 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
   });
 
   // ============================================================
-  // PHASE 1B — Navigate to a wave (if any exist), wheel over each card
+  // PHASE 1B — Navigate to a track (if any exist), wheel over each card
   // ============================================================
 
-  // Try to find a wave to enter. We look for any wave-row / area-nav.
-  // The probe stops here if no wave is reachable — note in findings.
-  const firstWaveId = await page.evaluate(async () => {
-    const r = await fetch('/api/waves');
+  // Try to find a track to enter. We look for any track-row / area-nav.
+  // The probe stops here if no track is reachable — note in findings.
+  const firstTrackId = await page.evaluate(async () => {
+    const r = await fetch('/api/tracks');
     if (!r.ok) return null;
     const j = await r.json();
-    // The API returns either `Wave[]` or `{ waves: Wave[] }` depending on path.
-    const list = Array.isArray(j) ? j : (Array.isArray(j?.waves) ? j.waves : []);
-    // Skip the auto-minted Today wave (cwd === '/').
+    // The API returns either `Track[]` or `{ tracks: Track[] }` depending on path.
+    const list = Array.isArray(j) ? j : (Array.isArray(j?.tracks) ? j.tracks : []);
+    // Skip the auto-minted Today track (cwd === '/').
     const real = list.find((w: any) => w.cwd && w.cwd !== '/') ?? list[0];
     return real?.id ?? null;
   });
-  if (firstWaveId) {
+  if (firstTrackId) {
     {
-      await page.goto(`/calm/wave/${firstWaveId}`);
+      await page.goto(`/calm/track/${firstTrackId}`);
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(1500);
 
       await runRegion({
-        label: 'wave_page_scroll_no_focus',
+        label: 'track_page_scroll_no_focus',
         selector: '.scroll',
         deltas: [120, 120, 120, 120, -120, -120, -120, -120],
       });
@@ -309,7 +309,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
             await head.click({ timeout: 2000 }).catch(() => {});
             focusSurvey[`${sel} > .card-head click`] = await page.evaluate(() => ({
               active: document.activeElement?.outerHTML?.slice(0, 200) ?? null,
-              cardHasFocusWithin: !!document.querySelector('.wave-card:focus-within'),
+              cardHasFocusWithin: !!document.querySelector('.track-card:focus-within'),
             }));
           }
           // click body center — bail fast if hidden or no box
@@ -318,7 +318,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
             await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
             focusSurvey[`${sel} body click`] = await page.evaluate(() => ({
               active: document.activeElement?.outerHTML?.slice(0, 200) ?? null,
-              cardHasFocusWithin: !!document.querySelector('.wave-card:focus-within'),
+              cardHasFocusWithin: !!document.querySelector('.track-card:focus-within'),
             }));
           } else {
             focusSurvey[`${sel} body click`] = { skipped: 'no bounding box' };
@@ -327,7 +327,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
           await page.mouse.click(20, 20);
           focusSurvey[`${sel} click-outside`] = await page.evaluate(() => ({
             active: document.activeElement?.outerHTML?.slice(0, 200) ?? null,
-            cardHasFocusWithin: !!document.querySelector('.wave-card:focus-within'),
+            cardHasFocusWithin: !!document.querySelector('.track-card:focus-within'),
           }));
         } catch (e: any) {
           focusSurvey[sel] = { error: String(e?.message ?? e) };
@@ -341,7 +341,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
       allLogs['_focus_survey'] = [focusSurvey];
     }
   } else {
-    allLogs['_note'] = [{ msg: 'no waves found via /api/waves; phase 1B skipped' }];
+    allLogs['_note'] = [{ msg: 'no tracks found via /api/tracks; phase 1B skipped' }];
   }
 
   // ============================================================

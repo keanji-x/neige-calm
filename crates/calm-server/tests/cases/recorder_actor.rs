@@ -27,7 +27,7 @@ async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
     CardRoleCache,
-    calm_server::wave_area_cache::WaveAreaCache,
+    calm_server::track_area_cache::TrackAreaCache,
     NamedTempFile,
 ) {
     let repo: Arc<dyn Repo> = Arc::new(
@@ -37,7 +37,7 @@ async fn boot() -> (
     );
     let bus = EventBus::new();
     let cache = CardRoleCache::new();
-    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    let wcc = calm_server::track_area_cache::TrackAreaCache::new();
     let tmp = NamedTempFile::new().expect("tempfile");
     spawn_session_recorder(&bus, tmp.path().to_path_buf());
     // Recorder subscribes inside `tokio::spawn` — give it a tick to land
@@ -52,7 +52,7 @@ async fn create_area_as(
     repo: &dyn Repo,
     bus: &EventBus,
     cache: &CardRoleCache,
-    wcc: &calm_server::wave_area_cache::WaveAreaCache,
+    wcc: &calm_server::track_area_cache::TrackAreaCache,
     actor: ActorId,
     name: &str,
 ) -> i64 {

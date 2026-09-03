@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 //
 // #1253 §5.2 — the Today document region, composed the way production composes
-// it: the real resolve query, the real wave detail query, the real
-// `readWaveReport` and the real `ReportDocument`.
+// it: the real resolve query, the real track detail query, the real
+// `readTrackReport` and the real `ReportDocument`.
 //
 // What this file proves, precisely: given a report body with the SHAPE that
 // defeats a naive predicate — a non-empty, well-formed document whose sections
 // are all empty — the branch taken is the server field's and the rendered
 // output differs accordingly. It does NOT evaluate the kernel's own
-// `WaveReportPayload::initial()`; `INITIAL_BODY` below is a stand-in and says
+// `TrackReportPayload::initial()`; `INITIAL_BODY` below is a stand-in and says
 // so. The one test that runs against the kernel's real canonical payload is
 // server-side: `today_launchpad::a_crdt_materialized_canonical_report_still_
 // reads_as_unwritten`.
@@ -33,7 +33,7 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
-/** The server's answer when no launchpad wave exists yet: 200, body `null`. */
+/** The server's answer when no launchpad track exists yet: 200, body `null`. */
 const noLaunchpad = (): ApiTransportResponse => ({ status: 200, statusText: 'OK', body: null });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
 /** A typed 4xx, the way the kernel words one: `{ error, code }`. */
@@ -41,21 +41,21 @@ const refuse = (status: number, code: string, message: string): ApiTransportResp
   ({ status, statusText: 'Conflict', body: { error: message, code } });
 
 const areas = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
-const wave = {
+const track = {
   id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1,
 };
-const launchpadWave = { ...wave, id: 'lp', title: 'Today' };
+const launchpadTrack = { ...track, id: 'lp', title: 'Today' };
 
 /**
- * A stand-in for the kernel's `WaveReportPayload::initial()` body.
+ * A stand-in for the kernel's `TrackReportPayload::initial()` body.
  *
  * It is not a copy of that text and must never become one — the kernel owns
  * those words and mirroring them here would be exactly the mirror code
  * INV-TODAYDOC-003 forbids in production. What it reproduces are the three
  * properties that make the naive predicate wrong: a leading HTML comment, four
  * empty H1 sections, and therefore a body that is a perfectly well-formed,
- * non-empty document. `readWaveReport` returns non-null for it, so anything
+ * non-empty document. `readTrackReport` returns non-null for it, so anything
  * that decided "is there progress?" by null-checking the report would show
  * four empty headings where the empty state belongs.
  */
@@ -66,14 +66,14 @@ const EMPTY_COPY = 'Nothing written today yet.';
 
 function reportCard(body: string) {
   return {
-    id: 'report-card', wave_id: 'lp', kind: 'wave-report', title: null, sort: -1,
+    id: 'report-card', track_id: 'lp', kind: 'track-report', title: null, sort: -1,
     payload: { schemaVersion: 3, docRev: 0, summary: '', body },
     deletable: false, created_at: 1, updated_at: 1,
   };
 }
 
 /**
- * How `GET /api/waves/{lp}` behaves for a case.
+ * How `GET /api/tracks/{lp}` behaves for a case.
  *
  * `'seeded'` primes the query cache as well as answering, which removes the
  * one-frame gap between the resolve landing and the detail landing. That gap
@@ -101,17 +101,17 @@ type Case = Readonly<{
 
 function renderToday({ resolve, body, detail = 'seeded', summary }: Case) {
   const requests: ApiRequest[] = [];
-  const detailOk = () => ok({ wave: launchpadWave, cards: [reportCard(body)], overlays: [] });
+  const detailOk = () => ok({ track: launchpadTrack, cards: [reportCard(body)], overlays: [] });
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
       if (request.path === '/api/today/summary') {
-        return Promise.resolve(summary ?? ok({ wave_id: 'lp', card_id: 'conv-1' }));
+        return Promise.resolve(summary ?? ok({ track_id: 'lp', card_id: 'conv-1' }));
       }
       if (request.path === '/api/today/launchpad') return Promise.resolve(resolve);
       if (request.path === '/api/areas') return Promise.resolve(ok(areas));
-      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([wave]));
-      if (request.path === '/api/waves/lp') {
+      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
+      if (request.path === '/api/tracks/lp') {
         if (detail === 'hung') return new Promise<ApiTransportResponse>(() => undefined);
         return Promise.resolve(detail === 'seeded' ? detailOk() : detail);
       }
@@ -120,7 +120,7 @@ function renderToday({ resolve, body, detail = 'seeded', summary }: Case) {
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (detail === 'seeded') {
-    client.setQueryData(['wave', 'lp'], { wave: launchpadWave, cards: [reportCard(body)], overlays: [] });
+    client.setQueryData(['track', 'lp'], { track: launchpadTrack, cards: [reportCard(body)], overlays: [] });
   }
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
@@ -130,7 +130,7 @@ function renderToday({ resolve, body, detail = 'seeded', summary }: Case) {
   return { requests };
 }
 
-const resolved = (hasContent: boolean) => ok({ wave_id: 'lp', report_has_noninitial_content: hasContent });
+const resolved = (hasContent: boolean) => ok({ track_id: 'lp', report_has_noninitial_content: hasContent });
 
 afterEach(cleanup);
 
@@ -185,8 +185,8 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
     expect(await screen.findByText(EMPTY_COPY)).toBeTruthy();
     expect(screen.queryAllByRole('alert')).toEqual([]);
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
-    // No launchpad means no wave to read either.
-    expect(requests.map((request) => request.path)).not.toContain('/api/waves/lp');
+    // No launchpad means no track to read either.
+    expect(requests.map((request) => request.path)).not.toContain('/api/tracks/lp');
   });
 
   it('treats a 404 as a failure, not as an empty day', async () => {
@@ -216,7 +216,7 @@ describe('INV-TODAYDOC-002 a failed resolve surfaces as an error', () => {
 
 describe('INV-TODAYDOC-002 the three document states are three answers', () => {
   /*
-   * `readWaveReport(...) === null` is true while the detail is in flight, when
+   * `readTrackReport(...) === null` is true while the detail is in flight, when
    * the detail read fails, and when the payload will not decode. Collapsing
    * them onto `ReportDocument`'s `empty` told a reader whose server was
    * unreachable that their build was too old, and offered no retry — the
@@ -224,24 +224,24 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
    */
   const DECODE_COPY = "Today's report could not be read.";
 
-  it('says nothing while the wave detail is still in flight', async () => {
+  it('says nothing while the track detail is still in flight', async () => {
     // This frame is on EVERY page load: the detail query cannot start until
-    // the resolve has answered with a wave id, so it is strictly one round
+    // the resolve has answered with a track id, so it is strictly one round
     // trip behind.
     const { requests } = renderToday({ resolve: resolved(true), body: INITIAL_BODY, detail: 'hung' });
-    await waitFor(() => { expect(requests.map((request) => request.path)).toContain('/api/waves/lp'); });
+    await waitFor(() => { expect(requests.map((request) => request.path)).toContain('/api/tracks/lp'); });
     const main = screen.getByRole('main');
     expect(within(main).queryByText(DECODE_COPY)).toBeNull();
     expect(within(main).queryByText(EMPTY_COPY)).toBeNull();
     expect(within(main).queryAllByRole('alert')).toEqual([]);
   });
 
-  it('surfaces a failed wave detail as an error with a retry, not as a decoding excuse', async () => {
+  it('surfaces a failed track detail as an error with a retry, not as a decoding excuse', async () => {
     renderToday({
-      resolve: resolved(true), body: INITIAL_BODY, detail: fail('wave detail exploded'),
+      resolve: resolved(true), body: INITIAL_BODY, detail: fail('track detail exploded'),
     });
     const alerts = await screen.findAllByRole('alert');
-    expect(alerts.some((alert) => alert.textContent?.includes('wave detail exploded'))).toBe(true);
+    expect(alerts.some((alert) => alert.textContent?.includes('track detail exploded'))).toBe(true);
     expect(screen.queryByText(DECODE_COPY)).toBeNull();
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
@@ -253,7 +253,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
     renderToday({
       resolve: resolved(true), body: INITIAL_BODY,
       detail: ok({
-        wave: launchpadWave,
+        track: launchpadTrack,
         cards: [{ ...reportCard(INITIAL_BODY), payload: { schemaVersion: 'not-a-number' } }],
         overlays: [],
       }),
@@ -262,12 +262,12 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
   });
 
-  it('does not read the wave detail at all when the server says there is no content', async () => {
+  it('does not read the track detail at all when the server says there is no content', async () => {
     const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY, detail: 'hung' });
     await screen.findByText(EMPTY_COPY);
     // Nothing to draw ⇒ nothing to fetch. It also keeps the states above
     // honest: each is about a document the reader is actually owed.
-    expect(requests.map((request) => request.path)).not.toContain('/api/waves/lp');
+    expect(requests.map((request) => request.path)).not.toContain('/api/tracks/lp');
   });
 });
 
@@ -339,7 +339,7 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
    * agent writes the report, and the page does not move.
    *
    * The event is fed through the real bridge, so the assertion covers the whole
-   * chain — the plan emitting `['today-launchpad']` and `['wave', id]`, and the
+   * chain — the plan emitting `['today-launchpad']` and `['track', id]`, and the
    * adapter mapping both. Refetching in the mutation's `onSuccess` would have
    * hidden a break in that chain behind a lucky refresh, which is why it does
    * not.
@@ -350,13 +350,13 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     const transport: ApiTransportPort = {
       send: (request) => {
         requests.push(request);
-        if (request.path === '/api/today/summary') return Promise.resolve(ok({ wave_id: 'lp', card_id: 'conv-1' }));
+        if (request.path === '/api/today/summary') return Promise.resolve(ok({ track_id: 'lp', card_id: 'conv-1' }));
         if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(hasContent));
         if (request.path === '/api/areas') return Promise.resolve(ok(areas));
-        if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([wave]));
-        if (request.path === '/api/waves/lp') {
+        if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
+        if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
-            wave: launchpadWave,
+            track: launchpadTrack,
             cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
             overlays: [],
           }));
@@ -381,9 +381,9 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     // The real plan and the real adapter, driven with the real wire event —
     // not a hand-picked key list, which would assert the chain by assuming it.
     const edited = wireEventSchema.parse({
-      ev: 'wave.report_edited',
+      ev: 'track.report_edited',
       data: {
-        wave_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
+        track_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
         summary_before: '', summary_after: 'today', body_before: '', body_after: '# 概要',
       },
     });
@@ -400,7 +400,7 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
    * query is `enabled`-gated on `report_has_noninitial_content`, so it mounts
    * for the first time and fetches fresh whatever the cache says. Written →
    * written has no such luck. The resolve's value does not change, the detail
-   * query is already mounted, and `['wave', id]` is the only key that can make
+   * query is already mounted, and `['track', id]` is the only key that can make
    * it refetch — without it the reader presses "Rewrite", the agent rewrites,
    * and the page keeps showing yesterday's paragraph.
    */
@@ -408,12 +408,12 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     let body = '# 概要\n\n上午合了一个 PR。\n';
     const transport: ApiTransportPort = {
       send: (request) => {
-        if (request.path === '/api/today/summary') return Promise.resolve(ok({ wave_id: 'lp', card_id: 'conv-1' }));
+        if (request.path === '/api/today/summary') return Promise.resolve(ok({ track_id: 'lp', card_id: 'conv-1' }));
         if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(true));
         if (request.path === '/api/areas') return Promise.resolve(ok(areas));
-        if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([wave]));
-        if (request.path === '/api/waves/lp') {
-          return Promise.resolve(ok({ wave: launchpadWave, cards: [reportCard(body)], overlays: [] }));
+        if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
+        if (request.path === '/api/tracks/lp') {
+          return Promise.resolve(ok({ track: launchpadTrack, cards: [reportCard(body)], overlays: [] }));
         }
         return Promise.resolve(ok([]));
       },
@@ -429,9 +429,9 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     await userEvent.click(screen.getByRole('button', { name: REWRITE }));
     body = '# 概要\n\n晚上又合了两个。\n';
     const edited = wireEventSchema.parse({
-      ev: 'wave.report_edited',
+      ev: 'track.report_edited',
       data: {
-        wave_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-2',
+        track_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-2',
         summary_before: '', summary_after: 'today', body_before: '# 概要', body_after: '# 概要',
       },
     });

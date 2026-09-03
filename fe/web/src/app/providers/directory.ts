@@ -6,7 +6,7 @@
 // may not import `app/**`, so the one place that can hold both the operation
 // and the browser's own path-joining rule is the composition layer. Each route
 // that needs a picker creates it and hands it down as a plain function — the
-// shell used to, when it owned the New wave dialog (#1211 made that a route).
+// shell used to, when it owned the New track dialog (#1211 made that a route).
 
 import {
   gitDiffOperation, gitStatusOperation, listDirectoryOperation, rawFileUrl, readFileOperation,

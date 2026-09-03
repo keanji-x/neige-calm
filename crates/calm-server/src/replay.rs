@@ -184,8 +184,8 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
     // (fixtures replay as `ActorId::User`, which the gate lets through
     // without a cache lookup). An empty cache is fine.
     let card_role_cache = crate::card_role_cache::CardRoleCache::new();
-    let wave_area_cache = crate::wave_area_cache::WaveAreaCache::new();
-    let write = crate::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let track_area_cache = crate::track_area_cache::TrackAreaCache::new();
+    let write = crate::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -202,7 +202,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
         replay_terminal_spawn_hook(),
     );
     Ok((repo, events, state))
@@ -247,7 +247,7 @@ pub async fn seed_events(
     // (replay should refuse to ingest events the live kernel would
     // refuse to mint).
     let cache = crate::card_role_cache::CardRoleCache::new();
-    let wcc = crate::wave_area_cache::WaveAreaCache::new();
+    let wcc = crate::track_area_cache::TrackAreaCache::new();
     for ev in &fixture.events {
         let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
             .map_err(|e| anyhow::anyhow!("reconstruct event {}: {}", ev.kind, e))?;
@@ -314,7 +314,7 @@ fn actor_from_legacy_string(s: &str) -> ActorId {
 /// envelopes on the bus exactly as the initial boot did.
 ///
 /// Tables wiped match the schema declared by `migrations/0001..0004`:
-/// `events`, `overlays`, `cards`, `waves`, `areas`, `terminals`,
+/// `events`, `overlays`, `cards`, `tracks`, `areas`, `terminals`,
 /// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`, plus the
 /// #644 `tasks` table (migration 0041) and the #854 `retention_meta`
 /// table (migration 0060). Migration rows
@@ -331,7 +331,7 @@ pub async fn reset_from_fixture(
     // `terminals.card_id → cards` is now `ON DELETE RESTRICT`
     // (migration 0011), so terminals MUST be wiped before cards or
     // the FK trips with `(code: 1811) FOREIGN KEY constraint failed`.
-    // After that, `cards.wave_id → waves` and `waves.area_id → areas`
+    // After that, `cards.track_id → tracks` and `tracks.area_id → areas`
     // still cascade, but we delete them explicitly in child-first order
     // so the whole table-wipe sequence is uniform and order-correct
     // regardless of which FKs are RESTRICT vs CASCADE. The SqlxRepo
@@ -359,17 +359,17 @@ pub async fn reset_from_fixture(
         "DELETE FROM cards",
         "DELETE FROM task_ref_index",
         // `tasks` (migration 0041, issue #644) deliberately has no FK to
-        // `waves`, so deleting `waves` will NOT cascade here — the wipe
+        // `tracks`, so deleting `tracks` will NOT cascade here — the wipe
         // must name it explicitly or task rows leak across resets.
         "DELETE FROM tasks",
-        // `waves.root_session_id` points at `worker_sessions` without
+        // `tracks.root_session_id` points at `worker_sessions` without
         // ON DELETE SET NULL, so table-level resets must clear it before
         // worker sessions leave.
-        "UPDATE waves SET root_session_id = NULL",
-        // `worker_sessions.wave_id` is a NO ACTION FK, so sessions must
-        // leave before their parent waves.
+        "UPDATE tracks SET root_session_id = NULL",
+        // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
+        // leave before their parent tracks.
         "DELETE FROM worker_sessions",
-        "DELETE FROM waves",
+        "DELETE FROM tracks",
         "DELETE FROM areas",
         "DELETE FROM plugin_kv",
         "DELETE FROM plugin_tokens",
@@ -421,7 +421,7 @@ pub struct ForceSpecPhaseOutcome {
 /// Why the function must stand its own harness up (Step-0 probe, pinned by
 /// `tests/replay_force_spec_phase.rs`): in replay boot the shared codex
 /// app-server is a stub (`is_running()` == false), so the
-/// `spec-harness-start` operation submitted by `POST /api/waves` fails at
+/// `spec-harness-start` operation submitted by `POST /api/tracks` fails at
 /// `validate` — the spec card exists but has NO runtime row and NO
 /// registered harness. A 404 on registry miss would make e2e setup
 /// impossible, so this converges any valid spec card to a forceable
@@ -490,14 +490,14 @@ pub async fn force_spec_phase(
             "card {card_id} is not a spec codex card",
         )));
     }
-    let wave = repo
-        .wave_get(card.wave_id.as_str())
+    let track = repo
+        .track_get(card.track_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-    if role == CardRole::Spec && wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
+        .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
+    if role == CardRole::Spec && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
-            "spec harness is disabled for area chat wave {}",
-            wave.id
+            "spec harness is disabled for area chat track {}",
+            track.id
         )));
     }
     // Issue #682 review — take the same per-card recovery lock
@@ -534,7 +534,7 @@ pub async fn force_spec_phase(
                             card_id: card_id_for_tx,
                             // Only a real spec card gets the `SharedSpec` kind:
                             // that kind maps to `WorkerContract::Planner`,
-                            // which makes the session the wave's root
+                            // which makes the session the track's root
                             // authority. Both conversation flavours are
                             // ordinary codex-card sessions.
                             kind: if role == CardRole::Spec {
@@ -621,7 +621,7 @@ pub async fn force_spec_phase(
             repo.clone(),
             state.events.clone(),
             state.card_role_cache.clone(),
-            state.wave_area_cache.clone(),
+            state.track_area_cache.clone(),
             state.shared_codex_appserver.clone(),
             &state.harness,
             runtime.clone(),
@@ -665,7 +665,7 @@ pub async fn force_spec_phase(
 ///
 /// Uses the existing remove-then-`shutdown()` seam (`HarnessRegistry::
 /// remove` + `SpecHarness::shutdown`), the same path `spec-harness-shutdown`
-/// and wave deletion take — no new kill mechanism. Shutdown against the
+/// and track deletion take — no new kill mechanism. Shutdown against the
 /// replay stub daemon degrades to warn-logged no-op RPCs by design.
 ///
 /// Returns the number of harnesses shut down.
@@ -744,22 +744,22 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
     // log without re-running the business logic that produced it).
     //
     // So we fold the event stream ourselves: walk events in id order,
-    // and let each `overlay.set` for the target wave's `view/layout`
+    // and let each `overlay.set` for the target track's `view/layout`
     // overwrite the running state. This is what a WS replay consumer
     // (`useOverlayState` in the frontend, the test in
     // `tests/replay_fixtures.rs`) would do, just done server-side
     // without the WS hop.
     if !fixture.expected.layout_positions.is_empty() {
-        let wave_id = infer_wave_id(fixture);
-        match wave_id {
+        let track_id = infer_track_id(fixture);
+        match track_id {
             None => failed.push(
-                "layout_positions: fixture does not reference a wave id we can target".into(),
+                "layout_positions: fixture does not reference a track id we can target".into(),
             ),
-            Some(wave_id) => {
-                let actual_positions = derive_layout_positions(repo, &wave_id).await?;
+            Some(track_id) => {
+                let actual_positions = derive_layout_positions(repo, &track_id).await?;
                 match actual_positions {
                     None => failed.push(format!(
-                        "layout_positions: no `view/layout` overlay-set events for wave `{wave_id}`"
+                        "layout_positions: no `view/layout` overlay-set events for track `{track_id}`"
                     )),
                     Some(actual) => {
                         let expected = &fixture.expected.layout_positions;
@@ -787,7 +787,7 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
                             ));
                         } else {
                             failed.push(format!(
-                                "layout_positions mismatch on wave `{wave_id}`:\n{}",
+                                "layout_positions mismatch on track `{track_id}`:\n{}",
                                 diff.join("\n")
                             ));
                         }
@@ -801,8 +801,8 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
 }
 
 /// Fold the persisted event log to derive the current `view/layout`
-/// positions map for `wave_id`. Returns `None` if no `overlay.set` for
-/// `(view, wave_id, layout)` has been observed (or the most recent
+/// positions map for `track_id`. Returns `None` if no `overlay.set` for
+/// `(view, track_id, layout)` has been observed (or the most recent
 /// event for that overlay was an `overlay.deleted`). The fold mirrors
 /// what `useOverlayState` does on the frontend: later events for the
 /// same `(plugin_id, entity_kind, entity_id, kind)` quad overwrite
@@ -814,22 +814,22 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
 /// stable surface; treat as test-helper-shape.
 pub async fn derive_layout_positions(
     repo: &SqlxRepo,
-    wave_id: &str,
+    track_id: &str,
 ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let log = repo.events_since(0, i64::MAX).await?;
     Ok(fold_layout_positions(
         log.into_iter().map(|(_id, _ver, _scope, ev)| ev),
-        wave_id,
+        track_id,
     ))
 }
 
 /// Pure fold used by `derive_layout_positions` — exposed so tests can
 /// feed a hand-built event sequence without touching the repo. Walks
 /// events in caller-provided order and tracks the running `view/layout`
-/// state for `wave_id`: `overlay.set` upserts, `overlay.deleted` clears.
+/// state for `track_id`: `overlay.set` upserts, `overlay.deleted` clears.
 pub fn fold_layout_positions<I>(
     events: I,
-    wave_id: &str,
+    track_id: &str,
 ) -> Option<serde_json::Map<String, serde_json::Value>>
 where
     I: IntoIterator<Item = Event>,
@@ -838,7 +838,7 @@ where
     for ev in events {
         match ev {
             Event::OverlaySet(o)
-                if o.entity_kind == "view" && o.entity_id == wave_id && o.kind == "layout" =>
+                if o.entity_kind == "view" && o.entity_id == track_id && o.kind == "layout" =>
             {
                 current = o
                     .payload
@@ -851,7 +851,7 @@ where
                 entity_id,
                 kind,
                 ..
-            } if entity_kind == "view" && entity_id == wave_id && kind == "layout" => {
+            } if entity_kind == "view" && entity_id == track_id && kind == "layout" => {
                 current = None;
             }
             _ => {}
@@ -860,11 +860,11 @@ where
     current
 }
 
-/// Best-effort: find the wave id the fixture's `view/layout` overlay
-/// is attached to. The fixture schema does not name the wave directly
+/// Best-effort: find the track id the fixture's `view/layout` overlay
+/// is attached to. The fixture schema does not name the track directly
 /// in `expected`, so we walk the seeded events and pick the first
 /// `overlay.set` whose entity_kind is `view` and kind is `layout`.
-fn infer_wave_id(fixture: &Fixture) -> Option<String> {
+fn infer_track_id(fixture: &Fixture) -> Option<String> {
     for ev in &fixture.events {
         if ev.kind == "overlay.set"
             && ev.payload.get("entity_kind").and_then(|v| v.as_str()) == Some("view")
@@ -897,7 +897,7 @@ fn infer_wave_id(fixture: &Fixture) -> Option<String> {
 ///   - The leading entity snapshot mentioned in §6.3 is deferred: a
 ///     snapshot would let a fixture target a non-empty starting state
 ///     without re-seeding from scratch, but the existing §6.3 fixtures
-///     (and the wave-grid trace) already start from empty, so this gap
+///     (and the track-grid trace) already start from empty, so this gap
 ///     doesn't block the headline workflow.
 pub fn spawn_session_recorder(bus: &EventBus, path: std::path::PathBuf) {
     let mut rx = bus.subscribe();

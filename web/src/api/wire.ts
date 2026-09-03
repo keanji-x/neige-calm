@@ -10,7 +10,7 @@
 // openapi-typescript` (writes `generated.ts`). The intermediate
 // `openapi.json` is committed so frontend builds don't require cargo.
 //
-// This file exists to keep the public type names (KernelArea, KernelWave,
+// This file exists to keep the public type names (KernelArea, KernelTrack,
 // ...) stable for consumers — only the underlying definition migrated from
 // hand-maintained to generated. A few shapes intentionally diverge from the
 // generated form where the OpenAPI emission lost fidelity:
@@ -20,7 +20,7 @@
 //     the kernel passes around. We override it to `unknown` to match the
 //     previous hand-rolled wire and keep `cards/*`, `useKernel`, and
 //     `adapt.ts` working without per-call casts.
-//   * `entity_kind` on `NewOverlayBody` keeps its `'wave' | 'card'` literal
+//   * `entity_kind` on `NewOverlayBody` keeps its `'track' | 'card'` literal
 //     union — utoipa emitted the underlying Rust `String` as plain `string`.
 //
 // WS event-envelope types now come from `./generated-events.ts` (re-exported
@@ -38,7 +38,7 @@ type Schemas = components['schemas'];
 // ---------------- Domain models (REST responses) ----------------
 
 export type KernelArea = Schemas['Area'];
-export type KernelWave = Schemas['Wave'];
+export type KernelTrack = Schemas['Track'];
 
 /**
  * Issue #250 PR 3 — 200 body for `GET /api/areas/resolve`. The kernel
@@ -47,7 +47,7 @@ export type KernelWave = Schemas['Wave'];
  * `resolveAreaPath` wrapper deserializes into.
  */
 export type AreaResolveBody = Schemas['AreaResolve'];
-/** Issue #250 PR 3 — 409 body returned by `POST /api/waves` when the
+/** Issue #250 PR 3 — 409 body returned by `POST /api/tracks` when the
  *  body's `cwd` collides with an existing folder claim under another
  *  area (descendant) or already-narrower claims block widening
  *  (ancestor). NewTaskForm surfaces the kind + path in its inline
@@ -67,7 +67,7 @@ export type KernelTerminal = Schemas['Terminal'];
 
 export type KernelPlugin = Schemas['Plugin'];
 
-export type KernelWaveDetail = Omit<Schemas['WaveDetail'], 'cards' | 'overlays'> & {
+export type KernelTrackDetail = Omit<Schemas['TrackDetail'], 'cards' | 'overlays'> & {
   cards: KernelCard[];
   overlays: KernelOverlay[];
 };
@@ -108,17 +108,17 @@ type KeyOf<T, K extends keyof T> = K;
  * workflow's `input_schema` at create time, #891), which utoipa's
  * `value_type = Option<Object>` emits as `Record<string, never>` — an empty
  * object no caller could actually populate. The read side needs no override:
- * `Wave.template_input` reaches the UI via `generated-events.ts` (ts-rs,
+ * `Track.template_input` reaches the UI via `generated-events.ts` (ts-rs,
  * `#[ts(type = "unknown")]` → `unknown`) and no consumer reads it off the
- * OpenAPI `Wave` shape today.
+ * OpenAPI `Track` shape today.
  */
-export type NewWaveBody   = Omit<
-  Schemas['CreateWaveRequest'],
-  KeyOf<Schemas['CreateWaveRequest'], 'template_input'>
+export type NewTrackBody   = Omit<
+  Schemas['CreateTrackRequest'],
+  KeyOf<Schemas['CreateTrackRequest'], 'template_input'>
 > & {
   template_input?: unknown;
 };
-export type WavePatchBody = Schemas['WavePatch'];
+export type TrackPatchBody = Schemas['TrackPatch'];
 
 /**
  * `payload` override mirrors `KernelCard`: kernel routes accept any JSON
@@ -130,12 +130,12 @@ export type CardPatchBody = Omit<Schemas['CardPatch'], 'payload'> & { payload?: 
 /**
  * `entity_kind` keeps its literal union — the Rust side is `String` so utoipa
  * emits `string`, but the kernel today only addresses overlays scoped to
- * `"wave"`, `"card"`, or `"view"` (the latter introduced for Scope E's
- * `useOverlayState` + WaveGrid layout, per design doc §5). New entity kinds
+ * `"track"`, `"card"`, or `"view"` (the latter introduced for Scope E's
+ * `useOverlayState` + TrackGrid layout, per design doc §5). New entity kinds
  * land here in lock-step with a matching server-side acceptance.
  */
 export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payload'> & {
-  entity_kind: 'wave' | 'card' | 'view';
+  entity_kind: 'track' | 'card' | 'view';
   payload: unknown;
 };
 

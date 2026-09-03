@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
-import type { Area, Route, Wave } from '../../types';
-import { isRunning, sortByLifecycleRank, waveNeedsUserAttention } from '../lifecycle';
-import { waveDisplayTitle } from '../waveTitle';
+import type { Area, Route, Track } from '../../types';
+import { isRunning, sortByLifecycleRank, trackNeedsUserAttention } from '../lifecycle';
+import { trackDisplayTitle } from '../trackTitle';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { ChevronIcon } from './ChevronIcon';
 import { CloseIcon } from './CloseIcon';
@@ -101,44 +101,44 @@ function useExpandedAreas(): [
   return [expandedAreas, toggleAreaExpanded, expandArea];
 }
 
-function areaWavesListId(areaId: string): string {
-  return `sidebar-area-waves-${encodeURIComponent(areaId)}`;
+function areaTracksListId(areaId: string): string {
+  return `sidebar-area-tracks-${encodeURIComponent(areaId)}`;
 }
 
 export function Sidebar({
   areas,
-  waves,
+  tracks,
   route,
   onGo,
   onCreateArea,
   onDeleteArea,
-  onDeleteWave,
-  onPinWave,
+  onDeleteTrack,
+  onPinTrack,
   onOpenSettings,
   onSignOut,
 }: {
   areas: Area[];
-  waves: Wave[];
+  tracks: Track[];
   route: Route;
   onGo: (r: Route) => void;
   /** Bootstrap affordance: renders a small `+` icon button on the Areas
    *  section header that expands an inline name input at the top of the
    *  area list. Lives here (not in AreaPage) because creating the *first*
-   *  area has no other home. Wave creation, by contrast, lives inside
+   *  area has no other home. Track creation, by contrast, lives inside
    *  AreaPage where the area context is already established. */
   onCreateArea?: (name: string, color: string) => void | Promise<void>;
   /** Per-row delete on each area. When provided, every area row reveals a
    *  hover `×` that opens a single shared ConfirmDialog. Mirrors the
-   *  WaveRow delete pattern. Optional so tests can render the sidebar
+   *  TrackRow delete pattern. Optional so tests can render the sidebar
    *  without wiring deletion. */
   onDeleteArea?: (areaId: string) => void | Promise<void>;
-  /** Per-row delete on each wave. When provided, every wave row reveals a
+  /** Per-row delete on each track. When provided, every track row reveals a
    *  hover `×` that opens a single shared ConfirmDialog. */
-  onDeleteWave?: (waveId: string) => void | Promise<void>;
-  /** Pin or unpin a wave. Optional so tests / sub-trees that render the
+  onDeleteTrack?: (trackId: string) => void | Promise<void>;
+  /** Pin or unpin a track. Optional so tests / sub-trees that render the
    *  sidebar without a mutation hook don't have to wire it up. When
-   *  provided, every wave row renders a hover-revealed pin button. */
-  onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
+   *  provided, every track row renders a hover-revealed pin button. */
+  onPinTrack?: (trackId: string, pin: boolean) => void | Promise<void>;
   /** Open the app-global settings page. Optional so tests / sub-trees that
    *  render the sidebar without a router don't have to wire it up. */
   onOpenSettings?: () => void;
@@ -148,41 +148,41 @@ export function Sidebar({
 }) {
   // Single shared ConfirmDialog at the sidebar root; `pendingDelete`
   // carries the area being confirmed so the dialog text reflects the
-  // actual area name. Mirrors Area.tsx's `pendingDeleteWave` pattern.
+  // actual area name. Mirrors Area.tsx's `pendingDeleteTrack` pattern.
   const [pendingDelete, setPendingDelete] = useState<Area | null>(null);
-  const [pendingDeleteWave, setPendingDeleteWave] = useState<Wave | null>(null);
-  const [activeWaveRowEl, setActiveWaveRowEl] = useState<HTMLDivElement | null>(
+  const [pendingDeleteTrack, setPendingDeleteTrack] = useState<Track | null>(null);
+  const [activeTrackRowEl, setActiveTrackRowEl] = useState<HTMLDivElement | null>(
     null,
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => readSidebarCollapsed(),
   );
   const [expandedAreas, toggleAreaExpanded, expandArea] = useExpandedAreas();
-  const activeWaveId = route.name === 'wave' ? route.id : null;
+  const activeTrackId = route.name === 'track' ? route.id : null;
   const activeAreaId = useMemo(
     () => (
-      activeWaveId
-        ? waves.find((w) => w.id === activeWaveId)?.areaId ?? null
+      activeTrackId
+        ? tracks.find((w) => w.id === activeTrackId)?.areaId ?? null
         : null
     ),
-    [activeWaveId, waves],
+    [activeTrackId, tracks],
   );
-  const setActiveWaveRowRef = useCallback(
+  const setActiveTrackRowRef = useCallback(
     (node: HTMLDivElement | null) => {
-      setActiveWaveRowEl(node);
+      setActiveTrackRowEl(node);
     },
-    [setActiveWaveRowEl],
+    [setActiveTrackRowEl],
   );
   useEffect(() => {
     if (activeAreaId == null) return;
     expandArea(activeAreaId);
-  }, [activeWaveId, activeAreaId, expandArea]);
+  }, [activeTrackId, activeAreaId, expandArea]);
   useEffect(() => {
-    activeWaveRowEl?.scrollIntoView?.({
+    activeTrackRowEl?.scrollIntoView?.({
       block: 'nearest',
       behavior: 'smooth',
     });
-  }, [activeWaveId, activeWaveRowEl]);
+  }, [activeTrackId, activeTrackRowEl]);
   const cancelDelete = () => setPendingDelete(null);
   const confirmDelete = async () => {
     const c = pendingDelete;
@@ -190,16 +190,16 @@ export function Sidebar({
     if (!c || !onDeleteArea) return;
     await onDeleteArea(c.id);
   };
-  const openDeleteWaveDialog = (w: Wave) => {
-    if (!onDeleteWave) return;
-    setPendingDeleteWave(w);
+  const openDeleteTrackDialog = (w: Track) => {
+    if (!onDeleteTrack) return;
+    setPendingDeleteTrack(w);
   };
-  const cancelDeleteWave = () => setPendingDeleteWave(null);
-  const confirmDeleteWave = () => {
-    const w = pendingDeleteWave;
-    setPendingDeleteWave(null);
-    if (!w || !onDeleteWave) return;
-    void onDeleteWave(w.id);
+  const cancelDeleteTrack = () => setPendingDeleteTrack(null);
+  const confirmDeleteTrack = () => {
+    const w = pendingDeleteTrack;
+    setPendingDeleteTrack(null);
+    if (!w || !onDeleteTrack) return;
+    void onDeleteTrack(w.id);
   };
   const toggleSidebarCollapsed = () => {
     setSidebarCollapsed((current) => {
@@ -208,27 +208,27 @@ export function Sidebar({
       return next;
     });
   };
-  // Pinned waves sorted by the timestamp they were pinned, oldest first
+  // Pinned tracks sorted by the timestamp they were pinned, oldest first
   // so the order is stable and user-determined (first pin = top).
-  const pinnedWaves = waves
+  const pinnedTracks = tracks
     .filter((w) => w.pinnedAt != null)
     .sort((a, b) => a.pinnedAt! - b.pinnedAt!);
   // Issue #254 — OR'd predicate: lifecycle ∪ kernel-card-FSM. Catches
   // both "Spec Agent said blocked/reviewing/failed" AND "a worker card
   // hit an AwaitingInput/Errored hook before Spec Agent could drive
   // lifecycle". The latter is the regression hole #248's deletion of
-  // the wave-level FSM union left open.
-  // Waiting includes pinned attention waves intentionally: a pinned
-  // waiting wave appears in both Pinned and Waiting on you.
-  const waitingWaves = waves.filter(waveNeedsUserAttention);
+  // the track-level FSM union left open.
+  // Waiting includes pinned attention tracks intentionally: a pinned
+  // waiting track appears in both Pinned and Waiting on you.
+  const waitingTracks = tracks.filter(trackNeedsUserAttention);
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
-  //   <section aria-label="Waiting on you">  → side-wave rows (when any)
-  //   <section aria-label="Pinned">          → pinned wave rows (when any)
+  //   <section aria-label="Waiting on you">  → side-track rows (when any)
+  //   <section aria-label="Pinned">          → pinned track rows (when any)
   //   <nav aria-label="Areas">               → area-nav buttons + New area
   // Two <nav>s rather than one because the "Waiting on you" section sits
   // visually between Today and the area list and reads as a third
-  // concern (waves needing attention) — folding the area list into the
+  // concern (tracks needing attention) — folding the area list into the
   // top nav would either reorder the DOM or nest the section inside a
   // nav. Both landmarks have unique accessible names so the
   // `landmark-unique` axe rule stays green.
@@ -267,48 +267,48 @@ export function Sidebar({
 
       {!sidebarCollapsed && (
         <>
-          {waitingWaves.length > 0 && (
+          {waitingTracks.length > 0 && (
             <section className="side-section attn-zone" aria-label="Waiting on you">
               <div className="nav-label warn-text">Waiting on you</div>
-              {waitingWaves.map((w) => {
+              {waitingTracks.map((w) => {
                 const area = areas.find((c) => c.id === w.areaId);
-                const active = route.name === 'wave' && route.id === w.id;
-                const displayTitle = waveDisplayTitle(w.title);
+                const active = route.name === 'track' && route.id === w.id;
+                const displayTitle = trackDisplayTitle(w.title);
                 return (
-                  <WaveRow
+                  <TrackRow
                     key={w.id}
-                    wave={w}
+                    track={w}
                     active={active}
                     area={area ?? null}
                     title={area ? `${area.name} · ${displayTitle}` : displayTitle}
-                    onGo={() => onGo({ name: 'wave', id: w.id })}
-                    onPinWave={onPinWave}
-                    onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
-                    rowRef={active ? setActiveWaveRowRef : undefined}
+                    onGo={() => onGo({ name: 'track', id: w.id })}
+                    onPinTrack={onPinTrack}
+                    onDeleteTrack={onDeleteTrack ? openDeleteTrackDialog : undefined}
+                    rowRef={active ? setActiveTrackRowRef : undefined}
                   />
                 );
               })}
             </section>
           )}
 
-          {pinnedWaves.length > 0 && (
+          {pinnedTracks.length > 0 && (
             <section className="side-section" aria-label="Pinned">
               <div className="nav-label">Pinned</div>
-              {pinnedWaves.map((w) => {
+              {pinnedTracks.map((w) => {
                 const area = areas.find((c) => c.id === w.areaId);
-                const active = route.name === 'wave' && route.id === w.id;
-                const displayTitle = waveDisplayTitle(w.title);
+                const active = route.name === 'track' && route.id === w.id;
+                const displayTitle = trackDisplayTitle(w.title);
                 return (
-                  <WaveRow
+                  <TrackRow
                     key={w.id}
-                    wave={w}
+                    track={w}
                     active={active}
                     area={area ?? null}
                     title={area ? `${area.name} · ${displayTitle}` : displayTitle}
-                    onGo={() => onGo({ name: 'wave', id: w.id })}
-                    onPinWave={onPinWave}
-                    onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
-                    rowRef={active ? setActiveWaveRowRef : undefined}
+                    onGo={() => onGo({ name: 'track', id: w.id })}
+                    onPinTrack={onPinTrack}
+                    onDeleteTrack={onDeleteTrack ? openDeleteTrackDialog : undefined}
+                    rowRef={active ? setActiveTrackRowRef : undefined}
                   />
                 );
               })}
@@ -318,21 +318,21 @@ export function Sidebar({
           <nav className="side-nav side-areas" aria-label="Areas">
             <AreasHeader onCreate={onCreateArea} />
             {areas.map((area) => {
-              const cw = waves.filter((w) => w.areaId === area.id);
-              // Pinned waves intentionally appear in both the quick-access
+              const cw = tracks.filter((w) => w.areaId === area.id);
+              // Pinned tracks intentionally appear in both the quick-access
               // Pinned section and their area's inline list; pinning is not
-              // relocation, and the wave still belongs to this area.
-              const inlineWaves = sortByLifecycleRank(cw);
+              // relocation, and the track still belongs to this area.
+              const inlineTracks = sortByLifecycleRank(cw);
               const running = cw.filter((w) => isRunning(w.lifecycle)).length;
               // Match the top-of-sidebar "Waiting on you" predicate, including
-              // pinned attention waves, so area warn badges surface pinned work.
-              const waiting = cw.filter(waveNeedsUserAttention).length;
+              // pinned attention tracks, so area warn badges surface pinned work.
+              const waiting = cw.filter(trackNeedsUserAttention).length;
               const active = route.name === 'area' && route.areaId === area.id;
               const expanded = !!expandedAreas[area.id];
-              const listId = areaWavesListId(area.id);
-              const showInlineWaves = expanded && inlineWaves.length > 0;
+              const listId = areaTracksListId(area.id);
+              const showInlineTracks = expanded && inlineTracks.length > 0;
               // Single right-edge badge slot: warn-red waiting count beats
-              // muted total count; empty when there are no waves at all.
+              // muted total count; empty when there are no tracks at all.
               const badge =
                 waiting > 0
                   ? { kind: 'warn' as const, n: waiting }
@@ -354,7 +354,7 @@ export function Sidebar({
                         toggleAreaExpanded(area.id);
                       }}
                       aria-expanded={expanded}
-                      aria-controls={showInlineWaves ? listId : undefined}
+                      aria-controls={showInlineTracks ? listId : undefined}
                       aria-label={`${expanded ? 'Collapse' : 'Expand'} area ${area.name}`}
                     >
                       <ChevronIcon />
@@ -394,27 +394,27 @@ export function Sidebar({
                       </button>
                     )}
                   </div>
-                  {showInlineWaves && (
+                  {showInlineTracks && (
                     <div
                       id={listId}
-                      className="side-areas-waves"
+                      className="side-areas-tracks"
                       role="group"
-                      aria-label={`Waves in ${area.name}`}
+                      aria-label={`Tracks in ${area.name}`}
                     >
-                      {inlineWaves.map((w) => {
-                        const waveActive = route.name === 'wave' && route.id === w.id;
-                        const displayTitle = waveDisplayTitle(w.title);
+                      {inlineTracks.map((w) => {
+                        const trackActive = route.name === 'track' && route.id === w.id;
+                        const displayTitle = trackDisplayTitle(w.title);
                         return (
-                          <WaveRow
+                          <TrackRow
                             key={w.id}
-                            wave={w}
-                            active={waveActive}
+                            track={w}
+                            active={trackActive}
                             area={null}
                             title={displayTitle}
-                            onGo={() => onGo({ name: 'wave', id: w.id })}
-                            onPinWave={onPinWave}
-                            onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
-                            rowRef={waveActive ? setActiveWaveRowRef : undefined}
+                            onGo={() => onGo({ name: 'track', id: w.id })}
+                            onPinTrack={onPinTrack}
+                            onDeleteTrack={onDeleteTrack ? openDeleteTrackDialog : undefined}
+                            rowRef={trackActive ? setActiveTrackRowRef : undefined}
                           />
                         );
                       })}
@@ -432,7 +432,7 @@ export function Sidebar({
             title="Delete area?"
             description={
               pendingDelete
-                ? `Delete area "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
+                ? `Delete area "${pendingDelete.name}"? Its tracks and cards go too. This cannot be undone.`
                 : null
             }
             confirmLabel="Delete area"
@@ -441,17 +441,17 @@ export function Sidebar({
             onCancel={cancelDelete}
           />
           <ConfirmDialog
-            open={pendingDeleteWave !== null}
-            title="Delete wave?"
+            open={pendingDeleteTrack !== null}
+            title="Delete track?"
             description={
-              pendingDeleteWave
-                ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
+              pendingDeleteTrack
+                ? `Delete track "${trackDisplayTitle(pendingDeleteTrack.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
                 : null
             }
-            confirmLabel="Delete wave"
+            confirmLabel="Delete track"
             cancelLabel="Cancel"
-            onConfirm={confirmDeleteWave}
-            onCancel={cancelDeleteWave}
+            onConfirm={confirmDeleteTrack}
+            onCancel={cancelDeleteTrack}
           />
         </>
       )}
@@ -601,73 +601,73 @@ function AreasHeader({
   );
 }
 
-// ---------------- WaveRow ----------------
+// ---------------- TrackRow ----------------
 //
-// A single wave entry in the Pinned, Waiting-on-you, or inline area list.
+// A single track entry in the Pinned, Waiting-on-you, or inline area list.
 // Rendered as `<div role="group">` containing sibling `<button>`s to
 // avoid nested-button a11y violations: pin, navigation, and delete.
-// The pin button is hover-revealed but always visible when the wave is
+// The pin button is hover-revealed but always visible when the track is
 // already pinned so unpin is discoverable on touch.
 
-function WaveRow({
-  wave,
+function TrackRow({
+  track,
   active,
   area,
   title,
   onGo,
-  onPinWave,
-  onDeleteWave,
+  onPinTrack,
+  onDeleteTrack,
   rowRef,
 }: {
-  wave: Wave;
+  track: Track;
   active: boolean;
   area: { id: string; name: string } | null;
   title: string;
   onGo: () => void;
-  onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
-  onDeleteWave?: (wave: Wave) => void;
+  onPinTrack?: (trackId: string, pin: boolean) => void | Promise<void>;
+  onDeleteTrack?: (track: Track) => void;
   rowRef?: (node: HTMLDivElement | null) => void;
 }) {
-  const pinned = wave.pinnedAt != null;
-  const attention = waveNeedsUserAttention(wave);
-  const displayTitle = waveDisplayTitle(wave.title);
+  const pinned = track.pinnedAt != null;
+  const attention = trackNeedsUserAttention(track);
+  const displayTitle = trackDisplayTitle(track.title);
   return (
     <div
       ref={rowRef}
-      className={'side-wave-row' + (active ? ' active' : '') + (attention ? ' attention' : '')}
+      className={'side-track-row' + (active ? ' active' : '') + (attention ? ' attention' : '')}
       role="group"
     >
-      {onPinWave && (
+      {onPinTrack && (
         <button
           type="button"
-          className={'side-wave-pin' + (pinned ? ' pinned' : '')}
+          className={'side-track-pin' + (pinned ? ' pinned' : '')}
           onClick={(e) => {
             e.stopPropagation();
-            void onPinWave(wave.id, !pinned);
+            void onPinTrack(track.id, !pinned);
           }}
-          aria-label={pinned ? 'Unpin wave' : 'Pin wave'}
+          aria-label={pinned ? 'Unpin track' : 'Pin track'}
         >
           <PinIcon down={pinned} />
         </button>
       )}
       <button
-        className={'side-wave' + (active ? ' active' : '')}
+        className={'side-track' + (active ? ' active' : '')}
         onClick={onGo}
         title={title}
       >
-        <span className="side-wave-title">{displayTitle}</span>
-        {area && <span className="side-wave-area">{area.name}</span>}
+        <span className="side-track-title">{displayTitle}</span>
+        {area && <span className="side-track-area">{area.name}</span>}
       </button>
-      {onDeleteWave && (
+      {onDeleteTrack && (
         <button
           type="button"
-          className="side-wave-delete"
+          className="side-track-delete"
           onClick={(e) => {
             e.stopPropagation();
-            onDeleteWave(wave);
+            onDeleteTrack(track);
           }}
-          title={`Delete wave "${displayTitle}"`}
-          aria-label={`Delete wave "${displayTitle}"`}
+          title={`Delete track "${displayTitle}"`}
+          aria-label={`Delete track "${displayTitle}"`}
         >
           <CloseIcon />
         </button>

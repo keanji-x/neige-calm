@@ -8,7 +8,7 @@ use axum::{
 };
 use calm_server::db::RepoRead;
 use calm_server::routes::today::SystemAreaMintCounters;
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::track_report::TrackReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, RepoOutOfDomain, sqlite::SqlxRepo},
@@ -17,7 +17,7 @@ use calm_server::{
     routes,
     shared_codex_appserver::SharedCodexAppServer,
     state::{AppState, CodexClient, DaemonClient, WriteContext},
-    wave_area_cache::WaveAreaCache,
+    track_area_cache::TrackAreaCache,
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -63,13 +63,13 @@ async fn boot_with_rendezvous(
 ) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
-    let waves = WaveAreaCache::new();
+    let tracks = TrackAreaCache::new();
     // Seeded from the DB, not left empty: `boot_with` is also used to build a
     // SECOND server over an existing database (the B1 upgrade fixture), and an
     // empty role cache would make `ensure` fail to recognise the existing spec
     // card and try to mint a second one.
     repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_wave_area_cache(&waves).await.unwrap();
+    repo.seed_track_area_cache(&tracks).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -83,7 +83,7 @@ async fn boot_with_rendezvous(
         tmp.path().join("plugins-data"),
         Vec::new(),
         events.clone(),
-        WriteContext::new(roles.clone(), waves.clone()),
+        WriteContext::new(roles.clone(), tracks.clone()),
     ));
     let state = AppState::from_parts(
         repo_dyn,
@@ -92,7 +92,7 @@ async fn boot_with_rendezvous(
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(roles),
-        Some(waves),
+        Some(tracks),
     )
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo.clone(),
@@ -139,12 +139,12 @@ async fn create_area(b: &Boot, name: &str) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn create_wave(b: &Boot, body: Value) -> Value {
+async fn create_track(b: &Boot, body: Value) -> Value {
     let response = b
         .app
         .clone()
         .oneshot(
-            Request::post("/api/waves")
+            Request::post("/api/tracks")
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
@@ -191,26 +191,31 @@ async fn first_ensure_mints_launchpad_with_all_cards_and_idle_spec() {
         StatusCode::CREATED,
         "body={body}, operation_error={operation_error:?}"
     );
-    for key in ["wave_id", "spec_card_id", "terminal_card_id", "terminal_id"] {
+    for key in [
+        "track_id",
+        "spec_card_id",
+        "terminal_card_id",
+        "terminal_id",
+    ] {
         assert!(
             body[key].as_str().is_some_and(|id| !id.is_empty()),
             "missing {key}: {body}"
         );
     }
     let pool = b.repo.pool();
-    let purpose: String = sqlx::query_scalar("SELECT purpose FROM waves WHERE id=?1")
-        .bind(body["wave_id"].as_str().unwrap())
+    let purpose: String = sqlx::query_scalar("SELECT purpose FROM tracks WHERE id=?1")
+        .bind(body["track_id"].as_str().unwrap())
         .fetch_one(pool)
         .await
         .unwrap();
     assert_eq!(purpose, "launchpad");
     let kinds: Vec<String> =
-        sqlx::query_scalar("SELECT kind FROM cards WHERE wave_id=?1 ORDER BY kind")
-            .bind(body["wave_id"].as_str().unwrap())
+        sqlx::query_scalar("SELECT kind FROM cards WHERE track_id=?1 ORDER BY kind")
+            .bind(body["track_id"].as_str().unwrap())
             .fetch_all(pool)
             .await
             .unwrap();
-    assert_eq!(kinds, ["codex", "terminal", "wave-report"]);
+    assert_eq!(kinds, ["codex", "terminal", "track-report"]);
     let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
         .bind(body["spec_card_id"].as_str().unwrap())
         .fetch_one(pool)
@@ -230,7 +235,7 @@ async fn repeated_ensure_preserves_spec_transcript_and_ids_and_singleton() {
         .harness_item_insert(
             "runtime",
             first["spec_card_id"].as_str().unwrap(),
-            first["wave_id"].as_str().unwrap(),
+            first["track_id"].as_str().unwrap(),
             "thread",
             Some("turn"),
             Some("item"),
@@ -250,7 +255,7 @@ async fn repeated_ensure_preserves_spec_transcript_and_ids_and_singleton() {
         .unwrap();
     assert_eq!(items, 1);
     let launchpads: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE purpose='launchpad'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE purpose='launchpad'")
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
@@ -261,8 +266,8 @@ async fn repeated_ensure_preserves_spec_transcript_and_ids_and_singleton() {
 async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
     let b = boot().await;
     let (_, original) = ensure(b.app.clone()).await;
-    sqlx::query("UPDATE waves SET purpose=NULL WHERE id=?1")
-        .bind(original["wave_id"].as_str().unwrap())
+    sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
+        .bind(original["track_id"].as_str().unwrap())
         .execute(b.repo.pool())
         .await
         .unwrap();
@@ -270,7 +275,7 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
         .harness_item_insert(
             "legacy-runtime",
             original["spec_card_id"].as_str().unwrap(),
-            original["wave_id"].as_str().unwrap(),
+            original["track_id"].as_str().unwrap(),
             "legacy-thread",
             None,
             Some("legacy-item"),
@@ -296,8 +301,8 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
         .await
         .unwrap();
     assert_eq!(items, 0);
-    let purpose: String = sqlx::query_scalar("SELECT purpose FROM waves WHERE id=?1")
-        .bind(original["wave_id"].as_str().unwrap())
+    let purpose: String = sqlx::query_scalar("SELECT purpose FROM tracks WHERE id=?1")
+        .bind(original["track_id"].as_str().unwrap())
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
@@ -306,25 +311,25 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
     assert_eq!(adopted["terminal_id"], original["terminal_id"]);
 }
 
-/// #1147 S1 (design D9 + §5 test 8). The launchpad is the wave-create path
-/// that bypasses `wave_create_tx` entirely — a raw `INSERT INTO waves(...)`
-/// plus a raw `UPDATE`, with a hand-written `Wave` literal and two
+/// #1147 S1 (design D9 + §5 test 8). The launchpad is the track-create path
+/// that bypasses `track_create_tx` entirely — a raw `INSERT INTO tracks(...)`
+/// plus a raw `UPDATE`, with a hand-written `Track` literal and two
 /// hand-written SELECT column lists. That combination fails at **runtime**,
 /// not at compile time (`query_as` binds columns by name), so this asserts the
 /// route still answers and that both of its branches leave the workspace and
 /// its `cwd` projection agreeing.
 ///
-/// It also pins the launchpad's documented exception: this wave is
+/// It also pins the launchpad's documented exception: this track is
 /// **never frozen**. The adopt-legacy branch re-points an existing `Today`
-/// wave at the caller's `cwd`, and `ensure` is idempotent, so a stamp written
+/// track at the caller's `cwd`, and `ensure` is idempotent, so a stamp written
 /// on the first call would be overwritten on the second — which is precisely
 /// the "one-shot, monotonic" property D1 gives `frozen_at`. Leaving it NULL is
 /// how re-pointing stays legal without the latch ever being violated.
 #[tokio::test]
-async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches() {
+async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches() {
     async fn workspace_row(repo: &SqlxRepo, id: &str) -> (String, String, Option<i64>) {
         sqlx::query_as(
-            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id=?1",
+            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id=?1",
         )
         .bind(id)
         .fetch_one(repo.pool())
@@ -335,10 +340,10 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let wave_id = body["wave_id"].as_str().unwrap().to_string();
+    let track_id = body["track_id"].as_str().unwrap().to_string();
 
     // Branch 1 — fresh INSERT.
-    let (kind, path, frozen_at) = workspace_row(&b.repo, &wave_id).await;
+    let (kind, path, frozen_at) = workspace_row(&b.repo, &track_id).await;
     // #1147 S2 review ruling — `managed`, not `attached`. The directory is
     // minted by the server, and `attached` means "the user pointed at it, the
     // server never touches it". Labelling a server-created directory
@@ -351,7 +356,7 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
     );
     assert_eq!(
         frozen_at, None,
-        "the launchpad wave must stay unfrozen so the adopt branch can \
+        "the launchpad track must stay unfrozen so the adopt branch can \
          re-point it without re-stamping (design D1 monotonicity)"
     );
 
@@ -361,7 +366,7 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
         .app
         .clone()
         .oneshot(
-            Request::get(format!("/api/waves/{wave_id}"))
+            Request::get(format!("/api/tracks/{track_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -370,10 +375,10 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let dto: Value = serde_json::from_slice(&bytes).unwrap();
-    let wave = dto.get("wave").unwrap_or(&dto);
-    assert_eq!(wave["workspace"]["kind"], "managed", "dto={dto}");
-    assert_eq!(wave["workspace"]["path"], wave["cwd"], "dto={dto}");
-    assert!(wave["workspace"]["frozen_at"].is_null(), "dto={dto}");
+    let track = dto.get("track").unwrap_or(&dto);
+    assert_eq!(track["workspace"]["kind"], "managed", "dto={dto}");
+    assert_eq!(track["workspace"]["path"], track["cwd"], "dto={dto}");
+    assert!(track["workspace"]["frozen_at"].is_null(), "dto={dto}");
 
     // Branch 2 — legacy adoption. Scramble the row so the assertion cannot
     // pass on leftovers from branch 1: the adoption branch must rewrite both
@@ -382,21 +387,21 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
         // #1147 S3 — the stamp is scrambled to NULL, not to 99. S2 flipped it
         // to 99 to keep the assertion non-vacuous, but S3's freeze latch makes
         // a frozen launchpad row un-repointable, so a 99 here would fake a
-        // state nothing can produce (`wave_workspace_freeze_tx` excludes the
+        // state nothing can produce (`track_workspace_freeze_tx` excludes the
         // system area precisely so this row never gets a stamp) and would turn
         // the adopt branch into a 409. `kind` and `path` still carry the
         // scramble, so the rewrite assertions below still bite.
-        "UPDATE waves SET purpose=NULL, workspace_path='/also-scrambled', \
+        "UPDATE tracks SET purpose=NULL, workspace_path='/also-scrambled', \
          workspace_kind='attached', workspace_frozen_at=NULL WHERE id=?1",
     )
-    .bind(&wave_id)
+    .bind(&track_id)
     .execute(b.repo.pool())
     .await
     .unwrap();
 
     let (status, adopted) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");
-    let (kind, path, frozen_at) = workspace_row(&b.repo, &wave_id).await;
+    let (kind, path, frozen_at) = workspace_row(&b.repo, &track_id).await;
     assert_eq!(kind, "managed", "adoption re-declares the kind");
     assert_ne!(
         path, "/also-scrambled",
@@ -414,35 +419,35 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
 /// no exceptions.**
 ///
 /// S5's recycle path asserts this prefix before it removes anything. Stated
-/// over the whole table rather than per known wave, so any future create path
+/// over the whole table rather than per known track, so any future create path
 /// that mints a managed workspace somewhere else shows up here whether or not
 /// somebody remembered to write a test for it — and so S5 never needs a
 /// launchpad carve-out.
 #[tokio::test]
-async fn every_managed_wave_lives_under_the_workspace_root() {
+async fn every_managed_track_lives_under_the_workspace_root() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // A user area with both shapes of wave, minted through the production
+    // A user area with both shapes of track, minted through the production
     // route: a managed one (title-only) and an attached one (explicit cwd), so
     // the property below is neither empty nor all-launchpad.
     let area = create_area(&b, "Atlas").await;
     let attached_dir = attached_repo_fixture("today-launchpad-under-root");
-    create_wave(
+    create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
-            "title": "managed wave",
+            "title": "managed track",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
     )
     .await;
-    create_wave(
+    create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
-            "title": "attached wave",
+            "title": "attached track",
             "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -451,7 +456,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     .await;
 
     let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, workspace_kind, workspace_path, purpose FROM waves ORDER BY created_at, id",
+        "SELECT id, workspace_kind, workspace_path, purpose FROM tracks ORDER BY created_at, id",
     )
     .fetch_all(b.repo.pool())
     .await
@@ -461,17 +466,17 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     assert!(
         managed.len() >= 2 && managed.iter().any(|r| r.3.as_deref() == Some("launchpad")),
         "the managed set must include the launchpad AND at least one ordinary \
-         wave, or this property is vacuous: {rows:?}"
+         track, or this property is vacuous: {rows:?}"
     );
     assert!(
         !attached.is_empty(),
-        "an attached wave must exist too, otherwise the negative check below \
+        "an attached track must exist too, otherwise the negative check below \
          could be passing because every row happens to be managed: {rows:?}"
     );
     for (id, _, path, purpose) in managed {
         assert!(
             std::path::Path::new(path).starts_with(&b.workspace_root),
-            "managed wave {id} (purpose={purpose:?}) lives at {path}, outside \
+            "managed track {id} (purpose={purpose:?}) lives at {path}, outside \
              the workspace root {}. S5 removes managed directories: a managed \
              row pointing outside the root is either an un-recyclable orphan \
              or, worse, something S5 would delete outside its own tree.",
@@ -483,21 +488,21 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     for (id, _, path, _) in attached {
         assert!(
             !std::path::Path::new(path).starts_with(&b.workspace_root),
-            "attached wave {id} at {path} is inside the managed root"
+            "attached track {id} at {path} is inside the managed root"
         );
     }
 }
 
-/// `(wave id, workspace_kind, workspace_frozen_at, purpose, area kind)` —
-/// named so `no_attached_wave_is_ever_unfrozen`'s query stays inside clippy's
+/// `(track id, workspace_kind, workspace_frozen_at, purpose, area kind)` —
+/// named so `no_attached_track_is_ever_unfrozen`'s query stays inside clippy's
 /// `type_complexity` budget.
 type WorkspaceFreezeRow = (String, String, Option<i64>, Option<String>, String);
 
 /// #1147 — the bound on the "may still be re-pointed" state (design D9, r3.2
 /// amendment; narrowed by the S2 review).
 ///
-/// S1 could say "no wave outside the launchpad is unfrozen" only because every
-/// wave it could mint was `attached`. S2 mints `managed` workspaces, and
+/// S1 could say "no track outside the launchpad is unfrozen" only because every
+/// track it could mint was `attached`. S2 mints `managed` workspaces, and
 /// **unfrozen managed is the intended steady state** — it is exactly what
 /// makes S3's "re-point before any work has happened" reachable. So the
 /// property is not about unfrozen rows in general.
@@ -514,7 +519,7 @@ type WorkspaceFreezeRow = (String, String, Option<i64>, Option<String>, String);
 /// attached rows (which must all be frozen) and unfrozen rows (which must all
 /// be managed).
 #[tokio::test]
-async fn no_attached_wave_is_ever_unfrozen() {
+async fn no_attached_track_is_ever_unfrozen() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -523,22 +528,22 @@ async fn no_attached_wave_is_ever_unfrozen() {
     // otherwise the property is only tested against the row that motivated it.
     let area = create_area(&b, "Atlas").await;
     let attached_dir = attached_repo_fixture("today-launchpad-never-unfrozen");
-    create_wave(
+    create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
-            "title": "user wave",
+            "title": "user track",
             "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
     )
     .await;
-    create_wave(
+    create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
-            "title": "managed wave",
+            "title": "managed track",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
     )
@@ -546,7 +551,7 @@ async fn no_attached_wave_is_ever_unfrozen() {
 
     let rows: Vec<WorkspaceFreezeRow> = sqlx::query_as(
         "SELECT w.id, w.workspace_kind, w.workspace_frozen_at, w.purpose, c.kind \
-         FROM waves w JOIN areas c ON c.id = w.area_id",
+         FROM tracks w JOIN areas c ON c.id = w.area_id",
     )
     .fetch_all(b.repo.pool())
     .await
@@ -555,11 +560,11 @@ async fn no_attached_wave_is_ever_unfrozen() {
     // Non-vacuity, both directions.
     assert!(
         rows.iter().any(|r| r.1 == "attached"),
-        "no attached wave exists, so the property below is vacuous: {rows:?}"
+        "no attached track exists, so the property below is vacuous: {rows:?}"
     );
     assert!(
         rows.iter().any(|r| r.2.is_none()),
-        "no unfrozen wave exists, so the property below is vacuous: {rows:?}"
+        "no unfrozen track exists, so the property below is vacuous: {rows:?}"
     );
 
     let unfrozen_attached: Vec<_> = rows
@@ -578,19 +583,19 @@ async fn no_attached_wave_is_ever_unfrozen() {
     for (id, kind, frozen_at, purpose, area_kind) in rows.iter().filter(|r| r.2.is_none()) {
         assert_eq!(
             kind, "managed",
-            "wave {id} (purpose={purpose:?}, area={area_kind}, frozen_at={frozen_at:?})"
+            "track {id} (purpose={purpose:?}, area={area_kind}, frozen_at={frozen_at:?})"
         );
     }
     assert!(
         rows.iter()
             .any(|r| r.3.as_deref() == Some("launchpad") && r.2.is_none() && r.4 == "system"),
         "the kernel-owned launchpad must still be the unfrozen system-area \
-         wave design D9 carved out: {rows:?}"
+         track design D9 carved out: {rows:?}"
     );
 }
 
-/// #1147 S2 (design D3) — the launchpad is the fifth wave-create entry point
-/// and bypasses `create_wave_structure` entirely (raw `INSERT INTO waves`).
+/// #1147 S2 (design D3) — the launchpad is the fifth track-create entry point
+/// and bypasses `create_track_structure` entirely (raw `INSERT INTO tracks`).
 /// Without its own materialize call every codex task on the Today panel keeps
 /// dying with `spawn-failed`, which is the defect #1147 was opened on.
 #[tokio::test]
@@ -600,14 +605,14 @@ async fn launchpad_workspace_is_materialized() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let (path, kind, frozen_at, area_id): (String, String, Option<i64>, String) = sqlx::query_as(
-        "SELECT workspace_path, workspace_kind, workspace_frozen_at, area_id FROM waves \
+        "SELECT workspace_path, workspace_kind, workspace_frozen_at, area_id FROM tracks \
          WHERE purpose='launchpad'",
     )
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
     // #1147 S2 review ruling ① — a managed workspace like any other, at
-    // `<root>/<system_area_id>/<wave_id>`, and still never frozen (design D9).
+    // `<root>/<system_area_id>/<track_id>`, and still never frozen (design D9).
     assert_eq!(kind, "managed");
     assert_eq!(
         frozen_at, None,
@@ -618,7 +623,7 @@ async fn launchpad_workspace_is_materialized() {
         std::path::PathBuf::from(&path),
         b.workspace_root
             .join(area_id)
-            .join(body["wave_id"].as_str().unwrap())
+            .join(body["track_id"].as_str().unwrap())
     );
     let path = std::path::Path::new(&path);
     assert!(path.join(".git").is_dir(), "no repository at {path:?}");
@@ -678,7 +683,7 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
     let (status, body) = ensure(before.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let old_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -706,7 +711,7 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
         "first ensure after the re-point must succeed; body={body}"
     );
     let new_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -756,10 +761,11 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
     // --- the upgrade, with materialization obstructed ---
     let tmp = TempDir::new().unwrap();
     let after = boot_with(tmp, repo.clone(), "workspaces-new").await;
-    let area_id: String = sqlx::query_scalar("SELECT area_id FROM waves WHERE purpose='launchpad'")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
+    let area_id: String =
+        sqlx::query_scalar("SELECT area_id FROM tracks WHERE purpose='launchpad'")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
     std::fs::create_dir_all(&after.workspace_root).unwrap();
     // A plain file where `<root>/<area_id>` must be a directory: `mkdir` gets
     // ENOTDIR. (Not a read-only parent — CI runs as root, for whom mode bits
@@ -803,20 +809,20 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
     assert!(reuse_at_new_path > 0, "steady state never resumed");
 }
 
-/// `(wave id, workspace_kind, workspace_path)`.
+/// `(track id, workspace_kind, workspace_path)`.
 type WorkspaceRow = (String, String, String);
 
-/// Every wave row, whatever minted it.
+/// Every track row, whatever minted it.
 async fn all_workspace_rows(repo: &SqlxRepo) -> Vec<WorkspaceRow> {
-    sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM waves ORDER BY created_at, id")
+    sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM tracks ORDER BY created_at, id")
         .fetch_all(repo.pool())
         .await
         .unwrap()
 }
 
-/// Managed paths held by more than one wave — the violation set of the property
+/// Managed paths held by more than one track — the violation set of the property
 /// below. Computed in Rust over whole-table rows rather than as a `GROUP BY`,
-/// so the failure message can name the waves.
+/// so the failure message can name the tracks.
 fn shared_managed_paths(rows: &[WorkspaceRow]) -> Vec<(String, Vec<String>)> {
     let mut by_path: std::collections::BTreeMap<&str, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -826,8 +832,8 @@ fn shared_managed_paths(rows: &[WorkspaceRow]) -> Vec<(String, Vec<String>)> {
     }
     by_path
         .into_iter()
-        .filter(|(_, waves)| waves.len() > 1)
-        .map(|(path, waves)| (path.to_string(), waves))
+        .filter(|(_, tracks)| tracks.len() > 1)
+        .map(|(path, tracks)| (path.to_string(), tracks))
         .collect()
 }
 
@@ -841,38 +847,40 @@ fn shared_attached_paths(rows: &[WorkspaceRow]) -> Vec<(String, Vec<String>)> {
     }
     by_path
         .into_iter()
-        .filter(|(_, waves)| waves.len() > 1)
-        .map(|(path, waves)| (path.to_string(), waves))
+        .filter(|(_, tracks)| tracks.len() > 1)
+        .map(|(path, tracks)| (path.to_string(), tracks))
         .collect()
 }
 
-/// Drive the production child-wave creation path (`ChildWaveAdapter`, the
-/// fifth wave-create entry point) against this boot's database and workspace
+/// Drive the production child-track creation path (`ChildTrackAdapter`, the
+/// fifth track-create entry point) against this boot's database and workspace
 /// root. The parent task row is seeded directly because the adapter only reads
 /// the frozen task fields from it; everything that decides a workspace runs in
 /// production code.
-async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
-    use calm_server::operation::child_wave_adapter::{ChildWaveAdapter, ChildWaveOperationPayload};
+async fn create_child_track(b: &Boot, parent_track_id: &str) -> String {
+    use calm_server::operation::child_track_adapter::{
+        ChildTrackAdapter, ChildTrackOperationPayload,
+    };
     use calm_server::operation::{Operation, Phase, ProviderAdapter};
 
-    let task_id = format!("{parent_wave_id}:child");
+    let task_id = format!("{parent_track_id}:child");
     let now = calm_server::model::now_ms();
     sqlx::query(
-        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,\
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,acceptance_criteria,\
          depends_on_json,priority,status,declared_by,spawn,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,'child','codex','child goal','{}','done','[]',0,'dispatched',\
          'spec','sub-wave',?3,?3)",
     )
     .bind(&task_id)
-    .bind(parent_wave_id)
+    .bind(parent_track_id)
     .bind(now)
     .execute(b.repo.pool())
     .await
     .unwrap();
 
-    let payload = serde_json::to_value(ChildWaveOperationPayload {
+    let payload = serde_json::to_value(ChildTrackOperationPayload {
         task_id: task_id.clone(),
-        parent_wave_id: parent_wave_id.into(),
+        parent_track_id: parent_track_id.into(),
         goal: "child goal".into(),
         acceptance: Some("done".into()),
         context: serde_json::json!({}),
@@ -882,7 +890,7 @@ async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
     let operation = Operation {
         id: "op-child".into(),
         operation_key: task_id.clone(),
-        kind: "child-wave".into(),
+        kind: "child-track".into(),
         idempotency_key: Some(task_id.clone()),
         payload_hash: "test-hash".into(),
         target_type: "unknown".into(),
@@ -901,9 +909,9 @@ async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
         parked_at_ms: None,
         parked_deadline_ms: None,
     };
-    let adapter = ChildWaveAdapter::new(
+    let adapter = ChildTrackAdapter::new(
         b.repo.card_role_cache().clone(),
-        b.repo.wave_area_cache().clone(),
+        b.repo.track_area_cache().clone(),
         b.workspace_root.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();
@@ -912,21 +920,21 @@ async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    output.data["child_wave_id"].as_str().unwrap().to_string()
+    output.data["child_track_id"].as_str().unwrap().to_string()
 }
 
-/// #1147 S4 (design D7 as amended) — **no two waves share a `managed`
+/// #1147 S4 (design D7 as amended) — **no two tracks share a `managed`
 /// workspace path**, over the WHOLE table.
 ///
 /// This is the invariant that pays for S5 being allowed to `remove_dir_all` a
 /// managed directory: if two rows named one managed directory, deleting either
-/// wave would destroy the other's repository. It is stated here, beside
-/// `every_managed_wave_lives_under_the_workspace_root`, for the same reason
+/// track would destroy the other's repository. It is stated here, beside
+/// `every_managed_track_lives_under_the_workspace_root`, for the same reason
 /// that one is: a future create path that shares a managed directory shows up
 /// whether or not anybody remembered to write a test for it.
 ///
 /// The rows come from the real entry points — launchpad `ensure`, `POST
-/// /api/waves` (managed and attached), and the child-wave adapter for both a
+/// /api/tracks` (managed and attached), and the child-track adapter for both a
 /// managed and an attached parent — not from hand-written rows.
 ///
 /// Scoped to `managed` deliberately, with a two-sided guard so the scope cannot
@@ -935,18 +943,18 @@ async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
 /// * the managed set must be non-empty and contain more than the launchpad,
 ///   otherwise "no duplicates" holds because there is nothing to duplicate;
 /// * an attached path that IS shared must exist, and must NOT be reported.
-///   Attached sharing is legal and pre-existing in production (two waves on one
+///   Attached sharing is legal and pre-existing in production (two tracks on one
 ///   checkout), so an unscoped version of this property would call a
 ///   long-standing correct state a violation.
 #[tokio::test]
-async fn no_two_waves_share_a_managed_workspace_path() {
+async fn no_two_tracks_share_a_managed_workspace_path() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let area = create_area(&b, "Atlas").await;
     let attached_dir = attached_repo_fixture("today-launchpad-shared-path");
-    let managed_parent = create_wave(
+    let managed_parent = create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
@@ -955,7 +963,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
         }),
     )
     .await;
-    let attached_parent = create_wave(
+    let attached_parent = create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
@@ -971,14 +979,14 @@ async fn no_two_waves_share_a_managed_workspace_path() {
     // "attached sharing exists and is not reported" guard below real rather
     // than hypothetical: it produces a genuine shared attached path through
     // production code.
-    let managed_child = create_child_wave(&b, managed_parent["id"].as_str().unwrap()).await;
-    let attached_child = create_child_wave(&b, attached_parent["id"].as_str().unwrap()).await;
+    let managed_child = create_child_track(&b, managed_parent["id"].as_str().unwrap()).await;
+    let attached_child = create_child_track(&b, attached_parent["id"].as_str().unwrap()).await;
 
     let rows = all_workspace_rows(&b.repo).await;
     let managed: Vec<_> = rows.iter().filter(|r| r.1 == "managed").collect();
     assert!(
         managed.len() >= 3,
-        "the managed set must hold the launchpad, an ordinary wave and a \
+        "the managed set must hold the launchpad, an ordinary track and a \
          child, or 'no duplicates' is vacuous: {rows:?}"
     );
     assert!(
@@ -989,8 +997,8 @@ async fn no_two_waves_share_a_managed_workspace_path() {
     let violations = shared_managed_paths(&rows);
     assert!(
         violations.is_empty(),
-        "two waves share a managed workspace path. S5 recycles managed \
-         directories, so deleting either wave destroys the other's \
+        "two tracks share a managed workspace path. S5 recycles managed \
+         directories, so deleting either track destroys the other's \
          repository: {violations:?}"
     );
 
@@ -1024,7 +1032,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let area = create_area(&b, "Atlas").await;
-    let first = create_wave(
+    let first = create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
@@ -1033,7 +1041,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
         }),
     )
     .await;
-    let second = create_wave(
+    let second = create_track(
         &b,
         serde_json::json!({
             "area_id": area["id"],
@@ -1046,17 +1054,17 @@ async fn shared_managed_path_is_reported_as_a_violation() {
 
     let first_id = first["id"].as_str().unwrap().to_string();
     let second_id = second["id"].as_str().unwrap().to_string();
-    let first_path: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+    let first_path: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
         .bind(&first_id)
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
     let mut tx = b.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::wave_workspace_write_tx(
+    calm_server::db::sqlite::track_workspace_write_tx(
         &mut tx,
         &second_id,
-        &calm_server::model::WaveWorkspace {
-            kind: calm_server::model::WaveWorkspaceKind::Managed,
+        &calm_server::model::TrackWorkspace {
+            kind: calm_server::model::TrackWorkspaceKind::Managed,
             path: first_path.clone(),
             frozen_at: None,
         },
@@ -1070,7 +1078,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     assert_eq!(violations[0].0, first_path);
     assert!(
         violations[0].1.contains(&first_id) && violations[0].1.contains(&second_id),
-        "the report must name both waves: {violations:?}"
+        "the report must name both tracks: {violations:?}"
     );
 }
 
@@ -1100,9 +1108,9 @@ async fn count(b: &Boot, sql: &str) -> i64 {
         .unwrap()
 }
 
-async fn report_card_id(b: &Boot, wave_id: &str) -> String {
-    sqlx::query_scalar("SELECT id FROM cards WHERE wave_id=?1 AND kind='wave-report'")
-        .bind(wave_id)
+async fn report_card_id(b: &Boot, track_id: &str) -> String {
+    sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
+        .bind(track_id)
         .fetch_one(b.repo.pool())
         .await
         .unwrap()
@@ -1119,7 +1127,7 @@ async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
 
 /// INV-TODAYDOC-001 — the page-load path is a *read*. Before any launchpad
 /// exists it answers `200 null` and leaves the database and the workspace root
-/// exactly as it found them: no area, no wave, no card, and above all no
+/// exactly as it found them: no area, no track, no card, and above all no
 /// `spec-harness-start` operation, because submitting one is what would make
 /// Today's first paint depend on codex being up.
 ///
@@ -1139,7 +1147,7 @@ async fn resolve_is_a_pure_read_and_answers_null_before_the_launchpad_exists() {
         Value::Null,
         "routine absence must be a null body, not an error status: {body}"
     );
-    assert_eq!(count(&b, "SELECT COUNT(*) FROM waves").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM tracks").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM areas").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
     assert!(
@@ -1162,7 +1170,7 @@ async fn resolve_reports_a_freshly_minted_report_as_unwritten() {
 
     let (status, body) = resolve(b.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["wave_id"], ensured["wave_id"]);
+    assert_eq!(body["track_id"], ensured["track_id"]);
     assert_eq!(
         body["report_has_noninitial_content"],
         Value::Bool(false),
@@ -1173,7 +1181,7 @@ async fn resolve_reports_a_freshly_minted_report_as_unwritten() {
     let object = body.as_object().unwrap();
     let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["report_has_noninitial_content", "wave_id"]);
+    assert_eq!(keys, ["report_has_noninitial_content", "track_id"]);
     assert_eq!(
         count(&b, "SELECT COUNT(*) FROM operations").await,
         operations_after_ensure,
@@ -1192,8 +1200,8 @@ async fn resolve_reports_a_freshly_minted_report_as_unwritten() {
 async fn a_crdt_materialized_canonical_report_still_reads_as_unwritten() {
     let b = boot().await;
     let (_, ensured) = ensure(b.app.clone()).await;
-    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
-    let mut payload = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    let card = report_card_id(&b, ensured["track_id"].as_str().unwrap()).await;
+    let mut payload = serde_json::to_value(TrackReportPayload::initial()).unwrap();
     payload["docRev"] = serde_json::json!(7);
     payload["blocks"] = serde_json::json!([
         {"id": "b1", "kind": "prose", "rev": 3, "payload": {"markdown": "# 概要\n"}}
@@ -1215,8 +1223,8 @@ async fn a_crdt_materialized_canonical_report_still_reads_as_unwritten() {
 async fn a_written_report_reads_as_having_content() {
     let b = boot().await;
     let (_, ensured) = ensure(b.app.clone()).await;
-    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
-    let mut payload = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    let card = report_card_id(&b, ensured["track_id"].as_str().unwrap()).await;
+    let mut payload = serde_json::to_value(TrackReportPayload::initial()).unwrap();
     payload["body"] = serde_json::json!("# 概要\n\n今天合了两个 PR。\n");
     write_report_payload(&b, &card, &payload).await;
 
@@ -1225,7 +1233,7 @@ async fn a_written_report_reads_as_having_content() {
     assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
 
     // A summary alone is enough, with the body left canonical.
-    let mut summary_only = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    let mut summary_only = serde_json::to_value(TrackReportPayload::initial()).unwrap();
     summary_only["summary"] = serde_json::json!("两个 PR");
     write_report_payload(&b, &card, &summary_only).await;
     let (status, body) = resolve(b.app.clone()).await;
@@ -1233,16 +1241,16 @@ async fn a_written_report_reads_as_having_content() {
     assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
 }
 
-/// §5.1 — a launchpad wave with no report card is a 404.
+/// §5.1 — a launchpad track with no report card is a 404.
 ///
-/// This state is **not** reachable in production (wave and report card are
+/// This state is **not** reachable in production (track and report card are
 /// created in one transaction), which is why the endpoint gets no repair path:
 /// the test pins the fail-closed answer, not a supported state.
 #[tokio::test]
 async fn resolve_404s_when_the_launchpad_has_no_report_card() {
     let b = boot().await;
     let (_, ensured) = ensure(b.app.clone()).await;
-    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    let card = report_card_id(&b, ensured["track_id"].as_str().unwrap()).await;
     sqlx::query("DELETE FROM cards WHERE id=?1")
         .bind(&card)
         .execute(b.repo.pool())
@@ -1260,7 +1268,7 @@ async fn resolve_404s_when_the_launchpad_has_no_report_card() {
 async fn an_unreadable_report_payload_reads_as_having_content() {
     let b = boot().await;
     let (_, ensured) = ensure(b.app.clone()).await;
-    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    let card = report_card_id(&b, ensured["track_id"].as_str().unwrap()).await;
     write_report_payload(&b, &card, &serde_json::json!({"schemaVersion": 3})).await;
 
     let (status, body) = resolve(b.app.clone()).await;
@@ -1386,13 +1394,13 @@ async fn concurrent_first_ensure_retries_the_system_area_race() {
         "expected exactly one loser to take the system-area retry arm, got \
          {retries} (attempts={attempts})"
     );
-    assert_eq!(first.1["wave_id"], second.1["wave_id"]);
+    assert_eq!(first.1["track_id"], second.1["track_id"]);
     assert_eq!(
         count(&b, "SELECT COUNT(*) FROM areas WHERE kind='system'").await,
         1
     );
     assert_eq!(
-        count(&b, "SELECT COUNT(*) FROM waves WHERE purpose='launchpad'").await,
+        count(&b, "SELECT COUNT(*) FROM tracks WHERE purpose='launchpad'").await,
         1
     );
 }
@@ -1402,11 +1410,11 @@ async fn concurrent_first_ensure_retries_the_system_area_race() {
 // survive the `workflow_id` -> `template_id` column rename.
 // ---------------------------------------------------------------------------
 //
-// This route is the one wave-create path that writes the wave column names as
-// hand-written SQL strings: an `INSERT INTO waves(... template_id, purpose,
-// template_input ...)` on the mint branch and an `UPDATE waves SET ...
+// This route is the one track-create path that writes the track column names as
+// hand-written SQL strings: an `INSERT INTO tracks(... template_id, purpose,
+// template_input ...)` on the mint branch and an `UPDATE tracks SET ...
 // template_id=NULL ... template_input=NULL` on the adopt branch. Neither goes
-// through `WAVE_SELECT_COLUMNS` or `wave_create_tx`, so a missed rename in
+// through `TRACK_SELECT_COLUMNS` or `track_create_tx`, so a missed rename in
 // either one compiles cleanly, passes clippy, and fails at RUNTIME with
 // `no such column`.
 //
@@ -1415,20 +1423,20 @@ async fn concurrent_first_ensure_retries_the_system_area_race() {
 // the old column name back in exactly one of the two statements and exactly one
 // of these two tests goes red.
 
-/// Mint branch — `INSERT INTO waves(...)` on an empty database.
+/// Mint branch — `INSERT INTO tracks(...)` on an empty database.
 #[tokio::test]
 async fn today_launchpad_mint_branch_survives_the_column_rename() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let wave_id = body["wave_id"].as_str().expect("wave id").to_string();
+    let track_id = body["track_id"].as_str().expect("track id").to_string();
 
     // Read the two renamed columns by their new names. If the INSERT still
     // named the old columns the request above would already have failed; this
     // read additionally proves the row landed in the columns we think it did.
     let (template_id, template_input): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT template_id, template_input FROM waves WHERE id=?1")
-            .bind(&wave_id)
+        sqlx::query_as("SELECT template_id, template_input FROM tracks WHERE id=?1")
+            .bind(&track_id)
             .fetch_one(b.repo.pool())
             .await
             .expect("read the renamed columns off the minted launchpad");
@@ -1439,7 +1447,7 @@ async fn today_launchpad_mint_branch_survives_the_column_rename() {
     );
 }
 
-/// Adopt branch — `UPDATE waves SET ... template_id=NULL ...` over a
+/// Adopt branch — `UPDATE tracks SET ... template_id=NULL ...` over a
 /// pre-existing `purpose IS NULL AND title='Today'` row.
 ///
 /// The legacy row is built with raw SQL rather than by calling `ensure` first,
@@ -1463,24 +1471,24 @@ async fn today_launchpad_adopt_branch_survives_the_column_rename() {
         .expect("system area");
     tx.commit().await.unwrap();
 
-    let wave_id = "legacy-today-wave".to_string();
+    let track_id = "legacy-today-track".to_string();
     sqlx::query(
-        "INSERT INTO waves (id, area_id, title, sort, lifecycle, template_id, template_input, \
+        "INSERT INTO tracks (id, area_id, title, sort, lifecycle, template_id, template_input, \
          created_at, updated_at) \
          VALUES (?1, ?2, 'Today', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
     )
-    .bind(&wave_id)
+    .bind(&track_id)
     .bind(area.id.as_str())
     .execute(b.repo.pool())
     .await
     .expect("seed a legacy Today row carrying both template columns");
     let (status, adopted) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");
-    assert_eq!(adopted["wave_id"].as_str(), Some(wave_id.as_str()));
+    assert_eq!(adopted["track_id"].as_str(), Some(track_id.as_str()));
 
     let (purpose, template_id, template_input): (Option<String>, Option<String>, Option<String>) =
-        sqlx::query_as("SELECT purpose, template_id, template_input FROM waves WHERE id=?1")
-            .bind(&wave_id)
+        sqlx::query_as("SELECT purpose, template_id, template_input FROM tracks WHERE id=?1")
+            .bind(&track_id)
             .fetch_one(b.repo.pool())
             .await
             .expect("read the renamed columns off the adopted launchpad");

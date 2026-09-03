@@ -1,15 +1,15 @@
 use calm_server::error::{CalmError, Result};
 use calm_server::model::{Task, new_id};
-use calm_server::wave_report::tasks_rebuild_tx;
+use calm_server::track_report::tasks_rebuild_tx;
 use calm_types::report_blocks::render_fence;
-use calm_types::wave_report::{ReportBlock, WaveReportPayload};
+use calm_types::track_report::{ReportBlock, TrackReportPayload};
 use serde_json::{Map, Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 pub async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO tasks
-           (id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+           (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
             gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
             running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms)
@@ -17,7 +17,7 @@ pub async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Re
                   ?18,?19,?20,?21,?22,?23,?24)"#,
     )
     .bind(&task.id)
-    .bind(&task.wave_id)
+    .bind(&task.track_id)
     .bind(&task.key)
     .bind(task.kind)
     .bind(&task.goal)
@@ -82,8 +82,8 @@ pub async fn project_task(pool: &SqlitePool, task: &Task) -> Result<()> {
         rev: 1,
         payload: Value::Object(declaration),
     };
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
         body: format!(
@@ -95,15 +95,15 @@ pub async fn project_task(pool: &SqlitePool, task: &Task) -> Result<()> {
     };
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO cards(id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES(?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+        "INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES(?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
     )
     .bind(new_id())
-    .bind(&task.wave_id)
+    .bind(&task.track_id)
     .bind(serde_json::to_string(&report)?)
     .execute(&mut *tx)
     .await?;
-    let outcome = tasks_rebuild_tx(&mut tx, &task.wave_id).await?;
+    let outcome = tasks_rebuild_tx(&mut tx, &task.track_id).await?;
     let updated = sqlx::query(
         "UPDATE tasks SET status=?1,status_detail=?2,worker_card_id=?3,gate_result_json=?4,\
          gate_attempt=?5,gate_pid=?6,gate_pid_starttime=?7,gate_pid_boot_id=?8,\

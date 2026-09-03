@@ -40,7 +40,7 @@ import { makeUuid } from '../util/uuid';
 import { CardHead } from './CardHead';
 
 declare module '../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     plugin: PluginCardData;
   }
 }
@@ -107,7 +107,7 @@ const HOST_CAPABILITIES: McpUiHostCapabilities = {
  * The actual card body. Mounts an iframe pointing at the kernel's HTML
  * route, then wires an AppBridge to the iframe's content window once it
  * loads. Errors during mount surface as an in-card error state — the rest
- * of the wave keeps rendering.
+ * of the track keeps rendering.
  *
  * Theme wiring (issue #22):
  *   * Initial `hostContext.theme` is captured from `useTheme()` at the

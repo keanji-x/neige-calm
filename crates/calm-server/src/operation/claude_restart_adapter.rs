@@ -13,7 +13,7 @@ use crate::db::sqlite::{
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::new_id;
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
 use crate::routes::cards::{card_scope, card_scope_tx};
@@ -25,7 +25,7 @@ use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use crate::state::{CodexClient, WriteContext};
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 use calm_truth::model::NewTerminal;
 
@@ -49,7 +49,7 @@ pub struct ClaudeRestartAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     codex: Arc<CodexClient>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -59,13 +59,13 @@ impl ClaudeRestartAdapter {
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
             codex,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -76,14 +76,14 @@ impl ClaudeRestartAdapter {
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             codex,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -174,7 +174,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 // #1147 S6 — the fallback used to be `default_cwd()`, i.e.
                 // `$HOME`. After S6 this was the *only* remaining path that
                 // could persist the server's environment into a `terminals.cwd`
-                // — and it persists it into a row that freezes the wave's
+                // — and it persists it into a row that freezes the track's
                 // workspace in the same transaction, so the wrong directory
                 // becomes permanent.
                 //
@@ -187,11 +187,11 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 //
                 // The claude card's cwd SEMANTICS are unchanged: a payload cwd
                 // still wins. Only the fallback moves, from `$HOME` to the
-                // wave's workspace, and an empty workspace is a hard error
+                // track's workspace, and an empty workspace is a hard error
                 // rather than a third fallback.
-                let cwd = crate::operation::terminal_adapter::terminal_cwd_or_wave_workspace(
+                let cwd = crate::operation::terminal_adapter::terminal_cwd_or_track_workspace(
                     tx,
-                    card.wave_id.as_str(),
+                    card.track_id.as_str(),
                     card.payload
                         .get("cwd")
                         .and_then(Value::as_str)
@@ -234,11 +234,11 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         .await?;
 
         // #1147 S6 — `card_scope_tx`, NOT `card_scope`. This transaction may
-        // have just created the terminal row above, which freezes the wave's
-        // workspace and therefore holds the write lock on `waves`; resolving the
+        // have just created the terminal row above, which freezes the track's
+        // workspace and therefore holds the write lock on `tracks`; resolving the
         // scope through the pool would deadlock the task against itself. See
         // `card_scope_tx`'s doc comment for the measurement.
-        let scope = card_scope_tx(tx, CardId::from(card_id.clone()), card.wave_id.clone()).await?;
+        let scope = card_scope_tx(tx, CardId::from(card_id.clone()), card.track_id.clone()).await?;
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card_id.clone(),
@@ -251,7 +251,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -277,7 +277,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         output.data = json!({
             "card_id": card_id,
             "runtime_id": runtime_id,
-            "wave_id": scope.wave_id().map(|id| id.as_str().to_string()),
+            "track_id": scope.track_id().map(|id| id.as_str().to_string()),
             "terminal_id": term.id,
             "settings_path": settings_path,
             "claude_session_id": claude_session_id,
@@ -363,22 +363,22 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                         return Ok(());
                     }
 
-                    let wave_id =
-                        if let Some(wave_id) = output.data.get("wave_id").and_then(Value::as_str) {
-                            WaveId::from(wave_id.to_string())
+                    let track_id =
+                        if let Some(track_id) = output.data.get("track_id").and_then(Value::as_str) {
+                            TrackId::from(track_id.to_string())
                         } else {
                             ctx.repo
                                 .card_get(&card_id)
                                 .await?
                                 .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
-                                .wave_id
+                                .track_id
                         };
                     let scope =
-                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), wave_id)
+                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), track_id)
                             .await?;
                     let write = WriteContext::new(
                         self.card_role_cache.clone(),
-                        self.wave_area_cache.clone(),
+                        self.track_area_cache.clone(),
                     );
                     let card_id_for_tx = card_id.clone();
                     let (_unit, _ids) = write_with_events_typed(

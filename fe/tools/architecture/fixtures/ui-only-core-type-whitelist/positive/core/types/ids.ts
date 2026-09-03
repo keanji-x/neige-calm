@@ -1,1 +1,1 @@
-export type WaveId = string & { readonly __wave: unique symbol };
+export type TrackId = string & { readonly __track: unique symbol };

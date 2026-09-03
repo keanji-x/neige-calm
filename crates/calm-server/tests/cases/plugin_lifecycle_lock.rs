@@ -171,7 +171,7 @@ async fn boot_with(opts: BootOpts) -> Fx {
         EventBus::new(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     );
     if let Some((schedule, window, limit)) = opts.backoff {
@@ -1922,7 +1922,7 @@ async fn a19_a_wedged_lifecycle_lock_cannot_hang_boot() {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )
         .with_app_autospawn_wall(Duration::from_millis(300)),
@@ -2353,7 +2353,7 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
         EventBus::new(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
 
@@ -2622,7 +2622,7 @@ async fn two_wedged_app_plugins_cost_two_walls_not_one() {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )
         .with_app_autospawn_wall(WALL),

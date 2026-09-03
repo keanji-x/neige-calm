@@ -784,22 +784,22 @@
     "why_more_than_one": "The contract rerenders with fresh context identities."
   },
   {
-    "mutation_id": "app-adapter-drop-wave-invalidation",
+    "mutation_id": "app-adapter-drop-track-invalidation",
     "defends": [
       "oracle:GATE-APP-029"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'waves' && first === 'area' && typeof second === 'string') return queryKeys.wavesInArea(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n-  if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n+  if (head === 'track' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
     "expected_red": [
       "#1253 D5 the write-today’s-progress trigger redraws a report that was already written when it is rewritten",
-      "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
-      "event composition T-B2 carries a real socket card event through the bridge into wave invalidation",
+      "EventBridge contracts resolves a runtime card through cached track detail before invalidating",
+      "event composition T-B2 carries a real socket card event through the bridge into track invalidation",
       "query invalidation adapter drives the conversation-list keys all the way onto the query client",
       "query invalidation adapter invalidates each mapped key of an invalidate effect",
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter preserves effect order across a snapshot-required style batch",
       "query invalidation adapter removes mapped keys for a remove effect",
-      "query invalidation adapter turns a real wave.deleted plan into area-list plus overlay invalidation and a detail removal",
+      "query invalidation adapter turns a real track.deleted plan into area-list plus overlay invalidation and a detail removal",
       "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve"
     ],
     "selection_paths": [
@@ -916,19 +916,19 @@
     "why_more_than_one": "T-A3 directly observes the browser composition's injected channel notification."
   },
   {
-    "mutation_id": "app-wave-lookup-always-misses",
+    "mutation_id": "app-track-lookup-always-misses",
     "defends": [
       "oracle:INV-APP-034",
       "oracle:CAP-APP-036"
     ],
-    "target": "web/src/app/events/wave-lookup.ts",
-    "patch": "diff --git a/web/src/app/events/wave-lookup.ts b/web/src/app/events/wave-lookup.ts\n--- a/web/src/app/events/wave-lookup.ts\n+++ b/web/src/app/events/wave-lookup.ts\n@@ -10,7 +10,7 @@\n       for (const [key, detail] of client.getQueriesData<WaveDetailWire>({ queryKey: ['wave'] })) {\n         if (detail?.cards.some((card) => card.id === cardId)) {\n           const waveId = key[1];\n-          return typeof waveId === 'string' ? waveId : null;\n+          return null;\n         }\n       }\n       return null;\n",
+    "target": "web/src/app/events/track-lookup.ts",
+    "patch": "diff --git a/web/src/app/events/track-lookup.ts b/web/src/app/events/track-lookup.ts\n--- a/web/src/app/events/track-lookup.ts\n+++ b/web/src/app/events/track-lookup.ts\n@@ -10,7 +10,7 @@\n       for (const [key, detail] of client.getQueriesData<TrackDetailWire>({ queryKey: ['track'] })) {\n         if (detail?.cards.some((card) => card.id === cardId)) {\n           const trackId = key[1];\n-          return typeof trackId === 'string' ? trackId : null;\n+          return null;\n         }\n       }\n       return null;\n",
     "expected_red": [
-      "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
-      "wave lookup context finds a card in cached wave details and returns null when it is absent"
+      "EventBridge contracts resolves a runtime card through cached track detail before invalidating",
+      "track lookup context finds a card in cached track details and returns null when it is absent"
     ],
     "selection_paths": [
-      "web/src/app/events/wave-lookup.test.ts",
+      "web/src/app/events/track-lookup.test.ts",
       "web/src/app/events/event-bridge.contract.test.tsx"
     ],
     "why_more_than_one": "T-G1 locks the lookup directly and through the production bridge default context."
@@ -969,9 +969,9 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n /**\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n /**\n",
     "expected_red": [
-      "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
+      "invalidation plan contract pins track-report invalidation to exactly the derived kinds plus report edits"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts"
@@ -984,10 +984,10 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
-      "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
+      "invalidation plan contract pins track-report invalidation to exactly the derived kinds plus report edits"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts",
@@ -1001,15 +1001,15 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -264,7 +264,7 @@ function policies(): PolicyMap {\n    * `invalidation-plan.contract.test.ts` is the only guard there is.\n    */\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n     ['today-launchpad'], ['wave', event.data.wave_id],\n   ])),\n   'overlay.set': plan((event, context) => {\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -264,7 +264,7 @@ function policies(): PolicyMap {\n    * `invalidation-plan.contract.test.ts` is the only guard there is.\n    */\n   'track.report_edited': plan((event) => result([\n-    ['track-files', event.data.track_id], ['track-report', event.data.track_id], ['track-backlinks'],\n+    ['track-files', event.data.track_id], ['track-backlinks'],\n     ['today-launchpad'], ['track', event.data.track_id],\n   ])),\n   'overlay.set': plan((event, context) => {\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
-      "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
+      "invalidation plan contract pins track-report invalidation to exactly the derived kinds plus report edits"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts"
     ],
-    "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind wave-report set."
+    "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind track-report set."
   },
   {
     "mutation_id": "app-providers-retry-401-as-400",
@@ -1077,7 +1077,7 @@
       "oracle:CAP-CHATHIST-005"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -236,7 +236,7 @@ function policies(): PolicyMap {\n   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['spec-run', event.data.card_id], ...conversationLists(event.data.wave_id),\n   ])),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -236,7 +236,7 @@ function policies(): PolicyMap {\n   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['spec-run', event.data.card_id], ...conversationLists(event.data.track_id),\n   ])),\n",
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"
@@ -1095,7 +1095,7 @@
       "oracle:CAP-SPECCONVO-017"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'waves' && first === 'area' && typeof second === 'string') return queryKeys.wavesInArea(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   /* The wave's task verdicts. Both arities are mapped, and the bare one is not\n      an oversight: the four `task.*` events carry no wave-id *field*, so\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   /* The track's task verdicts. Both arities are mapped, and the bare one is not\n      an oversight: the four `task.*` events carry no track-id *field*, so\n",
     "expected_red": [
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"
@@ -1127,17 +1127,17 @@
       "oracle:INV-CARD-226"
     ],
     "target": "web/src/systems/cards/builtins/headless-filter.ts",
-    "patch": "diff --git a/web/src/systems/cards/builtins/headless-filter.ts b/web/src/systems/cards/builtins/headless-filter.ts\n--- a/web/src/systems/cards/builtins/headless-filter.ts\n+++ b/web/src/systems/cards/builtins/headless-filter.ts\n@@ -33,10 +33,10 @@ export function partitionWaveCards(\n   cards.forEach((wire, originalIndex) => {\n     const card = registry.resolve({ id: wire.id, kind: wire.kind, payload: wire.payload });\n     if (card === null) {\n-      if (wire.kind !== 'wave-report') unknown.push(Object.freeze({ wire, originalIndex }));\n+      if (wire.kind !== 'wave-report') unknown.push(Object.freeze({ wire, originalIndex: unknown.length }));\n       return;\n     }\n     if (registry.get(card.type)?.headless === true) return;\n-    visible.push(Object.freeze({ card, wire, originalIndex }));\n+    visible.push(Object.freeze({ card, wire, originalIndex: visible.length }));\n   });\n   return Object.freeze({ visible: Object.freeze(visible), unknown: Object.freeze(unknown) });\n }\n",
+    "patch": "diff --git a/web/src/systems/cards/builtins/headless-filter.ts b/web/src/systems/cards/builtins/headless-filter.ts\n--- a/web/src/systems/cards/builtins/headless-filter.ts\n+++ b/web/src/systems/cards/builtins/headless-filter.ts\n@@ -33,10 +33,10 @@ export function partitionTrackCards(\n   cards.forEach((wire, originalIndex) => {\n     const card = registry.resolve({ id: wire.id, kind: wire.kind, payload: wire.payload });\n     if (card === null) {\n-      if (wire.kind !== 'track-report') unknown.push(Object.freeze({ wire, originalIndex }));\n+      if (wire.kind !== 'track-report') unknown.push(Object.freeze({ wire, originalIndex: unknown.length }));\n       return;\n     }\n     if (registry.get(card.type)?.headless === true) return;\n-    visible.push(Object.freeze({ card, wire, originalIndex }));\n+    visible.push(Object.freeze({ card, wire, originalIndex: visible.length }));\n   });\n   return Object.freeze({ visible: Object.freeze(visible), unknown: Object.freeze(unknown) });\n }\n",
     "expected_red": [
       "headless card filtering [INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array",
-      "headless card filtering [INV-CARD-226] filters raw wave-report kinds out of the unknown branch defensively",
+      "headless card filtering [INV-CARD-226] filters raw track-report kinds out of the unknown branch defensively",
       "headless card filtering routes cards with a surface into the visible branch with their wire and index",
-      "wave route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order",
-      "wave route CARDS panel shows a titled card by its name AND its kind, and an untitled one by its kind alone"
+      "track route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order",
+      "track route CARDS panel shows a titled card by its name AND its kind, and an untitled one by its kind alone"
     ],
     "selection_paths": [
       "web/src/systems/cards/builtins/headless-filter.test.ts",
-      "web/src/app/router/wave-cards-panel.test.tsx",
+      "web/src/app/router/track-cards-panel.test.tsx",
       "web/src/app/router/test-card-runtime.ts",
       "web/src/systems/cards/builtins/register.ts",
       "web/src/systems/cards/registry.ts"

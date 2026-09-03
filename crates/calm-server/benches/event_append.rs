@@ -71,7 +71,7 @@ fn event_append_bench(c: &mut Criterion) {
                     &bus,
                     &calm_server::state::WriteContext::new(
                         calm_server::card_role_cache::CardRoleCache::new(),
-                        calm_server::wave_area_cache::WaveAreaCache::new(),
+                        calm_server::track_area_cache::TrackAreaCache::new(),
                     ),
                     move |tx| {
                         Box::pin(async move {

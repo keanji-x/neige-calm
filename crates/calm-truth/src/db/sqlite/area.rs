@@ -3,7 +3,7 @@ use sqlx::Transaction;
 
 use super::infra::next_sort_scoped_in_tx;
 use super::session_row::{
-    WorkerSessionDeleteScope, clear_wave_root_session_refs_for_worker_session_delete_tx,
+    WorkerSessionDeleteScope, clear_track_root_session_refs_for_worker_session_delete_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::model::*;
@@ -52,7 +52,7 @@ pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Res
 }
 
 /// Issue #175 — mint the singleton system area that hosts the default
-/// Today terminal's wave + card. The unique partial index on
+/// Today terminal's track + card. The unique partial index on
 /// `areas(kind) WHERE kind = 'system'` from migration 0009 enforces the
 /// at-most-one invariant DB-side; the upsert endpoint
 /// (`POST /api/areas/system`) checks for existence before calling this
@@ -145,37 +145,39 @@ pub async fn area_update_tx(
 }
 
 pub async fn area_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
-    let wave_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE area_id = ?1")
+    let track_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM tracks WHERE area_id = ?1")
         .bind(id)
         .fetch_all(&mut **tx)
         .await?;
-    for (wave_id,) in wave_ids {
-        sqlx::query("DELETE FROM wave_vcs_refs WHERE wave_id = ?1")
-            .bind(&wave_id)
+    for (track_id,) in track_ids {
+        sqlx::query("DELETE FROM track_vcs_refs WHERE track_id = ?1")
+            .bind(&track_id)
             .execute(&mut **tx)
             .await?;
-        sqlx::query("DELETE FROM wave_vcs_commits WHERE wave_id = ?1")
-            .bind(&wave_id)
+        sqlx::query("DELETE FROM track_vcs_commits WHERE track_id = ?1")
+            .bind(&track_id)
             .execute(&mut **tx)
             .await?;
-        // #644 — `tasks` has no FK to `waves`; mirror `wave_delete_tx`.
+        // #644 — `tasks` has no FK to `tracks`; mirror `track_delete_tx`.
         sqlx::query(
-            "DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE wave_id = ?1)",
+            "DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE track_id = ?1)",
         )
-        .bind(&wave_id)
+        .bind(&track_id)
         .execute(&mut **tx)
         .await?;
-        sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
-            .bind(&wave_id)
+        sqlx::query("DELETE FROM tasks WHERE track_id = ?1")
+            .bind(&track_id)
             .execute(&mut **tx)
             .await?;
-        clear_wave_root_session_refs_for_worker_session_delete_tx(
+        clear_track_root_session_refs_for_worker_session_delete_tx(
             tx,
-            WorkerSessionDeleteScope::Wave { wave_id: &wave_id },
+            WorkerSessionDeleteScope::Track {
+                track_id: &track_id,
+            },
         )
         .await?;
-        sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
-            .bind(&wave_id)
+        sqlx::query("DELETE FROM worker_sessions WHERE track_id = ?1")
+            .bind(&track_id)
             .execute(&mut **tx)
             .await?;
     }
@@ -192,10 +194,10 @@ pub async fn area_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
 /// Issue #250 PR 2 — in-tx variant of
 /// [`SqlxRepo::area_folder_create`](crate::db::RepoOutOfDomain::area_folder_create).
 ///
-/// Needed because the wave-create path with `attach_folder = true`
-/// claims a folder and writes the wave row in the **same** transaction:
+/// Needed because the track-create path with `attach_folder = true`
+/// claims a folder and writes the track row in the **same** transaction:
 /// either both land or neither does. The route layer
-/// (`routes::waves::create_wave`) hands path normalization +
+/// (`routes::tracks::create_track`) hands path normalization +
 /// conflict-classification responsibilities here (mirror of the route
 /// layer in `routes::area_folders::create_folder`), but the conflict
 /// scan reuses the existing in-memory pass over `area_folders_list_all`
@@ -237,7 +239,7 @@ pub async fn area_folder_create_tx(
 }
 
 /// Issue #250 PR 2 — in-tx variant of `area_folders_list_all`. Used by
-/// the wave-create `attach_folder = true` path so the conflict scan
+/// the track-create `attach_folder = true` path so the conflict scan
 /// reads consistent state alongside the row insert. SQLite serializes
 /// writers anyway, but routing through the same tx future-proofs the
 /// path against per-connection isolation surprises.

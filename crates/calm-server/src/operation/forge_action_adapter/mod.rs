@@ -22,7 +22,7 @@ use crate::event::{
     BroadcastEnvelope, Event, EventBus, EventScope, FieldSource, ForgeEventSpec, ForgeMergeSubject,
     SYNC_EVENT_VERSION,
 };
-use crate::ids::{ActorId, AreaId, CardId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
@@ -112,7 +112,7 @@ const FORGE_ACTION_PHASES: &[PhaseTag] = &[
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ForgeActionPayload {
-    pub wave_id: String,
+    pub track_id: String,
     pub card_id: String,
     #[serde(default)]
     pub subject: Option<ForgeMergeSubject>,
@@ -138,7 +138,7 @@ pub struct ProbeSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FrozenForge {
-    pub wave_id: String,
+    pub track_id: String,
     pub area_id: String,
     pub card_id: String,
     #[serde(default)]
@@ -167,12 +167,12 @@ impl FrozenForge {
         if event_kind.starts_with("worktree.") {
             EventScope::Card {
                 card: CardId::from(self.card_id.clone()),
-                wave: WaveId::from(self.wave_id.clone()),
+                track: TrackId::from(self.track_id.clone()),
                 area: AreaId::from(self.area_id.clone()),
             }
         } else {
-            EventScope::Wave {
-                wave: WaveId::from(self.wave_id.clone()),
+            EventScope::Track {
+                track: TrackId::from(self.track_id.clone()),
                 area: AreaId::from(self.area_id.clone()),
             }
         }
@@ -465,16 +465,16 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
 }
 
 /// Kernel-authoritative payload fields the kernel injects last and that
-/// plugin `context`/`event_spec.fields` may not set: `wave_id` for every
+/// plugin `context`/`event_spec.fields` may not set: `track_id` for every
 /// kind; `subject` for `forge.pr.merged`; `card_id` for `worktree.*`.
 fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
-        "forge.pr.merged" => &["wave_id", "subject"],
-        "forge.pr.diff.read" | "forge.issue.read" => &["wave_id", "artifact_path"],
+        "forge.pr.merged" => &["track_id", "subject"],
+        "forge.pr.diff.read" | "forge.issue.read" => &["track_id", "artifact_path"],
         "worktree.provisioned" | "worktree.committed" | "worktree.removed" => {
-            &["wave_id", "card_id"]
+            &["track_id", "card_id"]
         }
-        _ => &["wave_id"],
+        _ => &["track_id"],
     }
 }
 
@@ -502,9 +502,9 @@ fn parse_json_stdout_if_needed(
 }
 
 fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
-    if payload.wave_id.trim().is_empty() {
+    if payload.track_id.trim().is_empty() {
         return Err(CalmError::BadRequest(
-            "forge-action wave_id must not be empty".into(),
+            "forge-action track_id must not be empty".into(),
         ));
     }
     if payload.card_id.trim().is_empty() {
@@ -707,10 +707,10 @@ fn build_forge_event(
     }
     for field in kernel_injected_fields(&spec.event_kind) {
         match *field {
-            "wave_id" => {
+            "track_id" => {
                 payload.insert(
-                    "wave_id".into(),
-                    serde_json::to_value(WaveId::from(frozen.wave_id.clone())).map_err(|e| {
+                    "track_id".into(),
+                    serde_json::to_value(TrackId::from(frozen.track_id.clone())).map_err(|e| {
                         ForgeEventBuildError::ExtractionFailed {
                             reason: format!(
                                 "gate-infra: forge event context serialize failed: {e}"
@@ -1263,7 +1263,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         validate_payload(&payload)?;
         if !operation_key_matches_payload_idem(
             op.idempotency_key.as_deref(),
-            &payload.wave_id,
+            &payload.track_id,
             &payload.card_id,
             &payload.idem_key,
         ) {
@@ -1272,14 +1272,14 @@ impl ProviderAdapter for ForgeActionAdapter {
             ));
         }
 
-        let area_id: String = sqlx::query_scalar("SELECT area_id FROM waves WHERE id = ?1")
-            .bind(&payload.wave_id)
+        let area_id: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id = ?1")
+            .bind(&payload.track_id)
             .fetch_optional(&mut **tx)
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
+            .ok_or_else(|| CalmError::NotFound(format!("track {}", payload.track_id)))?;
 
         let frozen = FrozenForge {
-            wave_id: payload.wave_id,
+            track_id: payload.track_id,
             area_id,
             card_id: payload.card_id,
             subject: payload.subject,
@@ -1292,7 +1292,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             result_path: payload.result_path,
             deadline_ms: payload.deadline_ms,
         };
-        let mut output = TxOutput::new("wave", Some(frozen.wave_id.clone()), json!({}));
+        let mut output = TxOutput::new("track", Some(frozen.track_id.clone()), json!({}));
         output.data = serde_json::to_value(&frozen)?;
         Ok(output)
     }
@@ -1698,7 +1698,7 @@ impl ProviderAdapter for ForgeActionAdapter {
 
 fn operation_key_matches_payload_idem(
     op_idem_key: Option<&str>,
-    wave_id: &str,
+    track_id: &str,
     card_id: &str,
     payload_idem_key: &str,
 ) -> bool {
@@ -1708,6 +1708,6 @@ fn operation_key_matches_payload_idem(
     if op_idem_key == payload_idem_key {
         return true;
     }
-    let scoped_suffix = format!(":{wave_id}:{card_id}:{payload_idem_key}");
+    let scoped_suffix = format!(":{track_id}:{card_id}:{payload_idem_key}");
     op_idem_key.ends_with(&scoped_suffix)
 }

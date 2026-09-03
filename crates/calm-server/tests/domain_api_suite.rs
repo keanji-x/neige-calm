@@ -17,8 +17,8 @@ mod auth;
 mod card_cascade_semantics;
 #[path = "cases/cards_deletable.rs"]
 mod cards_deletable;
-#[path = "cases/chat_wave_ensure.rs"]
-mod chat_wave_ensure;
+#[path = "cases/chat_track_ensure.rs"]
+mod chat_track_ensure;
 #[path = "cases/claude_fsm_overlay.rs"]
 mod claude_fsm_overlay;
 #[path = "cases/claude_ingest.rs"]
@@ -60,15 +60,15 @@ mod today_launchpad;
 
 #[path = "cases/today_summary.rs"]
 mod today_summary;
+#[path = "cases/track_conversations.rs"]
+mod track_conversations;
+#[path = "cases/track_projection_policy_patch.rs"]
+mod track_projection_policy_patch;
+#[path = "cases/track_workspace_materialize.rs"]
+mod track_workspace_materialize;
+#[path = "cases/track_workspace_recycle.rs"]
+mod track_workspace_recycle;
+#[path = "cases/track_workspace_repoint.rs"]
+mod track_workspace_repoint;
 #[path = "cases/version.rs"]
 mod version;
-#[path = "cases/wave_conversations.rs"]
-mod wave_conversations;
-#[path = "cases/wave_projection_policy_patch.rs"]
-mod wave_projection_policy_patch;
-#[path = "cases/wave_workspace_materialize.rs"]
-mod wave_workspace_materialize;
-#[path = "cases/wave_workspace_recycle.rs"]
-mod wave_workspace_recycle;
-#[path = "cases/wave_workspace_repoint.rs"]
-mod wave_workspace_repoint;

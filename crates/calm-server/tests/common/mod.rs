@@ -1,10 +1,10 @@
 //! Shared integration-test support (#293 cutover).
 //!
-//! Since the shared-daemon cutover, `POST /api/waves` uses the
+//! Since the shared-daemon cutover, `POST /api/tracks` uses the
 //! `SharedCodexAppServer` boot path and drives `initialize` / `thread/start` /
 //! `turn/start` before returning 201. With no real codex discoverable (e.g.
 //! CI, which provisions none) that boot hard-errors and the route returns 500,
-//! so every wave-create integration test that asserts 201 would fail.
+//! so every track-create integration test that asserts 201 would fail.
 //!
 //! The proven-faithful stand-in is the `osc-probe-child` test fixture: when
 //! invoked as `codex app-server ...` it runs `appserver::run_fake_app_server`
@@ -15,7 +15,7 @@
 //! symlink because the codex-cards path hard-codes the program name and runs
 //! it under `sh -c codex`.
 //!
-//! The wave-create harnesses don't need that PATH dance: the shared-daemon
+//! The track-create harnesses don't need that PATH dance: the shared-daemon
 //! harness invokes `s.codex.codex_bin` directly, so we just point `codex_bin`
 //! at the fixture binary. This is deterministic, parallel-safe
 //! (no process-global `PATH`/`set_var` mutation), and needs no symlink.
@@ -36,7 +36,7 @@ pub fn fake_codex_bin() -> String {
 /// A `CodexClient` stub whose `codex_bin` points at the fake-codex fixture
 /// (see [`fake_codex_bin`]). Identical to `CodexClient::new_stub()` in every
 /// other respect (its per-test `codex_homes` tempdir, etc.) — we only
-/// override the binary the shared-daemon boot will spawn, so `POST /api/waves`
+/// override the binary the shared-daemon boot will spawn, so `POST /api/tracks`
 /// boots the fake app-server and returns 201 without a real codex on PATH.
 pub fn fake_codex_client() -> CodexClient {
     let mut c = CodexClient::new_stub();

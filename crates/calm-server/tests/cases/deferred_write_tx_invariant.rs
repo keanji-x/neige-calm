@@ -21,8 +21,8 @@
 //! deferred tx holds R locks across statements, and an R lock blocks an
 //! IMMEDIATE writer's W request just as effectively as a W lock does —
 //! proven end-to-end by `deferred_read_tx_deadlock_repro`, where the
-//! then-allowlisted `read.rs::wave_detail` held R(waves)+R(cards), parked
-//! on `overlays`, and drove `DELETE /api/waves/:id` into code 6.
+//! then-allowlisted `read.rs::track_detail` held R(tracks)+R(cards), parked
+//! on `overlays`, and drove `DELETE /api/tracks/:id` into code 6.
 //!
 //! If this test starts failing, the new deferred transaction must either
 //! move to `begin_immediate_tx` (it writes) or drop the explicit
@@ -79,7 +79,7 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
 /// hold-and-wait party" — was false: closing a cycle needs a lock-HOLDING
 /// waiter, not a writer-slot contender, and a multi-table read-only
 /// deferred tx is one. Its three entries (`begin_read_tx`,
-/// `read.rs::wave_detail`, `read.rs::task_diagnostics`) were removed by
+/// `read.rs::track_detail`, `read.rs::task_diagnostics`) were removed by
 /// dropping their explicit transactions, not by re-justifying them.
 ///
 /// The ONLY exemption that survives the #1016 analysis is a deferred tx

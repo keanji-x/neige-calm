@@ -104,7 +104,7 @@ async function emitPhase(
         data: {
           runtime_id: 'runtime',
           card_id: cardId,
-          wave_id: 'wave',
+          track_id: 'track',
           old_phase: oldPhase,
           new_phase: newPhase,
         },
@@ -123,7 +123,7 @@ function harnessUserRow(id: number, text: string) {
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `msg_${id}`,
@@ -148,7 +148,7 @@ function harnessAgentRow(id: number, text: string) {
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `msg_${id}`,
@@ -174,7 +174,7 @@ function harnessCommandRow(id: number) {
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `cmd_${id}`,
@@ -240,7 +240,7 @@ function harnessReasoningRow(
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `reason_${id}`,
@@ -273,7 +273,7 @@ function harnessToolRow(
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `tool_${id}`,
@@ -327,7 +327,7 @@ function harnessFileChangeRow(
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `edit_${id}`,
@@ -357,7 +357,7 @@ function harnessCompactRow(id: number) {
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `compact_${id}`,
@@ -381,7 +381,7 @@ function harnessUnknownRow(id: number) {
     id,
     runtime_id: 'runtime',
     card_id: 'card_spec_1',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: `legacy_${id}`,
@@ -428,7 +428,7 @@ async function emitHarnessItemAdded(
         data: {
           runtime_id: 'runtime',
           card_id: 'card_spec_1',
-          wave_id: 'wave',
+          track_id: 'track',
           item_db_id: 999,
           item_uuid: 'msg_999',
           item_type: 'userMessage',
@@ -677,7 +677,7 @@ describe('SpecConversation', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(
-      "Spec Agent isn't running for this wave — Reset to start a session",
+      "Spec Agent isn't running for this track — Reset to start a session",
     );
     expect(alert).toHaveAttribute('data-dormant', 'true');
     expect(
@@ -733,7 +733,7 @@ describe('SpecConversation', () => {
   it('renders an unavailable empty state and no composer without a spec card', async () => {
     await renderHarness({ specCardId: null });
 
-    expect(screen.getByText('Spec Agent is unavailable for this wave.')).toBeInTheDocument();
+    expect(screen.getByText('Spec Agent is unavailable for this track.')).toBeInTheDocument();
     expect(
       screen.queryByLabelText('Ask the Spec Agent'),
     ).not.toBeInTheDocument();

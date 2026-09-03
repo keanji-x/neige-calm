@@ -31,9 +31,9 @@ async fn legacy_compensation_harness(
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         repo.as_ref(),
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "legacy compensation".into(),
@@ -50,7 +50,7 @@ async fn legacy_compensation_harness(
     let card = crate::db::RepoSyncDomainRaw::card_create(
         repo.as_ref(),
         crate::model::NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: card_kind.into(),
             sort: None,
@@ -181,7 +181,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         ),
         Arc::new(Mutex::new(())),
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_area_cache::WaveAreaCache::new(),
+        crate::track_area_cache::TrackAreaCache::new(),
     );
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 
@@ -195,7 +195,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         harness.route_repo.clone(),
         Arc::new(crate::state::CodexClient::new_stub()),
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_area_cache::WaveAreaCache::new(),
+        crate::track_area_cache::TrackAreaCache::new(),
     );
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 
@@ -209,7 +209,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         harness.route_repo.clone(),
         Arc::new(crate::state::CodexClient::new_stub()),
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_area_cache::WaveAreaCache::new(),
+        crate::track_area_cache::TrackAreaCache::new(),
     );
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 }
@@ -452,7 +452,7 @@ async fn same_idempotency_key_different_hash_conflicts() {
         idempotency_key: Some("same-key".into()),
         payload_hash: "hash-a".into(),
     };
-    let payload = json!({ "wave_id": "wave-a" });
+    let payload = json!({ "track_id": "track-a" });
     let first = repo
         .insert_operation("terminal-create", key, payload.clone())
         .await
@@ -475,7 +475,7 @@ async fn same_idempotency_key_different_hash_conflicts() {
 }
 
 #[tokio::test]
-async fn operation_event_append_creates_wave_vcs_commit() {
+async fn operation_event_append_creates_track_vcs_commit() {
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
     use crate::db::sqlite::{
@@ -483,9 +483,9 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     };
     use crate::event::{Event, EventScope};
     use crate::ids::{ActorId, CardId};
-    use crate::model::{CardRole, NewArea, NewCard, NewWave};
+    use crate::model::{CardRole, NewArea, NewCard, NewTrack};
     use crate::routes::theme::RequestTheme;
-    use crate::wave_report::WaveReportPayload;
+    use crate::track_report::TrackReportPayload;
     use calm_truth::decision_gate::PermissiveGate;
 
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -499,11 +499,11 @@ async fn operation_event_append_creates_wave_vcs_commit() {
         })
         .await
         .unwrap();
-    let wave = sqlx_repo
-        .wave_create(NewWave {
+    let track = sqlx_repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
-            title: "wave".into(),
+            title: "track".into(),
             sort: None,
             cwd: "/tmp".into(),
             template_id: None,
@@ -520,11 +520,11 @@ async fn operation_event_append_creates_wave_vcs_commit() {
         &mut tx,
         card_id.clone(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
-            kind: "wave-report".into(),
+            kind: "track-report".into(),
             sort: None,
-            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
         },
         CardRole::ReportCard,
         false,
@@ -534,7 +534,7 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     .unwrap();
     let scope = EventScope::Card {
         card: CardId::from(card_id),
-        wave: wave.id.clone(),
+        track: track.id.clone(),
         area: area.id.clone(),
     };
     let event = Event::CardAdded(report);
@@ -550,26 +550,26 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    let head = crate::wave_vcs::head(sqlx_repo.pool(), &wave.id)
+    let head = crate::track_vcs::head(sqlx_repo.pool(), &track.id)
         .await
         .unwrap()
         .expect("vcs head");
     let stored_event_id: i64 =
-        sqlx::query_scalar("SELECT updated_event_id FROM wave_vcs_refs WHERE wave_id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT updated_event_id FROM track_vcs_refs WHERE track_id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(sqlx_repo.pool())
             .await
             .unwrap();
     assert_eq!(stored_event_id, event_id);
     let author: Option<String> =
-        sqlx::query_scalar("SELECT author FROM wave_vcs_commits WHERE hash = ?1")
+        sqlx::query_scalar("SELECT author FROM track_vcs_commits WHERE hash = ?1")
             .bind(&head)
             .fetch_one(sqlx_repo.pool())
             .await
             .unwrap();
     assert_eq!(author.as_deref(), Some("kernel"));
     assert!(
-        crate::wave_vcs::tree_at(sqlx_repo.pool(), &head)
+        crate::track_vcs::tree_at(sqlx_repo.pool(), &head)
             .await
             .unwrap()
             .expect("tree")
@@ -592,7 +592,7 @@ async fn set_phase_clears_lease_and_rejects_stale_owner() {
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": "wave-a" }),
+            json!({ "track_id": "track-a" }),
         )
         .await
         .unwrap();
@@ -633,7 +633,7 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": "wave-a" }),
+            json!({ "track_id": "track-a" }),
         )
         .await
         .unwrap();
@@ -845,9 +845,9 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         &sqlx_repo,
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "lease reclaim".into(),
@@ -864,7 +864,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     let card = crate::db::RepoSyncDomainRaw::card_create(
         &sqlx_repo,
         crate::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -884,7 +884,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
                 idempotency_key: Some(new_id()),
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": wave.id.clone() }),
+            json!({ "track_id": track.id.clone() }),
         )
         .await
         .unwrap();
@@ -901,20 +901,20 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     .unwrap();
 
     let lease_id = new_id();
-    let path = format!(".claude/worktrees/{}/{}", wave.id, card.id);
+    let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     let stale_boot = stale_boot_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
     )
     .bind(&lease_id)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(&op_id)
     .bind(now + 60_000)
@@ -963,9 +963,9 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         &sqlx_repo,
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "lease reclaim removal failure".into(),
@@ -982,7 +982,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     let card = crate::db::RepoSyncDomainRaw::card_create(
         &sqlx_repo,
         crate::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1002,7 +1002,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
                 idempotency_key: Some(new_id()),
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": wave.id.clone() }),
+            json!({ "track_id": track.id.clone() }),
         )
         .await
         .unwrap();
@@ -1027,14 +1027,14 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     let stale_boot = stale_boot_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
     )
     .bind(&lease_id)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(&op_id)
     .bind(now + 60_000)
@@ -1060,20 +1060,20 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     assert_eq!(state, "released");
     assert!(
         path_buf.exists(),
-        "boot reclaim leaves workspace artifacts for wave cleanup"
+        "boot reclaim leaves workspace artifacts for track cleanup"
     );
 
     let replacement = new_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', 'replacement-owner', ?5, 'replacement-boot', ?6, ?6)"#,
     )
     .bind(&replacement)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(now + 120_000)
     .bind(now + 1)
@@ -1098,9 +1098,9 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         &sqlx_repo,
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "lease same boot".into(),
@@ -1117,7 +1117,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     let card = crate::db::RepoSyncDomainRaw::card_create(
         &sqlx_repo,
         crate::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1137,7 +1137,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
                 idempotency_key: Some(new_id()),
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": wave.id.clone() }),
+            json!({ "track_id": track.id.clone() }),
         )
         .await
         .unwrap();
@@ -1154,20 +1154,20 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     .unwrap();
 
     let lease_id = new_id();
-    let path = format!(".claude/worktrees/{}/{}", wave.id, card.id);
+    let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     let boot_id = crate::proc_identity::read_boot_id().expect("current boot id");
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
     )
     .bind(&lease_id)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(&op_id)
     .bind(now + 60_000)
@@ -1217,9 +1217,9 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         &sqlx_repo,
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "lease recoverable".into(),
@@ -1236,7 +1236,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     let card = crate::db::RepoSyncDomainRaw::card_create(
         &sqlx_repo,
         crate::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1256,7 +1256,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": wave.id.clone() }),
+            json!({ "track_id": track.id.clone() }),
         )
         .await
         .unwrap();
@@ -1292,20 +1292,20 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     .unwrap();
 
     let lease_id = new_id();
-    let path = format!(".claude/worktrees/{}/{}", wave.id, card.id);
+    let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     let stale_boot = stale_boot_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
     )
     .bind(&lease_id)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(&op_id)
     .bind(now + 60_000)
@@ -1384,9 +1384,9 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     )
     .await
     .unwrap();
-    let wave = crate::db::RepoSyncDomainRaw::wave_create(
+    let track = crate::db::RepoSyncDomainRaw::track_create(
         &sqlx_repo,
-        crate::model::NewWave {
+        crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "lease releasing".into(),
@@ -1403,7 +1403,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     let card = crate::db::RepoSyncDomainRaw::card_create(
         &sqlx_repo,
         crate::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1413,19 +1413,19 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     .await
     .unwrap();
     let lease_id = new_id();
-    let path = format!(".claude/worktrees/{}/{}", wave.id, card.id);
+    let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'releasing', 'release-owner', ?5, 'dead-boot', ?6, ?6)"#,
     )
     .bind(&lease_id)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(now + 60_000)
     .bind(now)
@@ -1460,14 +1460,14 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     let replacement = new_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', 'new-owner', ?5, 'new-boot', ?6, ?6)"#,
     )
     .bind(&replacement)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(&path)
     .bind(now + 120_000)
     .bind(now + 1)
@@ -1554,7 +1554,7 @@ async fn parked_return_without_artifacts_fails_and_drops_observer() {
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": "wave-a" }),
+            json!({ "track_id": "track-a" }),
         )
         .await
         .unwrap();
@@ -1596,7 +1596,7 @@ async fn set_parked_lost_lease_after_artifacts_drops_observer() {
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": "wave-a" }),
+            json!({ "track_id": "track-a" }),
         )
         .await
         .unwrap();
@@ -1623,7 +1623,7 @@ async fn claimed_spawn_started_operation(repo: &SqlxOperationRepo) -> Operation 
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": "wave-a" }),
+            json!({ "track_id": "track-a" }),
         )
         .await
         .unwrap();

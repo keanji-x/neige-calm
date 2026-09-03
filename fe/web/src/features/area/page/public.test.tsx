@@ -15,11 +15,11 @@ function area(overrides: Partial<Area> = {}): Area {
 function renderPage(overrides: Partial<Parameters<typeof AreaPage>[0]> = {}) {
   const props = {
     area: area(),
-    waveCount: 2,
-    waveList: <div>wave list slot</div>,
+    trackCount: 2,
+    trackList: <div>track list slot</div>,
     onRenameArea: vi.fn(),
     onDeleteArea: vi.fn(),
-    onRequestNewWave: vi.fn(),
+    onRequestNewTrack: vi.fn(),
     ...overrides,
   };
   return { props, ...render(<AreaPage {...props} />) };
@@ -29,20 +29,20 @@ describe('AreaPage header', () => {
   it('shows the area name, and nothing else', () => {
     const { container } = renderPage();
     expect(screen.getByRole('button', { name: 'Rename area' }).textContent).toBe('Work');
-    // No wave count. It answered a question nobody asks — you open an area to
-    // pick a wave, not to learn how many there are — and the list below already
+    // No track count. It answered a question nobody asks — you open an area to
+    // pick a track, not to learn how many there are — and the list below already
     // says it, at a glance, with the names attached. No identity dot either: it
     // was the only colour on the page and it restated the name beside it.
-    expect(container.textContent).not.toMatch(/\d+ waves?/);
+    expect(container.textContent).not.toMatch(/\d+ tracks?/);
   });
 
-  // `waveCount` survives as a prop because the *confirm copy* spends it
-  // ("This deletes 2 waves"), which is the one place the number changes a
+  // `trackCount` survives as a prop because the *confirm copy* spends it
+  // ("This deletes 2 tracks"), which is the one place the number changes a
   // decision. See the delete suite below.
-  it('asks the caller to open the new-wave surface', async () => {
+  it('asks the caller to open the new-track surface', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: 'New wave' }));
-    expect(props.onRequestNewWave).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: 'New track' }));
+    expect(props.onRequestNewTrack).toHaveBeenCalledTimes(1);
   });
 
   // §4.4's "一次性动作必须带文字" is overridden here for two glyphs in their
@@ -50,18 +50,18 @@ describe('AreaPage header', () => {
   // accessible name, so both are present, not either.
   it('gives each header icon a tooltip as well as an accessible name', () => {
     renderPage();
-    expect(screen.getByRole('button', { name: 'New wave' }).getAttribute('title')).toBe('New wave');
+    expect(screen.getByRole('button', { name: 'New track' }).getAttribute('title')).toBe('New track');
     expect(screen.getByRole('button', { name: 'Delete area Work' }).getAttribute('title')).toBe('Delete area');
   });
 
-  it('renders the wave list slot rather than its own list', () => {
-    renderPage({ waveList: <p>ten waves live here</p> });
-    expect(screen.getByText('ten waves live here')).toBeTruthy();
+  it('renders the track list slot rather than its own list', () => {
+    renderPage({ trackList: <p>ten tracks live here</p> });
+    expect(screen.getByText('ten tracks live here')).toBeTruthy();
   });
 
   it('leaves the empty state to the list slot', () => {
-    renderPage({ waveCount: 0, waveList: <p>No waves yet.</p> });
-    expect(screen.getAllByText(/No waves yet\./)).toHaveLength(1);
+    renderPage({ trackCount: 0, trackList: <p>No tracks yet.</p> });
+    expect(screen.getAllByText(/No tracks yet\./)).toHaveLength(1);
   });
 });
 
@@ -72,7 +72,7 @@ describe('AreaPage delete', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
     // §6.13's body is two sentences with different typography: what it costs,
     // then what to type. The count lands here, where it changes a decision.
-    expect(screen.getByText('This deletes 2 waves. This cannot be undone.')).toBeTruthy();
+    expect(screen.getByText('This deletes 2 tracks. This cannot be undone.')).toBeTruthy();
     expect(props.onDeleteArea).not.toHaveBeenCalled();
   });
 

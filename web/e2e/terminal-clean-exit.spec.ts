@@ -17,7 +17,7 @@
 // Chromium project only — the replay backend doesn't spawn daemons.
 
 import { test, expect } from '@playwright/test';
-import { seedWaveViewMode } from './helpers/reset';
+import { seedTrackViewMode } from './helpers/reset';
 
 test('terminal worker that exits cleanly shows the exit 0 header badge, no overlay', async ({ page }) => {
   // Step 1 — mint a fresh user area via the sidebar (issue #175).
@@ -35,32 +35,32 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
   const areaId = new URL(page.url()).pathname.split('/').pop()!;
 
-  // Step 2 — mint a wave inside the area via REST. Same shape as
+  // Step 2 — mint a track inside the area via REST. Same shape as
   // `new-terminal-card.spec.ts`.
-  const waveTitle = `E2E clean-exit ${Date.now()}`;
+  const trackTitle = `E2E clean-exit ${Date.now()}`;
   // The terminal card below spawns in this directory. `/tmp` exists
   // inside the kernel, and the terminal-card route carries no
-  // attached-workspace contract (#1147 S3 validates `POST /api/waves`
+  // attached-workspace contract (#1147 S3 validates `POST /api/tracks`
   // only), so it stays a plain existing directory.
   const cwd = '/tmp';
-  const waveRes = await page.request.post('/api/waves', {
+  const trackRes = await page.request.post('/api/tracks', {
     data: {
       area_id: areaId,
-      title: waveTitle,
-      // #1147 S3 — no `cwd` on the wave: take the kernel-managed
+      title: trackTitle,
+      // #1147 S3 — no `cwd` on the track: take the kernel-managed
       // workspace branch. This spec is about the terminal clean-exit
       // race, not working directories. See
-      // `helpers/reset.ts::createWaveInArea` for why the invented
+      // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-clean-exit-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
   });
-  if (!waveRes.ok()) {
-    const body = await waveRes.text().catch(() => '<unreadable>');
-    throw new Error(`POST /api/waves → ${waveRes.status()} ${waveRes.statusText()}: ${body}`);
+  if (!trackRes.ok()) {
+    const body = await trackRes.text().catch(() => '<unreadable>');
+    throw new Error(`POST /api/tracks → ${trackRes.status()} ${trackRes.statusText()}: ${body}`);
   }
-  const wave = (await waveRes.json()) as { id: string };
+  const track = (await trackRes.json()) as { id: string };
 
   // Step 3 — mint a terminal card whose program prints one line and
   // exits with code 0. `/bin/sh -c "printf 'done\\n'"` reproduces the
@@ -70,7 +70,7 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   // server-side (`routes/terminal.rs` `spawn_daemon_with_parts`), so
   // we just pass the shell snippet.
   const cardRes = await page.request.post(
-    `/api/waves/${wave.id}/terminal-cards`,
+    `/api/tracks/${track.id}/terminal-cards`,
     {
       data: {
         program: `printf 'done\\n'`,
@@ -90,7 +90,7 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   if (!terminalId) {
     throw new Error(`terminal card POST missing payload.terminal_id: ${JSON.stringify(card)}`);
   }
-  await seedWaveViewMode(page.request, wave.id, 'grid');
+  await seedTrackViewMode(page.request, track.id, 'grid');
 
   // Step 4 — small breather so the daemon's spawn → child exit → unlink
   // cycle finishes BEFORE we open the page. `printf` is sub-50ms but
@@ -100,15 +100,15 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   // persists across kernel restarts.
   await page.waitForTimeout(500);
 
-  // Step 5 — open the wave detail page. The XtermView mounts, opens
+  // Step 5 — open the track detail page. The XtermView mounts, opens
   // its WS, and the server accepts the upgrade + closes with
   // 1000+child-exited. After #306 the buffer stays visible and the
   // card header badge surfaces `exit 0` (success palette).
-  await page.goto(`/calm/wave/${wave.id}`);
-  await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
+  await page.goto(`/calm/track/${track.id}`);
+  await expect(page).toHaveURL(/\/calm\/track\/[^/]+$/);
 
   // Step 6 — scope assertions to the worker terminal card we minted.
-  // The wave's auto-created spec card also renders an XtermView, so a
+  // The track's auto-created spec card also renders an XtermView, so a
   // page-wide selector would hit both. `[data-terminal-id="..."]` on
   // the XtermView root pins the locator to our worker.
   const ourView = page.locator(`[data-terminal-id="${terminalId}"]`);

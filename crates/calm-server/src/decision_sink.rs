@@ -9,22 +9,22 @@
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
-use crate::ids::{ActorId, AreaId, CardId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Card, CardRole, Wave, WaveLifecycle};
+use crate::model::{Card, CardRole, Track, TrackLifecycle};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
 use crate::session_projection_repo::RuntimeId;
 use crate::state::WriteContext;
-use crate::wave_lifecycle::{
+use crate::track_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
-use crate::wave_report::{
-    BlockOpOutcome, ReportDocOp, WaveReportPayload, persist_report_with_shadow,
+use crate::track_report::{
+    BlockOpOutcome, ReportDocOp, TrackReportPayload, persist_report_with_shadow,
 };
-use crate::wave_report_origin::{
+use crate::track_report_origin::{
     AgentOrigin, SITE_MCP_DECISION_SINK, WriteOrigin, verify_legacy_write_arguments,
 };
 use async_trait::async_trait;
@@ -69,29 +69,29 @@ impl CardDecisionSink {
                     "emit: bound card {card_id_str} not found (deleted mid-connection?)"
                 ))
             })?;
-        let wave = self
+        let track = self
             .repo
-            .wave_get(card.wave_id.as_str())
+            .track_get(card.track_id.as_str())
             .await
-            .map_err(|e| CalmError::Internal(format!("emit: wave lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("emit: track lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "emit: wave {} for card {} not found",
-                    card.wave_id.as_str(),
+                    "emit: track {} for card {} not found",
+                    card.track_id.as_str(),
                     card_id_str
                 ))
             })?;
 
         let scope = EventScope::Card {
             card: CardId::from(card_id_str.clone()),
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
-        let wave_scope = EventScope::Wave {
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+        let track_scope = EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
-        let wave_id = wave.id.clone();
+        let track_id = track.id.clone();
         let release_workspace = matches!(
             event,
             Event::TaskCompleted { .. } | Event::TaskFailed { .. }
@@ -107,21 +107,21 @@ impl CardDecisionSink {
                 let event = event.clone();
                 let actor = actor.clone();
                 let scope = scope.clone();
-                let wave_scope = wave_scope.clone();
-                let wave_id = wave_id.clone();
+                let track_scope = track_scope.clone();
+                let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
                     // Issue #644 PR-B — flip the matching plan-task row INSIDE
                     // the same tx that persists the worker's report event
                     // (design §3): one tx, no event-persisted-but-row-stale
                     // crash window. The flips are guarded
-                    // (`status IN ('dispatched','running')`, wave-pinned, and
+                    // (`status IN ('dispatched','running')`, track-pinned, and
                     // the done-flip skips gated rows), so a legacy
                     // `calm.task.dispatch` key with no tasks row, an already
-                    // terminal row, or a foreign-wave id all no-op. This hook
+                    // terminal row, or a foreign-track id all no-op. This hook
                     // lives ONLY in the worker-role-gated
                     // `calm.task.complete` / `calm.task.fail` handlers — spec
-                    // verdict emissions (`calm.task.verdict`, wave_state.rs)
+                    // verdict emissions (`calm.task.verdict`, track_state.rs)
                     // never run it, so verdicts can never flip rows.
                     let now = crate::model::now_ms();
                     // #1147 ① — the failure branch keeps the worker's own
@@ -171,7 +171,7 @@ impl CardDecisionSink {
                             match crate::db::sqlite::task_report_success_from_worker_tx(
                                 tx,
                                 &task_id,
-                                wave_id.as_str(),
+                                track_id.as_str(),
                                 reporter,
                                 now,
                             )
@@ -190,7 +190,7 @@ impl CardDecisionSink {
                             crate::db::sqlite::task_fail_from_worker_tx(
                                 tx,
                                 &task_id,
-                                wave_id.as_str(),
+                                track_id.as_str(),
                                 reporter,
                                 &crate::db::sqlite::status_detail_with_reason(
                                     "worker-reported",
@@ -264,9 +264,9 @@ impl CardDecisionSink {
                     if !suppress_promotion
                         && let Some(auto_events) = auto_transition_if_current_in_tx(
                             tx,
-                            &wave_id,
-                            crate::model::WaveLifecycle::Working,
-                            crate::model::WaveLifecycle::Reviewing,
+                            &track_id,
+                            crate::model::TrackLifecycle::Working,
+                            crate::model::TrackLifecycle::Reviewing,
                             &ActorId::Kernel,
                             Some("[auto] first task report".to_string()),
                         )
@@ -275,7 +275,7 @@ impl CardDecisionSink {
                         events.extend(
                             auto_events
                                 .into_iter()
-                                .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
+                                .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
                         );
                     }
                     Ok(((), events))
@@ -298,7 +298,7 @@ impl CardDecisionSink {
         &self,
         identity: &ToolCallIdentity,
         message: String,
-        lifecycle: Option<WaveLifecycle>,
+        lifecycle: Option<TrackLifecycle>,
         event: Event,
     ) -> Result<(), CalmError> {
         let actor = identity.to_actor_id();
@@ -308,33 +308,33 @@ impl CardDecisionSink {
             .repo
             .card_get(&card_id_str)
             .await
-            .map_err(|e| CalmError::Internal(format!("wave_state: card lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("track_state: card lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "wave_state: bound card {card_id_str} not found (deleted mid-connection?)"
+                    "track_state: bound card {card_id_str} not found (deleted mid-connection?)"
                 ))
             })?;
-        let wave = self
+        let track = self
             .repo
-            .wave_get(card.wave_id.as_str())
+            .track_get(card.track_id.as_str())
             .await
-            .map_err(|e| CalmError::Internal(format!("wave_state: wave lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("track_state: track lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "wave_state: wave {} for card {} not found",
-                    card.wave_id.as_str(),
+                    "track_state: track {} for card {} not found",
+                    card.track_id.as_str(),
                     card_id_str
                 ))
             })?;
-        let scope = EventScope::Wave {
-            wave: wave.id.clone(),
-            area: wave.area_id.clone(),
+        let scope = EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
         };
-        let wave_id = wave.id.clone();
-        let wave_scope = scope.clone();
+        let track_id = track.id.clone();
+        let track_scope = scope.clone();
         let recorder_shadow = Arc::new(CardDecisionSinkRecorderShadowProbe {
             principal,
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
         });
 
         write_with_actor_events_typed::<(), _>(
@@ -346,23 +346,23 @@ impl CardDecisionSink {
                 let event = event.clone();
                 let actor = actor.clone();
                 let scope = scope.clone();
-                let wave_scope = wave_scope.clone();
-                let wave_id = wave_id.clone();
+                let track_scope = track_scope.clone();
+                let track_id = track_id.clone();
                 let message = message.clone();
                 let recorder_shadow = Arc::clone(&recorder_shadow);
                 Box::pin(async move {
                     let mut events = Vec::new();
-                    if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await? {
+                    if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await? {
                         events.extend(
                             auto_events
                                 .into_iter()
-                                .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
+                                .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
                         );
                     }
                     if let Some(target) = lifecycle
                         && let Some(lifecycle_events) = apply_requested_transition_in_tx(
                             tx,
-                            &wave_id,
+                            &track_id,
                             target,
                             &actor,
                             message.clone(),
@@ -370,12 +370,12 @@ impl CardDecisionSink {
                         .await?
                     {
                         recorder_shadow
-                            .record(tx, RecorderShadowDecisionKind::WaveLifecycle)
+                            .record(tx, RecorderShadowDecisionKind::TrackLifecycle)
                             .await?;
                         events.extend(
                             lifecycle_events
                                 .into_iter()
-                                .map(|event| (actor.clone(), wave_scope.clone(), event)),
+                                .map(|event| (actor.clone(), track_scope.clone(), event)),
                         );
                     }
                     events.push((actor, scope, event));
@@ -392,18 +392,18 @@ impl CardDecisionSink {
     pub async fn commit_report_write(
         &self,
         identity: &ToolCallIdentity,
-        wave: Wave,
+        track: Track,
         report_card: Card,
-        current_payload: WaveReportPayload,
-        next: WaveReportPayload,
+        current_payload: TrackReportPayload,
+        next: TrackReportPayload,
         agent_message: String,
-        lifecycle: Option<WaveLifecycle>,
+        lifecycle: Option<TrackLifecycle>,
     ) -> Result<Card, CalmError> {
         let if_doc_rev = current_payload.doc_rev;
         let (updated, _outcome) = self
             .commit_report_op(
                 identity,
-                wave,
+                track,
                 report_card,
                 current_payload,
                 ReportDocOp::Replace {
@@ -432,49 +432,49 @@ impl CardDecisionSink {
     /// * **attribution** (`EditAuthor`). Hard-coding `Spec` would let an
     ///   assistant's edits land in the event log under the spec's name —
     ///   and would silently undo the `author_name(Assistant) == None`
-    ///   line in `wave_report_edit_guard`, which is half of the P2 task
+    ///   line in `track_report_edit_guard`, which is half of the P2 task
     ///   guard.
-    /// * **auto-promote** (P1). A block write must not walk a Draft wave
+    /// * **auto-promote** (P1). A block write must not walk a Draft track
     ///   out of Draft on an assistant's behalf; that is the state machine
     ///   §3.2 keeps on the far side of the line. The REST user block
-    ///   endpoint already passes `false`, so "a Draft wave with a report"
+    ///   endpoint already passes `false`, so "a Draft track with a report"
     ///   is a long-standing legal state, not a new one.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_op(
         &self,
         identity: &ToolCallIdentity,
-        wave: Wave,
+        track: Track,
         report_card: Card,
-        current_payload: WaveReportPayload,
+        current_payload: TrackReportPayload,
         op: ReportDocOp,
         agent_message: Option<String>,
-        lifecycle: Option<WaveLifecycle>,
+        lifecycle: Option<TrackLifecycle>,
     ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
         let legacy_actor = identity.to_actor_id();
         let (legacy_author, legacy_auto_promote_draft) = report_op_attribution(identity.role)?;
         // #1252 S1 step 2 — the same decisions, stated a second way. The origin
         // is built from the request context this funnel already holds
-        // (`identity`, plus the wave being written), never from the values
+        // (`identity`, plus the track being written), never from the values
         // above, so the two derivations are independent.
         //
-        // `wave.id` is the wave whose report this call resolved
-        // (`mcp_server::tools::wave_report::resolve_report_for_caller` reads it
-        // off the caller's own card) — not `identity.wave_id`, the wave
+        // `track.id` is the track whose report this call resolved
+        // (`mcp_server::tools::track_report::resolve_report_for_caller` reads it
+        // off the caller's own card) — not `identity.track_id`, the track
         // identity resolution attached to the principal. `AgentOrigin`'s docs
         // keep those two apart, and since the recorder probe is now built out
-        // of `AgentOrigin::wave_id`, this line is what the gate checks the
+        // of `AgentOrigin::track_id`, this line is what the gate checks the
         // acting session's card against.
         //
-        // `AgentOrigin::wave_id` is required, and this funnel owes the refusal
-        // for an identity that cannot supply a wave — that is `AgentOrigin`'s
+        // `AgentOrigin::track_id` is required, and this funnel owes the refusal
+        // for an identity that cannot supply a track — that is `AgentOrigin`'s
         // documented division of labour. It used to be paid later and by
         // accident: `to_principal()` answered `None` and
         // `CardDecisionSinkRecorderShadowProbe::record` turned that `None` into
         // this same `Forbidden`, inside the write transaction. Now the probe is
-        // built from the origin, whose `wave_id` is always present, so nothing
+        // built from the origin, whose `track_id` is always present, so nothing
         // downstream would notice. Hence the explicit refusal, with the message
         // the probe used to produce.
-        if identity.wave_id.is_none() {
+        if identity.track_id.is_none() {
             return Err(CalmError::Forbidden(
                 "recorder gate requires an agent principal".into(),
             ));
@@ -484,13 +484,28 @@ impl CardDecisionSink {
             role: identity.role,
             provider: identity.provider.clone(),
             session_id: WorkerSessionId::from(identity.session_id.clone()),
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             area_id: AreaId::from(identity.area_id.clone()),
         });
-        // Everything below writes with what the check *returned*. The recorder
-        // probe in particular is never assembled here, so there is no binding
-        // for a later arm to shadow with `None` for one role — the mutation
-        // that got the first cut of this step rejected.
+        // Everything below writes with what the check *returned*, and the
+        // recorder probe is not assembled here — the check builds it. That is
+        // a visibility property, not an impossibility one: `into_parts`
+        // destructures into four ordinary bindings, and reassigning any of
+        // them between here and the call below still compiles. A reviewer did
+        // exactly that with
+        // `let author = if identity.thread_id == "card-bound" { EditAuthor::User } else { author };`
+        // — a shape `mcp_server::transport.rs` really produces for card-bound
+        // connections that carry no `threadId` — and the whole
+        // `mcp_integration_suite` stayed green at 212/212 while the assistant's
+        // edit was recorded as `author: User`. Calling the still-`pub(crate)`
+        // `persist_report_with_shadow` directly bypasses this block entirely.
+        //
+        // What this shape buys is that diverging now means visibly discarding a
+        // value you were handed, instead of writing an expression in the
+        // argument position. Closing it means moving the decision inside
+        // `persist_report_with_shadow` so it checks what it actually received;
+        // that is owed to step 3 and blocked by the fixture population in
+        // `track_report_origin`'s module docs.
         let (actor, author, auto_promote_draft, recorder_shadow) = verify_legacy_write_arguments(
             SITE_MCP_DECISION_SINK,
             &origin,
@@ -505,7 +520,7 @@ impl CardDecisionSink {
             &self.write,
             actor,
             author,
-            wave,
+            track,
             report_card,
             current_payload,
             op,
@@ -536,7 +551,7 @@ fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError
         CardRole::Spec => (EditAuthor::Spec, true),
         role @ (CardRole::Worker | CardRole::ReportCard) => {
             return Err(CalmError::Forbidden(format!(
-                "card role {role:?} may not write the wave report"
+                "card role {role:?} may not write the track report"
             )));
         }
     })
@@ -545,35 +560,35 @@ fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError
 /// #1252 S1 step 2 — the recorder probe for an agent-channel report write,
 /// built from the [`AgentOrigin`] and from nothing else.
 ///
-/// Called only by `wave_report_origin::verify_legacy_write_arguments`, which
+/// Called only by `track_report_origin::verify_legacy_write_arguments`, which
 /// hands the result to the call site through
 /// `LegacyWriteArguments::into_parts`. No production call site assembles a
-/// probe of its own any more, which is the whole point: the probe's target wave
-/// and the origin's wave cannot disagree, because there is one of them.
+/// probe of its own any more, which is the whole point: the probe's target track
+/// and the origin's track cannot disagree, because there is one of them.
 ///
-/// `principal.wave_id` is the target wave rather than
-/// `ToolCallIdentity::wave_id`, which is what production used to put there.
+/// `principal.track_id` is the target track rather than
+/// `ToolCallIdentity::track_id`, which is what production used to put there.
 /// The two are equal on every production input (both resolve to the acting
-/// card's `cards.wave_id`), and `decide_recorder` reads neither — it
-/// destructures `Principal::Agent { session_id, .. }` and takes the target wave
+/// card's `cards.track_id`), and `decide_recorder` reads neither — it
+/// destructures `Principal::Agent { session_id, .. }` and takes the target track
 /// as its own argument, which [`RecorderShadowProbe`] supplies from
-/// `wave_id` below. So this is a change of *provenance*, not of behaviour: the
+/// `track_id` below. So this is a change of *provenance*, not of behaviour: the
 /// principal is now derived from the same origin as everything else the check
 /// hands out.
 pub(crate) fn recorder_probe_for_agent(agent: &AgentOrigin) -> Arc<dyn RecorderShadowProbe> {
     Arc::new(CardDecisionSinkRecorderShadowProbe {
         principal: Some(Principal::Agent {
             session_id: agent.session_id.clone(),
-            wave_id: agent.wave_id.clone(),
+            track_id: agent.track_id.clone(),
             area_id: agent.area_id.clone(),
         }),
-        wave_id: agent.wave_id.clone(),
+        track_id: agent.track_id.clone(),
     })
 }
 
 struct CardDecisionSinkRecorderShadowProbe {
     principal: Option<Principal>,
-    wave_id: WaveId,
+    track_id: TrackId,
 }
 
 #[async_trait]
@@ -592,13 +607,13 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
             ));
         };
         match PrincipalDecisionGate::new(principal.clone())
-            .decide_recorder(tx, &self.wave_id)
+            .decide_recorder(tx, &self.track_id)
             .await
         {
             Ok(GateDecision::Allow) => Ok(()),
             Ok(GateDecision::Deny(message)) => {
                 emit_divergence(&RecorderShadowDivergence {
-                    wave_id: self.wave_id.clone(),
+                    track_id: self.track_id.clone(),
                     session_id: session_id.clone(),
                     decision_kind,
                 });
@@ -610,7 +625,7 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
             Err(error) => {
                 tracing::warn!(
                     target: "neige::recorder_shadow",
-                    wave_id = %self.wave_id,
+                    track_id = %self.track_id,
                     session_id = %session_id,
                     decision_kind = decision_kind.as_str(),
                     error = %error,
@@ -647,15 +662,15 @@ impl DecisionSink for CardDecisionSink {
 #[derive(Clone, Debug)]
 pub struct SpecHarnessAgentReactor {
     runtime_id: RuntimeId,
-    wave_id: WaveId,
+    track_id: TrackId,
     area_id: AreaId,
 }
 
 impl SpecHarnessAgentReactor {
-    pub fn new(runtime_id: RuntimeId, wave_id: WaveId, area_id: AreaId) -> Self {
+    pub fn new(runtime_id: RuntimeId, track_id: TrackId, area_id: AreaId) -> Self {
         Self {
             runtime_id,
-            wave_id,
+            track_id,
             area_id,
         }
     }
@@ -666,7 +681,7 @@ impl AgentReactor for SpecHarnessAgentReactor {
     fn principal(&self) -> Principal {
         Principal::Agent {
             session_id: WorkerSessionId::from(self.runtime_id.clone()),
-            wave_id: self.wave_id.clone(),
+            track_id: self.track_id.clone(),
             area_id: self.area_id.clone(),
         }
     }
@@ -682,14 +697,14 @@ mod tests {
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
     use crate::db::sqlite::{
-        SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_wave_root_tx,
+        SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_track_root_tx,
     };
-    use crate::model::{CardRole, NewArea, NewCard, NewWave, WavePatch};
+    use crate::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
     use crate::operation::workspace_lease::{
         acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, provision_workspace_worktree,
     };
     use crate::recorder_shadow::divergence_count_for_test;
-    use crate::wave_area_cache::WaveAreaCache;
+    use crate::track_area_cache::TrackAreaCache;
     use calm_types::worker::{
         LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
         WorkerSessionState,
@@ -721,7 +736,7 @@ mod tests {
         for role in [CardRole::Worker, CardRole::ReportCard] {
             match report_op_attribution(role) {
                 Err(CalmError::Forbidden(msg)) => assert!(
-                    msg.contains("may not write the wave report"),
+                    msg.contains("may not write the track report"),
                     "{role:?} refusal should say why, got {msg:?}"
                 ),
                 other => panic!(
@@ -748,10 +763,10 @@ mod tests {
         }
     }
 
-    fn worker_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
+    fn worker_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
         WorkerSession {
             id: WorkerSessionId::from(id),
-            wave_id,
+            track_id,
             provider: WorkerProviderKind::Codex,
             mode: SessionMode::Resumable,
             contract: WorkerContract::Planner,
@@ -778,28 +793,28 @@ mod tests {
         }
     }
 
-    async fn seed_wave_root_session(
+    async fn seed_track_root_session(
         repo: &SqlxRepo,
-        wave_id: &WaveId,
+        track_id: &TrackId,
         card_id: &CardId,
         session_id: &WorkerSessionId,
     ) {
-        let root_session = worker_session(session_id.as_str(), wave_id.clone(), card_id.clone());
-        let wave_id = wave_id.clone();
+        let root_session = worker_session(session_id.as_str(), track_id.clone(), card_id.clone());
+        let track_id = track_id.clone();
         let session_id = session_id.clone();
         crate::db::write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
                 session_insert_tx(tx, root_session)
                     .await
                     .map_err(CalmError::from)?;
-                session_mark_wave_root_tx(tx, &wave_id, &session_id)
+                session_mark_track_root_tx(tx, &track_id, &session_id)
                     .await
                     .map_err(CalmError::from)?;
                 Ok(())
             })
         })
         .await
-        .expect("seed wave root session");
+        .expect("seed track root session");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -819,8 +834,8 @@ mod tests {
             })
             .await
             .expect("create area");
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "worker report preserve".into(),
@@ -832,10 +847,10 @@ mod tests {
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
-            .expect("create wave");
+            .expect("create track");
         let worker_card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -844,7 +859,11 @@ mod tests {
             .await
             .expect("create worker card");
         let session_id = WorkerSessionId::from("worker-session");
-        let session = worker_session(session_id.as_str(), wave.id.clone(), worker_card.id.clone());
+        let session = worker_session(
+            session_id.as_str(),
+            track.id.clone(),
+            worker_card.id.clone(),
+        );
         crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
             Box::pin(async move {
                 session_insert_tx(tx, session)
@@ -859,7 +878,7 @@ mod tests {
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
         let target = prepare_workspace_lease_target_tx(
             &mut tx,
-            wave.id.as_str(),
+            track.id.as_str(),
             worker_card.id.as_str(),
             &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )
@@ -868,7 +887,7 @@ mod tests {
         let (lease, _event) = acquire_workspace_lease_tx(
             &mut tx,
             worker_card.id.as_str(),
-            wave.id.as_str(),
+            track.id.as_str(),
             "op-worker-report-preserve",
             &target,
         )
@@ -882,23 +901,23 @@ mod tests {
         run_git(&target.path, ["commit", "-m", "worker output"]);
 
         let card_role_cache = CardRoleCache::new();
-        card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
-        let wave_area_cache = WaveAreaCache::new();
-        repo.seed_wave_area_cache(&wave_area_cache)
+        card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
+        let track_area_cache = TrackAreaCache::new();
+        repo.seed_track_area_cache(&track_area_cache)
             .await
-            .expect("seed wave area cache");
+            .expect("seed track area cache");
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let sink = CardDecisionSink {
             repo: route_repo,
             events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, wave_area_cache),
+            write: WriteContext::new(card_role_cache, track_area_cache),
         };
         let identity = ToolCallIdentity {
             card_id: worker_card.id.as_str().to_string(),
             role: CardRole::Worker,
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: session_id.as_str().to_string(),
-            wave_id: Some(wave.id.as_str().to_string()),
+            track_id: Some(track.id.as_str().to_string()),
             area_id: area.id.as_str().to_string(),
             thread_id: "worker-thread".to_string(),
         };
@@ -964,11 +983,11 @@ mod tests {
             })
             .await
             .expect("create area");
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
-                title: "shadow wave".into(),
+                title: "shadow track".into(),
                 sort: None,
                 cwd: String::new(),
                 template_id: None,
@@ -977,10 +996,10 @@ mod tests {
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
-            .expect("create wave");
+            .expect("create track");
         let spec_card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -990,18 +1009,18 @@ mod tests {
             .expect("create spec card");
         let report_card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
-                kind: "wave-report".into(),
+                kind: "track-report".into(),
                 sort: Some(-1.0),
-                payload: serde_json::to_value(WaveReportPayload::initial())
+                payload: serde_json::to_value(TrackReportPayload::initial())
                     .expect("initial report payload"),
             })
             .await
             .expect("create report card");
 
         let root_session_id = WorkerSessionId::from("root-session");
-        seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
+        seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, &root_session_id).await;
         // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
         // `card_create` persists `worker` regardless of kind.
         sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
@@ -1011,32 +1030,32 @@ mod tests {
             .expect("persist spec card role");
 
         let card_role_cache = CardRoleCache::new();
-        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
         card_role_cache.insert(
             report_card.id.clone(),
             CardRole::ReportCard,
-            wave.id.clone(),
+            track.id.clone(),
         );
-        let wave_area_cache = WaveAreaCache::new();
-        repo.seed_wave_area_cache(&wave_area_cache)
+        let track_area_cache = TrackAreaCache::new();
+        repo.seed_track_area_cache(&track_area_cache)
             .await
-            .expect("seed wave area cache");
+            .expect("seed track area cache");
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let sink = CardDecisionSink {
             repo: route_repo,
             events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, wave_area_cache),
+            write: WriteContext::new(card_role_cache, track_area_cache),
         };
         let identity = ToolCallIdentity {
             card_id: spec_card.id.as_str().to_string(),
             role: CardRole::Spec,
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: "non-root-session".to_string(),
-            wave_id: Some(wave.id.as_str().to_string()),
+            track_id: Some(track.id.as_str().to_string()),
             area_id: area.id.as_str().to_string(),
             thread_id: "non-root-thread".to_string(),
         };
-        let next = WaveReportPayload::new("non-root summary", "# Goal\n\nnon-root body\n");
+        let next = TrackReportPayload::new("non-root summary", "# Goal\n\nnon-root body\n");
         let warnings = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_registry().with(RecorderShadowWarnLayer {
             hits: Arc::clone(&warnings),
@@ -1057,9 +1076,9 @@ mod tests {
         let err = sink
             .commit_report_write(
                 &identity,
-                wave.clone(),
+                track.clone(),
                 report_card,
-                WaveReportPayload::initial(),
+                TrackReportPayload::initial(),
                 next,
                 "non-root edit".into(),
                 None,
@@ -1102,11 +1121,11 @@ mod tests {
             })
             .await
             .expect("create area");
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
-                title: "root wave".into(),
+                title: "root track".into(),
                 sort: None,
                 cwd: String::new(),
                 template_id: None,
@@ -1115,12 +1134,12 @@ mod tests {
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
-            .expect("create wave");
-        let wave = repo
-            .wave_update(
-                wave.id.as_str(),
-                WavePatch {
-                    lifecycle: Some(WaveLifecycle::Planning),
+            .expect("create track");
+        let track = repo
+            .track_update(
+                track.id.as_str(),
+                TrackPatch {
+                    lifecycle: Some(TrackLifecycle::Planning),
                     ..Default::default()
                 },
             )
@@ -1128,7 +1147,7 @@ mod tests {
             .expect("set planning");
         let spec_card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -1138,18 +1157,18 @@ mod tests {
             .expect("create spec card");
         let report_card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
-                kind: "wave-report".into(),
+                kind: "track-report".into(),
                 sort: Some(-1.0),
-                payload: serde_json::to_value(WaveReportPayload::initial())
+                payload: serde_json::to_value(TrackReportPayload::initial())
                     .expect("initial report payload"),
             })
             .await
             .expect("create report card");
 
         let root_session_id = WorkerSessionId::from("root-session");
-        seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
+        seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, &root_session_id).await;
         // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
         // `card_create` persists `worker` regardless of kind.
         sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
@@ -1159,67 +1178,67 @@ mod tests {
             .expect("persist spec card role");
 
         let card_role_cache = CardRoleCache::new();
-        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
         card_role_cache.insert(
             report_card.id.clone(),
             CardRole::ReportCard,
-            wave.id.clone(),
+            track.id.clone(),
         );
-        let wave_area_cache = WaveAreaCache::new();
-        repo.seed_wave_area_cache(&wave_area_cache)
+        let track_area_cache = TrackAreaCache::new();
+        repo.seed_track_area_cache(&track_area_cache)
             .await
-            .expect("seed wave area cache");
+            .expect("seed track area cache");
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let sink = CardDecisionSink {
             repo: route_repo,
             events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, wave_area_cache),
+            write: WriteContext::new(card_role_cache, track_area_cache),
         };
         let identity = ToolCallIdentity {
             card_id: spec_card.id.as_str().to_string(),
             role: CardRole::Spec,
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: root_session_id.as_str().to_string(),
-            wave_id: Some(wave.id.as_str().to_string()),
+            track_id: Some(track.id.as_str().to_string()),
             area_id: area.id.as_str().to_string(),
             thread_id: "root-thread".to_string(),
         };
-        let next = WaveReportPayload::new("root summary", "# Goal\n\nroot body\n");
+        let next = TrackReportPayload::new("root summary", "# Goal\n\nroot body\n");
 
         let updated = sink
             .commit_report_write(
                 &identity,
-                wave.clone(),
+                track.clone(),
                 report_card,
-                WaveReportPayload::initial(),
+                TrackReportPayload::initial(),
                 next,
                 "root edit".into(),
-                Some(WaveLifecycle::Dispatching),
+                Some(TrackLifecycle::Dispatching),
             )
             .await
             .expect("root report write succeeds");
 
-        let payload: WaveReportPayload =
+        let payload: TrackReportPayload =
             serde_json::from_value(updated.payload).expect("updated report payload");
         assert_eq!(payload.summary, "root summary");
-        let wave_after = repo
-            .wave_get(wave.id.as_str())
+        let track_after = repo
+            .track_get(track.id.as_str())
             .await
-            .expect("wave after")
-            .expect("wave row");
-        assert_eq!(wave_after.lifecycle, WaveLifecycle::Dispatching);
+            .expect("track after")
+            .expect("track row");
+        assert_eq!(track_after.lifecycle, TrackLifecycle::Dispatching);
         let events = repo.events_since(0, i64::MAX).await.expect("events");
         assert!(events.iter().any(|(_, _, _, event)| matches!(
             event,
-            Event::WaveLifecycleChanged {
-                to: WaveLifecycle::Dispatching,
+            Event::TrackLifecycleChanged {
+                to: TrackLifecycle::Dispatching,
                 ..
             }
         )));
         assert!(
             events
                 .iter()
-                .any(|(_, _, _, event)| matches!(event, Event::WaveReportEdited { .. }))
+                .any(|(_, _, _, event)| matches!(event, Event::TrackReportEdited { .. }))
         );
     }
 
@@ -1227,7 +1246,7 @@ mod tests {
     async fn spec_harness_agent_reactor_is_inert_and_shapes_principal() {
         let reactor = SpecHarnessAgentReactor::new(
             "runtime-1".to_string(),
-            WaveId::from("wave-1"),
+            TrackId::from("track-1"),
             AreaId::from("area-1"),
         );
 
@@ -1235,13 +1254,13 @@ mod tests {
             reactor.principal(),
             Principal::Agent {
                 session_id: WorkerSessionId::from("runtime-1"),
-                wave_id: WaveId::from("wave-1"),
+                track_id: TrackId::from("track-1"),
                 area_id: AreaId::from("area-1"),
             }
         );
 
         let intents = reactor
-            .react(&Observation::WaveGoal {
+            .react(&Observation::TrackGoal {
                 text: "goal".into(),
             })
             .await

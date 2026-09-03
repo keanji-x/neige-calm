@@ -29,7 +29,7 @@ App 进程是本机安装并受信的协作代码。当前没有 OS sandbox，�
 - 领域事实、role gate 和事件写路径；
 - operation、scheduler、gate 和 worker 生命周期；
 - 内建卡片的持久化契约；
-- Wave VCS、配额和 GC；
+- Track VCS、配额和 GC；
 - app 进程、MCP 传输和 `ui://` 资源宿主。
 
 ## 通道
@@ -44,7 +44,7 @@ Iframe 只能调用 manifest 为 view 声明的 `neige.*` 工具。浏览器入�
 
 ### Agent 调用 App
 
-内核把 app 工具代理为 `plugin.<id>_<tool>`。可见性由 wave 的 `plugin_scope` 决定，并且 fail closed：归属不明确或 app 不可用时，不向 Agent 暴露工具。
+内核把 app 工具代理为 `plugin.<id>_<tool>`。可见性由 track 的 `plugin_scope` 决定，并且 fail closed：归属不明确或 app 不可用时，不向 Agent 暴露工具。
 
 普通工具调用直接代理。Forge action 只接受结构化请求，由内核 operation 执行，以获得幂等、归因和恢复能力。
 
@@ -55,7 +55,7 @@ Manifest 可以声明工具、workflow、card view、entrypoint 和 permissions�
 ## App 能表达什么
 
 - 自己的 card kind 和 `ui://` 界面；
-- 附着在 wave/card 上的 overlay；
+- 附着在 track/card 上的 overlay；
 - workflow 的任务模板、输入和 spec 指令；
 - 提供给 Agent 的外部工具；
 - 私有 KV 与事件驱动行为。
@@ -63,7 +63,7 @@ Manifest 可以声明工具、workflow、card view、entrypoint 和 permissions�
 App 不能通过 Neige 通道：
 
 - 修改内核拥有的卡片或报告正文；
-- 直接写 Wave VCS 或 wave 文件投影；
+- 直接写 Track VCS 或 track 文件投影；
 - 定义由内核直接执行的 shell gate；
 - 绕过 role gate、scope 或事件写路径。
 
@@ -71,7 +71,7 @@ App 不能通过 Neige 通道：
 
 ## 当前限制
 
-一个 wave 只能绑定一个 workflow。绑定后只暴露所属 app 的工具；归属缺失时不回退到全部 app。多 app 协作需要新的组合模型，不能放宽 fail-closed scope。
+一个 track 只能绑定一个 workflow。绑定后只暴露所属 app 的工具；归属缺失时不回退到全部 app。多 app 协作需要新的组合模型，不能放宽 fail-closed scope。
 
 当前 trust 来自内核配置，没有签名或进程隔离。后续实现可以替换信任来源，但必须保持“由内核判定、消费端 fail closed”。
 

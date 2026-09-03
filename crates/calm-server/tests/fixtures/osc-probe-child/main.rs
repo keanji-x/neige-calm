@@ -373,7 +373,7 @@ fn main() {
     // by the shared-daemon boot path, act as a minimal fake `codex app-server`:
     // bind the socket, answer the JSON-RPC handshake (initialize /
     // thread.start / turn.start) and emit the `turn/started` notification.
-    // This keeps the OSC-roundtrip tests' real `POST /api/waves` path intact
+    // This keeps the OSC-roundtrip tests' real `POST /api/tracks` path intact
     // without needing a real codex binary. Any other invocation (e.g. the
     // `codex resume ... --remote ...` PTY child) falls through to the OSC probe
     // below.

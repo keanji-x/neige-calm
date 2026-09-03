@@ -5,7 +5,7 @@
 //! pure-function unit tests in `crate::role_gate::tests`, which sit one
 //! layer below the SQL. We want to pin:
 //!
-//!   * a `spec`-roled card can update its wave through the audited write
+//!   * a `spec`-roled card can update its track through the audited write
 //!     path, the events row lands, and the bus broadcast fires;
 //!   * an `AiCodex(other_card)` attempting the same write is refused
 //!     before the event row is appended — neither the events table
@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, wave_update_tx};
+use calm_server::db::sqlite::{SqlxRepo, track_update_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId};
-use calm_server::model::{CardRole, NewArea, NewWave, WavePatch};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::model::{CardRole, NewArea, NewTrack, TrackPatch};
+use calm_server::track_area_cache::TrackAreaCache;
 
 async fn boot() -> (Arc<SqlxRepo>, EventBus) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -31,11 +31,11 @@ async fn boot() -> (Arc<SqlxRepo>, EventBus) {
 }
 
 /// PR3 happy path: a card whose `cards.role = 'spec'` (we set this via
-/// direct SQL today — PR6 will mint spec cards from the wave-create
-/// path) is permitted to emit `WaveUpdated` through the audited write
+/// direct SQL today — PR6 will mint spec cards from the track-create
+/// path) is permitted to emit `TrackUpdated` through the audited write
 /// surface. The events row lands and the bus broadcast fires.
 #[tokio::test]
-async fn spec_card_can_update_wave() {
+async fn spec_card_can_update_track() {
     let (repo, bus) = boot().await;
     let mut sub = bus.subscribe();
 
@@ -47,8 +47,8 @@ async fn spec_card_can_update_wave() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -63,7 +63,7 @@ async fn spec_card_can_update_wave() {
         .unwrap();
     let card = repo
         .card_create(calm_server::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -81,16 +81,16 @@ async fn spec_card_can_update_wave() {
 
     // Re-seed the role cache so it sees the new spec role.
     let cache = CardRoleCache::new();
-    let wcc = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wcc).await.unwrap();
+    let wcc = TrackAreaCache::new();
+    repo.seed_track_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
     assert_eq!(cache.get(&card.id), Some(CardRole::Spec));
 
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
         area: area.id.clone(),
     };
-    let wave_id_for_tx = wave.id.clone();
+    let track_id_for_tx = track.id.clone();
     let res = write_with_event_typed(
         repo.as_ref(),
         ActorId::AiSpec(card.id.clone()),
@@ -100,10 +100,10 @@ async fn spec_card_can_update_wave() {
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
-                let w = wave_update_tx(
+                let w = track_update_tx(
                     tx,
-                    wave_id_for_tx.as_str(),
-                    WavePatch {
+                    track_id_for_tx.as_str(),
+                    TrackPatch {
                         title: Some("renamed".into()),
                         ..Default::default()
                     },
@@ -111,31 +111,34 @@ async fn spec_card_can_update_wave() {
                 .await?;
                 Ok((
                     w.clone(),
-                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                    Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(w, None)),
                 ))
             })
         },
     )
     .await;
-    assert!(res.is_ok(), "spec-card wave update should succeed: {res:?}");
+    assert!(
+        res.is_ok(),
+        "spec-card track update should succeed: {res:?}"
+    );
 
     // Confirm the event row landed.
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE kind = 'wave.updated'")
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE kind = 'track.updated'")
         .fetch_one(repo.pool())
         .await
         .unwrap();
-    assert_eq!(row.0, 1, "exactly one wave.updated row");
+    assert_eq!(row.0, 1, "exactly one track.updated row");
 
     // Bus saw the envelope.
     let env = sub.try_recv().expect("envelope on bus");
-    matches!(env.event, Event::WaveUpdated(_));
+    matches!(env.event, Event::TrackUpdated(_));
 }
 
 /// PR3 deny path: an `AiCodex(other_card)` actor attempting a
-/// `WaveUpdated` write is refused by the gate. Events table holds no
+/// `TrackUpdated` write is refused by the gate. Events table holds no
 /// new row; no broadcast fires.
 #[tokio::test]
-async fn ai_codex_cannot_update_wave() {
+async fn ai_codex_cannot_update_track() {
     let (repo, bus) = boot().await;
     let mut sub = bus.subscribe();
 
@@ -147,8 +150,8 @@ async fn ai_codex_cannot_update_wave() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -163,7 +166,7 @@ async fn ai_codex_cannot_update_wave() {
         .unwrap();
     let card = repo
         .card_create(calm_server::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -171,11 +174,11 @@ async fn ai_codex_cannot_update_wave() {
         })
         .await
         .unwrap();
-    // Worker codex cards are denied for wave.updated.
+    // Worker codex cards are denied for track.updated.
 
     let cache = CardRoleCache::new();
-    let wcc = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wcc).await.unwrap();
+    let wcc = TrackAreaCache::new();
+    repo.seed_track_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
 
     let baseline_events: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events")
@@ -183,12 +186,12 @@ async fn ai_codex_cannot_update_wave() {
         .await
         .unwrap();
 
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
         area: area.id.clone(),
     };
-    let wave_id_for_tx = wave.id.clone();
-    let title_before = wave.title.clone();
+    let track_id_for_tx = track.id.clone();
+    let title_before = track.title.clone();
     let res = write_with_event_typed(
         repo.as_ref(),
         ActorId::AiCodex(card.id.clone()),
@@ -198,10 +201,10 @@ async fn ai_codex_cannot_update_wave() {
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
-                let w = wave_update_tx(
+                let w = track_update_tx(
                     tx,
-                    wave_id_for_tx.as_str(),
-                    WavePatch {
+                    track_id_for_tx.as_str(),
+                    TrackPatch {
                         title: Some("hijack".into()),
                         ..Default::default()
                     },
@@ -209,7 +212,7 @@ async fn ai_codex_cannot_update_wave() {
                 .await?;
                 Ok((
                     w.clone(),
-                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                    Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(w, None)),
                 ))
             })
         },
@@ -234,10 +237,10 @@ async fn ai_codex_cannot_update_wave() {
         "events table must not gain rows on a denied write"
     );
 
-    // The wave's title is unchanged in the database — the rolled-back
+    // The track's title is unchanged in the database — the rolled-back
     // transaction took the UPDATE with it.
-    let fetched = repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(fetched.title, title_before, "wave row not mutated");
+    let fetched = repo.track_get(track.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(fetched.title, title_before, "track row not mutated");
 
     // Bus saw nothing for this attempt.
     assert!(
@@ -252,8 +255,8 @@ async fn ai_codex_cannot_update_wave() {
 async fn empty_codex_card_id_rejected() {
     let (repo, bus) = boot().await;
     let cache = CardRoleCache::new();
-    let wcc = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wcc).await.unwrap();
+    let wcc = TrackAreaCache::new();
+    repo.seed_track_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
     // Pure-event path with an empty CardId actor.
     let res = repo
@@ -295,8 +298,8 @@ async fn public_card_create_writes_worker_role() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "w".into(),
@@ -311,7 +314,7 @@ async fn public_card_create_writes_worker_role() {
         .unwrap();
     let card = repo
         .card_create(calm_server::model::NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -328,10 +331,10 @@ async fn public_card_create_writes_worker_role() {
 }
 
 /// Migration smoke test: the partial unique index that constrains "one
-/// spec card per wave" actually rejects duplicates. PR6 will rely on
+/// spec card per track" actually rejects duplicates. PR6 will rely on
 /// this as a backstop in case the application-level mint races itself.
 #[tokio::test]
-async fn unique_spec_card_per_wave_index_enforced() {
+async fn unique_spec_card_per_track_index_enforced() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
         .area_create(NewArea {
@@ -341,8 +344,8 @@ async fn unique_spec_card_per_wave_index_enforced() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "w".into(),
@@ -358,7 +361,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
     // Two cards, both role=spec.
     let c1 = repo
         .card_create(calm_server::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -368,7 +371,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
         .unwrap();
     let c2 = repo
         .card_create(calm_server::model::NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "spec".into(),
             sort: None,
@@ -392,7 +395,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
     assert!(
         msg.contains("UNIQUE")
             || msg.contains("constraint")
-            || msg.contains("idx_cards_one_spec_per_wave"),
+            || msg.contains("idx_cards_one_spec_per_track"),
         "expected unique-index violation, got: {msg}"
     );
 }

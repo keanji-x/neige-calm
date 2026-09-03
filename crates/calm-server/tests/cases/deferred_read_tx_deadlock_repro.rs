@@ -20,17 +20,17 @@
 //! already SELECTed while it parks on the next one. Those R locks block an
 //! IMMEDIATE writer's W request just as effectively as a W lock would.
 //!
-//! This test drives the REAL production reader `Repo::wave_detail`
+//! This test drives the REAL production reader `Repo::track_detail`
 //! (`calm-truth/src/db/sqlite/read.rs`, allowlist entry
-//! `async fn wave_detail(`) against the REAL production writer sequence of
-//! `DELETE /api/waves/:id` (`calm-server/src/routes/waves.rs`):
+//! `async fn track_detail(`) against the REAL production writer sequence of
+//! `DELETE /api/tracks/:id` (`calm-server/src/routes/tracks.rs`):
 //! `write_with_events_typed` (= `begin_immediate_tx`) →
-//! `overlay_delete_card_overlays_by_wave_tx` →
-//! `overlay_delete_by_entity_tx` ×2 → `wave_delete_tx`. Slow process/socket
+//! `overlay_delete_card_overlays_by_track_tx` →
+//! `overlay_delete_by_entity_tx` ×2 → `track_delete_tx`. Slow process/socket
 //! teardown happens before this writer tx.
 //!
-//! (`release_workspace_leases_for_wave_tx` sits between the overlay deletes
-//! and `wave_delete_tx` in the route but is `pub(crate)` to calm-server, so
+//! (`release_workspace_leases_for_track_tx` sits between the overlay deletes
+//! and `track_delete_tx` in the route but is `pub(crate)` to calm-server, so
 //! it is not callable from an integration test. It only touches
 //! `workspace_leases`, which neither side of this cycle reads, so its
 //! absence cannot manufacture the deadlock.)
@@ -40,23 +40,23 @@
 //!
 //!   1. writer: BEGIN IMMEDIATE, run the three overlay deletes → holds
 //!      W(overlays); signals `overlays_locked`, then parks on `go`.
-//!   2. test: spawns the reader `repo.wave_detail(id)`. It takes R(waves),
+//!   2. test: spawns the reader `repo.track_detail(id)`. It takes R(tracks),
 //!      R(cards), then MUST park on `overlays` — the writer holds W there.
 //!      Under the pre-fix deferred tx the reader is at this point a
 //!      lock-HOLDING waiter; under the fix it has already released
 //!      everything.
 //!   3. test: releases `go`.
-//!   4. writer: `wave_delete_tx` walks down to `DELETE FROM waves`, which
-//!      needs W(waves) — held R by the parked reader in the pre-fix shape.
+//!   4. writer: `track_delete_tx` walks down to `DELETE FROM tracks`, which
+//!      needs W(tracks) — held R by the parked reader in the pre-fix shape.
 //!      Cycle closed, code 6.
 //!
 //! The test asserts the invariant the allowlist CLAIMED to hold — that no
 //! such cycle can form. It was RED when written (the writer's
-//! `wave_delete_tx` failed with sqlite extended-result code **6**,
+//! `track_delete_tx` failed with sqlite extended-result code **6**,
 //! `SQLITE_LOCKED` "database is deadlocked" — the non-retryable cycle
 //! abort #930 set out to eliminate, not the retryable code 5
 //! `SQLITE_BUSY`). The fix dropped the explicit transaction from
-//! `wave_detail` and collapsed its three SELECTs into ONE statement: a
+//! `track_detail` and collapsed its three SELECTs into ONE statement: a
 //! single statement is AUTOCOMMIT (a blocked autocommit statement unwinds
 //! its implicit transaction, releasing every table lock it took, before
 //! parking in `unlock_notify` — so it can never be the lock-HOLDING
@@ -70,7 +70,7 @@
 //! satisfy trivially. Four positive facts pin the reader to its park
 //! point instead:
 //!   1. it signals `entered` from inside the spawned task before calling
-//!      `wave_detail`, and the test awaits that signal BEFORE releasing
+//!      `track_detail`, and the test awaits that signal BEFORE releasing
 //!      the writer. That rules out "never polled";
 //!   2. it HOLDS a checked-out sqlite connection while the writer is still
 //!      parked — the pool shows two connections in use, writer plus
@@ -78,8 +78,8 @@
 //!      the observation and fails if it never arrives. A reader still
 //!      sitting in `pool.acquire()` holds none;
 //!   3. it stays unfinished for at least `PARK_FLOOR_RATIO` times the
-//!      measured uncontended `wave_detail` latency (floor
-//!      `MIN_PARK_FLOOR`). The baseline is taken on this same wave, on
+//!      measured uncontended `track_detail` latency (floor
+//!      `MIN_PARK_FLOOR`). The baseline is taken on this same track, on
 //!      this machine, before the writer takes any lock — so "the reader
 //!      is merely slow" is quantified away rather than assumed, and a
 //!      slow machine scales the bar instead of flaking;
@@ -94,7 +94,7 @@
 //! userspace can distinguish those two, precisely BECAUSE the fix makes a
 //! parked reader hold no table locks and therefore leave no observable
 //! trace. What closes the gap is (4) combined with (3): the reader was
-//! inside `wave_detail` for two orders of magnitude longer than the read
+//! inside `track_detail` for two orders of magnitude longer than the read
 //! costs uncontended, holding a connection the whole time, and the rows it
 //! returned exist only on the far side of the writer's rollback. The one
 //! interleaving that would make `code != 6` vacuous — a reader that never
@@ -127,20 +127,21 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, wave_delete_tx,
+    SqlxRepo, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
+    track_delete_tx,
 };
 use calm_server::db::{RepoEventWrite, write_with_events_typed};
 use calm_server::error::{CalmError, Result};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewOverlay, NewWave};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack};
 use serde_json::json;
 use tokio::sync::oneshot;
 
-/// How much longer than an UNCONTENDED `wave_detail` the reader must stay
+/// How much longer than an UNCONTENDED `track_detail` the reader must stay
 /// unfinished before the writer is released.
 ///
-/// Deliberately a ratio against a baseline measured on this wave, on this
+/// Deliberately a ratio against a baseline measured on this track, on this
 /// machine, moments earlier — not a wall-clock constant. A fixed window is
 /// the classic CI flake: too short on a loaded box and the test fails for
 /// scheduling reasons, too long and it wastes CI time everywhere. A ratio
@@ -178,7 +179,7 @@ fn sqlite_code(err: &CalmError) -> Option<String> {
     }
 }
 
-/// What the writer's `wave_delete_tx` produced, shipped out of the write
+/// What the writer's `track_delete_tx` produced, shipped out of the write
 /// closure so the assertion can run on the test task.
 #[derive(Debug)]
 struct WriterOutcome {
@@ -187,7 +188,7 @@ struct WriterOutcome {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_delete_writer() {
+async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_delete_writer() {
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -202,8 +203,8 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
         })
         .await
         .expect("area_create");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "deadlock repro".into(),
@@ -215,12 +216,12 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("wave_create");
-    let wave_id = wave.id.to_string();
+        .expect("track_create");
+    let track_id = track.id.to_string();
 
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             kind: "note".into(),
             sort: None,
             payload: json!({"text": "repro"}),
@@ -233,13 +234,13 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
     // overlay statements are not no-ops.
     repo.overlay_upsert(NewOverlay {
         plugin_id: "repro".into(),
-        entity_kind: "wave".into(),
-        entity_id: wave_id.clone(),
+        entity_kind: "track".into(),
+        entity_id: track_id.clone(),
         kind: "badge".into(),
         payload: json!({"n": 1}),
     })
     .await
-    .expect("wave overlay");
+    .expect("track overlay");
     repo.overlay_upsert(NewOverlay {
         plugin_id: "repro".into(),
         entity_kind: "card".into(),
@@ -250,35 +251,35 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
     .await
     .expect("card overlay");
 
-    // Baseline: what does this exact `wave_detail` cost with NOBODY holding
+    // Baseline: what does this exact `track_detail` cost with NOBODY holding
     // a lock, on this machine, right now? Evidence #3 below is expressed as
     // a multiple of this, so "the reader is just slow" stops being a
     // hand-wave and a loaded CI box raises the bar instead of flaking.
     let mut baseline = Duration::ZERO;
     for _ in 0..5 {
         let started = std::time::Instant::now();
-        repo.wave_detail(&wave_id)
+        repo.track_detail(&track_id)
             .await
-            .expect("baseline wave_detail")
-            .expect("wave exists");
+            .expect("baseline track_detail")
+            .expect("track exists");
         baseline = baseline.max(started.elapsed());
     }
     let park_floor = (baseline * PARK_FLOOR_RATIO).max(MIN_PARK_FLOOR);
 
     let bus = EventBus::new();
     let role_cache = CardRoleCache::new();
-    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&area_cache)
+    let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&area_cache)
         .await
-        .expect("seed wave->area cache");
+        .expect("seed track->area cache");
 
     let (overlays_locked_tx, overlays_locked_rx) = oneshot::channel::<()>();
     let (go_tx, go_rx) = oneshot::channel::<()>();
     let (outcome_tx, outcome_rx) = oneshot::channel::<WriterOutcome>();
 
-    // ---- writer: the DELETE /api/waves/:id transaction, verbatim --------
+    // ---- writer: the DELETE /api/tracks/:id transaction, verbatim --------
     let repo_w = Arc::clone(&repo);
-    let wave_id_w = wave_id.clone();
+    let track_id_w = track_id.clone();
     let area_cache_w = area_cache.clone();
     let write_ctx = calm_server::state::WriteContext::new(role_cache.clone(), area_cache.clone());
     let writer = tokio::spawn(async move {
@@ -290,9 +291,9 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
             &write_ctx,
             move |tx| {
                 Box::pin(async move {
-                    overlay_delete_card_overlays_by_wave_tx(tx, &wave_id_w).await?;
-                    overlay_delete_by_entity_tx(tx, "wave", &wave_id_w).await?;
-                    overlay_delete_by_entity_tx(tx, "view", &wave_id_w).await?;
+                    overlay_delete_card_overlays_by_track_tx(tx, &track_id_w).await?;
+                    overlay_delete_by_entity_tx(tx, "track", &track_id_w).await?;
+                    overlay_delete_by_entity_tx(tx, "view", &track_id_w).await?;
 
                     // W(overlays) is now held by this IMMEDIATE tx.
                     overlays_locked_tx
@@ -300,13 +301,13 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
                         .expect("test task must still be listening");
                     go_rx.await.expect("test task must release the writer");
 
-                    let res = wave_delete_tx(tx, &wave_id_w, &area_cache_w)
+                    let res = track_delete_tx(tx, &track_id_w, &area_cache_w)
                         .await
                         .map_err(CalmError::from);
                     let outcome = match &res {
                         Ok(()) => WriterOutcome {
                             code: None,
-                            message: "wave_delete_tx succeeded (no cycle)".into(),
+                            message: "track_delete_tx succeeded (no cycle)".into(),
                         },
                         Err(e) => WriterOutcome {
                             code: sqlite_code(e),
@@ -334,20 +335,20 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
         .expect("writer must reach the overlay-locked seam");
 
     let repo_r = Arc::clone(&repo);
-    let wave_id_r = wave_id.clone();
+    let track_id_r = track_id.clone();
     let (entered_tx, entered_rx) = oneshot::channel::<()>();
     let reader = tokio::spawn(async move {
         // Positive evidence #1: the reader task was actually polled and is
-        // inside `wave_detail`. Without this the `!is_finished()` check
+        // inside `track_detail`. Without this the `!is_finished()` check
         // below is vacuous — it holds just as well for a task the runtime
         // has not touched yet.
         entered_tx.send(()).expect("test task must be listening");
-        let out = repo_r.wave_detail(&wave_id_r).await;
+        let out = repo_r.track_detail(&track_id_r).await;
         (out, std::time::Instant::now())
     });
     tokio::time::timeout(CHECKOUT_OBSERVE_CAP, entered_rx)
         .await
-        .expect("reader must reach wave_detail")
+        .expect("reader must reach track_detail")
         .expect("reader task must not be dropped");
     let entered_at = std::time::Instant::now();
 
@@ -369,7 +370,7 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
         tokio::task::yield_now().await;
         assert!(
             !reader.is_finished(),
-            "wave_detail must be PARKED on `overlays` (W-held by the writer). \
+            "track_detail must be PARKED on `overlays` (W-held by the writer). \
              It entered the read while the writer already held W(overlays), so \
              finishing early would mean it never took the lock at all"
         );
@@ -386,7 +387,7 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
                 entered_at.elapsed() < CHECKOUT_OBSERVE_CAP,
                 "the reader never held a checked-out sqlite connection \
                  (writer + reader = 2 in use) within {CHECKOUT_OBSERVE_CAP:?} \
-                 of entering `wave_detail`; peak observed {peak_in_use}. That \
+                 of entering `track_detail`; peak observed {peak_in_use}. That \
                  means it never got as far as issuing its statement, which \
                  would make the `code != 6` assertion below vacuous"
             ),
@@ -394,7 +395,7 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     eprintln!(
-        "[#1016 repro] uncontended wave_detail baseline={baseline:?}, \
+        "[#1016 repro] uncontended track_detail baseline={baseline:?}, \
          park floor={park_floor:?}, peak connections in use={peak_in_use}"
     );
 
@@ -404,28 +405,28 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
     let outcome = tokio::time::timeout(Duration::from_secs(30), outcome_rx)
         .await
         .expect("writer must not stall forever")
-        .expect("writer must report its wave_delete_tx outcome");
+        .expect("writer must report its track_delete_tx outcome");
 
     eprintln!(
-        "[#1016 repro] writer wave_delete_tx -> code={:?} message={}",
+        "[#1016 repro] writer track_delete_tx -> code={:?} message={}",
         outcome.code, outcome.message
     );
 
     // THE INVARIANT UNDER TEST (violated when this repro was written; #1016
     // closed the gap by removing the explicit tx). The allowlist in
     // `deferred_write_tx_invariant.rs` asserted that a read-only deferred tx
-    // "cannot be a hold-and-wait party". If that were true, no interleaving of `wave_detail` with the
-    // wave-delete writer could ever produce sqlite's non-retryable cycle
+    // "cannot be a hold-and-wait party". If that were true, no interleaving of `track_detail` with the
+    // track-delete writer could ever produce sqlite's non-retryable cycle
     // abort, `SQLITE_LOCKED` (6). Code 5 (`SQLITE_BUSY`) would be fine —
     // that one is retryable and is not what #930 set out to kill.
     assert_ne!(
         outcome.code.as_deref(),
         Some("6"),
         "#1016: the ALLOWLISTED read-only deferred transaction \
-         `read.rs::wave_detail` acted as a lock-HOLDING waiter \
-         (R(waves)+R(cards) held while parked on overlays) and closed a \
-         deadlock cycle with the real `DELETE /api/waves/:id` writer. \
-         `wave_delete_tx` aborted with SQLITE_LOCKED (6) \"database is \
+         `read.rs::track_detail` acted as a lock-HOLDING waiter \
+         (R(tracks)+R(cards) held while parked on overlays) and closed a \
+         deadlock cycle with the real `DELETE /api/tracks/:id` writer. \
+         `track_delete_tx` aborted with SQLITE_LOCKED (6) \"database is \
          deadlocked\" — the non-retryable production symptom #930 set out \
          to eliminate. The allowlist justification (\"a deferred \
          transaction that performs no writes ... cannot be a hold-and-wait \
@@ -435,10 +436,10 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
 
     // ---- positive evidence that the reader really went through `overlays`
     //
-    // The reader entered `wave_detail` while the writer's IMMEDIATE tx held
+    // The reader entered `track_detail` while the writer's IMMEDIATE tx held
     // W(overlays) with both seeded overlay rows DELETEd but not committed
     // (the route issues three overlay DELETE statements — card-scoped,
-    // wave-scoped, view-scoped — but only two rows exist to be hit; the
+    // track-scoped, view-scoped — but only two rows exist to be hit; the
     // "view" delete is a legitimate no-op, and adding a third row would not
     // strengthen anything the cycle depends on). The writer then rolls back,
     // restoring them. So a reader that observes both overlay rows can only
@@ -456,8 +457,8 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
         .expect("reader must not stall forever")
         .expect("reader task must not panic");
     let detail = detail
-        .expect("wave_detail must succeed")
-        .expect("wave must still exist — the writer rolled back");
+        .expect("track_detail must succeed")
+        .expect("track must still exist — the writer rolled back");
     assert_eq!(
         detail.overlays.len(),
         2,
@@ -469,7 +470,7 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
     assert_eq!(
         detail.cards.len(),
         1,
-        "reader must observe the wave's card in the same snapshot"
+        "reader must observe the track's card in the same snapshot"
     );
     assert!(
         finished_at > released_at,
@@ -477,14 +478,14 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
          completing earlier would mean it never contended for `overlays`"
     );
     // Evidence #3, cashed out: the reader spent orders of magnitude longer
-    // inside `wave_detail` than the same read costs uncontended on this
+    // inside `track_detail` than the same read costs uncontended on this
     // machine. `park_floor` is derived from the baseline measured above, so
     // this scales with the box instead of encoding a wall-clock guess.
     let reader_wall = finished_at.duration_since(entered_at);
     assert!(
         reader_wall >= park_floor,
-        "reader spent {reader_wall:?} in `wave_detail` but an uncontended \
-         read of the same wave costs {baseline:?}; it must have been BLOCKED \
+        "reader spent {reader_wall:?} in `track_detail` but an uncontended \
+         read of the same track costs {baseline:?}; it must have been BLOCKED \
          for at least {park_floor:?} ({PARK_FLOOR_RATIO}× baseline). A \
          shorter stay means it was never actually waiting on the writer's \
          W(overlays)"

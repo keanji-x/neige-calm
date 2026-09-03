@@ -8,7 +8,7 @@ const PRIVATE_IMPL: &str = "guard_forked_blocks_impl";
 
 #[test]
 fn fork_rule_one_exemption_has_one_structural_entry() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routes/waves/fork_guard.rs");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routes/tracks/fork_guard.rs");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let syntax = syn::parse_file(&source)
@@ -21,8 +21,8 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
     });
     let entry = entry.expect("fork guard entry vanished");
     assert!(
-        is_not_wider_than_waves(&entry.vis, 0),
-        "{EXPORTED_ENTRY} must not be visible beyond crate::routes::waves"
+        is_not_wider_than_tracks(&entry.vis, 0),
+        "{EXPORTED_ENTRY} must not be visible beyond crate::routes::tracks"
     );
 
     let mut exported_entries = BTreeSet::new();
@@ -72,7 +72,7 @@ fn template_descriptor_surface_is_id_only() {
     let descriptor = descriptor.expect("TemplateDescriptor vanished from the manifest parser");
     assert!(
         matches!(descriptor.vis, Visibility::Public(_)),
-        "TemplateDescriptor must stay pub so wave-create can resolve plugin_scope"
+        "TemplateDescriptor must stay pub so track-create can resolve plugin_scope"
     );
 
     let mut expected_entries = BTreeSet::new();
@@ -119,7 +119,7 @@ fn template_descriptor_surface_is_id_only() {
     );
 }
 
-fn is_not_wider_than_waves(visibility: &Visibility, inline_depth: usize) -> bool {
+fn is_not_wider_than_tracks(visibility: &Visibility, inline_depth: usize) -> bool {
     let Visibility::Restricted(restricted) = visibility else {
         return matches!(visibility, Visibility::Inherited);
     };
@@ -137,7 +137,7 @@ fn is_not_wider_than_waves(visibility: &Visibility, inline_depth: usize) -> bool
         Some("crate") => segments.starts_with(&[
             "crate".to_string(),
             "routes".to_string(),
-            "waves".to_string(),
+            "tracks".to_string(),
         ]),
         _ => false,
     }
@@ -177,7 +177,7 @@ fn is_cfg_test_module(module: &ItemMod) -> bool {
 }
 
 fn collect_parent_reexports(exports: &mut BTreeSet<String>) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routes/waves.rs");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routes/tracks.rs");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let syntax = syn::parse_file(&source)
@@ -193,7 +193,7 @@ fn collect_parent_reexports(exports: &mut BTreeSet<String>) {
         collect_use_paths(&item_use.tree, &mut Vec::new(), &mut paths);
         for (path, exported_name) in paths {
             if path.iter().any(|segment| segment == "fork_guard") {
-                exports.insert(format!("waves::{exported_name}"));
+                exports.insert(format!("tracks::{exported_name}"));
             }
         }
     }

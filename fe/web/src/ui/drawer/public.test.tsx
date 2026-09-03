@@ -72,7 +72,7 @@ describe('Drawer', () => {
    * The close **collapses**, it does not destroy.
    *
    * This is the shape assertion, and it is here because the page header's
-   * delete-wave control is 58px above this one in the same column at the same
+   * delete-track control is 58px above this one in the same column at the same
    * 28px size: measured at 1512×950, delete centres on y 36.3 and this centres
    * on y 94.0. An X on both would be one glyph meaning "put away" and "destroy"
    * a pointer-flick apart. So the close is the rail's collapse chevron, and the
@@ -277,7 +277,7 @@ describe('Drawer', () => {
    * ── The two ends of "unless something inside has already claimed it" ──────
    *
    * The open effect bows out when the focus is already inside the panel
-   * (#1211 S2). Its advertised case is the landing a just-created wave gets:
+   * (#1211 S2). Its advertised case is the landing a just-created track gets:
    * `ChatComposer`'s `focusOnMount` runs in the same commit and asks for
    * something more specific than "focus moves in". But the line also decides
    * *who the opener was*, on a path nobody asked it to decide, and both halves

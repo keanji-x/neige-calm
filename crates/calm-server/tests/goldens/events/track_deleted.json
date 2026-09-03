@@ -1,0 +1,10 @@
+{
+  "description": "track.deleted inline struct variant.",
+  "wire": {
+    "ev": "track.deleted",
+    "data": {
+      "id": "track-01",
+      "area_id": "area-01"
+    }
+  }
+}

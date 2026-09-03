@@ -17,7 +17,7 @@ use crate::db::sqlite::{
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
@@ -43,7 +43,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -77,7 +77,7 @@ pub struct CodexAdapter {
     pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     initial_turn_lifecycle_timeout: Duration,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
@@ -90,9 +90,9 @@ pub struct CodexWorkerAdapter {
     shared_codex_appserver: Arc<SharedCodexAppServer>,
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     /// #1147 D2 — the managed workspace root, needed because taking a lease
-    /// re-runs materialization for a managed wave (red-team B5). Boot-frozen
+    /// re-runs materialization for a managed track (red-team B5). Boot-frozen
     /// config, threaded rather than read from a global.
     workspace_root: std::path::PathBuf,
 }
@@ -106,7 +106,7 @@ impl CodexAdapter {
         pending_codex_threads: Arc<PendingThreadStartRegistry>,
         pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
@@ -115,7 +115,7 @@ impl CodexAdapter {
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             initial_turn_lifecycle_timeout: INITIAL_TURN_LIFECYCLE_TIMEOUT,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
@@ -131,7 +131,7 @@ impl CodexAdapter {
         pending_codex_threads: Arc<PendingThreadStartRegistry>,
         pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
@@ -141,7 +141,7 @@ impl CodexAdapter {
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             initial_turn_lifecycle_timeout: INITIAL_TURN_LIFECYCLE_TIMEOUT,
             spawn_hook: Some(spawn_hook),
         }
@@ -162,7 +162,7 @@ impl CodexWorkerAdapter {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
@@ -171,7 +171,7 @@ impl CodexWorkerAdapter {
             shared_codex_appserver,
             mcp_server,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             workspace_root,
         }
     }
@@ -188,7 +188,7 @@ pub struct CodexCreateOperationPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CodexWorkerOperationPayload {
     pub actor: ActorId,
-    pub wave_id: String,
+    pub track_id: String,
     pub idempotency_key: String,
     pub goal: String,
     /// Forward-compatible only. Scheduler-created Codex worker payloads keep
@@ -204,7 +204,7 @@ pub struct CodexWorkerOperationPayload {
 
 #[derive(Clone, Debug)]
 pub struct CodexCreateRequestInput {
-    pub wave_id: String,
+    pub track_id: String,
     pub title: Option<String>,
     pub sort: Option<f64>,
     pub cwd: Option<String>,
@@ -216,7 +216,7 @@ pub struct CodexCreateRequestInput {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NormalizedCodexCreateRequest {
-    pub wave_id: String,
+    pub track_id: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -258,7 +258,7 @@ pub fn normalize_codex_create_request(
     let icon_fg = normalize_optional_css_color(input.icon_fg.as_deref(), "icon_fg")?;
 
     Ok(NormalizedCodexCreateRequest {
-        wave_id: input.wave_id,
+        track_id: input.track_id,
         title: input.title,
         sort: input.sort,
         cwd,
@@ -302,13 +302,13 @@ impl ProviderAdapter for CodexAdapter {
         validate_optional_color(payload.request.icon_fg.as_deref(), "icon_fg")?;
         if self
             .repo
-            .wave_get(&payload.request.wave_id)
+            .track_get(&payload.request.track_id)
             .await?
             .is_none()
         {
             return Err(CalmError::NotFound(format!(
-                "wave {}",
-                payload.request.wave_id
+                "track {}",
+                payload.request.track_id
             )));
         }
         if !self.shared_codex_appserver.is_running() {
@@ -328,12 +328,12 @@ impl ProviderAdapter for CodexAdapter {
         let payload: CodexCreateOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
-        let wave_id = payload.request.wave_id.clone();
+        let track_id = payload.request.track_id.clone();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
-            WaveId::from(wave_id.clone()),
+            TrackId::from(track_id.clone()),
         )
         .await?;
         let (card, term, _token) = card_with_codex_create_tx(
@@ -341,7 +341,7 @@ impl ProviderAdapter for CodexAdapter {
             card_id.clone(),
             &runtime_id,
             None,
-            WaveId::from(wave_id.clone()),
+            TrackId::from(track_id.clone()),
             payload.request.title.clone(),
             payload.request.sort,
             payload.request.cwd.clone(),
@@ -370,7 +370,7 @@ impl ProviderAdapter for CodexAdapter {
             &event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -379,7 +379,7 @@ impl ProviderAdapter for CodexAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -404,7 +404,7 @@ impl ProviderAdapter for CodexAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
-            "wave_id": card.wave_id,
+            "track_id": card.track_id,
             "terminal_id": term.id,
             "cwd": payload.request.cwd,
             "env": env,
@@ -482,7 +482,7 @@ impl ProviderAdapter for CodexAdapter {
             let updated = persist_prompt_thread(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 op,
                 output,
                 payload.actor.clone(),
@@ -518,7 +518,7 @@ impl ProviderAdapter for CodexAdapter {
             let updated = persist_pending_thread_status(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 op,
                 output,
                 payload.actor,
@@ -542,7 +542,7 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<SpawnOutcome> {
         let terminal_id = output.output_string("terminal_id", "codex")?;
         let card_id = output.output_string("card_id", "codex")?;
-        let wave_id = output.output_string("wave_id", "codex")?;
+        let track_id = output.output_string("track_id", "codex")?;
         let runtime_id = output.output_string("runtime_id", "codex")?;
         let cwd = output.output_string("cwd", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
@@ -572,7 +572,7 @@ impl ProviderAdapter for CodexAdapter {
             self.pending_codex_threads
                 .register(PendingEntry::new(
                     card_id,
-                    Some(wave_id),
+                    Some(track_id),
                     terminal_id.clone(),
                     runtime_id.clone(),
                 ))
@@ -779,8 +779,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 "codex worker idempotency_key must not be empty".into(),
             ));
         }
-        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
+        if self.repo.track_get(&payload.track_id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("track {}", payload.track_id)));
         }
         Ok(())
     }
@@ -800,12 +800,16 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
         let runtime_id = new_id();
-        let wave_id = WaveId::from(payload.wave_id.clone());
+        let track_id = TrackId::from(payload.track_id.clone());
         // `payload.cwd` is forward-compatible only; the isolated lease path is
         // authoritative for codex-worker execution.
-        let lease_target =
-            prepare_workspace_lease_target_tx(tx, wave_id.as_str(), &card_id, &self.workspace_root)
-                .await?;
+        let lease_target = prepare_workspace_lease_target_tx(
+            tx,
+            track_id.as_str(),
+            &card_id,
+            &self.workspace_root,
+        )
+        .await?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_worker_prompt(
@@ -816,7 +820,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
-            wave_id.clone(),
+            track_id.clone(),
         )
         .await?;
 
@@ -825,7 +829,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             card_id.clone(),
             &runtime_id,
             Some(op.id.as_str()),
-            wave_id,
+            track_id,
             None,
             None,
             cwd.clone(),
@@ -841,7 +845,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
 
         let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.wave_id.as_str(), &op.id, &lease_target)
+            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &lease_target)
                 .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
@@ -879,7 +883,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
-            "wave_id": card.wave_id,
+            "track_id": card.track_id,
             "terminal_id": term.id,
             "cwd": cwd,
             "lease_id": lease.lease_id,
@@ -904,7 +908,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         provision_codex_worker_workspace(
             ctx,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
             op,
             output,
         )
@@ -921,7 +925,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let card_id = output.output_string("card_id", "codex")?;
         let runtime_id = output.output_string("runtime_id", "codex")?;
         let terminal_id = output.output_string("terminal_id", "codex")?;
-        let wave_id = WaveId::from(output.output_string("wave_id", "codex")?);
+        let track_id = TrackId::from(output.output_string("track_id", "codex")?);
         let cwd = output.output_string("cwd", "codex")?;
         let rendered_prompt = output.output_string("prompt", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
@@ -942,15 +946,15 @@ impl ProviderAdapter for CodexWorkerAdapter {
             log_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 &card_id,
-                &wave_id,
+                &track_id,
             )
             .await
             .unwrap_or_else(|e| {
                 tracing::error!(
                     card_id = %card_id,
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
                     "codex worker CardAdded append failed after recovery exit preservation; continuing"
                 );
@@ -977,7 +981,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             card: &card,
             term: &term,
             runtime_id: &runtime_id,
-            wave_id: &wave_id,
+            track_id: &track_id,
             mcp_token: Some(mcp_token.as_str()),
             rendered_prompt: &rendered_prompt,
             cwd: &cwd,
@@ -988,15 +992,15 @@ impl ProviderAdapter for CodexWorkerAdapter {
         log_worker_card_added(
             ctx,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
             &card_id,
-            &wave_id,
+            &track_id,
         )
         .await
         .unwrap_or_else(|e| {
             tracing::error!(
                 card_id = %card_id,
-                wave_id = %wave_id,
+                track_id = %track_id,
                 error = %e,
                 "codex worker CardAdded append failed after live spawn; continuing"
             );
@@ -1138,7 +1142,7 @@ pub(crate) struct CodexWorkerSpawnCtx<'a> {
     pub(crate) card: &'a Card,
     pub(crate) term: &'a crate::model::Terminal,
     pub(crate) runtime_id: &'a str,
-    pub(crate) wave_id: &'a WaveId,
+    pub(crate) track_id: &'a TrackId,
     pub(crate) mcp_token: Option<&'a str>,
     pub(crate) rendered_prompt: &'a str,
     pub(crate) cwd: &'a str,
@@ -1161,7 +1165,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     let persisted_turn_id = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
     let worker_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::WorkerCodex.prompt_template(),
-        ctx.wave_id.as_str(),
+        ctx.track_id.as_str(),
     );
     let thread_id =
         if let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) {
@@ -1208,7 +1212,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             tracing::info!(
                 target: "shared_codex_daemon::worker",
                 card_id,
-                wave_id = %ctx.wave_id,
+                track_id = %ctx.track_id,
                 thread_id = %thread_id,
                 "thread_start_succeeded"
             );
@@ -1251,7 +1255,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             tracing::warn!(
                 target: "shared_codex_daemon::worker",
                 card_id,
-                wave_id = %ctx.wave_id,
+                track_id = %ctx.track_id,
                 thread_id = %thread_id,
                 error = %e,
                 "turn_start_failed"
@@ -1287,7 +1291,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             tracing::info!(
                 target: "shared_codex_daemon::worker",
                 card_id,
-                wave_id = %ctx.wave_id,
+                track_id = %ctx.track_id,
                 terminal_id = %ctx.term.id,
                 thread_id = %thread_id,
                 "worker_spawn_succeeded"
@@ -1301,7 +1305,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             tracing::info!(
                 target: "shared_codex_daemon::worker",
                 card_id,
-                wave_id = %ctx.wave_id,
+                track_id = %ctx.track_id,
                 terminal_id = %ctx.term.id,
                 thread_id = %thread_id,
                 spawn_err = %e,
@@ -1327,9 +1331,9 @@ async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str, runtime_id: &str) ->
 async fn log_worker_card_added(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     card_id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
 ) -> Result<()> {
     let card = ctx
         .repo
@@ -1339,7 +1343,7 @@ async fn log_worker_card_added(
     let scope = card_scope(
         ctx.repo.as_ref(),
         CardId::from(card_id.to_string()),
-        wave_id.clone(),
+        track_id.clone(),
     )
     .await?;
     ctx.repo
@@ -1349,7 +1353,7 @@ async fn log_worker_card_added(
             None,
             &ctx.events,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             Event::CardAdded(card),
         )
         .await?;
@@ -1545,12 +1549,12 @@ async fn build_codex_env(
 async fn provision_codex_worker_workspace(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     op: &Operation,
     output: &mut TxOutput,
 ) -> Result<()> {
     let card_id = output.output_string("card_id", "codex-worker")?;
-    let wave_id = output.output_string("wave_id", "codex-worker")?;
+    let track_id = output.output_string("track_id", "codex-worker")?;
     let runtime_id = output.output_string("runtime_id", "codex-worker")?;
     let cwd = output.output_string("cwd", "codex-worker")?;
     let repo_root = output.output_optional_string("repo_root", "codex-worker")?;
@@ -1559,7 +1563,7 @@ async fn provision_codex_worker_workspace(
         tracing::info!(
             operation_id = %op.id,
             card_id = %card_id,
-            wave_id = %wave_id,
+            track_id = %track_id,
             "codex-worker legacy tx_output has no worktree target; skipping workspace provisioning"
         );
         return Ok(());
@@ -1588,7 +1592,7 @@ async fn provision_codex_worker_workspace(
     let scope = card_scope(
         ctx.repo.as_ref(),
         CardId::from(card_id.clone()),
-        WaveId::from(wave_id.clone()),
+        TrackId::from(track_id.clone()),
     )
     .await?;
     let mut checkpoint_output = output.clone();
@@ -1604,12 +1608,12 @@ async fn provision_codex_worker_workspace(
     )?;
 
     let card_id_for_tx = card_id.clone();
-    let wave_id_for_tx = wave_id.clone();
+    let track_id_for_tx = track_id.clone();
     let runtime_id_for_tx = runtime_id.clone();
     let cwd_for_tx = cwd.clone();
     let op_for_tx = op.clone();
     let output_for_tx = checkpoint_output.clone();
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     write_with_events_typed(
         ctx.repo.as_ref(),
         ActorId::KernelDispatcher,
@@ -1632,7 +1636,7 @@ async fn provision_codex_worker_workspace(
                     events.push((
                         scope.clone(),
                         Event::WorktreeProvisioned {
-                            wave_id: WaveId::from(wave_id_for_tx.clone()),
+                            track_id: TrackId::from(track_id_for_tx.clone()),
                             card_id: CardId::from(card_id_for_tx.clone()),
                             path: cwd_for_tx.clone(),
                         },
@@ -1663,7 +1667,7 @@ async fn provision_codex_worker_workspace(
 async fn persist_prompt_thread(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     op: &Operation,
     output: &TxOutput,
     actor: ActorId,
@@ -1676,13 +1680,13 @@ async fn persist_prompt_thread(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
-    let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+    let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
     let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
         actor,
@@ -1781,7 +1785,7 @@ async fn checkpoint_prompt_turn_started(
 async fn persist_pending_thread_status(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     op: &Operation,
     output: &TxOutput,
     actor: ActorId,
@@ -1793,12 +1797,12 @@ async fn persist_pending_thread_status(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
-    let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+    let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
     let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
         actor,

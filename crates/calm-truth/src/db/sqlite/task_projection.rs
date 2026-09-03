@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
-use calm_types::ids::{ActorId, WaveId};
+use calm_types::ids::{ActorId, TrackId};
 use calm_types::report_blocks::tasks::{
     Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, diagnostic_args,
     gate_rule_violations, json_eq, opt_json_eq, task_diagnostic_action, unknown_deps,
@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
-use super::wave_tree::{
-    DEFAULT_SPEC_TASK_CEILING, MAX_TREE_TASK_BUDGET, WaveTreeTerm, deterministic_share,
+use super::track_tree::{
+    DEFAULT_SPEC_TASK_CEILING, MAX_TREE_TASK_BUDGET, TrackTreeTerm, deterministic_share,
     effective_limit,
 };
 use crate::error::{CalmError, Result};
@@ -132,7 +132,7 @@ pub struct BlockVerdict {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Issue #1147 slice ① / #1149 — the failure classifier plus its
-    /// human reason tail (`"spawn-failed: wave … is not a git
+    /// human reason tail (`"spawn-failed: track … is not a git
     /// repository"`). Without it a failed task reads as a bare
     /// classifier on every surface and the real diagnosis stays buried
     /// in the operation's `phase_detail_json`.
@@ -145,9 +145,9 @@ pub struct BlockVerdict {
     /// Written after claim, so exposing it preserves the #1030 read-state
     /// exception. `spawn` must never be added beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_wave_id: Option<String>,
+    pub child_track_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_wave_deleted: Option<bool>,
+    pub child_track_deleted: Option<bool>,
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
@@ -160,8 +160,8 @@ struct TaskReadState {
     status_detail: Option<String>,
     gate_result_json: Option<String>,
     worker_card_id: Option<String>,
-    child_wave_id: Option<String>,
-    child_wave_deleted: i64,
+    child_track_id: Option<String>,
+    child_track_deleted: i64,
     context_stale_at_ms: Option<i64>,
     context_closure_truncated: i64,
     claim_context_json: Option<String>,
@@ -185,7 +185,7 @@ fn live_declaration_blocks_by_key(declarations: &[TaskDeclaration]) -> BTreeMap<
     declarations
         .iter()
         // The empty key is grouped like any other. `key` is not required to be
-        // non-empty on the wire, and `UNIQUE (wave_id, key)` means two blocks
+        // non-empty on the wire, and `UNIQUE (track_id, key)` means two blocks
         // declaring `""` still share exactly one row — the very ambiguity this
         // index exists to name. Dropping them here would hand both blocks the
         // same run again.
@@ -199,18 +199,18 @@ fn live_declaration_blocks_by_key(declarations: &[TaskDeclaration]) -> BTreeMap<
         })
 }
 
-/// Attach the task-table state carried by `wave_projection_state`'s single
+/// Attach the task-table state carried by `track_projection_state`'s single
 /// statement. This deliberately stays beside the projection query instead of
 /// introducing a live block data-source abstraction.
 ///
 /// #1160 — run state is attached only where the declaration index gives one
-/// unambiguous owner. `tasks` is keyed by `(wave_id, key)` and carries no block
+/// unambiguous owner. `tasks` is keyed by `(track_id, key)` and carries no block
 /// identity, so when *several* live declarations claim a key nothing in the
 /// data says which block owns the run; every field below then stays `None`
 /// rather than being copied onto each candidate. See `owned` for the arms.
 fn attach_task_read_state(
     rows: &[TaskReadState],
-    wave_id: &str,
+    track_id: &str,
     declarations: &[TaskDeclaration],
     verdicts: &mut [BlockVerdict],
 ) {
@@ -235,7 +235,7 @@ fn attach_task_read_state(
         //       declaration mentions this key at all"). Refusing it would leave
         //       a verdict this function's caller already stamped `status` on
         //       with no worker card for its own `open_worker_output` action,
-        //       no `status_detail`, no child wave, and neither reference
+        //       no `status_detail`, no child track, and neither reference
         //       diagnostic — the §6.5 withdrawal row would name a run nobody
         //       can open.
         // - two or more — genuinely undecidable, `DuplicateLiveKey`.
@@ -268,11 +268,11 @@ fn attach_task_read_state(
                 Some(serde_json::Value::Object(public))
             });
         verdict.worker_card_id = row.worker_card_id.clone();
-        verdict.child_wave_id = row.child_wave_id.clone();
-        verdict.child_wave_deleted = row
-            .child_wave_id
+        verdict.child_track_id = row.child_track_id.clone();
+        verdict.child_track_deleted = row
+            .child_track_id
             .as_ref()
-            .map(|_| row.child_wave_deleted != 0);
+            .map(|_| row.child_track_deleted != 0);
         let related_context_blocks = || {
             let grouped = row
                 .claim_context_json
@@ -285,7 +285,7 @@ fn attach_task_read_state(
                     BTreeMap::<String, Vec<String>>::new(),
                     |mut grouped, item| {
                         grouped
-                            .entry(item.wave_id.to_string())
+                            .entry(item.track_id.to_string())
                             .or_default()
                             .push(item.block_id);
                         grouped
@@ -296,9 +296,10 @@ fn attach_task_read_state(
             }
             grouped
                 .into_iter()
-                .map(|(related_wave_id, block_ids)| {
-                    let related_wave_id = (related_wave_id != wave_id).then_some(related_wave_id);
-                    (related_wave_id, block_ids)
+                .map(|(related_track_id, block_ids)| {
+                    let related_track_id =
+                        (related_track_id != track_id).then_some(related_track_id);
+                    (related_track_id, block_ids)
                 })
                 .collect::<Vec<_>>()
         };
@@ -306,13 +307,13 @@ fn attach_task_read_state(
             verdict
                 .diagnostics
                 .extend(related_context_blocks().into_iter().map(
-                    |(related_wave_id, related_block_ids)| {
+                    |(related_track_id, related_block_ids)| {
                         Diagnostic::coded(
                             "reference_chain_too_large",
                             "refs",
                             BTreeMap::new(),
                             related_block_ids,
-                            related_wave_id,
+                            related_track_id,
                             Some("narrow_task_context".into()),
                         )
                     },
@@ -333,7 +334,7 @@ fn attach_task_read_state(
             verdict
                 .diagnostics
                 .extend(related_context_blocks().into_iter().map(
-                    |(related_wave_id, related_block_ids)| {
+                    |(related_track_id, related_block_ids)| {
                         Diagnostic::coded(
                             "context_stale_reference",
                             "refs",
@@ -342,7 +343,7 @@ fn attach_task_read_state(
                                 serde_json::Value::String(row.status.clone()),
                             )]),
                             related_block_ids,
-                            related_wave_id,
+                            related_track_id,
                             Some("relink_reference".into()),
                         )
                     },
@@ -361,7 +362,7 @@ pub struct TaskProjectionOutcome {
     pub kernel_events: Vec<(ActorId, EventScope, Event)>,
     /// Recursive tree statements used to obtain this projection's tree term.
     /// Whole-tree callers use this countable seam to prevent an accidental
-    /// return to one full member walk per projected wave.
+    /// return to one full member walk per projected track.
     pub tree_cte_queries: u32,
 }
 
@@ -370,21 +371,21 @@ pub struct TaskProjectionOutcome {
 pub async fn mark_context_material_tx(
     tx: &mut Transaction<'_, Sqlite>,
     task_id: &str,
-    wave_id: &str,
+    track_id: &str,
     changed_refs: Vec<TaskContextChangedRef>,
     rationale: &str,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
     let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT t.key,w.area_id FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
+        "SELECT t.key,w.area_id FROM tasks t JOIN tracks w ON w.id=t.track_id WHERE t.id=?1 AND t.track_id=?2",
     )
     .bind(task_id)
-    .bind(wave_id)
+    .bind(track_id)
     .fetch_optional(&mut **tx)
     .await?;
     let Some((task_key, area_id)) = row else {
         tracing::warn!(
             task_id,
-            wave_id,
+            track_id,
             "context material verdict lost because its task row disappeared"
         );
         return Ok(Vec::new());
@@ -403,12 +404,12 @@ pub async fn mark_context_material_tx(
     }
     Ok(vec![(
         ActorId::Kernel,
-        EventScope::Wave {
-            wave: WaveId::from(wave_id),
+        EventScope::Track {
+            track: TrackId::from(track_id),
             area: area_id.into(),
         },
         Event::TaskContextAdvanced {
-            wave_id: WaveId::from(wave_id),
+            track_id: TrackId::from(track_id),
             task_key,
             task_id: task_id.into(),
             changed_refs,
@@ -432,7 +433,7 @@ fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
     )
 }
 
-fn reference_diagnostic(code: &str, reference: &str, wave_id: Option<String>) -> Diagnostic {
+fn reference_diagnostic(code: &str, reference: &str, track_id: Option<String>) -> Diagnostic {
     let related_block_ids = parse_destination(reference)
         .and_then(|(_, block)| block)
         .into_iter()
@@ -442,12 +443,12 @@ fn reference_diagnostic(code: &str, reference: &str, wave_id: Option<String>) ->
         "refs",
         diagnostic_args([("reference", serde_json::Value::String(reference.into()))]),
         related_block_ids,
-        wave_id,
+        track_id,
         Some("relink_reference".into()),
     )
 }
 
-/// One in-flight `tasks` row, as carried by [`wave_projection_state`]'s
+/// One in-flight `tasks` row, as carried by [`track_projection_state`]'s
 /// `json_group_array`. Shape mirrors the three columns the predicate needs.
 #[derive(Deserialize)]
 struct InflightTaskRow {
@@ -456,13 +457,13 @@ struct InflightTaskRow {
     declared_by: String,
 }
 
-/// Everything the schedulability verdict needs from `waves` + the in-flight
+/// Everything the schedulability verdict needs from `tracks` + the in-flight
 /// `tasks` rows, read in ONE statement (#1016).
-struct WaveProjectionState {
+struct TrackProjectionState {
     policy: Option<String>,
     ceiling: i64,
     require_gates: bool,
-    /// Area of the wave being projected — the source side of the
+    /// Area of the track being projected — the source side of the
     /// cross-area reference check.
     source_area: String,
     inflight: Vec<InflightTaskRow>,
@@ -470,7 +471,7 @@ struct WaveProjectionState {
 }
 
 #[derive(sqlx::FromRow)]
-struct WaveProjectionStateRow {
+struct TrackProjectionStateRow {
     automation_policy: Option<String>,
     spec_task_ceiling: Option<i64>,
     require_task_gates: i64,
@@ -479,7 +480,7 @@ struct WaveProjectionStateRow {
     task_read_state_json: String,
 }
 
-/// Reads the wave's projection policy, its area, and every in-flight task
+/// Reads the track's projection policy, its area, and every in-flight task
 /// row in a SINGLE statement.
 ///
 /// This used to be four statements — policy/ceiling/gates, the in-flight key
@@ -490,55 +491,55 @@ struct WaveProjectionStateRow {
 /// never existed, and the orphaned-in-flight scan could contradict the
 /// in-flight key list. One statement is one implicit transaction, so all of
 /// it now comes from one version. It also removes the `SELECT area_id ...
-/// fetch_one` that turned a concurrently deleted wave into a 500 (it is the
+/// fetch_one` that turned a concurrently deleted track into a 500 (it is the
 /// `NotFound` below, i.e. a 404, on the same row that carries the policy).
 ///
 /// The in-flight key set, ceiling occupancy, and orphan candidates are captured
 /// by the same statement.
-async fn wave_projection_state(
+async fn track_projection_state(
     conn: &mut SqliteConnection,
-    wave_id: &str,
+    track_id: &str,
     include_read_state: bool,
-) -> Result<WaveProjectionState> {
+) -> Result<TrackProjectionState> {
     let sql = if include_read_state {
         r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
                    FROM tasks t
-                   WHERE t.wave_id = w.id
+                   WHERE t.track_id = w.id
                        AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'status_detail', t.status_detail,
                        'gate_result_json', t.gate_result_json,
                        'worker_card_id', t.worker_card_id,
-                       'child_wave_id', t.child_wave_id,
-                       'child_wave_deleted', CASE WHEN t.child_wave_id IS NOT NULL
-                         AND NOT EXISTS(SELECT 1 FROM waves child WHERE child.id=t.child_wave_id)
+                       'child_track_id', t.child_track_id,
+                       'child_track_deleted', CASE WHEN t.child_track_id IS NOT NULL
+                         AND NOT EXISTS(SELECT 1 FROM tracks child WHERE child.id=t.child_track_id)
                          THEN 1 ELSE 0 END,
                        'context_stale_at_ms', t.context_stale_at_ms,
                        'context_closure_truncated', t.context_closure_truncated,
                        'claim_context_json', t.claim_context_json))
-                   FROM tasks t WHERE t.wave_id = w.id) AS task_read_state_json
-           FROM waves w WHERE w.id = ?1"#
+                   FROM tasks t WHERE t.track_id = w.id) AS task_read_state_json
+           FROM tracks w WHERE w.id = ?1"#
     } else {
         r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
                    FROM tasks t
-                   WHERE t.wave_id = w.id
+                   WHERE t.track_id = w.id
                        AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    '[]' AS task_read_state_json
-           FROM waves w WHERE w.id = ?1"#
+           FROM tracks w WHERE w.id = ?1"#
     };
-    let row: Option<WaveProjectionStateRow> = sqlx::query_as(sql)
-        .bind(wave_id)
+    let row: Option<TrackProjectionStateRow> = sqlx::query_as(sql)
+        .bind(track_id)
         .fetch_optional(&mut *conn)
         .await?;
-    let row = row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
-    Ok(WaveProjectionState {
+    let row = row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    Ok(TrackProjectionState {
         policy: row.automation_policy,
         ceiling: effective_limit(row.spec_task_ceiling, DEFAULT_SPEC_TASK_CEILING),
         require_gates: row.require_task_gates != 0,
@@ -557,8 +558,8 @@ async fn wave_projection_state(
 ///
 /// Consistency on the READ path, stated precisely — including what is still
 /// broken. The local verdict core — policy, ceiling, in-flight occupancy,
-/// in-flight keys, the wave's area — is ONE statement
-/// ([`wave_projection_state`]). Before it, [`wave_tree_term`] runs three
+/// in-flight keys, the track's area — is ONE statement
+/// ([`track_projection_state`]). Before it, [`track_tree_term`] runs three
 /// autocommit statements (root walk, member/inventory walk, root budget); after
 /// it, two more kinds of reads remain outside that statement, each its own
 /// autocommit version:
@@ -566,7 +567,7 @@ async fn wave_projection_state(
 ///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
 ///     key is already executing"; and
 ///   * the per-reference existence/area lookups, which are questions about
-///     OTHER waves and cards and are inherently point-in-time.
+///     OTHER tracks and cards and are inherently point-in-time.
 ///
 /// The per-reference lookups really are only "possibly stale": they ask about
 /// unrelated entities and a stale answer is a stale answer.
@@ -608,7 +609,7 @@ async fn wave_projection_state(
 /// `begin_immediate_tx` would also be cycle-free and fully consistent, but it
 /// takes the writer slot and would serialize this read against every writer
 /// on production too — a real production cost for a non-production gap.
-/// Every declaration of a wave whose tree root cannot be resolved is
+/// Every declaration of a track whose tree root cannot be resolved is
 /// unschedulable, with a diagnostic that says so. Deliberately NOT "skip the
 /// tree term when there is no tree": one broken link would then exempt an
 /// entire subtree from the bound.
@@ -625,15 +626,15 @@ fn tree_root_unresolved_diagnostic() -> Diagnostic {
 
 pub async fn evaluate_schedulability(
     conn: &mut SqliteConnection,
-    wave_id: &str,
+    track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
     include_read_state: bool,
 ) -> Result<Vec<BlockVerdict>> {
-    let tree = super::wave_tree::wave_tree_term(&mut *conn, wave_id).await?;
+    let tree = super::track_tree::track_tree_term(&mut *conn, track_id).await?;
     evaluate_schedulability_with_tree_term(
         conn,
-        wave_id,
+        track_id,
         declarations,
         block_local_diags,
         include_read_state,
@@ -644,39 +645,39 @@ pub async fn evaluate_schedulability(
 
 async fn evaluate_schedulability_with_tree_term(
     conn: &mut SqliteConnection,
-    wave_id: &str,
+    track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
     include_read_state: bool,
-    tree_term: WaveTreeTerm,
+    tree_term: TrackTreeTerm,
 ) -> Result<Vec<BlockVerdict>> {
-    let state = wave_projection_state(&mut *conn, wave_id, include_read_state).await?;
+    let state = track_projection_state(&mut *conn, track_id, include_read_state).await?;
     let configured_policy = state.policy;
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
-    // share)` where `share` is this wave's deterministic slice of the root's
-    // `tree_task_budget`, split over the tree's waves in `(created_at, id)`
+    // share)` where `share` is this track's deterministic slice of the root's
+    // `tree_task_budget`, split over the tree's tracks in `(created_at, id)`
     // order. Its quota is a function of tree SHAPE, never sibling projection
-    // output. Within this wave, immutable in-flight occupancy is subtracted and
+    // output. Within this track, immutable in-flight occupancy is subtracted and
     // pending rows re-enter as ordered candidates. That keeps
     // "rebuild ≡ incremental" (D.1 #11) true. A shared sibling count would
     // instead be first-come-first-served,
     // path-dependent, and not reconstructible by a rebuild.
     let ceiling = state.ceiling;
     let (tree_share, tree_root_unresolved) = match &tree_term {
-        WaveTreeTerm::RootUnresolved => {
+        TrackTreeTerm::RootUnresolved => {
             // Fail closed. A broken parent link, a cycle, or an over-deep chain
-            // means we cannot name the budget this wave draws from; treating
+            // means we cannot name the budget this track draws from; treating
             // "no resolvable tree" as "no tree constraint" would leave a whole
             // subtree unbounded, which is the one outcome the tree bound exists
             // to prevent.
             (None, true)
         }
-        WaveTreeTerm::Share(share) => (Some(share.clone()), false),
+        TrackTreeTerm::Share(share) => (Some(share.clone()), false),
     };
     let require_gates = state.require_gates;
     let source_area = state.source_area;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
-    // unknown_deps knows every in-flight key in the wave.
+    // unknown_deps knows every in-flight key in the track.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
     let ceiling_occupied: i64 = state
@@ -746,34 +747,34 @@ async fn evaluate_schedulability_with_tree_term(
         {
             references.extend(scan_links(text).links.into_iter().filter_map(|link| {
                 link.dst_block_id
-                    .map(|block| format!("neige://wave/{}#{block}", link.dst_wave_id))
+                    .map(|block| format!("neige://wave/{}#{block}", link.dst_track_id))
             }));
         }
         references.sort();
         references.dedup();
         for reference in &references {
             let destination = parse_destination(reference);
-            let destination_wave = destination.as_ref().map(|(wave, _)| wave.clone());
-            let target: Option<(String, String, i64)> = if let Some((dst_wave, dst_block)) =
+            let destination_track = destination.as_ref().map(|(track, _)| track.clone());
+            let target: Option<(String, String, i64)> = if let Some((dst_track, dst_block)) =
                 destination
             {
                 let Some(dst_block) = dst_block else {
                     diagnostics.push(reference_diagnostic(
                         "reference_needs_block",
                         reference,
-                        Some(dst_wave),
+                        Some(dst_track),
                     ));
                     continue;
                 };
                 sqlx::query_as(
-                    "SELECT w.area_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.wave_id=w.id AND card.kind='wave-report' AND json_extract(block.value,'$.id')=?2) FROM waves w JOIN areas c ON c.id=w.area_id WHERE w.id=?1",
+                    "SELECT w.area_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.track_id=w.id AND card.kind='track-report' AND json_extract(block.value,'$.id')=?2) FROM tracks w JOIN areas c ON c.id=w.area_id WHERE w.id=?1",
                 )
-                    .bind(dst_wave).bind(dst_block).fetch_optional(&mut *conn).await?
+                    .bind(dst_track).bind(dst_block).fetch_optional(&mut *conn).await?
             } else if let Some(card_id) = reference
                 .strip_prefix("neige://card/")
                 .filter(|id| !id.is_empty() && !id.contains('/'))
             {
-                sqlx::query_as("SELECT w.area_id,c.kind,1 FROM cards card JOIN waves w ON w.id=card.wave_id JOIN areas c ON c.id=w.area_id WHERE card.id=?1")
+                sqlx::query_as("SELECT w.area_id,c.kind,1 FROM cards card JOIN tracks w ON w.id=card.track_id JOIN areas c ON c.id=w.area_id WHERE card.id=?1")
                     .bind(card_id).fetch_optional(&mut *conn).await?
             } else {
                 continue;
@@ -782,7 +783,7 @@ async fn evaluate_schedulability_with_tree_term(
                 None => diagnostics.push(reference_diagnostic(
                     "reference_missing",
                     reference,
-                    destination_wave.clone(),
+                    destination_track.clone(),
                 )),
                 Some((target_area, target_kind, _))
                     if target_area != source_area && target_kind != "system" =>
@@ -790,13 +791,13 @@ async fn evaluate_schedulability_with_tree_term(
                     diagnostics.push(reference_diagnostic(
                         "reference_cross_area",
                         reference,
-                        destination_wave.clone(),
+                        destination_track.clone(),
                     ));
                 }
                 Some((_, _, 0)) => diagnostics.push(reference_diagnostic(
                     "reference_missing",
                     reference,
-                    destination_wave,
+                    destination_track,
                 )),
                 Some(_) => {}
             }
@@ -823,8 +824,8 @@ async fn evaluate_schedulability_with_tree_term(
             status_detail: None,
             gate_result: None,
             worker_card_id: None,
-            child_wave_id: None,
-            child_wave_deleted: None,
+            child_track_id: None,
+            child_track_deleted: None,
             diagnostics,
             withdrawal: None,
         });
@@ -834,9 +835,9 @@ async fn evaluate_schedulability_with_tree_term(
     // in-flight declaration cannot consume capacity, and a terminal key can never
     // produce a new live row.
     let frozen: Vec<FrozenDeclarationRow> = sqlx::query_as(
-        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,decl_ready,decl_released_by_user FROM tasks WHERE wave_id=?1 AND status!='pending'",
+        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,decl_ready,decl_released_by_user FROM tasks WHERE track_id=?1 AND status!='pending'",
     )
-    .bind(wave_id)
+    .bind(track_id)
     .fetch_all(&mut *conn)
     .await?;
     let frozen_by_key: BTreeMap<_, _> =
@@ -929,8 +930,8 @@ async fn evaluate_schedulability_with_tree_term(
                 status_detail: None,
                 gate_result: None,
                 worker_card_id: None,
-                child_wave_id: None,
-                child_wave_deleted: None,
+                child_track_id: None,
+                child_track_deleted: None,
                 withdrawal: None,
             });
         }
@@ -978,7 +979,7 @@ async fn evaluate_schedulability_with_tree_term(
         .filter(|share| !share.admission_frozen && tree_capacity == ceiling_capacity)
         .cloned();
     for index in candidates.into_iter().skip(capacity) {
-        let tree_diagnostic = |share: &super::wave_tree::TreeShare, bounds_tied: bool| {
+        let tree_diagnostic = |share: &super::track_tree::TreeShare, bounds_tied: bool| {
             // The target must gain a genuinely free slot, not merely catch up
             // to immutable occupancy. In a self-overage freeze the first B
             // that increases `share` can still leave share == occupancy.
@@ -1032,7 +1033,7 @@ async fn evaluate_schedulability_with_tree_term(
                     .map(str::to_owned),
             )
         };
-        let ceiling_diagnostic = |tree_context: Option<&super::wave_tree::TreeShare>,
+        let ceiling_diagnostic = |tree_context: Option<&super::track_tree::TreeShare>,
                                   admission_frozen: bool,
                                   raise_available: bool| {
             // The new ceiling must clear both the configured bound and fixed
@@ -1077,7 +1078,7 @@ async fn evaluate_schedulability_with_tree_term(
                 "key",
                 args,
                 admitted_ids.clone(),
-                Some(wave_id.into()),
+                Some(track_id.into()),
                 raise_available
                     .then(|| task_diagnostic_action("spec_task_ceiling"))
                     .flatten()
@@ -1110,7 +1111,12 @@ async fn evaluate_schedulability_with_tree_term(
         verdicts[index].schedulable = false;
     }
     if include_read_state {
-        attach_task_read_state(&state.task_read_state, wave_id, declarations, &mut verdicts);
+        attach_task_read_state(
+            &state.task_read_state,
+            track_id,
+            declarations,
+            &mut verdicts,
+        );
     }
     Ok(verdicts)
 }
@@ -1127,49 +1133,49 @@ pub async fn task_delete_pending_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) 
 
 pub async fn project_tasks_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<TaskProjectionOutcome> {
-    let tree = super::wave_tree::wave_tree_term(tx, wave_id).await?;
+    let tree = super::track_tree::track_tree_term(tx, track_id).await?;
     let tree_cte_queries = tree.tree_cte_queries;
     let verdicts = evaluate_schedulability_with_tree_term(
         tx,
-        wave_id,
+        track_id,
         declarations,
         block_local_diags,
         false,
         tree.term,
     )
     .await?;
-    project_tasks_from_verdicts_tx(tx, wave_id, declarations, verdicts, tree_cte_queries).await
+    project_tasks_from_verdicts_tx(tx, track_id, declarations, verdicts, tree_cte_queries).await
 }
 
 /// Projection entry point for a whole-tree rebuild. The caller enumerates the
 /// tree once and passes each deterministic share here, avoiding one recursive
-/// member walk per wave.
+/// member walk per track.
 pub async fn project_tasks_with_tree_term_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
-    tree_term: WaveTreeTerm,
+    tree_term: TrackTreeTerm,
 ) -> Result<TaskProjectionOutcome> {
     let verdicts = evaluate_schedulability_with_tree_term(
         tx,
-        wave_id,
+        track_id,
         declarations,
         block_local_diags,
         false,
         tree_term,
     )
     .await?;
-    project_tasks_from_verdicts_tx(tx, wave_id, declarations, verdicts, 0).await
+    project_tasks_from_verdicts_tx(tx, track_id, declarations, verdicts, 0).await
 }
 
 async fn project_tasks_from_verdicts_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
+    track_id: &str,
     declarations: &[TaskDeclaration],
     verdicts: Vec<BlockVerdict>,
     tree_cte_queries: u32,
@@ -1179,7 +1185,7 @@ async fn project_tasks_from_verdicts_tx(
     // `BTreeMap` collects, so with several blocks on one key the answer
     // depended on document order. Each is now an explicit fold over every
     // block carrying the key. The dimension stays `key`: `tasks` rows are
-    // keyed by `(wave_id, key)` and `block_id` is not a durable identity.
+    // keyed by `(track_id, key)` and `block_id` is not a durable identity.
     //
     // `schedulable` folds with `any`: the row is still wanted as long as *one*
     // live block can produce it. Folding with `all` would let a tombstone (or
@@ -1193,8 +1199,8 @@ async fn project_tasks_from_verdicts_tx(
         },
     );
     let existing: Vec<(String, String, String, Option<String>)> =
-        sqlx::query_as("SELECT id,key,status,claim_context_json FROM tasks WHERE wave_id=?1")
-            .bind(wave_id)
+        sqlx::query_as("SELECT id,key,status,claim_context_json FROM tasks WHERE track_id=?1")
+            .bind(track_id)
             .fetch_all(&mut **tx)
             .await?;
     let mut verdicts = verdicts;
@@ -1261,7 +1267,7 @@ async fn project_tasks_from_verdicts_tx(
                                 .into_iter()
                                 .filter(|frozen| frozen.is_root)
                                 .map(|frozen| TaskContextChangedRef {
-                                    wave_id: frozen.wave_id,
+                                    track_id: frozen.track_id,
                                     block_id: frozen.block_id,
                                     from_rev: frozen.rev,
                                     from_hash: frozen.hash,
@@ -1273,7 +1279,7 @@ async fn project_tasks_from_verdicts_tx(
                         mark_context_material_tx(
                             tx,
                             id,
-                            wave_id,
+                            track_id,
                             changed_refs,
                             match withdrawal_edge {
                                 Some(WithdrawalEdge::Ready) => {
@@ -1301,8 +1307,8 @@ async fn project_tasks_from_verdicts_tx(
                         status_detail: None,
                         gate_result: None,
                         worker_card_id: None,
-                        child_wave_id: None,
-                        child_wave_deleted: None,
+                        child_track_id: None,
+                        child_track_deleted: None,
                         withdrawal: None,
                     });
                 }
@@ -1319,7 +1325,7 @@ async fn project_tasks_from_verdicts_tx(
         if !verdict.schedulable {
             continue;
         }
-        let id = format!("{wave_id}:{}", declaration.key);
+        let id = format!("{track_id}:{}", declaration.key);
         let context = serde_json::to_string(&declaration.context)
             .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
         let depends = serde_json::to_string(&declaration.depends_on)
@@ -1332,14 +1338,14 @@ async fn project_tasks_from_verdicts_tx(
             .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
         let result = sqlx::query(
             r#"INSERT INTO tasks(
-                   id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+                   id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
                    decl_ready,decl_released_by_user,created_at_ms,updated_at_ms
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
                    ?14,?15,?16,?16
                )
-               ON CONFLICT(wave_id,key) DO UPDATE SET
+               ON CONFLICT(track_id,key) DO UPDATE SET
                    kind=excluded.kind,
                    goal=excluded.goal,
                    context_json=excluded.context_json,
@@ -1370,7 +1376,7 @@ async fn project_tasks_from_verdicts_tx(
                  )"#,
         )
         .bind(&id)
-        .bind(wave_id)
+        .bind(track_id)
         .bind(&declaration.key)
         .bind(&declaration.kind)
         .bind(&declaration.goal)
@@ -1403,7 +1409,7 @@ async fn project_tasks_from_verdicts_tx(
 mod tests {
     use super::*;
     use calm_types::report_blocks::tasks::TaskDeclaration;
-    use calm_types::wave_report::ReportBlock;
+    use calm_types::track_report::ReportBlock;
     use serde_json::json;
 
     fn declaration(index: usize, key: &str) -> TaskDeclaration {
@@ -1444,23 +1450,23 @@ mod tests {
         let repo = super::super::SqlxRepo::open("sqlite::memory:")
             .await
             .unwrap();
-        let wave = "wave-projection".to_string();
+        let track = "track-projection".to_string();
         sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")
             .execute(&repo.pool).await.unwrap();
         // #1147 S1 — this fixture used to inline `cwd='/'`, which made it a
         // second writer of a column design D1 reserves for
-        // `wave_workspace_write_tx`. It is converted rather than exempted:
+        // `track_workspace_write_tx`. It is converted rather than exempted:
         // a fixture that bypasses a production invariant is exactly the shape
         // that lets the invariant rot. The projection assertions never read
         // the workspace, so the value is the same `/` routed properly.
-        sqlx::query("INSERT INTO waves(id,area_id,title,sort,lifecycle,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
-            .bind(&wave).execute(&repo.pool).await.unwrap();
+        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
+            .bind(&track).execute(&repo.pool).await.unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
-        crate::db::sqlite::wave_workspace::wave_workspace_write_tx(
+        crate::db::sqlite::track_workspace::track_workspace_write_tx(
             &mut tx,
-            &wave,
-            &crate::model::WaveWorkspace {
-                kind: crate::model::WaveWorkspaceKind::Attached,
+            &track,
+            &crate::model::TrackWorkspace {
+                kind: crate::model::TrackWorkspaceKind::Attached,
                 path: "/".into(),
                 frozen_at: Some(0),
             },
@@ -1468,27 +1474,32 @@ mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        (repo, wave)
+        (repo, track)
     }
 
-    async fn insert_block_task(repo: &super::super::SqlxRepo, wave: &str, key: &str, status: &str) {
-        sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,claim_context_json,context_closure_truncated,decl_ready,decl_released_by_user,context_verify_failures,spawn,child_wave_id,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec',NULL,0,0,0,0,'in-wave',NULL,0,0)")
-            .bind(format!("{wave}:{key}")).bind(wave).bind(key).bind(format!("goal {key}")).bind(status)
+    async fn insert_block_task(
+        repo: &super::super::SqlxRepo,
+        track: &str,
+        key: &str,
+        status: &str,
+    ) {
+        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,claim_context_json,context_closure_truncated,decl_ready,decl_released_by_user,context_verify_failures,spawn,child_track_id,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec',NULL,0,0,0,0,'in-wave',NULL,0,0)")
+            .bind(format!("{track}:{key}")).bind(track).bind(key).bind(format!("goal {key}")).bind(status)
             .execute(&repo.pool).await.unwrap();
     }
 
     #[tokio::test]
     async fn read_state_surfaces_truncated_and_stale_reference_diagnostics() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "read-state", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "read-state", "running").await;
         let claim_context = json!([
-            {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
-            {"wave_id": wave, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
+            {"track_id": track, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
+            {"track_id": track, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
         ]);
-        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1,gate_result_json=?2,worker_card_id='worker-output' WHERE wave_id=?3 AND key='read-state'")
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1,gate_result_json=?2,worker_card_id='worker-output' WHERE track_id=?3 AND key='read-state'")
             .bind(claim_context.to_string())
             .bind(json!({"passed":false,"failing_step":"test","log_path":"/private/gate.log","log_tail":"raw output","attempt":7}).to_string())
-            .bind(&wave)
+            .bind(&track)
             .execute(&repo.pool)
             .await
             .unwrap();
@@ -1496,7 +1507,7 @@ mod tests {
         let mut tx = repo.pool.begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
-            &wave,
+            &track,
             &[declaration(0, "read-state")],
             &[vec![]],
             true,
@@ -1523,14 +1534,14 @@ mod tests {
 
     #[tokio::test]
     async fn read_state_root_only_context_remains_fail_closed() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "root-only", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "root-only", "running").await;
         let claim_context = json!([
-            {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true}
+            {"track_id": track, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true}
         ]);
-        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='root-only'")
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='root-only'")
             .bind(claim_context.to_string())
-            .bind(&wave)
+            .bind(&track)
             .execute(&repo.pool)
             .await
             .unwrap();
@@ -1538,7 +1549,7 @@ mod tests {
         let mut tx = repo.pool.begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
-            &wave,
+            &track,
             &[declaration(0, "root-only")],
             &[vec![]],
             true,
@@ -1555,15 +1566,15 @@ mod tests {
                 .find(|diagnostic| diagnostic.code == code)
                 .unwrap_or_else(|| panic!("missing {code}"));
             assert!(diagnostic.related_block_ids.is_empty());
-            assert!(diagnostic.related_wave_id.is_none());
+            assert!(diagnostic.related_track_id.is_none());
         }
     }
 
     #[tokio::test]
-    async fn declare_and_wait_diagnostic_does_not_link_to_its_own_wave() {
-        let (repo, wave) = setup().await;
-        sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
-            .bind(&wave)
+    async fn declare_and_wait_diagnostic_does_not_link_to_its_own_track() {
+        let (repo, track) = setup().await;
+        sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
+            .bind(&track)
             .execute(&repo.pool)
             .await
             .unwrap();
@@ -1571,7 +1582,7 @@ mod tests {
         let mut tx = repo.pool.begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
-            &wave,
+            &track,
             &[declaration(0, "approval-needed")],
             &[vec![]],
             true,
@@ -1583,23 +1594,23 @@ mod tests {
             .iter()
             .find(|diagnostic| diagnostic.code == "declare_and_wait")
             .expect("declare-and-wait diagnostic");
-        assert!(diagnostic.related_wave_id.is_none());
+        assert!(diagnostic.related_track_id.is_none());
         assert!(diagnostic.related_block_ids.is_empty());
     }
 
     #[tokio::test]
-    async fn read_state_groups_related_context_links_by_wave() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "cross-wave", "running").await;
-        let other_wave = "wave_remote".to_owned();
+    async fn read_state_groups_related_context_links_by_track() {
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "cross-track", "running").await;
+        let other_track = "track_remote".to_owned();
         let claim_context = json!([
-            {"wave_id": wave, "block_id": "b_root", "rev": 1, "hash": "root", "is_root": true},
-            {"wave_id": wave, "block_id": "b_local", "rev": 2, "hash": "local", "is_root": false},
-            {"wave_id": other_wave, "block_id": "b_remote", "rev": 3, "hash": "remote", "is_root": false}
+            {"track_id": track, "block_id": "b_root", "rev": 1, "hash": "root", "is_root": true},
+            {"track_id": track, "block_id": "b_local", "rev": 2, "hash": "local", "is_root": false},
+            {"track_id": other_track, "block_id": "b_remote", "rev": 3, "hash": "remote", "is_root": false}
         ]);
-        sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='cross-wave'")
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='cross-track'")
             .bind(claim_context.to_string())
-            .bind(&wave)
+            .bind(&track)
             .execute(&repo.pool)
             .await
             .unwrap();
@@ -1607,8 +1618,8 @@ mod tests {
         let mut tx = repo.pool.begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
-            &wave,
-            &[declaration(0, "cross-wave")],
+            &track,
+            &[declaration(0, "cross-track")],
             &[vec![]],
             true,
         )
@@ -1622,23 +1633,23 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(stale.len(), 2);
         assert!(stale.iter().any(|diagnostic| {
-            diagnostic.related_wave_id.is_none() && diagnostic.related_block_ids == ["b_local"]
+            diagnostic.related_track_id.is_none() && diagnostic.related_block_ids == ["b_local"]
         }));
         assert!(stale.iter().any(|diagnostic| {
-            diagnostic.related_wave_id.as_deref() == Some(other_wave.as_str())
+            diagnostic.related_track_id.as_deref() == Some(other_track.as_str())
                 && diagnostic.related_block_ids == ["b_remote"]
         }));
     }
 
     #[tokio::test]
     async fn terminal_stale_row_only_offers_the_new_key_action() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "terminal-stale", "failed").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "terminal-stale", "failed").await;
         sqlx::query(
             "UPDATE tasks SET context_stale_at_ms=42,claim_context_json='[]' \
-             WHERE wave_id=?1 AND key='terminal-stale'",
+             WHERE track_id=?1 AND key='terminal-stale'",
         )
-        .bind(&wave)
+        .bind(&track)
         .execute(&repo.pool)
         .await
         .unwrap();
@@ -1646,7 +1657,7 @@ mod tests {
         let mut tx = repo.pool.begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
-            &wave,
+            &track,
             &[declaration(0, "terminal-stale")],
             &[vec![]],
             true,
@@ -1665,16 +1676,16 @@ mod tests {
 
     #[tokio::test]
     async fn zero_ceiling_diagnostic_has_no_false_block_jump_target() {
-        let (repo, wave) = setup().await;
-        sqlx::query("UPDATE waves SET spec_task_ceiling=0 WHERE id=?1")
-            .bind(&wave)
+        let (repo, track) = setup().await;
+        sqlx::query("UPDATE tracks SET spec_task_ceiling=0 WHERE id=?1")
+            .bind(&track)
             .execute(&repo.pool)
             .await
             .unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
-            &wave,
+            &track,
             &[declaration(0, "capacity-zero")],
             &[vec![]],
             true,
@@ -1687,29 +1698,29 @@ mod tests {
             .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
             .expect("ceiling diagnostic");
         assert!(ceiling.related_block_ids.is_empty());
-        assert_eq!(ceiling.related_wave_id.as_deref(), Some(wave.as_str()));
+        assert_eq!(ceiling.related_track_id.as_deref(), Some(track.as_str()));
     }
 
     #[tokio::test]
     async fn acceptance_1_spawn_only_projection_change_updates_row_and_changed_keys() {
-        let (repo, wave) = setup().await;
+        let (repo, track) = setup().await;
         let mut declaration = declaration(0, "route");
         let mut tx = repo.pool.begin().await.unwrap();
-        let first = project_tasks_tx(&mut tx, &wave, &[declaration.clone()], &[vec![]])
+        let first = project_tasks_tx(&mut tx, &track, &[declaration.clone()], &[vec![]])
             .await
             .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(first.changed_keys, ["route"]);
         declaration.spawn = "sub-wave".into();
         let mut tx = repo.pool.begin().await.unwrap();
-        let second = project_tasks_tx(&mut tx, &wave, &[declaration], &[vec![]])
+        let second = project_tasks_tx(&mut tx, &track, &[declaration], &[vec![]])
             .await
             .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(second.changed_keys, ["route"]);
         let spawn: String =
-            sqlx::query_scalar("SELECT spawn FROM tasks WHERE wave_id=?1 AND key='route'")
-                .bind(&wave)
+            sqlx::query_scalar("SELECT spawn FROM tasks WHERE track_id=?1 AND key='route'")
+                .bind(&track)
                 .fetch_one(&repo.pool)
                 .await
                 .unwrap();
@@ -1718,39 +1729,39 @@ mod tests {
 
     #[tokio::test]
     async fn acceptance_14b_and_22_read_dto_marks_deleted_child_and_never_exposes_spawn() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "child-link", "running").await;
-        sqlx::query("UPDATE tasks SET spawn='sub-wave',child_wave_id='gone-child' WHERE wave_id=?1 AND key='child-link'")
-            .bind(&wave).execute(&repo.pool).await.unwrap();
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "child-link", "running").await;
+        sqlx::query("UPDATE tasks SET spawn='sub-wave',child_track_id='gone-child' WHERE track_id=?1 AND key='child-link'")
+            .bind(&track).execute(&repo.pool).await.unwrap();
         let mut conn = repo.pool.acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
-            &wave,
+            &track,
             &[declaration(0, "child-link")],
             &[vec![]],
             true,
         )
         .await
         .unwrap();
-        assert_eq!(verdicts[0].child_wave_id.as_deref(), Some("gone-child"));
-        assert_eq!(verdicts[0].child_wave_deleted, Some(true));
+        assert_eq!(verdicts[0].child_track_id.as_deref(), Some("gone-child"));
+        assert_eq!(verdicts[0].child_track_deleted, Some(true));
         let json = serde_json::to_value(&verdicts[0]).unwrap();
         assert!(!json.as_object().unwrap().contains_key("spawn"));
     }
 
     #[tokio::test]
     async fn ceiling_i_a_inflight_is_input_and_holds_the_upper_bound() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "k1", "dispatched").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "k1", "dispatched").await;
         let declarations = vec![declaration(0, "k2"), declaration(1, "k1")];
         let mut tx = repo.pool.begin().await.unwrap();
-        let outcome = project_tasks_tx(&mut tx, &wave, &declarations, &[vec![], vec![]])
+        let outcome = project_tasks_tx(&mut tx, &track, &declarations, &[vec![], vec![]])
             .await
             .unwrap();
         tx.commit().await.unwrap();
         let mut conn = repo.pool.acquire().await.unwrap();
         let diagnostics =
-            evaluate_schedulability(&mut conn, &wave, &declarations, &[vec![], vec![]], true)
+            evaluate_schedulability(&mut conn, &track, &declarations, &[vec![], vec![]], true)
                 .await
                 .unwrap();
         assert!(!outcome.diagnostics[0].schedulable);
@@ -1762,8 +1773,8 @@ mod tests {
         );
         assert!(outcome.diagnostics[1].schedulable);
         assert_eq!(diagnostics[1].status.as_deref(), Some("dispatched"));
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND status IN ('pending','dispatched','running','verifying')")
-            .bind(&wave).fetch_one(&repo.pool).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1 AND status IN ('pending','dispatched','running','verifying')")
+            .bind(&track).fetch_one(&repo.pool).await.unwrap();
         assert_eq!(
             count, 1,
             "invariant 7b: no pending row may exceed occupied capacity"
@@ -1772,21 +1783,21 @@ mod tests {
 
     #[tokio::test]
     async fn ceiling_i_b_diagnosed_pending_is_output_and_does_not_cause_jitter() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "k1", "pending").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "k1", "pending").await;
         let declarations = vec![declaration(0, "k1"), declaration(1, "k2")];
         let local = vec![vec![Diagnostic::new("payload", "broken")], vec![]];
         for _ in 0..2 {
             let mut tx = repo.pool.begin().await.unwrap();
-            let outcome = project_tasks_tx(&mut tx, &wave, &declarations, &local)
+            let outcome = project_tasks_tx(&mut tx, &track, &declarations, &local)
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
             assert!(!outcome.diagnostics[0].schedulable);
             assert!(outcome.diagnostics[1].schedulable);
             let keys: Vec<(String,)> =
-                sqlx::query_as("SELECT key FROM tasks WHERE wave_id=?1 ORDER BY key")
-                    .bind(&wave)
+                sqlx::query_as("SELECT key FROM tasks WHERE track_id=?1 ORDER BY key")
+                    .bind(&track)
                     .fetch_all(&repo.pool)
                     .await
                     .unwrap();
@@ -1796,13 +1807,13 @@ mod tests {
 
     #[tokio::test]
     async fn rolled_back_material_verdict_leaves_no_row_change_or_event() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "rollback", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "rollback", "running").await;
         let mut tx = repo.pool.begin().await.unwrap();
         let events = mark_context_material_tx(
             &mut tx,
-            &format!("{wave}:rollback"),
-            &wave,
+            &format!("{track}:rollback"),
+            &track,
             Vec::new(),
             "rollback proof",
         )
@@ -1813,7 +1824,7 @@ mod tests {
 
         let stale: Option<i64> =
             sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
-                .bind(format!("{wave}:rollback"))
+                .bind(format!("{track}:rollback"))
                 .fetch_one(&repo.pool)
                 .await
                 .unwrap();
@@ -1826,17 +1837,17 @@ mod tests {
     }
 
     /// #1160 case 2 — two live blocks claim one key while the row is in
-    /// flight. `tasks` has a single row for `(wave_id, key)` and nothing in
+    /// flight. `tasks` has a single row for `(track_id, key)` and nothing in
     /// the data says which block owns that run, so neither verdict may carry
     /// it. Mirrors `resolve_task_closure`'s `DuplicateLiveKey`.
     #[tokio::test]
     async fn duplicate_live_declarations_never_stamp_run_state() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "contested", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "contested", "running").await;
         sqlx::query(
-            "UPDATE tasks SET worker_card_id='card-contested' WHERE wave_id=?1 AND key='contested'",
+            "UPDATE tasks SET worker_card_id='card-contested' WHERE track_id=?1 AND key='contested'",
         )
-        .bind(&wave)
+        .bind(&track)
         .execute(&repo.pool)
         .await
         .unwrap();
@@ -1859,7 +1870,7 @@ mod tests {
 
         let mut conn = repo.pool.acquire().await.unwrap();
         let verdicts =
-            evaluate_schedulability(&mut conn, &wave, &declarations, &block_local_diags, true)
+            evaluate_schedulability(&mut conn, &track, &declarations, &block_local_diags, true)
                 .await
                 .unwrap();
 
@@ -1879,12 +1890,12 @@ mod tests {
     /// tombstone must stay bare.
     #[tokio::test]
     async fn tombstoned_declaration_never_stamps_run_state() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "redeclared", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "redeclared", "running").await;
         sqlx::query(
-            "UPDATE tasks SET worker_card_id='card-redeclared' WHERE wave_id=?1 AND key='redeclared'",
+            "UPDATE tasks SET worker_card_id='card-redeclared' WHERE track_id=?1 AND key='redeclared'",
         )
-        .bind(&wave)
+        .bind(&track)
         .execute(&repo.pool)
         .await
         .unwrap();
@@ -1892,7 +1903,7 @@ mod tests {
         let mut conn = repo.pool.acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
-            &wave,
+            &track,
             &[
                 declaration(0, "redeclared"),
                 tombstone_declaration(1, "redeclared"),
@@ -1925,23 +1936,23 @@ mod tests {
     /// `live_blocks.get(key) == Some([root])`, which a deleted block can never
     /// satisfy, so everything `attach_task_read_state` adds — the worker card
     /// the `open_worker_output` action needs, the failure detail, the child
-    /// wave, and both reference diagnostics — silently fell off that verdict
+    /// track, and both reference diagnostics — silently fell off that verdict
     /// while `status` stayed. The key is not ambiguous here: it has *zero*
     /// live declarations, which `resolve_task_closure` answers `RootAbsent`,
     /// one single answer, and there is exactly one verdict to give it to.
     #[tokio::test]
     async fn deleted_declaration_run_state_survives_on_the_synthetic_verdict() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "deleted-block", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "deleted-block", "running").await;
         sqlx::query(
             "UPDATE tasks SET worker_card_id='card-deleted',status_detail='running: step 2',\
-             child_wave_id='child-of-deleted',context_closure_truncated=1,\
-             claim_context_json=?2 WHERE wave_id=?1 AND key='deleted-block'",
+             child_track_id='child-of-deleted',context_closure_truncated=1,\
+             claim_context_json=?2 WHERE track_id=?1 AND key='deleted-block'",
         )
-        .bind(&wave)
+        .bind(&track)
         .bind(
-            json!([{"wave_id": &wave, "block_id": "b_dead", "rev": 1, "hash": "h", "is_root": true},
-                   {"wave_id": &wave, "block_id": "b_ref", "rev": 1, "hash": "h", "is_root": false}])
+            json!([{"track_id": &track, "block_id": "b_dead", "rev": 1, "hash": "h", "is_root": true},
+                   {"track_id": &track, "block_id": "b_ref", "rev": 1, "hash": "h", "is_root": false}])
             .to_string(),
         )
         .execute(&repo.pool)
@@ -1951,7 +1962,7 @@ mod tests {
         let mut conn = repo.pool.acquire().await.unwrap();
         // The document no longer declares the key at all — the block was hard
         // deleted, and `delete_block` leaves no tombstone behind.
-        let verdicts = evaluate_schedulability(&mut conn, &wave, &[], &[], true)
+        let verdicts = evaluate_schedulability(&mut conn, &track, &[], &[], true)
             .await
             .unwrap();
 
@@ -1965,8 +1976,8 @@ mod tests {
             "without the card id the `open_worker_output` action is a dead link"
         );
         assert_eq!(verdict.status_detail.as_deref(), Some("running: step 2"));
-        assert_eq!(verdict.child_wave_id.as_deref(), Some("child-of-deleted"));
-        assert_eq!(verdict.child_wave_deleted, Some(true));
+        assert_eq!(verdict.child_track_id.as_deref(), Some("child-of-deleted"));
+        assert_eq!(verdict.child_track_deleted, Some(true));
         let codes = verdict
             .diagnostics
             .iter()
@@ -1987,12 +1998,12 @@ mod tests {
     /// real block id, so `block_id: ""` is what separates the two.
     #[tokio::test]
     async fn tombstone_only_document_still_never_stamps_run_state() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "only-tombstone", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "only-tombstone", "running").await;
         sqlx::query(
-            "UPDATE tasks SET worker_card_id='card-only-tombstone' WHERE wave_id=?1 AND key='only-tombstone'",
+            "UPDATE tasks SET worker_card_id='card-only-tombstone' WHERE track_id=?1 AND key='only-tombstone'",
         )
-        .bind(&wave)
+        .bind(&track)
         .execute(&repo.pool)
         .await
         .unwrap();
@@ -2000,7 +2011,7 @@ mod tests {
         let mut conn = repo.pool.acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
-            &wave,
+            &track,
             &[tombstone_declaration(0, "only-tombstone")],
             &[vec![]],
             true,
@@ -2069,13 +2080,13 @@ mod tests {
 
     async fn project_blocks(
         repo: &super::super::SqlxRepo,
-        wave: &str,
+        track: &str,
         blocks: &[ReportBlock],
     ) -> TaskProjectionOutcome {
         let (declarations, block_local_diags) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
         let mut tx = repo.pool.begin().await.unwrap();
-        let outcome = project_tasks_tx(&mut tx, wave, &declarations, &block_local_diags)
+        let outcome = project_tasks_tx(&mut tx, track, &declarations, &block_local_diags)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -2095,9 +2106,9 @@ mod tests {
     #[tokio::test]
     async fn tombstone_beside_live_redeclaration_emits_no_kernel_event_in_either_order() {
         async fn rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
-            let (repo, wave) = setup().await;
-            insert_block_task(&repo, &wave, "reordered", "running").await;
-            let outcome = project_blocks(&repo, &wave, &blocks).await;
+            let (repo, track) = setup().await;
+            insert_block_task(&repo, &track, "reordered", "running").await;
+            let outcome = project_blocks(&repo, &track, &blocks).await;
             context_advanced_rationales(&outcome)
         }
 
@@ -2136,16 +2147,16 @@ mod tests {
     /// say so.
     #[tokio::test]
     async fn tombstone_only_document_advances_the_in_flight_context() {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "reordered", "running").await;
-        let outcome = project_blocks(&repo, &wave, &[tombstone_task_block(0, "reordered")]).await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "reordered", "running").await;
+        let outcome = project_blocks(&repo, &track, &[tombstone_task_block(0, "reordered")]).await;
         assert_eq!(
             context_advanced_rationales(&outcome),
             ["task declaration block was removed"]
         );
         let stale: Option<i64> =
             sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
-                .bind(format!("{wave}:reordered"))
+                .bind(format!("{track}:reordered"))
                 .fetch_one(&repo.pool)
                 .await
                 .unwrap();
@@ -2167,24 +2178,24 @@ mod tests {
     /// *both* edges, under the policy that makes the release edge exist at all,
     /// and return the `task.context_advanced` rationales.
     async fn withdrawal_rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
-        let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "contended", "running").await;
+        let (repo, track) = setup().await;
+        insert_block_task(&repo, &track, "contended", "running").await;
         // The row was established by a declaration that carried *both*
         // edges; withdrawing either one is what the fold has to name.
         sqlx::query(
-            "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE wave_id=?1 AND key='contended'",
+            "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE track_id=?1 AND key='contended'",
         )
-        .bind(&wave)
+        .bind(&track)
         .execute(&repo.pool)
         .await
         .unwrap();
         // The release edge only exists under this policy.
-        sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
-            .bind(&wave)
+        sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
+            .bind(&track)
             .execute(&repo.pool)
             .await
             .unwrap();
-        let outcome = project_blocks(&repo, &wave, &blocks).await;
+        let outcome = project_blocks(&repo, &track, &blocks).await;
         context_advanced_rationales(&outcome)
     }
 

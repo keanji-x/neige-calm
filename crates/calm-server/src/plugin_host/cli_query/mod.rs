@@ -43,7 +43,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::child_process::{SpawnTimedOut, read_capped, set_process_group_leader, spawn_within};
-use super::manifest::{CliQueryTool, argv_slot};
+use super::manifest::{ArgvSlot, CliQueryTool, argv_slot};
 use super::mcp::{CallToolResult, ContentBlock, RpcError};
 
 /// Wall-clock bound on ONE `cli-query` bring-up (resolution + the `--version`
@@ -104,6 +104,15 @@ pub struct CliQueryRuntime {
     env: BTreeMap<String, String>,
     /// Declared tools by name.
     tools: BTreeMap<String, CliQueryTool>,
+    /// #1284 §2.3(b) — the rendered `{{config.<key>}}` slot values, resolved
+    /// ONCE at bring-up from `defaults ⊕ user_config`.
+    ///
+    /// A separate map from the agent's `arguments` by construction, which is
+    /// the isolation: `tools_call` never merges the two and never falls back
+    /// from one to the other, so an argument named `config.x` has nowhere to
+    /// land. Cached here for the same reason [`Self::env`] is (§2.4, F10) — a
+    /// configuration change takes effect on the next bring-up, not mid-flight.
+    config: BTreeMap<String, String>,
     /// `cli_query.timeout_ms`.
     timeout: Duration,
     /// `cli_query.max_output_bytes`.
@@ -164,7 +173,7 @@ impl CliQueryRuntime {
         let tool = self.tools.get(name).ok_or_else(|| {
             RpcError::method_not_found(&format!("tools/call: {}_{name}", self.plugin_id))
         })?;
-        let argv = render_argv(tool, &arguments).map_err(RpcError::invalid_params)?;
+        let argv = render_argv(tool, &arguments, &self.config).map_err(RpcError::invalid_params)?;
 
         tracing::info!(
             plugin_id = %self.plugin_id,
@@ -368,7 +377,22 @@ fn text_block(text: String) -> ContentBlock {
 /// rejected: refusing them would break every author who declares an optional
 /// property they render elsewhere, and accepting them costs nothing because an
 /// unreferenced key never reaches the child.
-fn render_argv(tool: &CliQueryTool, arguments: &Value) -> Result<Vec<String>, String> {
+///
+/// **Two populations, two maps, no fallback** (#1284 §2.3(b)). An
+/// [`ArgvSlot::Argument`] is looked up in `arguments` and nowhere else; an
+/// [`ArgvSlot::Config`] is looked up in `config` and nowhere else. Neither
+/// lookup falls through to the other map on a miss — a miss is a refusal that
+/// names the slot. That is what makes "an agent cannot supply a configuration
+/// value" a structural property rather than an ordering convention: a
+/// `tools/call` carrying `{"config.endpoint": "http://attacker"}` reaches this
+/// function as a key in `arguments`, which no `Config` slot ever reads and no
+/// `Argument` slot can name (the manifest validator refuses a `config.`-prefixed
+/// input property).
+fn render_argv(
+    tool: &CliQueryTool,
+    arguments: &Value,
+    config: &BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
     let obj = match arguments {
         Value::Object(m) => Some(m),
         // `null`/absent arguments are legal for a tool with no slots.
@@ -387,6 +411,25 @@ fn render_argv(tool: &CliQueryTool, arguments: &Value) -> Result<Vec<String>, St
         let Some(slot) = argv_slot(raw) else {
             argv.push(raw.clone());
             continue;
+        };
+        // The configuration arm resolves entirely here and never consults
+        // `arguments`. Values were flattened to strings at bring-up, so there
+        // is no second scalar-rendering rule to keep in sync.
+        let slot = match slot {
+            ArgvSlot::Config(key) => {
+                let Some(value) = config.get(key) else {
+                    return Err(format!(
+                        "tool `{}`: configuration slot `{key}` has no value — the argv \
+                         template `{raw}` is filled from this plugin's configuration \
+                         (`defaults ⊕ user_config`), which currently supplies no \
+                         `{key}`. Set it and restart the connector",
+                        tool.name
+                    ));
+                };
+                argv.push(value.clone());
+                continue;
+            }
+            ArgvSlot::Argument(name) => name,
         };
         let value = obj.and_then(|m| m.get(slot));
         let rendered = match value {
@@ -420,6 +463,52 @@ fn render_argv(tool: &CliQueryTool, arguments: &Value) -> Result<Vec<String>, St
         argv.push(rendered);
     }
     Ok(argv)
+}
+
+/// Flatten one effective-configuration value to the single string that a child
+/// process can carry — as an argv element or as an env value.
+///
+/// `null` is `None` ("no value"), matching `effective_config`'s reading of a
+/// stored `null`. Arrays and objects have no rendering: one slot is one argv
+/// element and one env value is one string, so a container would have to be
+/// serialized under a convention the child never agreed to. The `config_schema`
+/// subset cannot declare either type, so reaching that arm means a row edited
+/// outside the API — which is why it is an error rather than a silent skip.
+///
+/// **An interior NUL is refused by name** (#1284 S3a review P3). JSON can carry
+/// a `\u0000` inside a string and the write path stores it, but neither
+/// destination can: an argv element and an env value both become a `CString`,
+/// and `Command`'s conversion fails on the interior NUL. Without this check the operator's
+/// diagnostic is a per-call `spawning /path/to/tool failed: nul byte found in
+/// provided data` — an error that names the program and not the configuration
+/// key that caused it, on the `cli-query` path at bring-up (or per call, if the
+/// value only reaches an argv slot). Refusing here makes it a bring-up failure
+/// that names the key. Other control characters are NOT refused: `execve` and
+/// argv carry them fine, and a tab or newline inside a configured value is a
+/// legitimate (if unusual) thing to want.
+pub(super) fn config_scalar(key: &str, v: &Value) -> Result<Option<String>, String> {
+    Ok(match v {
+        Value::Null => None,
+        Value::String(s) if s.contains('\0') => {
+            return Err(format!(
+                "configuration key `{key}` contains a NUL byte, which no argv \
+                 element or environment value can carry (both become a C string \
+                 at `execve` time); the connector would fail to spawn with an \
+                 error naming the program rather than this key"
+            ));
+        }
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        other => {
+            return Err(format!(
+                "configuration key `{key}` holds {}, which has no single-value \
+                 rendering for a child process (`config_schema` can only declare \
+                 string, integer, number and boolean)",
+                json_type_name(other)
+            ));
+        }
+    })
 }
 
 fn json_type_name(v: &Value) -> &'static str {

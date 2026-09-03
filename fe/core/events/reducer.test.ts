@@ -64,7 +64,7 @@ describe('event reducer behavior', () => {
     expect(result.state.cursor).toBe(7);
     expect(result.effects).toEqual([
       { type: 'persist-cursor', id: 7 },
-      { type: 'invalidate', keys: [['areas'], ['overlays', 'wave']] },
+      { type: 'invalidate', keys: [['areas'], ['overlays', 'track']] },
     ]);
   });
 
@@ -75,14 +75,14 @@ describe('event reducer behavior', () => {
         readyFrame({ ev: 'area.deleted', data: { id: 'c1' }, _id: id, eventVersion: 3 }),
       );
       expect(result.state.cursor).toBe(8);
-      expect(result.effects).toEqual([{ type: 'invalidate', keys: [['areas'], ['overlays', 'wave']] }]);
+      expect(result.effects).toEqual([{ type: 'invalidate', keys: [['areas'], ['overlays', 'track']] }]);
     }
     const zeroFromColdStart = reduceEventFrame(
       initialEventState(3),
       readyFrame({ ev: 'area.deleted', data: { id: 'c1' }, _id: 0, eventVersion: 3 }),
     );
     expect(zeroFromColdStart.effects).toEqual([
-      { type: 'invalidate', keys: [['areas'], ['overlays', 'wave']] },
+      { type: 'invalidate', keys: [['areas'], ['overlays', 'track']] },
     ]);
   });
 
@@ -105,12 +105,12 @@ describe('event reducer behavior', () => {
 
     const deleted = reduceEventFrame(
       updated.state,
-      readyFrame({ ev: 'wave.deleted', data: { id: 'w1', area_id: 'c1' }, _id: 8, eventVersion: 3 }),
+      readyFrame({ ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' }, _id: 8, eventVersion: 3 }),
     );
     expect(deleted.effects).toEqual([
       { type: 'persist-cursor', id: 8 },
-      { type: 'invalidate', keys: [['waves', 'area', 'c1'], ['overlays', 'wave'], ['waves-range']] },
-      { type: 'remove', keys: [['wave', 'w1']] },
+      { type: 'invalidate', keys: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range']] },
+      { type: 'remove', keys: [['track', 'w1']] },
     ]);
   });
 });

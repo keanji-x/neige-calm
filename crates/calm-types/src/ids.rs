@@ -15,11 +15,11 @@ use crate::worker::WorkerSessionId;
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct AreaId(pub String);
 
-/// Wave identifier. See [`AreaId`] for the opacity contract.
+/// Track identifier. See [`AreaId`] for the opacity contract.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct WaveId(pub String);
+pub struct TrackId(pub String);
 
 /// Card identifier. See [`AreaId`] for the opacity contract.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
@@ -105,7 +105,7 @@ macro_rules! newtype_id_impls {
 }
 
 newtype_id_impls!(AreaId);
-newtype_id_impls!(WaveId);
+newtype_id_impls!(TrackId);
 newtype_id_impls!(CardId);
 
 #[cfg(test)]
@@ -127,8 +127,8 @@ mod tests {
 
     #[test]
     fn from_str_and_string_round_trip() {
-        let a = WaveId::from("w-1");
-        let b: WaveId = "w-1".to_string().into();
+        let a = TrackId::from("w-1");
+        let b: TrackId = "w-1".to_string().into();
         assert_eq!(a, b);
         assert_eq!(a.as_ref(), "w-1");
         assert_eq!(format!("{a}"), "w-1");

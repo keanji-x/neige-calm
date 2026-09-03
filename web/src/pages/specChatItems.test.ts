@@ -26,7 +26,7 @@ function harnessRow(
     id: 10,
     runtime_id: 'runtime',
     card_id: 'card',
-    wave_id: 'wave',
+    track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
     item_uuid: 'msg',
@@ -52,12 +52,12 @@ function userParams(text: string) {
 }
 
 describe('parseHarnessItem', () => {
-  it('strips the wave diff block before extracting User says text', () => {
+  it('strips the track diff block before extracting User says text', () => {
     const entry = parseHarnessItem(
       harnessRow({
         params: userParams(
           [
-            '## Wave state changes since your last turn',
+            '## Track state changes since your last turn',
             '',
             '- report changed',
             '',
@@ -95,13 +95,13 @@ describe('parseHarnessItem', () => {
     ['A worker card finished a turn with notes', 'Worker turn finished'],
     // #1252 F2 — both turn-text shapes must land on the same label: the
     // legacy sentence (pre-#1252 queued observations) and the authored one.
-    ['The user edited the wave report body', 'Report edited'],
+    ['The user edited the track report body', 'Report edited'],
     [
-      'The wave report was edited (author = "plugin"). Re-read the wave state.',
+      'The track report was edited (author = "plugin"). Re-read the track state.',
       'Report edited',
     ],
     [
-      'The wave report was edited (author = "user"). Re-read the wave state.',
+      'The track report was edited (author = "user"). Re-read the track state.',
       'Report edited',
     ],
     ['A dispatched task completed successfully', 'Task completed'],
@@ -120,16 +120,16 @@ describe('parseHarnessItem', () => {
     });
   });
 
-  it('renders wave-goal fallback as a clamped user bubble', () => {
+  it('renders track-goal fallback as a clamped user bubble', () => {
     const entry = parseHarnessItem(
       harnessRow({
-        params: userParams('Build the wave report from the current files.'),
+        params: userParams('Build the track report from the current files.'),
       }),
     );
 
     expect(entry).toMatchObject({
       kind: 'user',
-      text: 'Build the wave report from the current files.',
+      text: 'Build the track report from the current files.',
       clamp: true,
     });
   });

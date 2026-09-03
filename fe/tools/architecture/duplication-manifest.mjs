@@ -37,6 +37,6 @@ export const duplicationManifest = Object.freeze(/** @type {DuplicationEntry[]} 
   { id: 'INV-DUP-006', type: 'unique-symbol', canonicalPath: 'web/src/features/area/palette.ts', symbols: ['AREA_PALETTE'], mergeObligations: ['AREA_PALETTE 必须保持唯一 canonical 符号；当前唯一消费者是 Sidebar，创建 area 时用 Math.random 随机取色并把 color 发给内核。'] },
   { id: 'INV-DUP-007', type: 'unique-symbol', canonicalPath: 'web/src/app/theme/host-rgb.ts', symbols: ['readHostThemeRgb'] },
   { id: 'INV-DUP-008', type: 'unique-symbol', canonicalPath: 'web/src/ui/editable-title/public.tsx', symbols: ['EditableTitle'], mergeObligations: ['Area 版有 #288 的合成 click 抑制器；合并时必须把抑制器带进统一实现，而不是删掉。'] },
-  { id: 'INV-DUP-009', type: 'unique-symbol', canonicalPath: 'web/src/features/wave/row/public.tsx', symbols: ['WaveRow'] },
-  { id: 'INV-DUP-010', type: 'unique-symbol', canonicalPath: 'web/src/ui/confirm-dialog/copy.ts', symbols: ['DELETE_WAVE_COPY'] },
+  { id: 'INV-DUP-009', type: 'unique-symbol', canonicalPath: 'web/src/features/track/row/public.tsx', symbols: ['TrackRow'] },
+  { id: 'INV-DUP-010', type: 'unique-symbol', canonicalPath: 'web/src/ui/confirm-dialog/copy.ts', symbols: ['DELETE_TRACK_COPY'] },
 ]).map(freezeEntry));

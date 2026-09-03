@@ -145,7 +145,7 @@ if (typeof document !== 'undefined') {
    *
    * This exists because the attribute selector above is blind to exactly the
    * case #1161 needs: `ui/dialog/public.tsx:139` puts `display: none` on
-   * `.dialog-body` whenever a child view is showing, and the `Create wave`
+   * `.dialog-body` whenever a child view is showing, and the `Create track`
    * button lives inside it. A report that answered "no hidden subtree holds
    * anything queryable" there would be *actively wrong* — the precise
    * misdiagnosis this file exists to prevent.

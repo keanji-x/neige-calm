@@ -48,7 +48,7 @@
 //! goal is to make "no route handler can reach a raw sync-domain write"
 //! a compile-time invariant, not a grep-time one:
 //!
-//!   * [`RepoRead`] — universal read surface (`areas_list`, `wave_get`,
+//!   * [`RepoRead`] — universal read surface (`areas_list`, `track_get`,
 //!     `overlays_for`, `plugins_list_all`, `terminal_get`, …). Anyone
 //!     with a `&dyn RepoRead` can fetch anything; no writes.
 //!   * [`RepoEventWrite`] — the audited write surface
@@ -56,7 +56,7 @@
 //!     `events_earliest_id`). Supertrait `RepoRead` because every audited
 //!     write closure typically needs to read a parent row first.
 //!   * [`RepoSyncDomainRaw`] — **gated.** Raw entity writes for the
-//!     in-scope sync domain: areas, waves, cards, overlays. These exist
+//!     in-scope sync domain: areas, tracks, cards, overlays. These exist
 //!     on the trait because `SqlxRepo` is the canonical impl and the
 //!     types must be addressable somewhere — but the `RouteRepo` trait
 //!     object route handlers see does **not** include this supertrait,
@@ -91,12 +91,12 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, AreaId, CardId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::*;
 use crate::session_projection_repo::WorkerSessionProjectionRepo;
 use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use async_trait::async_trait;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
@@ -128,8 +128,8 @@ pub type WriteWithEventFn<'a> = Box<
 /// PR6 (#136) — plural counterpart to [`WriteWithEventFn`]. Closure
 /// returns a `Vec<(EventScope, Event)>` so a single transaction can
 /// persist multiple events, each tagged with its own scope. Used by
-/// `routes::waves::create_wave` to atomically emit both
-/// `Event::WaveUpdated` (scope = Wave) and `Event::CardAdded`
+/// `routes::tracks::create_track` to atomically emit both
+/// `Event::TrackUpdated` (scope = Track) and `Event::CardAdded`
 /// (scope = Card) for the auto-minted spec card.
 ///
 /// Invariants:
@@ -204,7 +204,7 @@ pub type WriteInTxFn<'a> = Box<
 >;
 
 #[derive(Clone, Debug)]
-pub struct WaveEvent {
+pub struct TrackEvent {
     pub id: i64,
     pub at: i64,
     pub actor: ActorId,
@@ -237,7 +237,7 @@ pub struct SharedCodexDaemonRecord {
 pub struct SessionCardIdentity {
     pub card_id: CardId,
     pub role: CardRole,
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub area_id: AreaId,
 }
 
@@ -260,7 +260,7 @@ pub struct SharedCodexDaemonUpdate {
 pub struct WorkspaceLease {
     pub lease_id: String,
     pub card_id: String,
-    pub wave_id: String,
+    pub track_id: String,
     pub path: String,
     pub state: String,
 }
@@ -293,7 +293,7 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn areas_list(&self) -> Result<Vec<Area>>;
     /// Issue #175 — `areas_list` filtered to `kind = 'user'`. Default
     /// read surface for `GET /api/areas` so the system area that hosts
-    /// the default Today terminal's wave never reaches the sidebar.
+    /// the default Today terminal's track never reaches the sidebar.
     /// Opt back into the full list via `?include_system=true` (calls
     /// [`RepoRead::areas_list`]).
     async fn areas_list_user_visible(&self) -> Result<Vec<Area>>;
@@ -318,64 +318,64 @@ pub trait RepoRead: Send + Sync + 'static {
     /// existence check.
     async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>>;
 
-    // ---- waves
-    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>>;
-    async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
-    /// #1253 PR1 — the Today launchpad wave, or `None` before it has ever
+    // ---- tracks
+    async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>>;
+    async fn track_get(&self, id: &str) -> Result<Option<Track>>;
+    /// #1253 PR1 — the Today launchpad track, or `None` before it has ever
     /// been minted.
     ///
     /// `purpose = 'launchpad'` is the same predicate
     /// `today_launchpad_ensure_tx` selects on, and migration 0064's partial
-    /// unique index `idx_waves_one_launchpad` makes it single-valued, so this
+    /// unique index `idx_tracks_one_launchpad` makes it single-valued, so this
     /// is a lookup and not a "first of many". It lives here rather than as a
-    /// SELECT inside the route because a route-local `SELECT` over `waves`
-    /// would be a second column list to keep in step with `WAVE_SELECT_COLUMNS`.
-    async fn wave_get_launchpad(&self) -> Result<Option<Wave>>;
-    async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
+    /// SELECT inside the route because a route-local `SELECT` over `tracks`
+    /// would be a second column list to keep in step with `TRACK_SELECT_COLUMNS`.
+    async fn track_get_launchpad(&self) -> Result<Option<Track>>;
+    async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
     /// Issue #250 PR 2 — calendar window query.
     ///
-    /// Returns every wave whose lifespan overlaps the half-open
+    /// Returns every track whose lifespan overlaps the half-open
     /// `[since, until]` millisecond range (both endpoints inclusive
     /// per the issue spec): `created_at <= until AND (terminal_at IS
     /// NULL OR terminal_at >= since)`. `area_id`, when `Some(_)`,
     /// further restricts the result to a single area.
     ///
     /// Any combination of the three filters is legal — when all three
-    /// are `None` the query degenerates to "every wave in the DB" so
+    /// are `None` the query degenerates to "every track in the DB" so
     /// callers that omit every parameter still get a sensible default.
     /// Sorted by `created_at ASC, id ASC` for stable pagination later;
     /// PR 2 returns the full window in one shot.
-    async fn waves_window(
+    async fn tracks_window(
         &self,
         area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
-    ) -> Result<Vec<Wave>>;
+    ) -> Result<Vec<Track>>;
 
-    // ---- tasks (issue #644 — wave-scoped task plan)
-    /// Every task in the wave's plan, ordered for stable listing:
+    // ---- tasks (issue #644 — track-scoped task plan)
+    /// Every task in the track's plan, ordered for stable listing:
     /// `priority DESC, created_at_ms ASC, key ASC` (the same order the
     /// PR-B scheduler's ready-set query uses, design §5.2). Backed by
-    /// the `tasks_wave_status_idx` index from migration 0041.
-    async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>>;
-    /// Single-row fetch by the composed `"{wave_id}:{key}"` id.
+    /// the `tasks_track_status_idx` index from migration 0041.
+    async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>>;
+    /// Single-row fetch by the composed `"{track_id}:{key}"` id.
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
-    /// Issue #644 PR-B — every non-terminal task across every wave
+    /// Issue #644 PR-B — every non-terminal task across every track
     /// (`pending` / `dispatched` / `running` / `verifying`), in stable
-    /// `(wave_id, priority DESC, created_at_ms ASC, key ASC)` order.
-    /// Backed by `tasks_wave_status_idx`. Used by the scheduler's sweep
+    /// `(track_id, priority DESC, created_at_ms ASC, key ASC)` order.
+    /// Backed by `tasks_track_status_idx`. Used by the scheduler's sweep
     /// (boot, periodic reconcile, post-`Lagged`) — design §8.
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
-    /// In-flight frozen contexts affected by an edit to `dst_wave_id`.
+    /// In-flight frozen contexts affected by an edit to `dst_track_id`.
     /// The JOIN is a correctness guard: stale index rows never revive a
     /// terminal or deleted task.
-    async fn task_contexts_by_dst_wave(&self, dst_wave_id: &str) -> Result<Vec<TaskContextRow>>;
-    /// Explicit recovery candidates affected by an edit to `dst_wave_id`.
+    async fn task_contexts_by_dst_track(&self, dst_track_id: &str) -> Result<Vec<TaskContextRow>>;
+    /// Explicit recovery candidates affected by an edit to `dst_track_id`.
     /// Kept separate from the fresh pass so stale rows never re-enter material
     /// classification or its retry budget.
-    async fn stale_task_contexts_by_dst_wave(
+    async fn stale_task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<TaskContextRow>>;
     /// Sweep source. Deliberately reads tasks rather than the reverse index.
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<TaskContextRow>>;
@@ -387,23 +387,23 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>>;
 
     // ---- cards
-    async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
-    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
+    async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>>;
+    async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     /// #960 PR2 review — atomic single-row fetch of a card together
     /// with its opaque CRDT blob (`cards.body_crdt`). One SELECT, one
     /// row: the returned `(Card, blob)` pair is a self-consistent
     /// snapshot (a concurrent persist can never tear payload vs.
     /// CRDT). The blob is `None` for rows never touched by the
-    /// wave-report persist path; the bytes are opaque to every caller
-    /// except `calm-server::wave_report_doc`.
+    /// track-report persist path; the bytes are opaque to every caller
+    /// except `calm-server::track_report_doc`.
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     /// Read-time task diagnostics, evaluated in one read transaction with the
     /// same DB-aware predicate as report projection.
     async fn task_diagnostics(
         &self,
-        wave_id: &str,
-        blocks: &[calm_types::wave_report::ReportBlock],
+        track_id: &str,
+        blocks: &[calm_types::track_report::ReportBlock],
     ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     /// Page **every** `harness_items` row for a card, whatever its `method`.
@@ -477,8 +477,8 @@ pub trait RepoRead: Send + Sync + 'static {
     // ---- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
     /// List every overlay attached to entities of the given `entity_kind`
-    /// (e.g. `"wave"`), regardless of `entity_id`. Used by the sidebar so
-    /// wave status indicators stay accurate without per-wave detail fetches.
+    /// (e.g. `"track"`), regardless of `entity_id`. Used by the sidebar so
+    /// track status indicators stay accurate without per-track detail fetches.
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
 
     // ---- terminals (read-only)
@@ -522,9 +522,9 @@ pub trait RepoRead: Send + Sync + 'static {
     /// this trait method lets `AppState` seed through the dyn-trait alone).
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
 
-    /// #234 — populate the supplied `WaveAreaCache` from the persisted
-    /// `waves.area_id` column. Mirror of [`seed_card_role_cache`].
-    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()>;
+    /// #234 — populate the supplied `TrackAreaCache` from the persisted
+    /// `tracks.area_id` column. Mirror of [`seed_card_role_cache`].
+    async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()>;
 
     /// PR7a (#136) — look up the card id bound to a presented MCP
     /// token's `SHA-256` hash. Returns `None` if no row matches. The
@@ -595,7 +595,7 @@ pub trait RepoRead: Send + Sync + 'static {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskContextRow {
     pub task_id: String,
-    pub wave_id: String,
+    pub track_id: String,
     pub claim_context_json: Option<String>,
     pub closure_truncated: bool,
 }
@@ -631,7 +631,7 @@ pub trait RepoEventWrite: RepoRead {
     /// TEXT column (`serde_json::to_string(&actor)`) — forward-compatible
     /// with future actor enrichment without a schema bump.
     ///
-    /// `scope` is the event's "home scope" in the area → wave → card
+    /// `scope` is the event's "home scope" in the area → track → card
     /// hierarchy. Persisted into the `events.scope_*` columns added in
     /// migration 0007 so PR3/PR5/PR8 can filter / route / authorize
     /// without re-parsing the event payload. Pick the most specific
@@ -665,8 +665,8 @@ pub trait RepoEventWrite: RepoRead {
     ///
     /// All events in the batch share the supplied `actor` — the
     /// "request initiator" is one per transaction. Per-event scopes
-    /// let a single mutation (e.g. wave create with auto-minted spec
-    /// card) emit both a wave-scoped and a card-scoped envelope so
+    /// let a single mutation (e.g. track create with auto-minted spec
+    /// card) emit both a track-scoped and a card-scoped envelope so
     /// subscribers filtered by either scope pick up the relevant
     /// frame without re-routing through ancestors.
     ///
@@ -701,7 +701,7 @@ pub trait RepoEventWrite: RepoRead {
     ///
     /// This is reserved for atomic kernel-auto lifecycle hooks: the triggering
     /// write remains attributed to the spec/worker actor, while the automatic
-    /// `wave.updated` transition is attributed to `Kernel` or
+    /// `track.updated` transition is attributed to `Kernel` or
     /// `KernelDispatcher`. Role enforcement still runs independently for each
     /// `(actor, scope, event)` tuple and any refusal rolls back the full tx.
     async fn write_with_actor_events(
@@ -724,7 +724,7 @@ pub trait RepoEventWrite: RepoRead {
     /// PR2 of #136: `actor` is now typed [`ActorId`]; `scope` carries the
     /// event's home scope (use [`EventScope::System`] for plugin-state
     /// transitions which have no entity scope; use [`EventScope::Card`]
-    /// for codex hooks when the wave→area chain is joinable, otherwise
+    /// for codex hooks when the track→area chain is joinable, otherwise
     /// fall back to [`EventScope::System`]).
     async fn log_pure_event(
         &self,
@@ -733,7 +733,7 @@ pub trait RepoEventWrite: RepoRead {
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         card_role_cache: &CardRoleCache,
-        wave_area_cache: &WaveAreaCache,
+        track_area_cache: &TrackAreaCache,
         event: Event,
     ) -> Result<i64>;
 
@@ -829,17 +829,17 @@ pub trait RepoEventWrite: RepoRead {
         probe_limit: i64,
     ) -> Result<(i64, Option<i64>)>;
 
-    /// Read only selected event kinds scoped to one wave. This is for
+    /// Read only selected event kinds scoped to one track. This is for
     /// projection tools that need a bounded audit-log slice, not a replay
     /// cursor: callers must pass the exact kind tags they need and the query
-    /// filters on `scope_wave = ?`. When `since_id` is present, the SQL
+    /// filters on `scope_track = ?`. When `since_id` is present, the SQL
     /// additionally filters on `events.id > since_id`.
-    async fn events_for_wave(
+    async fn events_for_track(
         &self,
-        wave_id: &str,
+        track_id: &str,
         kinds: &[&str],
         since_id: Option<i64>,
-    ) -> Result<Vec<WaveEvent>>;
+    ) -> Result<Vec<TrackEvent>>;
 
     /// Lowest live `events.id`, or `None` if the table is empty.
     ///
@@ -883,7 +883,7 @@ pub trait RepoEventWrite: RepoRead {
 /// replay lib, and tests via `AppState::raw_repo()`.
 ///
 /// Sync-domain == the per-user/per-AI co-edit shared state surface defined
-/// by the sync engine: areas, waves, cards, overlays. Any direct write here
+/// by the sync engine: areas, tracks, cards, overlays. Any direct write here
 /// bypasses `write_with_event` and is therefore invisible to replicas — the
 /// whole reason this surface is gated.
 #[async_trait]
@@ -893,10 +893,10 @@ pub trait RepoSyncDomainRaw: RepoRead {
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
     async fn area_delete(&self, id: &str) -> Result<()>;
 
-    // ---- waves
-    async fn wave_create(&self, p: NewWave) -> Result<Wave>;
-    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave>;
-    async fn wave_delete(&self, id: &str) -> Result<()>;
+    // ---- tracks
+    async fn track_create(&self, p: NewTrack) -> Result<Track>;
+    async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track>;
+    async fn track_delete(&self, id: &str) -> Result<()>;
 
     // ---- cards
     async fn card_create(&self, p: NewCard) -> Result<Card>;
@@ -957,7 +957,7 @@ pub trait RepoOutOfDomain: RepoRead {
         &self,
         runtime_id: &str,
         card_id: &str,
-        wave_id: &str,
+        track_id: &str,
         thread_id: &str,
         turn_id: Option<&str>,
         item_uuid: Option<&str>,
@@ -983,7 +983,7 @@ pub trait RepoOutOfDomain: RepoRead {
         &self,
         card_id: Option<&str>,
         runtime_id: Option<&str>,
-        wave_id: Option<&str>,
+        track_id: Option<&str>,
         worker_session_id: Option<&str>,
         kind: &str,
         payload: &str,
@@ -1129,7 +1129,7 @@ pub trait RepoOutOfDomain: RepoRead {
         path: &str,
     ) -> Result<crate::area_folder_claim::AreaFolderClaim>;
     /// Delete a folder by integer id. Returns `NotFound` when no row
-    /// exists. PR 2 will add a "has live wave referencing this path"
+    /// exists. PR 2 will add a "has live track referencing this path"
     /// guard at the route layer; the repo primitive stays narrow.
     async fn area_folder_delete(&self, id: i64) -> Result<()>;
 }
@@ -1261,9 +1261,9 @@ where
 /// `actor`; any violation rolls the whole transaction back.
 ///
 /// Use this when a single mutation must emit multiple events tagged
-/// with different scopes — e.g. `routes::waves::create_wave`'s
-/// atomic spec-card binding emits a wave-scoped `WaveUpdated` plus a
-/// card-scoped `CardAdded` from the same tx so per-wave and per-card
+/// with different scopes — e.g. `routes::tracks::create_track`'s
+/// atomic spec-card binding emits a track-scoped `TrackUpdated` plus a
+/// card-scoped `CardAdded` from the same tx so per-track and per-card
 /// subscribers each see the relevant frame at first hand. For the
 /// usual single-event case stay on [`write_with_event_typed`].
 pub async fn write_with_events_typed<R, F>(

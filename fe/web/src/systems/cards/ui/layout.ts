@@ -1,4 +1,4 @@
-// Copied from web/src/WaveGrid.tsx packing: 12-col row-major auto-place,
+// Copied from web/src/TrackGrid.tsx packing: 12-col row-major auto-place,
 // then reuse stored positions when the user has dragged or resized.
 
 import type { CardSize } from '../registry.js';

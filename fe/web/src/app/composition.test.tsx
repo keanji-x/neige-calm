@@ -14,10 +14,10 @@ function storage() {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
 }
-function cardAdded(id: number, waveId = 'wave_1'): string {
+function cardAdded(id: number, trackId = 'track_1'): string {
   return JSON.stringify({
     ev: 'card.added', _id: id, eventVersion: 1,
-    data: { id: 'card_1', wave_id: waveId, kind: 'terminal', sort: 5, payload: {}, created_at: 1000, updated_at: 2000 },
+    data: { id: 'card_1', track_id: trackId, kind: 'terminal', sort: 5, payload: {}, created_at: 1000, updated_at: 2000 },
   });
 }
 
@@ -48,15 +48,15 @@ describe('event composition', () => {
     expect(composition.driver).toBe(driverFactory.mock.results[0].value);
   });
 
-  it('T-B2 carries a real socket card event through the bridge into wave invalidation', async () => {
+  it('T-B2 carries a real socket card event through the bridge into track invalidation', async () => {
     const fake = createFakeSocketFactory();
     const composition = createEventComposition({ storage: storage(), transport, socketFactory: fake.factory, url: 'ws://example/api/events' });
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries').mockImplementation(() => Promise.resolve());
     render(<EventBridge client={client} stream={composition.stream} syncEventVersion={3} dbInstanceId="db-a" cursor={composition.store} />);
     await waitFor(() => expect(fake.constructionCount).toBe(1));
-    fake.sockets[0].open(); fake.sockets[0].message(cardAdded(1, 'wave-live'));
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['wave', 'wave-live']);
+    fake.sockets[0].open(); fake.sockets[0].message(cardAdded(1, 'track-live'));
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['track', 'track-live']);
   });
 
   it('T-B3 snapshot-required clears once and bounces to exactly one since-zero socket', async () => {

@@ -20,12 +20,12 @@
 
 use crate::db::RouteRepo;
 use crate::event::EventBus;
-use crate::ids::{ActorId, AreaId, CardId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
-use calm_truth::wave_vcs_repo::WaveVcsRepo;
+use calm_truth::track_vcs_repo::TrackVcsRepo;
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -44,7 +44,7 @@ pub struct CardIdentity {
     pub role: CardRole,
     pub provider: AgentProvider,
     pub session_id: String,
-    pub wave_id: Option<String>,
+    pub track_id: Option<String>,
     pub area_id: String,
 }
 
@@ -63,7 +63,7 @@ impl CardIdentity {
     ///   read-only kernel-projected payload and don't get an MCP token).
     ///   Mapped by provider for the same total-function reason — the role
     ///   gate refuses report-card actors as soon as they try to emit
-    ///   `WaveUpdated`, so a token-row leak surfaces as a clear `Forbidden`
+    ///   `TrackUpdated`, so a token-row leak surfaces as a clear `Forbidden`
     ///   rather than a panic.
     pub fn to_actor_id(&self) -> ActorId {
         let session_id = WorkerSessionId::from(self.session_id.clone());
@@ -76,10 +76,10 @@ impl CardIdentity {
     }
 
     pub fn to_principal(&self) -> Option<Principal> {
-        let wave_id = self.wave_id.as_ref()?;
+        let track_id = self.track_id.as_ref()?;
         Some(Principal::Agent {
             session_id: WorkerSessionId::from(self.session_id.clone()),
-            wave_id: WaveId::from(wave_id.clone()),
+            track_id: TrackId::from(track_id.clone()),
             area_id: AreaId::from(self.area_id.clone()),
         })
     }
@@ -108,7 +108,7 @@ pub struct ToolCallIdentity {
     pub role: CardRole,
     pub provider: AgentProvider,
     pub session_id: String,
-    pub wave_id: Option<String>,
+    pub track_id: Option<String>,
     pub area_id: String,
     pub thread_id: String,
 }
@@ -133,10 +133,10 @@ impl ToolCallIdentity {
     }
 
     pub fn to_principal(&self) -> Option<Principal> {
-        let wave_id = self.wave_id.as_ref()?;
+        let track_id = self.track_id.as_ref()?;
         Some(Principal::Agent {
             session_id: WorkerSessionId::from(self.session_id.clone()),
-            wave_id: WaveId::from(wave_id.clone()),
+            track_id: TrackId::from(track_id.clone()),
             area_id: AreaId::from(self.area_id.clone()),
         })
     }
@@ -159,8 +159,8 @@ fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId)
 /// error code instead of the more opaque `-32403 forbidden` that the
 /// in-tx gate would otherwise produce after speculatively reading rows.
 ///
-/// Use at the top of every spec-only handler. `calm.wave.state` is
-/// callable by both Spec and Worker (a worker may need to peek wave
+/// Use at the top of every spec-only handler. `calm.track.state` is
+/// callable by both Spec and Worker (a worker may need to peek track
 /// metadata before reporting), so it uses [`require_role_any`] instead.
 pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
     if identity.role != required {
@@ -202,10 +202,10 @@ pub struct AppContext {
     /// `AppState::repo`, so the dyn-trait gate is preserved (no
     /// sync-domain raw writes reachable from a tool handler).
     pub repo: Arc<dyn RouteRepo>,
-    /// Read-only wave-vcs drill-ins need the sqlite-backed audit tables.
+    /// Read-only track-vcs drill-ins need the sqlite-backed audit tables.
     /// This is built from the full internal repo at MCP server spawn time
     /// instead of widening the route-facing repo trait.
-    pub wave_vcs: Option<Arc<dyn WaveVcsRepo>>,
+    pub track_vcs: Option<Arc<dyn TrackVcsRepo>>,
     /// Event bus for `write_with_event_typed` broadcasts.
     pub events: EventBus,
     /// #480 PR2 write-surface caches shared with REST/worker paths.
@@ -286,7 +286,7 @@ pub fn read_only_annotations() -> Value {
 ///
 /// Do NOT slap this on every new write tool - re-evaluate whether the
 /// handler enforces a real authorization gate first. If a tool ever
-/// writes outside the wave/area the caller owns (e.g. crosses area
+/// writes outside the track/area the caller owns (e.g. crosses area
 /// boundaries or touches global state), keep approval ON by using
 /// `None` annotations or building a custom block with `destructiveHint:
 /// true`.
@@ -299,7 +299,7 @@ pub fn role_gated_write_annotations() -> Value {
 }
 
 /// Map of tool name → handler + descriptor. Populated by
-/// [`build_default_registry`] (emit + wave-state + wave-report tools).
+/// [`build_default_registry`] (emit + track-state + track-report tools).
 pub struct ToolRegistry {
     by_name: HashMap<String, (ToolDescriptor, ToolHandler)>,
 }
@@ -395,7 +395,7 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::state::WriteContext;
-    use crate::wave_area_cache::WaveAreaCache;
+    use crate::track_area_cache::TrackAreaCache;
 
     fn identity_with_role_and_provider(
         role: CardRole,
@@ -406,7 +406,7 @@ mod tests {
             role,
             provider,
             session_id: "session-1".to_string(),
-            wave_id: Some("wave-1".to_string()),
+            track_id: Some("track-1".to_string()),
             area_id: "area-1".to_string(),
             thread_id: "thread-1".to_string(),
         }
@@ -425,7 +425,7 @@ mod tests {
             role,
             provider,
             session_id: "session-1".to_string(),
-            wave_id: Some("wave-1".to_string()),
+            track_id: Some("track-1".to_string()),
             area_id: "area-1".to_string(),
         }
     }
@@ -528,9 +528,9 @@ mod tests {
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(AppContext {
             repo: route_repo,
-            wave_vcs: None,
+            track_vcs: None,
             events: EventBus::new(),
-            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -638,14 +638,14 @@ mod tests {
     }
 
     #[test]
-    fn wave_history_drill_ins_are_hidden_but_registered() {
+    fn track_history_drill_ins_are_hidden_but_registered() {
         let mut registry = ToolRegistry::new();
         crate::mcp_server::tools::register_default_tools(&mut registry);
         let hidden = [
-            crate::mcp_server::tools::wave_history::TOOL_WAVE_DIFF,
-            crate::mcp_server::tools::wave_history::TOOL_WAVE_CAT_AT,
-            crate::mcp_server::tools::wave_history::TOOL_WAVE_LOG,
-            crate::mcp_server::tools::admin::TOOL_ADMIN_WAVE_GC,
+            crate::mcp_server::tools::track_history::TOOL_TRACK_DIFF,
+            crate::mcp_server::tools::track_history::TOOL_TRACK_CAT_AT,
+            crate::mcp_server::tools::track_history::TOOL_TRACK_LOG,
+            crate::mcp_server::tools::admin::TOOL_ADMIN_TRACK_GC,
             crate::mcp_server::tools::admin::TOOL_ADMIN_VACUUM,
         ];
 

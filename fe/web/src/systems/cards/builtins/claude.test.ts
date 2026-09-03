@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { createCardRegistry } from '../registry.js';
 import { CLAUDE_CARD_ENTRY } from './claude.ts';
-import { partitionWaveCards } from './headless-filter.js';
+import { partitionTrackCards } from './headless-filter.js';
 import { registerAvailableBuiltinCards } from './register.js';
 
 function wire(id: string, kind: string, payload: unknown) {
   return {
-    id, kind, wave_id: 'w1', title: null, sort: 0, payload,
+    id, kind, track_id: 'w1', title: null, sort: 0, payload,
     deletable: true, created_at: 0, updated_at: 0,
   };
 }
@@ -49,7 +49,7 @@ describe('CLAUDE_CARD_ENTRY', () => {
   it('lands claude cards in the visible partition beside terminal cards', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
-    const { visible, unknown } = partitionWaveCards(registry, [
+    const { visible, unknown } = partitionTrackCards(registry, [
       wire('k-claude', 'claude', { terminal_id: 't1' }),
       wire('k-term', 'terminal', { terminal_id: 't2' }),
     ]);

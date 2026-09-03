@@ -56,7 +56,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
     session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
 };
-use calm_server::model::{CardRole, NewArea, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewPlugin, NewTrack, now_ms};
 use calm_server::plugin_host::Manifest;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -65,7 +65,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use support::gh_shim::write_gh_shim;
 use support::git_helpers::{
-    clone_for_wave, configure_repo_identity, init_bare_origin, run_git, run_git_capture,
+    clone_for_track, configure_repo_identity, init_bare_origin, run_git, run_git_capture,
     stage_git_change,
 };
 use support::kernel_proc::{launch_kernel, wait_exit_with_timeout};
@@ -110,11 +110,11 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let db_url = format!("sqlite://{db_str}?mode=rwc");
 
     // ---- world seeding (before boot#1) -------------------------------------
-    let wave_cwd = tmp_path.join("wave-cwd");
-    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+    let track_cwd = tmp_path.join("track-cwd");
+    std::fs::create_dir_all(&track_cwd).expect("create track cwd");
     let origin_repo = tmp_path.join("origin.git");
     init_bare_origin(&origin_repo, &tmp_path.join("seed"));
-    clone_for_wave(&origin_repo, &wave_cwd);
+    clone_for_track(&origin_repo, &track_cwd);
 
     let shim_dir = tmp_path.join("shim-bin");
     std::fs::create_dir_all(&shim_dir).expect("create gh shim dir");
@@ -127,11 +127,11 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     // check would race a live writer; all polls below go through this pool and
     // tolerate transient SQLITE_BUSY while a kernel is writing.
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
-    let seeded = seed_world(&repo, &wave_cwd).await;
+    let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
     provision_worker_worktree(
-        &wave_cwd,
-        &seeded.wave_id,
+        &track_cwd,
+        &seeded.track_id,
         &seeded.card_id,
         &seeded.lease_abs,
     );
@@ -203,7 +203,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     .await;
     let merge_idem_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{repo_arg}:{pr_number}",
-        seeded.wave_id, seeded.card_id
+        seeded.track_id, seeded.card_id
     );
     let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
 
@@ -283,7 +283,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         "exactly ONE forge.pr.merged event across abort + reboot"
     );
     let payload = &merged[0];
-    assert_eq!(payload["wave_id"], json!(seeded.wave_id));
+    assert_eq!(payload["track_id"], json!(seeded.track_id));
     assert_eq!(payload["head_sha"], json!(head_sha));
     assert_eq!(payload["subject"]["pr_number"], json!(pr_number));
     let merge_sha = payload["merge_sha"].as_str().expect("merge_sha string");
@@ -357,11 +357,11 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     let db_url = format!("sqlite://{db_str}?mode=rwc");
 
     // ---- world seeding (before boot#1) -------------------------------------
-    let wave_cwd = tmp_path.join("wave-cwd");
-    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+    let track_cwd = tmp_path.join("track-cwd");
+    std::fs::create_dir_all(&track_cwd).expect("create track cwd");
     let origin_repo = tmp_path.join("origin.git");
     init_bare_origin(&origin_repo, &tmp_path.join("seed"));
-    clone_for_wave(&origin_repo, &wave_cwd);
+    clone_for_track(&origin_repo, &track_cwd);
 
     let shim_dir = tmp_path.join("shim-bin");
     std::fs::create_dir_all(&shim_dir).expect("create gh shim dir");
@@ -370,11 +370,11 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     install_git_forge_plugin_files(&tmp_path);
 
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
-    let seeded = seed_world(&repo, &wave_cwd).await;
+    let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
     provision_worker_worktree(
-        &wave_cwd,
-        &seeded.wave_id,
+        &track_cwd,
+        &seeded.track_id,
         &seeded.card_id,
         &seeded.lease_abs,
     );
@@ -447,7 +447,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     .await;
     let merge_idem_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{repo_arg}:{pr_number}",
-        seeded.wave_id, seeded.card_id
+        seeded.track_id, seeded.card_id
     );
     let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
 
@@ -608,7 +608,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
 // ---------------------------------------------------------------------------
 
 struct Seeded {
-    wave_id: String,
+    track_id: String,
     card_id: String,
     raw_token: String,
     thread_id: String,
@@ -616,13 +616,13 @@ struct Seeded {
 }
 
 /// Mirror of forge_template_e2e's `boot_fixture`/`create_worker_caller`
-/// seeding, against the durable file DB: area + wave (cwd = git clone of the
+/// seeding, against the durable file DB: area + track (cwd = git clone of the
 /// bare origin), Worker card keeping its `raw_token`, runtime + thread
 /// binding, and a `held` workspace lease with **`boot_id` NULL** (the boot
 /// reclaim predicate only reclaims when BOTH boot_ids are non-NULL and
 /// unequal, so a NULL lease is never reclaimed) and a generous
 /// `lease_until_ms = now + 1h` (don't depend on the TTL being unchecked).
-async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
+async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let as_repo: Arc<dyn Repo> = repo.clone();
     let area = as_repo
         .area_create(NewArea {
@@ -632,28 +632,28 @@ async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
         })
         .await
         .expect("create area");
-    let wave = as_repo
-        .wave_create(NewWave {
+    let track = as_repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "merge-crash-e2".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
 
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_abs = wave_cwd
+    let lease_abs = track_cwd
         .join(".claude")
         .join("worktrees")
-        .join(wave.id.as_str())
+        .join(track.id.as_str())
         .join(&card_id);
 
     let mut tx = repo.pool().begin().await.expect("begin card tx");
@@ -662,7 +662,7 @@ async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
         card_id.clone(),
         &runtime_id,
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -694,14 +694,14 @@ async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', 'e2-test-lease-owner', ?5, NULL, ?6, ?6)"#,
     )
     .bind(calm_server::model::new_id())
     .bind(&card_id)
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(lease_abs.display().to_string())
     .bind(now + 3_600_000)
     .bind(now)
@@ -714,7 +714,7 @@ async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
     seed_runtime_thread(repo, card_id.as_str(), thread_id.as_str()).await;
 
     Seeded {
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         card_id,
         raw_token,
         thread_id,
@@ -801,11 +801,11 @@ fn manifest_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
 }
 
-fn provision_worker_worktree(repo: &Path, wave_id: &str, card_id: &str, target: &Path) {
+fn provision_worker_worktree(repo: &Path, track_id: &str, card_id: &str, target: &Path) {
     ensure_worktree_root_excluded(repo);
     let parent = target.parent().expect("worker worktree target parent");
     std::fs::create_dir_all(parent).expect("create worker worktree parent");
-    let branch = format!("neige/{wave_id}/{card_id}");
+    let branch = format!("neige/{track_id}/{card_id}");
     run_git(
         repo,
         [

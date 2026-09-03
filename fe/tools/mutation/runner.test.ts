@@ -573,8 +573,8 @@ describe('over-red failure detail evidence', () => {
   // A test that only checked lengths would have passed on the head-only version that lost it.
   it('keeps both the verdict line and the end of a TestingLibrary-shaped roles dump', () => {
     const verdict = 'TestingLibraryElementError: Unable to find an accessible element with the '
-      + 'role "button" and name "Create wave"';
-    const endMarker = 'dialog:\n  Name "Create wave": <div role="dialog" aria-label="Create wave" />';
+      + 'role "button" and name "Create track"';
+    const endMarker = 'dialog:\n  Name "Create track": <div role="dialog" aria-label="Create track" />';
     const boilerplate = Array.from({ length: 400 },
       (_v, index) => `  Name "sidebar item ${index}": <button />`).join('\n');
     const message = `${verdict}\n\nHere are the accessible roles:\n\n  button:\n${boilerplate}\n\n${endMarker}`;

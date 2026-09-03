@@ -35,8 +35,8 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>>
 
 const ATLAS = { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 };
 
-function mockCreatedWave() {
-  return vi.spyOn(api, 'createWave').mockResolvedValue({
+function mockCreatedTrack() {
+  return vi.spyOn(api, 'createTrack').mockResolvedValue({
     id: 'w-new',
     area_id: 'area-1',
     title: 'dev #891',
@@ -46,7 +46,7 @@ function mockCreatedWave() {
     archived_at: null,
     terminal_at: null,
     updated_at: 0,
-  } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+  } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
 }
 
 /** Drives the shared cwd/area flow to a submittable state: absolute cwd
@@ -174,7 +174,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
   it('pins the exact create body: template_id + derived template_input, no notes key ever', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = mockCreatedWave();
+    const createSpy = mockCreatedTrack();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
 
@@ -207,7 +207,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
   it('checking Auto-merge sends merge_policy auto-merge — still with no notes key', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = mockCreatedWave();
+    const createSpy = mockCreatedTrack();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm({ defaultAreaId: 'area-1' });
 
@@ -228,7 +228,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
   it('plain task variant sends no workflow keys at all (byte-identical body)', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = mockCreatedWave();
+    const createSpy = mockCreatedTrack();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -277,7 +277,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   it('an edited raw JSON overrides the derived fields in the submit body — including a notes key, which raw JSON alone can carry (#891 signoff)', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = mockCreatedWave();
+    const createSpy = mockCreatedTrack();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm({ defaultAreaId: 'area-1' });
 
@@ -360,7 +360,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   it('a stale raw override outlives later form edits: the summary flags it and the OLD blob ships', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = mockCreatedWave();
+    const createSpy = mockCreatedTrack();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm({ defaultAreaId: 'area-1' });
 
@@ -401,7 +401,7 @@ describe('NewTaskForm issue-dev — server 400 surfacing', () => {
   it('renders the server 400 message (schema validation stays server-side)', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    vi.spyOn(api, 'createWave').mockRejectedValue(
+    vi.spyOn(api, 'createTrack').mockRejectedValue(
       new CalmApiError(
         400,
         'bad_request',

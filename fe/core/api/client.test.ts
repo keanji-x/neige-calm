@@ -73,7 +73,7 @@ describe('core/api client behavior', () => {
     const cause = Object.assign(new Error('Request timed out.'), { name: 'TimeoutError' });
     const result = await performApiRequest(
       { send: () => Promise.reject(cause) },
-      { method: 'DELETE', path: '/api/waves/w1', responseSchema: z.void() },
+      { method: 'DELETE', path: '/api/tracks/w1', responseSchema: z.void() },
     );
     expect(result).toEqual({
       status: 'failed',

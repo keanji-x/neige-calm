@@ -6,12 +6,12 @@ import { ASSISTANT_CARD_ENTRY } from './assistant.ts';
 import { CLAUDE_CARD_ENTRY } from './claude.ts';
 import { CODEX_CARD_ENTRY } from './codex.ts';
 import { FILE_VIEWER_CARD_ENTRY } from './file-viewer.tsx';
-import { partitionWaveCards } from './headless-filter.js';
+import { partitionTrackCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { TERMINAL_CARD_ENTRY } from './terminal.js';
-import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
+import { TRACK_REPORT_CARD_ENTRY } from './track-report.js';
 
 declare module '../registry.js' {
   interface CardDataMap {
@@ -20,7 +20,7 @@ declare module '../registry.js' {
 }
 
 const LANDED = [
-  'terminal', 'codex', 'spec', 'assistant', 'claude', 'wave-report', 'file-viewer',
+  'terminal', 'codex', 'spec', 'assistant', 'claude', 'track-report', 'file-viewer',
 ] as const;
 
 describe('builtin card composition contract', () => {
@@ -29,7 +29,7 @@ describe('builtin card composition contract', () => {
     // order, so this literal *is* the resolution semantics. Changing an entry
     // or dropping one changes which adapter claims a shared kernel kind.
     expect([...BUILTIN_CARD_ORDER]).toEqual([
-      'terminal', 'codex', 'spec', 'assistant', 'claude', 'wave-report',
+      'terminal', 'codex', 'spec', 'assistant', 'claude', 'track-report',
       'file-viewer', 'iframe', 'plugin-iframe',
     ]);
     expect(BUILTIN_CARD_ORDER).toHaveLength(9);
@@ -51,7 +51,7 @@ describe('builtin card composition contract', () => {
     expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
     expect(registry.get('assistant')).toBe(ASSISTANT_CARD_ENTRY);
     expect(registry.get('claude')).toBe(CLAUDE_CARD_ENTRY);
-    expect(registry.get('wave-report')).toBe(WAVE_REPORT_CARD_ENTRY);
+    expect(registry.get('track-report')).toBe(TRACK_REPORT_CARD_ENTRY);
     expect(registry.get('file-viewer')).toBe(FILE_VIEWER_CARD_ENTRY);
   });
 
@@ -106,7 +106,7 @@ describe('builtin card composition contract', () => {
   /*
    * #1189 §5.4 — the assistant marker's half of the same rule.
    *
-   * The card the wave conversation endpoint mints is `kind: 'codex'` carrying
+   * The card the track conversation endpoint mints is `kind: 'codex'` carrying
    * `harness_profile: 'assistant'`, and `codex` is scanned before `assistant`.
    * What is really under test is `CODEX_CARD_ENTRY`'s refusal: delete that
    * clause and the assertion below reads `'codex'`, which in production means a
@@ -128,7 +128,7 @@ describe('builtin card composition contract', () => {
        assistant. */
     expect(
       registry.resolve({ id: 'p', kind: 'codex', payload: { harness_profile: 'plain_chat' } }),
-      'a plain chat card is not a wave assistant',
+      'a plain chat card is not a track assistant',
     ).toBeNull();
   });
 
@@ -153,13 +153,13 @@ describe('builtin card composition contract', () => {
    * component outside a renderer would throw for any entry that uses a hook.
    */
   describe('headless is declared on the entry, and the declaration is what filters', () => {
-    // Source of truth: `INV-CARD-181` (spec), `INV-CARD-201` (wave-report) and
-    // the wave assistant (#1189 §5.4) are headless — all three are read in the
+    // Source of truth: `INV-CARD-181` (spec), `INV-CARD-201` (track-report) and
+    // the track assistant (#1189 §5.4) are headless — all three are read in the
     // conversation drawer or the report column and draw no card of their own;
     // every other built-in owns a surface.
     const HEADLESS_BY_TYPE: Readonly<Record<BuiltinCardType, boolean>> = Object.freeze({
       terminal: false, codex: false, spec: true, assistant: true, claude: false,
-      'wave-report': true, 'file-viewer': false, iframe: false, 'plugin-iframe': false,
+      'track-report': true, 'file-viewer': false, iframe: false, 'plugin-iframe': false,
     });
     const bootedProductionRegistry = () => {
       const registry = createCardRegistry();
@@ -189,7 +189,7 @@ describe('builtin card composition contract', () => {
           entry.headless === true,
           expected
             ? `${entry.type} is headless but does not declare it — it would occupy an empty slot`
-            : `${entry.type} declares headless but owns a surface — it would vanish from the wave`,
+            : `${entry.type} declares headless but owns a surface — it would vanish from the track`,
         ).toBe(expected);
       }
     });
@@ -210,17 +210,17 @@ describe('builtin card composition contract', () => {
         fromKernel: (raw) => (raw.kind === 'declared' ? { type: 'declared-headless-fixture', id: raw.id } : null),
       });
       const wire = {
-        id: 'd1', kind: 'declared', wave_id: 'w1', title: null, sort: 0, payload: null,
+        id: 'd1', kind: 'declared', track_id: 'w1', title: null, sort: 0, payload: null,
         deletable: true, created_at: 0, updated_at: 0,
       };
-      const { visible, unknown } = partitionWaveCards(registry, [wire]);
+      const { visible, unknown } = partitionTrackCards(registry, [wire]);
       expect(visible).toEqual([]);
       expect(unknown).toEqual([]);
     });
   });
 
   /*
-   * `partitionWaveCards` reads headlessness with `registry.get(card.type)` on
+   * `partitionTrackCards` reads headlessness with `registry.get(card.type)` on
    * the card `resolve` handed back. `resolve` never checks that a resolved
    * card's `type` belongs to the entry that produced it, so that lookup is only
    * sound while every entry's `fromKernel` mints its own type. The narrow
@@ -238,7 +238,7 @@ describe('builtin card composition contract', () => {
       spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
       assistant: { id: 'probe-assistant', kind: 'codex', payload: { harness_profile: 'assistant' } },
       claude: { id: 'probe-claude', kind: 'claude', payload: { terminal_id: 't2' } },
-      'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
+      'track-report': { id: 'probe-report', kind: 'track-report', payload: null },
       'file-viewer': { id: 'probe-file', kind: 'file-viewer', payload: { path: '/tmp/probe.txt' } },
     });
 
@@ -259,7 +259,7 @@ describe('builtin card composition contract', () => {
           entry.fromKernel?.(probe)?.type,
           `${entry.type} must mint its own type, or the headless lookup reads another entry`,
         ).toBe(entry.type);
-        // The same trip `partitionWaveCards` makes: resolve, then look the
+        // The same trip `partitionTrackCards` makes: resolve, then look the
         // entry back up by the resolved card's type.
         const card = registry.resolve(probe);
         expect(card?.type, `${entry.type} probe must resolve through the registry`).toBe(entry.type);

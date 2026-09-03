@@ -1,22 +1,22 @@
 #![cfg(unix)]
 
 use calm_server::mcp_server::tools::report_links::{TOOL_AREA_OUTLINE, TOOL_REPORT_BACKLINKS};
-use calm_server::model::{NewArea, NewCard, NewWave};
-use calm_server::wave_report::{WaveReportPayload, persist_report};
+use calm_server::model::{NewArea, NewCard, NewTrack};
+use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
 use serde_json::{Value, json};
 
-use crate::mcp_wave_report::{boot, call_tool, spec_identity, worker_identity};
+use crate::mcp_track_report::{boot, call_tool, spec_identity, worker_identity};
 
-async fn add_wave(
-    boot: &crate::mcp_wave_report::Boot,
+async fn add_track(
+    boot: &crate::mcp_track_report::Boot,
     area_id: &str,
     title: &str,
     body: String,
-) -> calm_server::model::Wave {
-    let wave = boot
+) -> calm_server::model::Track {
+    let track = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: area_id.into(),
             title: title.into(),
             sort: None,
@@ -29,12 +29,12 @@ async fn add_wave(
         })
         .await
         .unwrap();
-    let initial = WaveReportPayload::initial();
+    let initial = TrackReportPayload::initial();
     let report = boot
         .repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
-            kind: "wave-report".into(),
+            track_id: track.id.clone(),
+            kind: "track-report".into(),
             sort: Some(-1.0),
             payload: serde_json::to_value(&initial).unwrap(),
             title: None,
@@ -47,10 +47,10 @@ async fn add_wave(
         &boot.ctx.write,
         ActorId::Kernel,
         EditAuthor::Kernel,
-        wave.clone(),
+        track.clone(),
         report,
         initial,
-        WaveReportPayload::new("", body),
+        TrackReportPayload::new("", body),
         0,
         None,
         None,
@@ -58,19 +58,19 @@ async fn add_wave(
     )
     .await
     .unwrap();
-    wave
+    track
 }
 
 async fn strip_report_cache_and_crdt(
-    boot: &crate::mcp_wave_report::Boot,
-    wave: &calm_server::model::Wave,
+    boot: &crate::mcp_track_report::Boot,
+    track: &calm_server::model::Track,
 ) {
     sqlx::query(
         "UPDATE cards SET body_crdt = NULL, \
          payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
-         WHERE wave_id = ?1 AND kind = 'wave-report'",
+         WHERE track_id = ?1 AND kind = 'track-report'",
     )
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .execute(&boot.repo.sqlite_pool().unwrap())
     .await
     .unwrap();
@@ -79,7 +79,7 @@ async fn strip_report_cache_and_crdt(
 #[tokio::test]
 async fn outline_lists_same_area_sibling_but_not_other_area() {
     let boot = boot().await;
-    let sibling = add_wave(
+    let sibling = add_track(
         &boot,
         boot.area_id.as_str(),
         "Sibling",
@@ -95,7 +95,7 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
         })
         .await
         .unwrap();
-    let outside = add_wave(
+    let outside = add_track(
         &boot,
         other_area.id.as_str(),
         "Outside",
@@ -105,15 +105,23 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
     let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
-    let waves = value["waves"].as_array().unwrap();
-    assert!(waves.iter().any(|wave| wave["id"] == sibling.id.as_str()));
-    assert!(!waves.iter().any(|wave| wave["id"] == outside.id.as_str()));
+    let tracks = value["tracks"].as_array().unwrap();
+    assert!(
+        tracks
+            .iter()
+            .any(|track| track["id"] == sibling.id.as_str())
+    );
+    assert!(
+        !tracks
+            .iter()
+            .any(|track| track["id"] == outside.id.as_str())
+    );
 }
 
 #[tokio::test]
 async fn outline_derives_blocks_for_v1_report_without_crdt() {
     let boot = boot().await;
-    let legacy = add_wave(
+    let legacy = add_track(
         &boot,
         boot.area_id.as_str(),
         "Legacy",
@@ -125,21 +133,21 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
     let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
-    let wave = value["waves"]
+    let track = value["tracks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|wave| wave["id"] == legacy.id.as_str())
+        .find(|track| track["id"] == legacy.id.as_str())
         .unwrap();
-    assert_eq!(wave["blocks"][0]["heading"], "Legacy heading");
-    assert!(wave["blocks"][0]["id"].as_str().unwrap().starts_with("b_"));
+    assert_eq!(track["blocks"][0]["heading"], "Legacy heading");
+    assert!(track["blocks"][0]["id"].as_str().unwrap().starts_with("b_"));
 }
 
 #[tokio::test]
-async fn outline_wave_cap_is_reported_and_exact() {
+async fn outline_track_cap_is_reported_and_exact() {
     let boot = boot().await;
     for index in 0..50 {
-        add_wave(
+        add_track(
             &boot,
             boot.area_id.as_str(),
             &format!("Sibling {index}"),
@@ -151,18 +159,18 @@ async fn outline_wave_cap_is_reported_and_exact() {
     let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
-    assert_eq!(value["waves"].as_array().unwrap().len(), 50);
-    assert_eq!(value["truncated"]["waves"], 1);
+    assert_eq!(value["tracks"].as_array().unwrap().len(), 50);
+    assert_eq!(value["truncated"]["tracks"], 1);
 }
 
-/// The real skeleton every wave is born with — the kernel's own bytes, not a
+/// The real skeleton every track is born with — the kernel's own bytes, not a
 /// transcription (#1185 §4.4 E). Since S2 that is one leading HTML comment
 /// block (multi-line, spanning blank lines — a CommonMark HTML block of type 2
 /// does not end at one) plus the four H1 sections the comment declares, so
 /// depending on it measures exactly what ships. A hand-written stand-in would
 /// only prove the outline can handle *a* contract-bearing report.
 fn contract_body() -> String {
-    WaveReportPayload::initial().body
+    TrackReportPayload::initial().body
 }
 
 #[tokio::test]
@@ -171,16 +179,16 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
     // block title; but the entry stays, because this outline is the only
     // source of block ids for deep links.
     let boot = boot().await;
-    let wave = add_wave(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
+    let track = add_track(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
 
     let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
-    let entry = value["waves"]
+    let entry = value["tracks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|candidate| candidate["id"] == wave.id.as_str())
+        .find(|candidate| candidate["id"] == track.id.as_str())
         .unwrap();
     let blocks = entry["blocks"].as_array().unwrap();
     assert_eq!(
@@ -202,14 +210,14 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
 #[tokio::test]
 async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
     /*
-     * What this measures, exactly: an area at the realistic ceiling — 51 waves,
+     * What this measures, exactly: an area at the realistic ceiling — 51 tracks,
      * every one carrying the maintenance contract plus four sections — still
      * fits the outline response comfortably, and the only degradation is the
-     * wave cap, reported.
+     * track cap, reported.
      *
      * What it does NOT measure, so nobody reads it as coverage it lacks: the
-     * `MAX_RESPONSE_BYTES` truncation branch and the `MAX_BLOCKS_PER_WAVE`
-     * branch are both untaken here, and by construction. 51 waves × 5 blocks
+     * `MAX_RESPONSE_BYTES` truncation branch and the `MAX_BLOCKS_PER_TRACK`
+     * branch are both untaken here, and by construction. 51 tracks × 5 blocks
      * serializes to about 17 KB against a 32 KiB cap, and 5 is well under the
      * 40-block cap. The assertions below therefore say "nothing was dropped",
      * which is the claim worth pinning for the carrier: adding a contract block
@@ -217,14 +225,14 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
      * paths would need a fixture built to blow the caps, it would be about the
      * degradation logic rather than about the contract, and it is not this one.
      *
-     * The existing wave-cap test seeds 50 *empty* bodies, which is why the size
+     * The existing track-cap test seeds 50 *empty* bodies, which is why the size
      * question needed a fixture of its own (#1185 §4.4 E).
      */
     let boot = boot().await;
     let mut seeded = Vec::new();
     for index in 0..50 {
         seeded.push(
-            add_wave(
+            add_track(
                 &boot,
                 boot.area_id.as_str(),
                 &format!("Sibling {index}"),
@@ -243,73 +251,73 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
     // into emptiness this stops passing for the wrong reason.
     assert!(
         (10 * 1024..=32 * 1024).contains(&bytes),
-        "expected a real, capped payload for 51 contract-bearing waves; got {bytes} bytes"
+        "expected a real, capped payload for 51 contract-bearing tracks; got {bytes} bytes"
     );
 
-    // The wave cap IS taken here — 51 waves against `MAX_WAVES = 50` — and it
+    // The track cap IS taken here — 51 tracks against `MAX_TRACKS = 50` — and it
     // is reported rather than silent.
-    let waves = value["waves"].as_array().unwrap();
-    assert_eq!(waves.len(), 50);
-    assert_eq!(value["truncated"]["waves"], 1);
+    let tracks = value["tracks"].as_array().unwrap();
+    assert_eq!(tracks.len(), 50);
+    assert_eq!(value["truncated"]["tracks"], 1);
     // Stated rather than implied: the byte-truncation branch did not fire.
     assert!(value["truncated"]["bytes"].is_null());
 
-    // No block was dropped from ANY wave — not just from the ones this loop
+    // No block was dropped from ANY track — not just from the ones this loop
     // happens to recognise. `truncated.blocks` is omitted entirely when the map
     // is empty, so asserting the whole key absent also rules out truncation
-    // metadata parked under some other wave id.
+    // metadata parked under some other track id.
     assert!(
         value["truncated"]["blocks"].is_null(),
         "nothing was dropped, so `truncated.blocks` must be absent entirely; got {}",
         value["truncated"]["blocks"]
     );
 
-    // Every block of every seeded wave is listed. This is the carrier's actual
+    // Every block of every seeded track is listed. This is the carrier's actual
     // claim — a contract block in every report costs the area nothing in
     // outline coverage — so the loop must also prove it actually looked at the
-    // seeded waves: a fixture whose ids stopped matching would otherwise skip
+    // seeded tracks: a fixture whose ids stopped matching would otherwise skip
     // every iteration and still pass.
     let mut verified = 0usize;
     let mut foreign = Vec::new();
-    for wave in waves {
-        let id = wave["id"].as_str().unwrap();
+    for track in tracks {
+        let id = track["id"].as_str().unwrap();
         if !seeded.iter().any(|seed| seed.id.as_str() == id) {
             foreign.push(id.to_string());
             continue;
         }
         verified += 1;
         assert_eq!(
-            wave["blocks"].as_array().unwrap().len(),
+            track["blocks"].as_array().unwrap().len(),
             5,
-            "every block of a seeded wave is listed ({id})"
+            "every block of a seeded track is listed ({id})"
         );
     }
-    // The area holds 51 waves — 50 seeded plus the boot wave — and `MAX_WAVES`
+    // The area holds 51 tracks — 50 seeded plus the boot track — and `MAX_TRACKS`
     // lists the 50 lowest ids, so exactly one falls off, and which one depends
-    // on where the random ids sort. Hence: nothing but the boot wave may show
-    // up unrecognised, and at most one seeded wave may be missing.
+    // on where the random ids sort. Hence: nothing but the boot track may show
+    // up unrecognised, and at most one seeded track may be missing.
     assert!(
         (seeded.len() - 1..=seeded.len()).contains(&verified),
-        "expected to have checked all {} seeded waves (at most one displaced by the wave cap); \
+        "expected to have checked all {} seeded tracks (at most one displaced by the track cap); \
          checked {verified}",
         seeded.len()
     );
     assert!(
         foreign
             .iter()
-            .all(|id| id.as_str() == boot.wave_id.as_str()),
-        "the only listable wave this test did not seed is the boot wave; got {foreign:?}"
+            .all(|id| id.as_str() == boot.track_id.as_str()),
+        "the only listable track this test did not seed is the boot track; got {foreign:?}"
     );
 }
 
 #[tokio::test]
-async fn backlinks_returns_linking_wave_for_callers_wave() {
+async fn backlinks_returns_linking_track_for_callers_track() {
     let boot = boot().await;
-    let source = add_wave(
+    let source = add_track(
         &boot,
         boot.area_id.as_str(),
         "Source",
-        format!("[target](neige://wave/{})\n", boot.wave_id),
+        format!("[target](neige://wave/{})\n", boot.track_id),
     )
     .await;
 
@@ -321,18 +329,18 @@ async fn backlinks_returns_linking_wave_for_callers_wave() {
     )
     .await
     .unwrap();
-    assert_eq!(value["backlinks"][0]["src_wave_id"], source.id.as_str());
+    assert_eq!(value["backlinks"][0]["src_track_id"], source.id.as_str());
     assert_eq!(value["backlinks"][0]["label"], "target");
 }
 
 #[tokio::test]
 async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
     let boot = boot().await;
-    let source = add_wave(
+    let source = add_track(
         &boot,
         boot.area_id.as_str(),
         "Footnote source",
-        format!("[^note]: [footnote](neige://wave/{})\n", boot.wave_id),
+        format!("[^note]: [footnote](neige://wave/{})\n", boot.track_id),
     )
     .await;
 
@@ -351,8 +359,8 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
         value,
         json!({
             "backlinks": [{
-                "src_wave_id": source.id,
-                "src_wave_title": "Footnote source",
+                "src_track_id": source.id,
+                "src_track_title": "Footnote source",
                 "src_block_id": src_block_id,
                 "dst_block_id": null,
                 "label": "footnote",

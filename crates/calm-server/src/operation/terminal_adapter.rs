@@ -13,7 +13,7 @@ use crate::db::sqlite::{
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{CardRole, new_id};
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::routes::cards::card_scope;
@@ -22,7 +22,7 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -46,7 +46,7 @@ const TERMINAL_PHASES: &[PhaseTag] = &[
 pub struct TerminalAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -54,7 +54,7 @@ pub struct TerminalAdapter {
 pub struct TerminalWorkerAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -62,12 +62,12 @@ impl TerminalAdapter {
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: None,
         }
     }
@@ -75,13 +75,13 @@ impl TerminalAdapter {
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -113,12 +113,12 @@ impl TerminalWorkerAdapter {
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: None,
         }
     }
@@ -126,13 +126,13 @@ impl TerminalWorkerAdapter {
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -149,7 +149,7 @@ pub struct TerminalCreateOperationPayload {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalCreateRequestPayload {
-    pub wave_id: String,
+    pub track_id: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -166,7 +166,7 @@ pub struct TerminalCreateRequestPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalWorkerOperationPayload {
     pub actor: ActorId,
-    pub wave_id: String,
+    pub track_id: String,
     pub idempotency_key: String,
     pub cmd: String,
     #[serde(default)]
@@ -186,8 +186,8 @@ pub fn normalize_terminal_create_request(
 /// field and a blank string are the same request.
 ///
 /// #1147 S6 — this used to fall back to `$HOME` here. The default is no longer
-/// a process-environment constant: it is the wave's workspace, and only
-/// [`terminal_cwd_or_wave_workspace`] can resolve it, because that needs the
+/// a process-environment constant: it is the track's workspace, and only
+/// [`terminal_cwd_or_track_workspace`] can resolve it, because that needs the
 /// transaction.
 pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
     cwd.as_deref()
@@ -197,13 +197,13 @@ pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
 }
 
 /// #1147 S6 — resolve a terminal card's working directory: whatever the caller
-/// named, else **the wave's workspace**.
+/// named, else **the track's workspace**.
 ///
-/// This is the slice's whole point. Design §产品契约 says every wave owns a
+/// This is the slice's whole point. Design §产品契约 says every track owns a
 /// repository; before S6 nothing made that true at a terminal prompt, because
 /// both terminal paths fell back to `$HOME` and never read
-/// `waves.workspace_path`. A user who opened a terminal in a wave landed
-/// outside the wave's repository — the same "the wave is not where you think it
+/// `tracks.workspace_path`. A user who opened a terminal in a track landed
+/// outside the track's repository — the same "the track is not where you think it
 /// is" defect #1147 was opened on, one layer up.
 ///
 /// Read inside the transaction that is about to write the terminal row, so the
@@ -211,21 +211,21 @@ pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
 /// the workspace in that same transaction).
 ///
 /// An empty stored path is refused rather than silently falling back. Every
-/// wave has had a materialized workspace since S2, so an empty one means the
+/// track has had a materialized workspace since S2, so an empty one means the
 /// row is broken; inheriting the server's cwd instead is exactly how #1147's
 /// original `spawn-failed` reached a user with no explanation.
-pub(crate) async fn terminal_cwd_or_wave_workspace(
+pub(crate) async fn terminal_cwd_or_track_workspace(
     tx: &mut Tx<'_>,
-    wave_id: &str,
+    track_id: &str,
     requested: Option<String>,
 ) -> Result<String> {
     if let Some(cwd) = requested {
         return Ok(cwd);
     }
-    let workspace = crate::db::sqlite::wave_workspace_read_tx(tx, wave_id).await?;
+    let workspace = crate::db::sqlite::track_workspace_read_tx(tx, track_id).await?;
     if workspace.path.trim().is_empty() {
         return Err(CalmError::Internal(format!(
-            "wave {wave_id} has no workspace path; refusing to open a terminal in the server's cwd"
+            "track {track_id} has no workspace path; refusing to open a terminal in the server's cwd"
         )));
     }
     Ok(workspace.path)
@@ -245,13 +245,13 @@ impl ProviderAdapter for TerminalAdapter {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         if self
             .repo
-            .wave_get(&payload.request.wave_id)
+            .track_get(&payload.request.track_id)
             .await?
             .is_none()
         {
             return Err(CalmError::NotFound(format!(
-                "wave {}",
-                payload.request.wave_id
+                "track {}",
+                payload.request.track_id
             )));
         }
         Ok(())
@@ -268,22 +268,22 @@ impl ProviderAdapter for TerminalAdapter {
         let env = payload.request.env.clone();
         let card_id = new_id();
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
-        let wave_id = payload.request.wave_id.clone();
-        // #1147 S6 — an empty request `cwd` means "the wave's workspace". It is
+        let track_id = payload.request.track_id.clone();
+        // #1147 S6 — an empty request `cwd` means "the track's workspace". It is
         // resolved here rather than in `normalize_terminal_create_request` for
         // the same reason the dispatcher keeps `cwd: None` on the terminal-worker
         // payload (see `scheduler::build_*_payload`): materializing a default
         // into the operation payload puts it into `stable_payload_hash`.
-        let cwd = terminal_cwd_or_wave_workspace(
+        let cwd = terminal_cwd_or_track_workspace(
             tx,
-            &wave_id,
+            &track_id,
             explicit_terminal_cwd(Some(payload.request.cwd.clone())),
         )
         .await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
-            WaveId::from(wave_id.clone()),
+            TrackId::from(track_id.clone()),
         )
         .await?;
         let (card, term) = card_with_terminal_create_tx(
@@ -291,7 +291,7 @@ impl ProviderAdapter for TerminalAdapter {
             card_id,
             &runtime_id,
             None,
-            WaveId::from(wave_id),
+            TrackId::from(track_id),
             payload.request.title.clone(),
             payload.request.sort,
             program.clone(),
@@ -316,7 +316,7 @@ impl ProviderAdapter for TerminalAdapter {
             &event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -325,7 +325,7 @@ impl ProviderAdapter for TerminalAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_area_cache,
+            &self.track_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -351,7 +351,7 @@ impl ProviderAdapter for TerminalAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
-            "wave_id": card.wave_id,
+            "track_id": card.track_id,
             "terminal_id": term.id,
             "program": program,
             "cwd": cwd,
@@ -410,23 +410,23 @@ impl ProviderAdapter for TerminalAdapter {
                         return Ok(());
                     }
 
-                    let wave_id = if let Some(wave_id) =
-                        output.data.get("wave_id").and_then(Value::as_str)
+                    let track_id = if let Some(track_id) =
+                        output.data.get("track_id").and_then(Value::as_str)
                     {
-                        WaveId::from(wave_id.to_string())
+                        TrackId::from(track_id.to_string())
                     } else {
                         ctx.repo
                             .card_get(&card_id)
                             .await?
                             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
-                            .wave_id
+                            .track_id
                     };
                     let scope =
-                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), wave_id)
+                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), track_id)
                             .await?;
                     let write = WriteContext::new(
                         self.card_role_cache.clone(),
-                        self.wave_area_cache.clone(),
+                        self.track_area_cache.clone(),
                     );
                     let card_id_for_tx = card_id.clone();
                     let (_unit, _ids) = write_with_events_typed(
@@ -513,7 +513,7 @@ impl ProviderAdapter for TerminalAdapter {
                 args: json!({
                     "card_id": output.output_string("card_id", "terminal")?,
                     "terminal_id": output.output_string("terminal_id", "terminal")?,
-                    "wave_id": output_wave_id(output)?,
+                    "track_id": output_track_id(output)?,
                 }),
                 completed: false,
                 attempts: 0,
@@ -550,15 +550,15 @@ impl ProviderAdapter for TerminalAdapter {
             .and_then(Value::as_str)
             .ok_or_else(|| CalmError::Internal("rollback step missing terminal_id".into()))?
             .to_string();
-        let wave_id = step
+        let track_id = step
             .args
-            .get("wave_id")
+            .get("track_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("rollback step missing wave_id".into()))?
+            .ok_or_else(|| CalmError::Internal("rollback step missing track_id".into()))?
             .to_string();
         let card = CardId::from(card_id.clone());
-        let wave = WaveId::from(wave_id);
-        let scope = card_scope(ctx.repo.as_ref(), card.clone(), wave.clone()).await?;
+        let track = TrackId::from(track_id);
+        let scope = card_scope(ctx.repo.as_ref(), card.clone(), track.clone()).await?;
         if let Some(term) = ctx.repo.terminal_get(&terminal_id).await? {
             reap_terminal_artifacts_with_renderer(Some(ctx.terminal_renderer.as_ref()), &term)
                 .await;
@@ -566,7 +566,7 @@ impl ProviderAdapter for TerminalAdapter {
         let cache = self.card_role_cache.clone();
         let write = crate::state::WriteContext::new(
             self.card_role_cache.clone(),
-            self.wave_area_cache.clone(),
+            self.track_area_cache.clone(),
         );
         ctx.repo
             .write_with_event(
@@ -577,7 +577,7 @@ impl ProviderAdapter for TerminalAdapter {
                 &write,
                 Box::new(move |tx| {
                     let event_card = card.clone();
-                    let event_wave = wave.clone();
+                    let event_track = track.clone();
                     let card_id = card_id.clone();
                     let terminal_id = terminal_id.clone();
                     let cache = cache.clone();
@@ -591,7 +591,7 @@ impl ProviderAdapter for TerminalAdapter {
                         .await?;
                         Ok(Event::CardDeleted {
                             id: event_card,
-                            wave_id: event_wave,
+                            track_id: event_track,
                         })
                     })
                 }),
@@ -618,8 +618,8 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 "terminal worker idempotency_key must not be empty".into(),
             ));
         }
-        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
+        if self.repo.track_get(&payload.track_id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("track {}", payload.track_id)));
         }
         Ok(())
     }
@@ -639,12 +639,12 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
         let runtime_id = new_id();
-        let wave_id = WaveId::from(payload.wave_id.clone());
-        // #1147 S6 — the task row's cwd if it named one, else the wave's
+        let track_id = TrackId::from(payload.track_id.clone());
+        // #1147 S6 — the task row's cwd if it named one, else the track's
         // workspace (was `$HOME`).
-        let cwd = terminal_cwd_or_wave_workspace(
+        let cwd = terminal_cwd_or_track_workspace(
             tx,
-            &payload.wave_id,
+            &payload.track_id,
             explicit_terminal_cwd(payload.cwd.clone()),
         )
         .await?;
@@ -652,7 +652,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
-            wave_id.clone(),
+            track_id.clone(),
         )
         .await?;
         let (mut card, term) = card_with_terminal_create_tx(
@@ -660,7 +660,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             card_id,
             &runtime_id,
             Some(op.id.as_str()),
-            wave_id,
+            track_id,
             None,
             None,
             payload.cmd.clone(),
@@ -704,7 +704,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
-            "wave_id": card.wave_id,
+            "track_id": card.track_id,
             "terminal_id": term.id,
             "cmd": payload.cmd,
             "cwd": cwd,
@@ -731,7 +731,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
     ) -> Result<SpawnOutcome> {
         let card_id = output_card_id(output)?;
         let terminal_id = output.output_string("terminal_id", "terminal")?;
-        let wave_id = WaveId::from(output.output_string("wave_id", "terminal")?);
+        let track_id = TrackId::from(output.output_string("track_id", "terminal")?);
         let cmd = output.output_string("cmd", "terminal")?;
         let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
@@ -751,15 +751,15 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             log_terminal_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
                 &card_id,
-                &wave_id,
+                &track_id,
             )
             .await
             .unwrap_or_else(|e| {
                 tracing::error!(
                     card_id = %card_id,
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     error = %e,
                     "terminal worker CardAdded append failed after recovery exit preservation; continuing"
                 );
@@ -800,15 +800,15 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 log_terminal_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     &card_id,
-                    &wave_id,
+                    &track_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
                     tracing::error!(
                         card_id = %card_id,
-                        wave_id = %wave_id,
+                        track_id = %track_id,
                         error = %e,
                         "terminal worker CardAdded append failed after live spawn; continuing"
                     );
@@ -818,7 +818,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             Err(e) if worker_spawn_failure_preserved(ctx.repo.as_ref(), &terminal_id).await? => {
                 tracing::info!(
                     card_id = %card_id,
-                    wave_id = %wave_id,
+                    track_id = %track_id,
                     terminal_id = %terminal_id,
                     spawn_err = %e,
                     "worker terminal fast-exit (sidecar present); preserving card + terminal",
@@ -826,15 +826,15 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 log_terminal_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     &card_id,
-                    &wave_id,
+                    &track_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
                     tracing::error!(
                         card_id = %card_id,
-                        wave_id = %wave_id,
+                        track_id = %track_id,
                         error = %e,
                         "terminal worker CardAdded append failed after fast-exit preservation; continuing"
                     );
@@ -909,12 +909,12 @@ impl ProviderAdapter for TerminalWorkerAdapter {
     }
 }
 
-fn output_wave_id(output: &TxOutput) -> Result<&str> {
+fn output_track_id(output: &TxOutput) -> Result<&str> {
     output
         .result
-        .get("wave_id")
+        .get("track_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| CalmError::Internal("terminal tx_output missing wave_id".into()))
+        .ok_or_else(|| CalmError::Internal("terminal tx_output missing track_id".into()))
 }
 
 pub(crate) async fn terminal_worker_env(repo: &dyn crate::db::RouteRepo) -> Result<Value> {
@@ -934,9 +934,9 @@ pub(crate) async fn terminal_worker_env(repo: &dyn crate::db::RouteRepo) -> Resu
 async fn log_terminal_worker_card_added(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_area_cache: &WaveAreaCache,
+    track_area_cache: &TrackAreaCache,
     card_id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
 ) -> Result<()> {
     let card = ctx
         .repo
@@ -946,7 +946,7 @@ async fn log_terminal_worker_card_added(
     let scope = card_scope(
         ctx.repo.as_ref(),
         CardId::from(card_id.to_string()),
-        wave_id.clone(),
+        track_id.clone(),
     )
     .await?;
     ctx.repo
@@ -956,7 +956,7 @@ async fn log_terminal_worker_card_added(
             None,
             &ctx.events,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             Event::CardAdded(card),
         )
         .await?;
@@ -988,8 +988,8 @@ fn normalize_program(program: String) -> String {
 }
 
 /// #1147 S6 — trim only. An empty cwd stays empty all the way into the
-/// operation payload and is resolved to the wave's workspace inside
-/// `prepare_tx` (`terminal_cwd_or_wave_workspace`). Filling `$HOME` in here
+/// operation payload and is resolved to the track's workspace inside
+/// `prepare_tx` (`terminal_cwd_or_track_workspace`). Filling `$HOME` in here
 /// would bake the server's environment into `stable_payload_hash`.
 fn normalize_cwd(cwd: String) -> String {
     cwd.trim().to_string()

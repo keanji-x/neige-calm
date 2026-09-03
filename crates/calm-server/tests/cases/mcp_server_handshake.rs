@@ -34,7 +34,7 @@ use calm_server::mcp_server::registry::{
     ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolHandlerFuture,
 };
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -58,7 +58,7 @@ struct Boot {
     events: EventBus,
     card_id: String,
     area_id: String,
-    wave_id: String,
+    track_id: String,
     session_id: String,
     thread_id: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
@@ -68,7 +68,7 @@ struct Boot {
 }
 
 /// Boot an `McpServer` against an in-memory SqlxRepo with a Spec card
-/// plus an MCP token already minted. The card's wave + area are seeded so
+/// plus an MCP token already minted. The card's track + area are seeded so
 /// the emit tools (PR7a) can resolve the scope chain.
 async fn boot() -> Boot {
     boot_with_registry(build_default_registry()).await
@@ -95,8 +95,8 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-handshake-test".into(),
@@ -123,7 +123,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         card_id.clone(),
         &calm_server::model::new_id(),
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -135,7 +135,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         // #229 PR A — spec cards are kernel-owned in production. The
         // mcp-handshake test focuses on the MCP surface, not on the
         // delete guard; minting `false` here also mirrors the prod
-        // wave-create path (`routes/waves.rs`).
+        // track-create path (`routes/tracks.rs`).
         false,
         &card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -148,12 +148,12 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,
@@ -172,7 +172,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         events,
         card_id,
         area_id: area.id.to_string(),
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         session_id,
         thread_id,
         raw_token,
@@ -333,31 +333,33 @@ fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value 
     })
 }
 
-fn wave_json_from_cat_response(resp: &Value) -> Value {
+fn track_json_from_cat_response(resp: &Value) -> Value {
     let structured = &resp["result"]["structuredContent"];
     assert_eq!(structured["content_type"], json!("application/json"));
-    let content = structured["content"].as_str().expect("wave content string");
-    serde_json::from_str(content).expect("wave content is JSON")
+    let content = structured["content"]
+        .as_str()
+        .expect("track content string");
+    serde_json::from_str(content).expect("track content is JSON")
 }
 
-fn registry_with_wave_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCaptureRx) {
+fn registry_with_track_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCaptureRx) {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
-    let wave_cat = registry
-        .lookup("calm.wave.cat")
-        .expect("calm.wave.cat registered");
+    let track_cat = registry
+        .lookup("calm.track.cat")
+        .expect("calm.track.cat registered");
     let descriptor = registry
         .descriptors()
         .into_iter()
-        .find(|d| d.name == "calm.wave.cat")
-        .expect("calm.wave.cat descriptor registered");
+        .find(|d| d.name == "calm.track.cat")
+        .expect("calm.track.cat descriptor registered");
     let handler: ToolHandler = Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let tx = tx.clone();
-        let wave_cat = wave_cat.clone();
+        let track_cat = track_cat.clone();
         Box::pin(async move {
             tx.send(identity.clone()).unwrap();
-            wave_cat(ctx, identity, args).await
+            track_cat(ctx, identity, args).await
         })
     });
     registry.register(descriptor, handler);
@@ -399,7 +401,7 @@ async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
         ConnectionIdentity::CardBound(identity) => {
             assert_eq!(identity.card_id.as_str(), b.card_id);
             assert_eq!(identity.session_id, b.session_id);
-            assert_eq!(identity.wave_id.as_deref(), Some(b.wave_id.as_str()));
+            assert_eq!(identity.track_id.as_deref(), Some(b.track_id.as_str()));
             assert_eq!(identity.area_id, b.area_id);
             assert_eq!(
                 identity.to_actor_id(),
@@ -410,7 +412,7 @@ async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
                 identity.to_principal(),
                 Some(Principal::Agent {
                     session_id: WorkerSessionId::from(b.session_id.as_str()),
-                    wave_id: b.wave_id.as_str().into(),
+                    track_id: b.track_id.as_str().into(),
                     area_id: b.area_id.as_str().into(),
                 }),
                 "Principal must be session-derived"
@@ -585,13 +587,13 @@ async fn tools_call_before_initialize_is_rejected() {
 }
 
 // Per-call `_meta.threadId` routing is verified on one initialized card-bound
-// connection by wrapping `calm.wave.cat` and capturing the identity delivered to
-// the handler. Both calls resolve to the same card/wave, so the load-bearing
+// connection by wrapping `calm.track.cat` and capturing the identity delivered to
+// the handler. Both calls resolve to the same card/track, so the load-bearing
 // assertion is that the observed `identity.thread_id` matches each request's
 // `_meta.threadId`; falling back to the initialize/bound identity is caught.
 #[tokio::test]
 async fn two_tools_calls_route_per_call_meta_thread_id() {
-    let (registry, mut identity_rx) = registry_with_wave_cat_identity_capture();
+    let (registry, mut identity_rx) = registry_with_track_cat_identity_capture();
     let b = boot_with_registry(registry).await;
     let mut rx = b.events.subscribe_filtered();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
@@ -606,9 +608,9 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         &mut wr,
         tools_call_frame(
             10,
-            "calm.wave.cat",
+            "calm.track.cat",
             &b.thread_id,
-            json!({"path": "wave.json"}),
+            json!({"path": "track.json"}),
         ),
     )
     .await;
@@ -617,11 +619,11 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         r1.get("error").is_none(),
         "first tools/call errored: {r1:#?}"
     );
-    let wave1 = wave_json_from_cat_response(&r1);
+    let track1 = track_json_from_cat_response(&r1);
     assert_eq!(
-        wave1["id"],
-        json!(b.wave_id.as_str()),
-        "first wave.cat resolved wrong wave for bound card {}",
+        track1["id"],
+        json!(b.track_id.as_str()),
+        "first track.cat resolved wrong track for bound card {}",
         b.card_id
     );
     let identity1 = timeout(TEST_BUDGET, identity_rx.recv())
@@ -639,9 +641,9 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         &mut wr,
         tools_call_frame(
             11,
-            "calm.wave.cat",
+            "calm.track.cat",
             &thread_id_a2,
-            json!({"path": "wave.json"}),
+            json!({"path": "track.json"}),
         ),
     )
     .await;
@@ -650,11 +652,11 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         r2.get("error").is_none(),
         "second tools/call errored: {r2:#?}"
     );
-    let wave2 = wave_json_from_cat_response(&r2);
+    let track2 = track_json_from_cat_response(&r2);
     assert_eq!(
-        wave2["id"],
-        json!(b.wave_id.as_str()),
-        "second wave.cat resolved wrong wave for bound card {}",
+        track2["id"],
+        json!(b.track_id.as_str()),
+        "second track.cat resolved wrong track for bound card {}",
         b.card_id
     );
     let identity2 = timeout(TEST_BUDGET, identity_rx.recv())
@@ -667,7 +669,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
 
     match timeout(Duration::from_millis(50), rx.recv()).await {
         Err(_) => {}
-        Ok(Ok(env)) => panic!("read-only wave.cat must not emit events; got {env:?}"),
+        Ok(Ok(env)) => panic!("read-only track.cat must not emit events; got {env:?}"),
         Ok(Err(_)) => panic!("bus closed unexpectedly"),
     }
     let _ = (&b.server, &b.repo);
@@ -696,9 +698,9 @@ async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
         &mut wr,
         tools_call_frame(
             12,
-            "calm.wave.cat",
+            "calm.track.cat",
             &second_thread_id,
-            json!({"path": "wave.json"}),
+            json!({"path": "track.json"}),
         ),
     )
     .await;
@@ -763,7 +765,7 @@ async fn spec_role_cannot_call_task_complete_or_fail() {
 }
 
 #[tokio::test]
-async fn wave_file_tools_support_two_calls_on_one_connection() {
+async fn track_file_tools_support_two_calls_on_one_connection() {
     let b = boot().await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
@@ -775,13 +777,13 @@ async fn wave_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(20, "calm.wave.ls", &b.thread_id, json!({"path": "/"})),
+        tools_call_frame(20, "calm.track.ls", &b.thread_id, json!({"path": "/"})),
     )
     .await;
     let r1 = recv_frame(&mut rd).await;
     assert!(
         r1.get("error").is_none(),
-        "first wave file tools/call errored: {r1:#?}"
+        "first track file tools/call errored: {r1:#?}"
     );
     let entries = r1["result"]["structuredContent"]
         .as_array()
@@ -795,7 +797,7 @@ async fn wave_file_tools_support_two_calls_on_one_connection() {
         &mut wr,
         tools_call_frame(
             21,
-            "calm.wave.cat",
+            "calm.track.cat",
             &b.thread_id,
             json!({"path": "index.md"}),
         ),
@@ -804,7 +806,7 @@ async fn wave_file_tools_support_two_calls_on_one_connection() {
     let r2 = recv_frame(&mut rd).await;
     assert!(
         r2.get("error").is_none(),
-        "second wave file tools/call errored: {r2:#?}"
+        "second track file tools/call errored: {r2:#?}"
     );
     let structured = &r2["result"]["structuredContent"];
     assert_eq!(structured["content_type"], json!("text/markdown"));
@@ -813,7 +815,7 @@ async fn wave_file_tools_support_two_calls_on_one_connection() {
             .as_str()
             .unwrap_or_default()
             .contains("Report: [report.md](report.md)"),
-        "index.md should expose the current wave summary: {structured:#?}"
+        "index.md should expose the current track summary: {structured:#?}"
     );
     let _ = &b.server;
 }
@@ -862,12 +864,12 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
     let card_role_cache = CardRoleCache::new();
     let events = EventBus::new();
     let registry = build_default_registry();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
 
     let result = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

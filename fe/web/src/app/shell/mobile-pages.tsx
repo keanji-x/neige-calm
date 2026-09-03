@@ -5,8 +5,8 @@ import {
 
 import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import {
-  userVisibleWaves, waveDisplayTitle, type Wave,
-} from '../../../../core/domain/wave.ts';
+  userVisibleTracks, trackDisplayTitle, type Track,
+} from '../../../../core/domain/track.ts';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
@@ -15,29 +15,29 @@ import styles from './mobile-pages.module.css';
 
 const RECENT_PAGE_LIMIT = 24;
 
-export function MobilePages({ areas, waves, onOpenWave }: Readonly<{
+export function MobilePages({ areas, tracks, onOpenTrack }: Readonly<{
   areas: readonly Area[];
-  waves: readonly Wave[];
-  onOpenWave: (waveId: string) => void;
+  tracks: readonly Track[];
+  onOpenTrack: (trackId: string) => void;
 }>) {
   /*
    * E2E-INV-SHELL-003 — the same second layer of defence the sidebar applies:
-   * a wave whose area is not user-visible does not belong on a list a person
-   * reads, and filtering waves alone (what this list used to do) let the
+   * a track whose area is not user-visible does not belong on a list a person
+   * reads, and filtering tracks alone (what this list used to do) let the
    * kernel's system area through if an unfiltered list ever reached here.
    */
-  const visible = userVisibleWaves(waves, areas);
+  const visible = userVisibleTracks(tracks, areas);
   const shownAreas = visibleAreas(areas);
   const pinned = visible
-    .filter((wave) => wave.pinnedAt !== null)
+    .filter((track) => track.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
   const recent = visible
-    .filter((wave) => wave.pinnedAt === null)
+    .filter((track) => track.pinnedAt === null)
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, RECENT_PAGE_LIMIT);
   const [group, setGroup] = useState<'pinned' | 'recent'>(() => (pinned.length > 0 ? 'pinned' : 'recent'));
   const shown = group === 'pinned' ? pinned : recent;
-  const areaFor = (wave: Wave) => areaOf(wave.areaId, shownAreas);
+  const areaFor = (track: Track) => areaOf(track.areaId, shownAreas);
 
   return (
     <MobileListPage title="Pages">
@@ -52,12 +52,12 @@ export function MobilePages({ areas, waves, onOpenWave }: Readonly<{
         <AstryxSegmentedControlItem value="recent" label="Recent" />
       </AstryxSegmentedControl>
       <MobileList>
-        {shown.map((wave) => {
-          const area = areaFor(wave);
+        {shown.map((track) => {
+          const area = areaFor(track);
           return (
             <MobileListItem
-              key={wave.id}
-              title={waveDisplayTitle(wave.title)}
+              key={track.id}
+              title={trackDisplayTitle(track.title)}
               titleVariant="document"
               meta={area?.name ?? 'Unknown area'}
               startContent={(
@@ -70,7 +70,7 @@ export function MobilePages({ areas, waves, onOpenWave }: Readonly<{
                   {area?.name.trim().charAt(0).toLocaleUpperCase() || '?'}
                 </span>
               )}
-              onSelect={() => onOpenWave(wave.id)}
+              onSelect={() => onOpenTrack(track.id)}
             />
           );
         })}

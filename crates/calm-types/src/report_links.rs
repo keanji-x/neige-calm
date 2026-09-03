@@ -5,20 +5,20 @@ use std::ops::Range;
 
 use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 
-const WAVE_LINK_PREFIX: &str = "neige://wave/";
+const TRACK_LINK_PREFIX: &str = "neige://wave/";
 const UNSAFE_LINK_SOURCE_MAX_BYTES: usize = 256;
 const TRUNCATED_SOURCE_SUFFIX: &str = "…[truncated]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportLinkRef {
-    pub dst_wave_id: String,
+    pub dst_track_id: String,
     pub dst_block_id: Option<String>,
     pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedLink {
-    pub dst_wave_id: String,
+    pub dst_track_id: String,
     pub dst_block_id: Option<String>,
     pub label: String,
     pub label_start: usize,
@@ -32,13 +32,13 @@ pub struct LinkScan {
 }
 
 struct PendingLink {
-    dst_wave_id: String,
+    dst_track_id: String,
     dst_block_id: Option<String>,
     label_start: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsafeWaveLink {
+pub struct UnsafeTrackLink {
     /// The exact destination when pulldown-cmark borrowed it from the source,
     /// otherwise a bounded excerpt of the smallest parser-provided source span
     /// containing it.
@@ -70,7 +70,7 @@ fn visit_links_with_options(
 ) -> bool {
     for link in scan_links_with_options(markdown, opts).links {
         if !visitor(ReportLinkRef {
-            dst_wave_id: link.dst_wave_id,
+            dst_track_id: link.dst_track_id,
             dst_block_id: link.dst_block_id,
             label: link.label,
         }) {
@@ -89,19 +89,19 @@ pub fn scan_links(markdown: &str) -> LinkScan {
     scan_links_with_options(markdown, opts)
 }
 
-/// Rewrite links that target a copied block in `source_wave_id` so they target
-/// the same block in `target_wave_id`.
+/// Rewrite links that target a copied block in `source_track_id` so they target
+/// the same block in `target_track_id`.
 ///
 /// Unlike [`scan_links`], this operates on Markdown source ranges: the offsets
 /// in [`ScannedLink`] belong to the rendered plain-text label and cannot be
 /// used to edit link destinations in the source document.
-pub fn rewrite_wave_links(
+pub fn rewrite_track_links(
     markdown: &str,
-    source_wave_id: &str,
-    target_wave_id: &str,
+    source_track_id: &str,
+    target_track_id: &str,
     copied_block_ids: &HashSet<String>,
-) -> Result<String, Vec<UnsafeWaveLink>> {
-    if source_wave_id == target_wave_id || source_wave_id.is_empty() {
+) -> Result<String, Vec<UnsafeTrackLink>> {
+    if source_track_id == target_track_id || source_track_id.is_empty() {
         return Ok(markdown.to_string());
     }
 
@@ -123,7 +123,7 @@ pub fn rewrite_wave_links(
                 dest_url,
                 id,
                 ..
-            }) if targets_copied_block(&dest_url, source_wave_id, copied_block_ids) => {
+            }) if targets_copied_block(&dest_url, source_track_id, copied_block_ids) => {
                 let source_span = match link_type {
                     LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut => definitions
                         .get(&id)
@@ -149,11 +149,11 @@ pub fn rewrite_wave_links(
                 if let Some(destination_range) = link.destination_range.as_ref()
                     && !link.has_inline_html
                 {
-                    let wave_start = destination_range.start + WAVE_LINK_PREFIX.len();
-                    replacements.push(wave_start..wave_start + source_wave_id.len());
+                    let track_start = destination_range.start + TRACK_LINK_PREFIX.len();
+                    replacements.push(track_start..track_start + source_track_id.len());
                 } else {
                     let source_range = link.destination_range.unwrap_or(link.source_span);
-                    unsafe_links.push(UnsafeWaveLink {
+                    unsafe_links.push(UnsafeTrackLink {
                         source: truncate_unsafe_source(
                             markdown.get(source_range).unwrap_or_default(),
                         ),
@@ -181,7 +181,7 @@ pub fn rewrite_wave_links(
 
     let mut rewritten = markdown.to_string();
     for range in replacements.into_iter().rev() {
-        rewritten.replace_range(range, target_wave_id);
+        rewritten.replace_range(range, target_track_id);
     }
     Ok(rewritten)
 }
@@ -209,35 +209,35 @@ fn borrowed_source_range(markdown: &str, destination: &CowStr<'_>) -> Option<Ran
 }
 
 /// Rewrite one bare `neige://wave/...` destination while preserving every
-/// byte outside the wave-id segment, including the fragment.
-pub fn rewrite_wave_destination(
+/// byte outside the track-id segment, including the fragment.
+pub fn rewrite_track_destination(
     destination: &str,
-    source_wave_id: &str,
-    target_wave_id: &str,
+    source_track_id: &str,
+    target_track_id: &str,
     copied_block_ids: &HashSet<String>,
 ) -> String {
-    if !targets_copied_block(destination, source_wave_id, copied_block_ids) {
+    if !targets_copied_block(destination, source_track_id, copied_block_ids) {
         return destination.to_string();
     }
-    let start = WAVE_LINK_PREFIX.len();
-    let end = start + source_wave_id.len();
+    let start = TRACK_LINK_PREFIX.len();
+    let end = start + source_track_id.len();
     let mut rewritten = destination.to_string();
-    rewritten.replace_range(start..end, target_wave_id);
+    rewritten.replace_range(start..end, target_track_id);
     rewritten
 }
 
 fn targets_copied_block(
     destination: &str,
-    source_wave_id: &str,
+    source_track_id: &str,
     copied_block_ids: &HashSet<String>,
 ) -> bool {
-    let Some(path) = destination.strip_prefix(WAVE_LINK_PREFIX) else {
+    let Some(path) = destination.strip_prefix(TRACK_LINK_PREFIX) else {
         return false;
     };
-    let Some((wave_id, block_id)) = path.split_once('#') else {
+    let Some((track_id, block_id)) = path.split_once('#') else {
         return false;
     };
-    wave_id == source_wave_id && copied_block_ids.contains(block_id)
+    track_id == source_track_id && copied_block_ids.contains(block_id)
 }
 
 fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
@@ -252,8 +252,8 @@ fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
             Event::Start(Tag::Link { dest_url, .. }) => {
                 link_depth += 1;
                 pending =
-                    parse_destination(&dest_url).map(|(dst_wave_id, dst_block_id)| PendingLink {
-                        dst_wave_id,
+                    parse_destination(&dest_url).map(|(dst_track_id, dst_block_id)| PendingLink {
+                        dst_track_id,
                         dst_block_id,
                         label_start: plain.len(),
                     });
@@ -266,7 +266,7 @@ fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
                         .expect("link label offsets are character boundaries")
                         .to_string();
                     links.push(ScannedLink {
-                        dst_wave_id: link.dst_wave_id,
+                        dst_track_id: link.dst_track_id,
                         dst_block_id: link.dst_block_id,
                         label,
                         label_start: link.label_start,
@@ -308,17 +308,17 @@ fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
 }
 
 pub fn parse_destination(destination: &str) -> Option<(String, Option<String>)> {
-    let path = destination.strip_prefix(WAVE_LINK_PREFIX)?;
-    let (wave_id, fragment) = match path.split_once('#') {
-        Some((wave_id, fragment)) => (wave_id, Some(fragment)),
+    let path = destination.strip_prefix(TRACK_LINK_PREFIX)?;
+    let (track_id, fragment) = match path.split_once('#') {
+        Some((track_id, fragment)) => (track_id, Some(fragment)),
         None => (path, None),
     };
-    if wave_id.is_empty() || wave_id.contains('/') {
+    if track_id.is_empty() || track_id.contains('/') {
         return None;
     }
 
     let block_id = fragment.filter(|fragment| is_block_id(fragment));
-    Some((wave_id.to_string(), block_id.map(str::to_string)))
+    Some((track_id.to_string(), block_id.map(str::to_string)))
 }
 
 pub fn is_block_id(id: &str) -> bool {
@@ -335,11 +335,11 @@ mod tests {
 
     fn rewrite(
         markdown: &str,
-        source_wave_id: &str,
-        target_wave_id: &str,
+        source_track_id: &str,
+        target_track_id: &str,
         copied_block_ids: &HashSet<String>,
     ) -> String {
-        rewrite_wave_links(markdown, source_wave_id, target_wave_id, copied_block_ids).unwrap()
+        rewrite_track_links(markdown, source_track_id, target_track_id, copied_block_ids).unwrap()
     }
 
     fn copied(ids: &[&str]) -> HashSet<String> {
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(
             links,
             [ReportLinkRef {
-                dst_wave_id: "w1".into(),
+                dst_track_id: "w1".into(),
                 dst_block_id: Some("b_1f3a".into()),
                 label: "x".into(),
             }]
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(
             links,
             [ReportLinkRef {
-                dst_wave_id: "w1".into(),
+                dst_track_id: "w1".into(),
                 dst_block_id: None,
                 label: "neige://wave/w1".into(),
             }]
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_wave_links_is_source_aware_and_preserves_fragments() {
+    fn rewrite_track_links_is_source_aware_and_preserves_fragments() {
         let markdown = concat!(
             "[inline](neige://wave/source#b_1f3a)\n",
             "[reference][same] and [again][same]\n",
@@ -433,9 +433,9 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_wave_destination_changes_only_internal_wave_segment() {
+    fn rewrite_track_destination_changes_only_internal_track_segment() {
         assert_eq!(
-            rewrite_wave_destination(
+            rewrite_track_destination(
                 "neige://wave/source#b_1f3a",
                 "source",
                 "target",
@@ -444,7 +444,7 @@ mod tests {
             "neige://wave/target#b_1f3a"
         );
         assert_eq!(
-            rewrite_wave_destination(
+            rewrite_track_destination(
                 "neige://wave/other#b_1f3a",
                 "source",
                 "target",
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_preserves_source_wave_links_to_uncopied_blocks_byte_for_byte() {
+    fn rewrite_preserves_source_track_links_to_uncopied_blocks_byte_for_byte() {
         let markdown = "[dangling](neige://wave/source#b_dead)";
         assert_eq!(
             rewrite(markdown, "source", "target", &copied(&["b_0001"])),
@@ -595,7 +595,7 @@ mod tests {
         );
         let destination = "neige://wave/source#b_dead";
         assert_eq!(
-            rewrite_wave_destination(destination, "source", "target", &copied(&["b_0001"]),),
+            rewrite_track_destination(destination, "source", "target", &copied(&["b_0001"]),),
             destination
         );
     }
@@ -604,7 +604,7 @@ mod tests {
     fn rewrite_fails_closed_for_character_entity_destination() {
         let markdown = "[entity](neige://wave/sour&#99;e#b_1234)";
         let errors =
-            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+            rewrite_track_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(
             errors[0].source.contains("neige://wave/sour&#99;e#b_1234"),
@@ -617,7 +617,7 @@ mod tests {
         let long_label = "正文".repeat(200);
         let markdown = format!("[{long_label}](neige://wave/sour&#99;e#b_1234)");
         let errors =
-            rewrite_wave_links(&markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+            rewrite_track_links(&markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].source.len() <= UNSAFE_LINK_SOURCE_MAX_BYTES);
@@ -629,7 +629,7 @@ mod tests {
     fn rewrite_fails_closed_for_backslash_escaped_destination() {
         let markdown = r"[escaped](neige\://wave/source#b_1234)";
         let errors =
-            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+            rewrite_track_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(
             errors[0].source.contains(r"neige\://wave/source#b_1234"),
@@ -642,20 +642,20 @@ mod tests {
         let destination = "neige://wave/source#b_1234";
         let markdown = format!(r#"[<span title="[">label</span>]({destination})"#);
         let errors =
-            rewrite_wave_links(&markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+            rewrite_track_links(&markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
         assert_eq!(errors[0].source, destination);
     }
 
     #[test]
-    fn wave_id_is_the_exact_path_segment() {
+    fn track_id_is_the_exact_path_segment() {
         let links = collect_links("[x](neige://wave/abc-def)");
-        assert_eq!(links[0].dst_wave_id, "abc-def");
-        assert_ne!(links[0].dst_wave_id, "abc");
+        assert_eq!(links[0].dst_track_id, "abc-def");
+        assert_ne!(links[0].dst_track_id, "abc");
     }
 
     #[test]
     fn markdown_without_neige_links_is_empty() {
-        assert!(collect_links("[web](https://example.com) and [local](/wave/w1)").is_empty());
+        assert!(collect_links("[web](https://example.com) and [local](/track/w1)").is_empty());
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_wave_paths_are_skipped() {
+    fn invalid_track_paths_are_skipped() {
         for markdown in [
             "[empty](neige://wave/)",
             "[slash](neige://wave/a/b)",
@@ -686,7 +686,7 @@ mod tests {
         assert_eq!(
             links
                 .iter()
-                .map(|link| (link.dst_wave_id.as_str(), link.label.as_str()))
+                .map(|link| (link.dst_track_id.as_str(), link.label.as_str()))
                 .collect::<Vec<_>>(),
             [("w1", "first emphasis"), ("w2", "second code")]
         );
@@ -700,7 +700,7 @@ mod tests {
         assert_eq!(scan.plain, "前文 web and 目标 后文\n");
         assert_eq!(scan.links.len(), 1);
         let link = &scan.links[0];
-        assert_eq!(link.dst_wave_id, "w1");
+        assert_eq!(link.dst_track_id, "w1");
         assert_eq!(link.dst_block_id.as_deref(), Some("b_1f3a"));
         assert_eq!(link.label, "目标");
         assert_eq!(
@@ -817,7 +817,7 @@ mod tests {
         let completed = visit_links(
             "[first](neige://wave/w1) [second](neige://wave/w2)",
             |link| {
-                visited.push(link.dst_wave_id);
+                visited.push(link.dst_track_id);
                 false
             },
         );
@@ -830,7 +830,7 @@ mod tests {
         assert_eq!(
             collect_links("[^a]: [n](neige://wave/w1)"),
             [ReportLinkRef {
-                dst_wave_id: "w1".into(),
+                dst_track_id: "w1".into(),
                 dst_block_id: None,
                 label: "n".into(),
             }]
@@ -910,7 +910,7 @@ mod tests {
             let expected_links = |label: Option<&str>| {
                 label
                     .map(|label| ReportLinkRef {
-                        dst_wave_id: "w1".into(),
+                        dst_track_id: "w1".into(),
                         dst_block_id: None,
                         label: label.into(),
                     })

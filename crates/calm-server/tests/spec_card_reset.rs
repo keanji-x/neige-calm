@@ -14,9 +14,9 @@ use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams,
 };
-use calm_server::ids::WaveId;
+use calm_server::ids::TrackId;
 use calm_server::model::{
-    Card, CardRole, NewArea, NewCard, NewTerminal, NewWave, RequestTheme, new_id, now_ms,
+    Card, CardRole, NewArea, NewCard, NewTerminal, NewTrack, RequestTheme, new_id, now_ms,
 };
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use calm_server::operation::{
@@ -53,7 +53,7 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     _tmp: TempDir,
 }
 
@@ -161,8 +161,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "reset route auth".into(),
@@ -178,9 +178,9 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -195,11 +195,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-spec-card-reset"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -211,7 +214,7 @@ async fn boot() -> Boot {
         app,
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         _tmp: tmp,
     }
 }
@@ -231,8 +234,8 @@ async fn boot_shared() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "shared reset goal".into(),
@@ -248,9 +251,9 @@ async fn boot_shared() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -265,11 +268,14 @@ async fn boot_shared() -> Boot {
             tmp.path().join("plugins-data"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
 
     let cfg = Config::parse_from([
@@ -309,7 +315,7 @@ async fn boot_shared() -> Boot {
         app,
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         _tmp: tmp,
     }
 }
@@ -324,7 +330,7 @@ fn install_failing_spec_start_runtime(boot: &mut Boot) {
             boot.state.harness.clone(),
             boot.state.plugin.clone(),
             boot.state.card_role_cache.clone(),
-            boot.state.wave_area_cache.clone(),
+            boot.state.track_area_cache.clone(),
             None,
         ),
     });
@@ -427,7 +433,7 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "plugin:test:worker".into(),
             sort: None,
@@ -535,7 +541,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -548,7 +554,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
         .expect("seed codex card");
     boot.state
         .card_role_cache
-        .insert(card.id.clone(), role, WaveId::from(boot.wave_id.clone()));
+        .insert(card.id.clone(), role, TrackId::from(boot.track_id.clone()));
     card
 }
 
@@ -584,13 +590,13 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_area_cache: boot.state.wave_area_cache.clone(),
+        track_area_cache: boot.state.track_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -609,7 +615,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, SpecHarness
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -620,7 +626,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, SpecHarness
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Worker,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     let runtime_id = new_id();
     let thread_id = format!("thread-{runtime_id}");
@@ -651,13 +657,13 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, SpecHarness
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_area_cache: boot.state.wave_area_cache.clone(),
+        track_area_cache: boot.state.track_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -858,7 +864,7 @@ async fn send_spec_input_emits_audit_event() {
 
     let area_id = boot
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await
         .unwrap()
         .unwrap()
@@ -870,20 +876,20 @@ async fn send_spec_input_emits_audit_event() {
             (
                 calm_server::event::EventScope::Card {
                     card: scope_card,
-                    wave: scope_wave,
+                    track: scope_track,
                     area: scope_area
                 },
                 calm_server::event::Event::HarnessUserMessageEnqueued {
                     runtime_id: ev_rt,
                     card_id: ev_card,
-                    wave_id: ev_wave,
+                    track_id: ev_track,
                     char_count,
                 },
             ) if ev_rt == &runtime_id
                 && ev_card == &card.id
-                && ev_wave == &card.wave_id
+                && ev_track == &card.track_id
                 && scope_card == &card.id
-                && scope_wave == &card.wave_id
+                && scope_track == &card.track_id
                 && scope_area == &area_id
                 && *char_count == text.chars().count() as u32
         )
@@ -951,18 +957,18 @@ async fn send_spec_input_with_ai_codex_actor_emits_spec_session_audit_event() {
 }
 
 #[tokio::test]
-async fn send_spec_input_wave_missing_returns_404() {
+async fn send_spec_input_track_missing_returns_404() {
     let boot = boot().await;
     let (mut card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
-    let missing_wave_id = format!("missing-wave-{}", new_id());
+    let missing_track_id = format!("missing-track-{}", new_id());
 
     let mut conn = boot.repo.pool().acquire().await.unwrap();
     sqlx::query("PRAGMA foreign_keys = OFF")
         .execute(&mut *conn)
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET wave_id = ?1 WHERE id = ?2")
-        .bind(&missing_wave_id)
+    sqlx::query("UPDATE cards SET track_id = ?1 WHERE id = ?2")
+        .bind(&missing_track_id)
         .bind(card.id.as_str())
         .execute(&mut *conn)
         .await
@@ -972,17 +978,17 @@ async fn send_spec_input_wave_missing_returns_404() {
         .await
         .unwrap();
     drop(conn);
-    card.wave_id = WaveId::from(missing_wave_id);
+    card.track_id = TrackId::from(missing_track_id);
 
     let (status, body) = post_json(
         boot.app.clone(),
         &format!("/api/cards/{}/spec/input", card.id),
-        json!({ "text": "wave gone" }),
+        json!({ "text": "track gone" }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert!(
-        body["error"].as_str().is_some_and(|e| e.contains("wave")),
+        body["error"].as_str().is_some_and(|e| e.contains("track")),
         "body={body}"
     );
 
@@ -995,7 +1001,7 @@ async fn send_spec_input_wave_missing_returns_404() {
     });
     assert!(
         !any_user_msg,
-        "wave_get -> None path must not emit audit: {events:?}"
+        "track_get -> None path must not emit audit: {events:?}"
     );
 
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
@@ -1139,7 +1145,7 @@ async fn send_spec_input_after_shutdown_returns_409() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match harness.observe(Observation::WaveGoal {
+        match harness.observe(Observation::TrackGoal {
             text: "closed-channel-probe".into(),
         }) {
             Err(CalmError::Conflict(message)) if message.contains("shutting down") => break,
@@ -1194,7 +1200,7 @@ async fn send_spec_input_non_spec_card_403() {
 }
 
 /// #649 i2 trigger B — no active runtime row at all (the fire-and-forget
-/// `spec-harness-start` failed at wave creation): typed 409 with the
+/// `spec-harness-start` failed at track creation): typed 409 with the
 /// machine-readable `spec_harness_dormant` code, NOT a 404, so the client
 /// can steer the user to Reset.
 #[tokio::test]
@@ -1237,7 +1243,7 @@ async fn boot_fake_running() -> Boot {
 
 /// Seed an *active* spec runtime row (status `idle`) with NO live harness
 /// task and NO registry entry — the post-restart shape #649 i2 recovers
-/// from (boot recovery skips done-lifecycle waves, leaving the row live
+/// from (boot recovery skips done-lifecycle tracks, leaving the row live
 /// and the registry empty).
 async fn seed_active_spec_runtime_row(
     boot: &Boot,
@@ -1613,7 +1619,7 @@ async fn shared_card_delete_interrupts_active_turn() {
 }
 
 #[tokio::test]
-async fn shared_wave_delete_interrupts_all_child_turns() {
+async fn shared_track_delete_interrupts_all_child_turns() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();
     let capture_file = capture.path().join("requests.ndjson");
@@ -1621,16 +1627,16 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot_shared().await;
-    let card_a = seed_shared_worker_card(&boot, "wave-a", "thread-wave-a").await;
-    let card_b = seed_shared_worker_card(&boot, "wave-b", "thread-wave-b").await;
+    let card_a = seed_shared_worker_card(&boot, "track-a", "thread-track-a").await;
+    let card_b = seed_shared_worker_card(&boot, "track-b", "thread-track-b").await;
     boot.state
         .shared_codex_appserver
-        .set_active_turn_for_test("thread-wave-a", "turn-wave-a");
+        .set_active_turn_for_test("thread-track-a", "turn-track-a");
     boot.state
         .shared_codex_appserver
-        .set_active_turn_for_test("thread-wave-b", "turn-wave-b");
+        .set_active_turn_for_test("thread-track-b", "turn-track-b");
 
-    let status = delete_empty(boot.app.clone(), &format!("/api/waves/{}", boot.wave_id)).await;
+    let status = delete_empty(boot.app.clone(), &format!("/api/tracks/{}", boot.track_id)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let rows = request_lines_containing(&capture_file, "turn/interrupt", 2).await;
     unsafe {
@@ -1638,12 +1644,12 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
     }
 
     assert!(
-        has_interrupt(&rows, "thread-wave-a", "turn-wave-a"),
-        "wave delete must interrupt first active shared turn: {rows:?}"
+        has_interrupt(&rows, "thread-track-a", "turn-track-a"),
+        "track delete must interrupt first active shared turn: {rows:?}"
     );
     assert!(
-        has_interrupt(&rows, "thread-wave-b", "turn-wave-b"),
-        "wave delete must interrupt second active shared turn: {rows:?}"
+        has_interrupt(&rows, "thread-track-b", "turn-track-b"),
+        "track delete must interrupt second active shared turn: {rows:?}"
     );
     assert!(
         boot.repo
@@ -1662,12 +1668,12 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
 }
 
 #[tokio::test]
-async fn wave_delete_shuts_down_active_spec_harness() {
+async fn track_delete_shuts_down_active_spec_harness() {
     let boot = boot_shared().await;
     let area = boot
         .repo
         .area_create(NewArea {
-            name: "harness-wave-delete".into(),
+            name: "harness-track-delete".into(),
             color: "#000".into(),
             sort: None,
         })
@@ -1675,7 +1681,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
         .unwrap();
     let (status, body) = post_json(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": area.id,
             "title": "delete harness",
@@ -1687,8 +1693,8 @@ async fn wave_delete_shuts_down_active_spec_harness() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let wave_id = body["id"].as_str().expect("wave id").to_string();
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    let track_id = body["id"].as_str().expect("track id").to_string();
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let spec_card = cards
         .iter()
         .find(|card| card.kind == "codex" && card.payload["spec_harness"] == json!(true))
@@ -1702,7 +1708,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
     assert!(boot.state.harness.get(&runtime.id).is_some());
     assert_eq!(boot.state.harness.len_active(), 1);
 
-    let status = delete_empty(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let status = delete_empty(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
 
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(boot.state.harness.len_active(), 0);
@@ -1717,7 +1723,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
 }
 
 #[tokio::test]
-async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_terminal() {
+async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_terminal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
@@ -1730,7 +1736,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
         .unwrap();
     let (status, body) = post_json(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": area.id,
             "title": "live parent",
@@ -1742,7 +1748,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let parent_id = body["id"].as_str().unwrap().to_string();
-    let cards = boot.repo.cards_by_wave(&parent_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&parent_id).await.unwrap();
     let spec_card = cards
         .iter()
         .find(|card| card.payload["spec_harness"] == json!(true))
@@ -1758,7 +1764,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
     let terminal_card = boot
         .repo
         .card_create(NewCard {
-            wave_id: parent_id.clone().into(),
+            track_id: parent_id.clone().into(),
             title: Some("live terminal".into()),
             kind: "terminal".into(),
             sort: None,
@@ -1795,7 +1801,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
 
     let child = boot
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: area.id,
             title: "child".into(),
             sort: None,
@@ -1808,7 +1814,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(&parent_id)
         .bind(child.id.as_str())
         .execute(boot.repo.pool())
@@ -1816,13 +1822,13 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
         .unwrap();
 
     let before_counts: (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+        "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                 (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
     )
     .fetch_one(boot.repo.pool())
     .await
     .unwrap();
-    let status = delete_empty(boot.app.clone(), &format!("/api/waves/{parent_id}")).await;
+    let status = delete_empty(boot.app.clone(), &format!("/api/tracks/{parent_id}")).await;
     assert_eq!(status, StatusCode::CONFLICT);
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -1835,10 +1841,10 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
         boot.state.harness.get(&runtime.id).is_some(),
         "harness registry changed"
     );
-    assert!(boot.repo.wave_get(&parent_id).await.unwrap().is_some());
+    assert!(boot.repo.track_get(&parent_id).await.unwrap().is_some());
     assert!(
         boot.repo
-            .wave_get(child.id.as_str())
+            .track_get(child.id.as_str())
             .await
             .unwrap()
             .is_some()
@@ -1858,7 +1864,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
             .is_some()
     );
     let after_counts: (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+        "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                 (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
     )
     .fetch_one(boot.repo.pool())
@@ -1889,7 +1895,7 @@ async fn reset_spec_card_rejects_worker_codex_card() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone().into(),
+            track_id: boot.track_id.clone().into(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1900,7 +1906,7 @@ async fn reset_spec_card_rejects_worker_codex_card() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Worker,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
 
     let (status, body) = post_empty(boot.app, &format!("/api/cards/{}/spec/reset", card.id)).await;
@@ -1914,7 +1920,7 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone().into(),
+            track_id: boot.track_id.clone().into(),
             title: None,
             kind: "report".into(),
             sort: None,
@@ -1925,7 +1931,7 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Worker,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
 
     let (status, body) = post_empty(boot.app, &format!("/api/cards/{}/spec/reset", card.id)).await;
@@ -1940,7 +1946,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1954,7 +1960,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Spec,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     let old_runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(3, vec![]);
@@ -1992,7 +1998,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     assert_eq!(body["card_id"], json!(card.id.as_str()));
     assert_eq!(body["terminal_id"], json!(""));
     assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
-    assert_eq!(body["wave"]["id"], json!(boot.wave_id));
+    assert_eq!(body["track"]["id"], json!(boot.track_id));
     assert!(
         boot.repo
             .terminal_get_by_card(card.id.as_str())
@@ -2032,7 +2038,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -2046,7 +2052,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Spec,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     let old_runtime_id = new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
@@ -2109,7 +2115,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     );
     // Fresh session: nothing inherited from the corrupt row — watermark is 0
     // and the queue is empty. #1211 S1 removed the title→goal seeding, so this
-    // asserts `is_empty()` rather than `.all(is WaveGoal)`: the latter is
+    // asserts `is_empty()` rather than `.all(is TrackGoal)`: the latter is
     // vacuously true on an empty queue and would pass no matter what reset put
     // there.
     assert_eq!(
@@ -2134,7 +2140,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -2148,7 +2154,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Spec,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     let old_runtime_id = new_id();
     let thread_id = "thread-old-watermark".to_string();
@@ -2180,13 +2186,13 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: old_runtime_id.clone(),
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_area_cache: boot.state.wave_area_cache.clone(),
+        track_area_cache: boot.state.track_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -2201,7 +2207,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     for envelope_id in 1_i64..=3 {
         harness
             .observe_envelope(
-                Observation::WaveGoal {
+                Observation::TrackGoal {
                     text: format!("seeded observation {envelope_id}"),
                 },
                 envelope_id,
@@ -2257,7 +2263,7 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -2271,7 +2277,7 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Spec,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     let old_runtime_id = new_id();
     let old_thread_id = "thread-old-spawn-failure".to_string();
@@ -2303,13 +2309,13 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let old_harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: old_runtime_id.clone(),
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(old_thread_id.clone()),
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_area_cache: boot.state.wave_area_cache.clone(),
+        track_area_cache: boot.state.track_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -2375,7 +2381,7 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -2389,7 +2395,7 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Spec,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     assert!(
         boot.repo
@@ -2409,7 +2415,7 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
     assert_eq!(body["card_id"], json!(card.id.as_str()));
     assert_eq!(body["terminal_id"], json!(""));
     assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
-    assert_eq!(body["wave"]["id"], json!(boot.wave_id));
+    assert_eq!(body["track"]["id"], json!(boot.track_id));
     assert!(
         boot.repo
             .terminal_get_by_card(card.id.as_str())
@@ -2436,7 +2442,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: WaveId::from(boot.wave_id.clone()),
+            track_id: TrackId::from(boot.track_id.clone()),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -2452,7 +2458,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Spec,
-        WaveId::from(boot.wave_id.clone()),
+        TrackId::from(boot.track_id.clone()),
     );
     let old_runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
@@ -2511,15 +2517,15 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1211 S1 — the wave title is no longer seeded as the spec agent's goal
+// Issue #1211 S1 — the track title is no longer seeded as the spec agent's goal
 // ---------------------------------------------------------------------------
 //
-// Before #1211 the single new-wave input box was both the wave's title and the
-// statement of what the wave should do, and three places turned it back into an
-// intent: `routes::waves::start_spec_harness` (the `spec-harness-start`
+// Before #1211 the single new-track input box was both the track's title and the
+// statement of what the track should do, and three places turned it back into an
+// intent: `routes::tracks::start_spec_harness` (the `spec-harness-start`
 // payload's `goal`), the spec card's `payload.prompt` at create, and
 // `/api/cards/{id}/spec/reset` for the `Spec` profile. #1211 moves the intent
-// out of the title — a wave created without one starts unnamed and the spec
+// out of the title — a track created without one starts unnamed and the spec
 // agent names it once the conversation has established what the work is — so
 // all three must stop seeding.
 //
@@ -2566,8 +2572,8 @@ fn assert_no_seeded_goal(payloads: &[Value], what: &str) {
     }
 }
 
-async fn spec_card_of_wave(boot: &Boot, wave_id: &str) -> Card {
-    let cards = boot.repo.cards_by_wave(wave_id).await.unwrap();
+async fn spec_card_of_track(boot: &Boot, track_id: &str) -> Card {
+    let cards = boot.repo.cards_by_track(track_id).await.unwrap();
     cards
         .into_iter()
         .find(|card| card.kind == "codex" && card.payload["spec_harness"] == json!(true))
@@ -2609,7 +2615,7 @@ async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
 /// #1211 S1 (1) — a create request may omit `title` entirely, and the harness
 /// that comes up behind it starts with an empty observation queue.
 #[tokio::test]
-async fn wave_create_without_title_seeds_no_wave_goal() {
+async fn track_create_without_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
@@ -2622,7 +2628,7 @@ async fn wave_create_without_title_seeds_no_wave_goal() {
         .unwrap();
     let (status, body) = post_json(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": area.id,
             "cwd": attached_repo_fixture("issue-1211-untitled"),
@@ -2633,8 +2639,8 @@ async fn wave_create_without_title_seeds_no_wave_goal() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let wave_id = body["id"].as_str().expect("wave id").to_string();
-    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+    let track_id = body["id"].as_str().expect("track id").to_string();
+    let spec_card = spec_card_of_track(&boot, &track_id).await;
     assert_no_seeded_goal(
         &spec_harness_start_payloads(boot.repo.as_ref(), spec_card.id.as_str()).await,
         "create without title",
@@ -2643,12 +2649,12 @@ async fn wave_create_without_title_seeds_no_wave_goal() {
 }
 
 /// #1211 S1 (2) — the deletion itself. A create carrying a perfectly good
-/// non-empty title must ALSO produce no `Observation::WaveGoal`: the title is
-/// simply not the wave's intent any more. Restore the old
+/// non-empty title must ALSO produce no `Observation::TrackGoal`: the title is
+/// simply not the track's intent any more. Restore the old
 /// `goal: (!goal.is_empty()).then_some(goal)` in
-/// `routes::waves::start_spec_harness` and this test is the one that fails.
+/// `routes::tracks::start_spec_harness` and this test is the one that fails.
 #[tokio::test]
-async fn wave_create_with_title_seeds_no_wave_goal() {
+async fn track_create_with_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
@@ -2662,7 +2668,7 @@ async fn wave_create_with_title_seeds_no_wave_goal() {
     let title = "ship the rename tool";
     let (status, body) = post_json(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": area.id,
             "title": title,
@@ -2674,18 +2680,18 @@ async fn wave_create_with_title_seeds_no_wave_goal() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let wave_id = body["id"].as_str().expect("wave id").to_string();
+    let track_id = body["id"].as_str().expect("track id").to_string();
     // The title itself is untouched — only its promotion to an intent is gone.
     assert_eq!(
         boot.repo
-            .wave_get(&wave_id)
+            .track_get(&track_id)
             .await
             .unwrap()
-            .expect("wave row")
+            .expect("track row")
             .title,
         title
     );
-    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+    let spec_card = spec_card_of_track(&boot, &track_id).await;
     assert_no_seeded_goal(
         &spec_harness_start_payloads(boot.repo.as_ref(), spec_card.id.as_str()).await,
         "create with non-empty title",
@@ -2697,7 +2703,7 @@ async fn wave_create_with_title_seeds_no_wave_goal() {
 /// second place that re-seeded the title. A restarted spec session must come
 /// up as silent as a fresh one.
 #[tokio::test]
-async fn spec_reset_seeds_no_wave_goal() {
+async fn spec_reset_seeds_no_track_goal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
@@ -2710,7 +2716,7 @@ async fn spec_reset_seeds_no_wave_goal() {
         .unwrap();
     let (status, body) = post_json(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": area.id,
             "title": "reset keeps quiet",
@@ -2721,8 +2727,8 @@ async fn spec_reset_seeds_no_wave_goal() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let wave_id = body["id"].as_str().expect("wave id").to_string();
-    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+    let track_id = body["id"].as_str().expect("track id").to_string();
+    let spec_card = spec_card_of_track(&boot, &track_id).await;
 
     let (status, body) = post_empty(
         boot.app.clone(),

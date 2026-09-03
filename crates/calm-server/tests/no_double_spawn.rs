@@ -17,7 +17,7 @@ use calm_server::db::write_in_tx_typed;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{Card, CardPatch, CardRole, NewArea, NewWave, new_id, now_ms};
+use calm_server::model::{Card, CardPatch, CardRole, NewArea, NewTrack, new_id, now_ms};
 use calm_server::operation::claude_adapter::{
     ClaudeAdapter, ClaudeCreateOperationPayload, PreparedClaudeCreateRequest,
 };
@@ -50,7 +50,7 @@ use tower::ServiceExt;
 struct Boot {
     state: AppState,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     spawn_count: Arc<AtomicUsize>,
     _tmp: TempDir,
 }
@@ -351,8 +351,8 @@ async fn boot_with_counted_spawn() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo_dyn
-        .wave_create(NewWave {
+    let track = repo_dyn
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "operations-test".into(),
@@ -383,7 +383,7 @@ async fn boot_with_counted_spawn() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -418,7 +418,7 @@ async fn boot_with_counted_spawn() -> Boot {
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -441,7 +441,7 @@ async fn boot_with_counted_spawn() -> Boot {
     Boot {
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spawn_count,
         _tmp: tmp,
     }
@@ -469,8 +469,8 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
         })
         .await
         .unwrap();
-    let wave = repo_dyn
-        .wave_create(NewWave {
+    let track = repo_dyn
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "codex-operations-test".into(),
@@ -502,7 +502,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -547,7 +547,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
     let terminal_adapter = Arc::new(TerminalAdapter::new(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
     ));
     let codex_adapter = Arc::new(
         CodexAdapter::new_with_spawn_hook(
@@ -557,7 +557,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             state.pending_codex_threads.clone(),
             state.pending_codex_threads_spawn_serial.clone(),
             state.card_role_cache.clone(),
-            state.wave_area_cache.clone(),
+            state.track_area_cache.clone(),
             hook,
         )
         .with_initial_turn_lifecycle_timeout(initial_turn_lifecycle_timeout),
@@ -582,7 +582,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
     Boot {
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spawn_count,
         _tmp: tmp,
     }
@@ -604,8 +604,8 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo_dyn
-        .wave_create(NewWave {
+    let track = repo_dyn
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "claude-operations-test".into(),
@@ -640,7 +640,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -676,7 +676,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         route_repo.clone(),
         codex,
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -699,7 +699,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
     Boot {
         state,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spawn_count,
         _tmp: tmp,
     }
@@ -755,7 +755,7 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
         boot.state.pending_codex_threads.clone(),
         boot.state.pending_codex_threads_spawn_serial.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -780,7 +780,7 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
 #[tokio::test]
 async fn test_terminal_create_no_double_spawn() {
     let boot = boot_with_counted_spawn().await;
-    let payload = terminal_payload(&boot.wave_id);
+    let payload = terminal_payload(&boot.track_id);
     let key = OperationKey {
         operation_key: "op-terminal-create".into(),
         idempotency_key: Some("terminal-create-same-key".into()),
@@ -826,7 +826,7 @@ async fn test_terminal_create_no_double_spawn() {
 #[tokio::test]
 async fn test_codex_create_no_double_spawn() {
     let boot = boot_codex_with_counted_spawn().await;
-    let payload = codex_payload(&boot.wave_id, None);
+    let payload = codex_payload(&boot.track_id, None);
     let key = OperationKey {
         operation_key: "op-codex-create".into(),
         idempotency_key: Some("codex-create-same-key".into()),
@@ -867,7 +867,7 @@ async fn test_codex_create_no_double_spawn() {
 #[tokio::test]
 async fn test_claude_create_no_double_spawn() {
     let boot = boot_claude_with_counted_spawn().await;
-    let payload = claude_payload(&boot, &boot.wave_id, None);
+    let payload = claude_payload(&boot, &boot.track_id, None);
     let key = OperationKey {
         operation_key: "op-claude-create".into(),
         idempotency_key: Some("claude-create-same-key".into()),
@@ -913,8 +913,8 @@ async fn test_claude_create_no_double_spawn() {
 #[tokio::test]
 async fn codex_empty_concurrent_creates_bind_fifo_to_spawn_order() {
     let boot = boot_codex_with_reversed_spawn_claims_and_thread_notifications().await;
-    let payload_a = codex_payload(&boot.wave_id, None);
-    let payload_b = codex_payload(&boot.wave_id, None);
+    let payload_a = codex_payload(&boot.track_id, None);
+    let payload_b = codex_payload(&boot.track_id, None);
     let key_a = OperationKey {
         operation_key: "op-codex-empty-fifo-a".into(),
         idempotency_key: Some("codex-empty-fifo-a".into()),
@@ -1029,7 +1029,7 @@ async fn terminal_create_same_idempotency_key_different_actor_conflicts() {
 
     let (first_status, first_body) = post_terminal_card_route(
         app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         body.clone(),
         Some("same-key-different-actor"),
         None,
@@ -1039,7 +1039,7 @@ async fn terminal_create_same_idempotency_key_different_actor_conflicts() {
 
     let (second_status, second_body) = post_terminal_card_route(
         app,
-        &boot.wave_id,
+        &boot.track_id,
         body,
         Some("same-key-different-actor"),
         Some("ai:codex"),
@@ -1070,7 +1070,7 @@ async fn terminal_create_same_idempotency_key_equivalent_normalized_body_reuses_
 
     let (first_status, first_body) = post_terminal_card_route(
         app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         first_body,
         Some("same-key-normalized-equivalent"),
         None,
@@ -1080,7 +1080,7 @@ async fn terminal_create_same_idempotency_key_equivalent_normalized_body_reuses_
 
     let (second_status, second_body) = post_terminal_card_route(
         app,
-        &boot.wave_id,
+        &boot.track_id,
         second_body,
         Some("same-key-normalized-equivalent"),
         None,
@@ -1115,7 +1115,7 @@ async fn terminal_create_same_idempotency_key_different_normalized_env_conflicts
 
     let (first_status, first_body) = post_terminal_card_route(
         app.clone(),
-        &boot.wave_id,
+        &boot.track_id,
         first_body,
         Some("same-key-different-normalized-env"),
         None,
@@ -1125,7 +1125,7 @@ async fn terminal_create_same_idempotency_key_different_normalized_env_conflicts
 
     let (second_status, second_body) = post_terminal_card_route(
         app,
-        &boot.wave_id,
+        &boot.track_id,
         second_body,
         Some("same-key-different-normalized-env"),
         None,
@@ -1144,7 +1144,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
     let boot = boot_with_counted_spawn().await;
     let card_id = new_id();
     let runtime_id = new_id();
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
@@ -1154,7 +1154,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                 card_id,
                 &runtime_id_for_tx,
                 None,
-                wave_id.into(),
+                track_id.into(),
                 None,
                 None,
                 "/bin/sh".into(),
@@ -1210,7 +1210,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
+    .bind(serde_json::to_string(&terminal_payload(&boot.track_id)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -1259,7 +1259,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
     let runtime_id = new_id();
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let env = json!({
         "CODEX_HOME": boot.state.codex.codex_home_dir().to_string_lossy().to_string(),
@@ -1275,7 +1275,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
                 card_id,
                 &runtime_id_for_tx,
                 None,
-                wave_id.into(),
+                track_id.into(),
                 None,
                 None,
                 "/workspace".into(),
@@ -1301,7 +1301,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": term.id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -1326,7 +1326,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, None)).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -1366,7 +1366,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     let boot = boot_claude_with_counted_spawn().await;
     let card_id = new_id();
     let runtime_id = new_id();
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let claude_session_id = uuid::Uuid::new_v4().to_string();
     let settings_path = boot
@@ -1397,7 +1397,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
                 tx,
                 card_id,
                 &runtime_id_for_tx,
-                wave_id.into(),
+                track_id.into(),
                 None,
                 None,
                 command_line_for_tx,
@@ -1430,7 +1430,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": term.id,
         "settings_path": settings_path,
         "claude_session_id": claude_session_id,
@@ -1457,7 +1457,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&claude_payload(&boot, &boot.wave_id, None)).unwrap())
+    .bind(serde_json::to_string(&claude_payload(&boot, &boot.track_id, None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -1522,7 +1522,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -1547,7 +1547,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -1604,7 +1604,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -1631,7 +1631,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
         serde_json::to_string(&json!({
@@ -1718,7 +1718,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -1747,7 +1747,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
         serde_json::to_string(&json!({
@@ -1831,7 +1831,7 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -1859,7 +1859,7 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
         serde_json::to_string(&json!({
@@ -1950,7 +1950,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -1979,7 +1979,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
         serde_json::to_string(&json!({
@@ -2053,7 +2053,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
     output.data = json!({
         "card_id": card.id,
         "runtime_id": runtime_id,
-        "wave_id": boot.wave_id.clone(),
+        "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
         "env": env_for_output,
@@ -2079,7 +2079,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.wave_id, None)).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -2129,7 +2129,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
     let mut boot = boot_with_counted_spawn().await;
     let card_id = new_id();
     let runtime_id = new_id();
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
@@ -2139,7 +2139,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                 card_id,
                 &runtime_id_for_tx,
                 None,
-                wave_id.into(),
+                track_id.into(),
                 None,
                 None,
                 "/bin/sh".into(),
@@ -2216,7 +2216,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
     let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -2255,7 +2255,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
+    .bind(serde_json::to_string(&terminal_payload(&boot.track_id)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -2320,9 +2320,9 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let adapter = install_terminal_worker_runtime_with_hook(&mut boot, hook);
 
     let idem = "terminal-worker-recovery-exited";
-    seed_dispatched_task(&boot.repo, &boot.wave_id, idem, "terminal").await;
-    let payload = terminal_worker_payload(&boot.wave_id, idem);
-    let op = pending_operation("terminal-worker", &boot.wave_id, payload.clone());
+    seed_dispatched_task(&boot.repo, &boot.track_id, idem, "terminal").await;
+    let payload = terminal_worker_payload(&boot.track_id, idem);
+    let op = pending_operation("terminal-worker", &boot.track_id, payload.clone());
     insert_pending_operation_row(&boot.repo, &op).await;
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
@@ -2404,7 +2404,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     assert_eq!(failed, 0, "recovery preservation must not emit TaskFailed");
 
     let mut boot = boot_with_counted_spawn().await;
-    let git_repo = init_git_repo_for_wave(&boot, "codex-worker-recovery-exited").await;
+    let git_repo = init_git_repo_for_track(&boot, "codex-worker-recovery-exited").await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let codex_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
@@ -2412,7 +2412,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         SharedCodexAppServer::new_stub(boot.repo.clone()),
         None,
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
@@ -2434,9 +2434,9 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     boot.state = boot.state.clone().with_operation_runtime(runtime);
 
     let idem = "codex-worker-recovery-exited";
-    seed_dispatched_task(&boot.repo, &boot.wave_id, idem, "codex").await;
-    let payload = codex_worker_payload(&boot.wave_id, idem);
-    let op = pending_operation("codex-worker", &boot.wave_id, payload.clone());
+    seed_dispatched_task(&boot.repo, &boot.track_id, idem, "codex").await;
+    let payload = codex_worker_payload(&boot.track_id, idem);
+    let op = pending_operation("codex-worker", &boot.track_id, payload.clone());
     insert_pending_operation_row(&boot.repo, &op).await;
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = codex_adapter
@@ -2543,8 +2543,8 @@ async fn worker_spawn_error_then_fast_exit_finalizes_as_success() {
     install_terminal_worker_runtime_with_hook(&mut boot, hook);
 
     let idem = "terminal-worker-spawn-error-fast-exit";
-    seed_dispatched_task(&boot.repo, &boot.wave_id, idem, "terminal").await;
-    let payload = terminal_worker_payload(&boot.wave_id, idem);
+    seed_dispatched_task(&boot.repo, &boot.track_id, idem, "terminal").await;
+    let payload = terminal_worker_payload(&boot.track_id, idem);
     let mut rx = boot.state.events.subscribe();
     let op_id = boot
         .state
@@ -2604,15 +2604,15 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'track', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&bad_op_id)
     .bind("bad-recovery-op")
     .bind("bad-recovery-key")
     .bind("bad-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
-    .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
+    .bind(&boot.track_id)
+    .bind(serde_json::to_string(&json!({ "type": "track", "id": boot.track_id })).unwrap())
+    .bind(serde_json::to_string(&terminal_payload(&boot.track_id)).unwrap())
     .bind(Option::<String>::None)
     .bind("dead-process")
     .bind(now + 60_000)
@@ -2623,7 +2623,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
 
     let card_id = new_id();
     let runtime_id = new_id();
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
@@ -2633,7 +2633,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                 card_id,
                 &runtime_id_for_tx,
                 None,
-                wave_id.into(),
+                track_id.into(),
                 None,
                 None,
                 "/bin/sh".into(),
@@ -2679,7 +2679,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
+    .bind(serde_json::to_string(&terminal_payload(&boot.track_id)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -2713,7 +2713,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -2778,18 +2778,18 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
 #[tokio::test]
 async fn pre_pr4_operation_payload_deserializes_with_missing_runtime_id() {
     let terminal: TerminalCreateOperationPayload =
-        serde_json::from_value(without_runtime_id(terminal_payload("wave-pre-pr4")))
+        serde_json::from_value(without_runtime_id(terminal_payload("track-pre-pr4")))
             .expect("terminal payload without runtime_id");
     assert!(terminal.runtime_id.is_none());
 
     let codex: CodexCreateOperationPayload =
-        serde_json::from_value(without_runtime_id(codex_payload("wave-pre-pr4", None)))
+        serde_json::from_value(without_runtime_id(codex_payload("track-pre-pr4", None)))
             .expect("codex payload without runtime_id");
     assert!(codex.runtime_id.is_none());
 
     let boot = boot_claude_with_counted_spawn().await;
     let claude: ClaudeCreateOperationPayload = serde_json::from_value(without_runtime_id(
-        claude_payload(&boot, "wave-pre-pr4", None),
+        claude_payload(&boot, "track-pre-pr4", None),
     ))
     .expect("claude payload without runtime_id");
     assert!(claude.runtime_id.is_none());
@@ -2798,21 +2798,21 @@ async fn pre_pr4_operation_payload_deserializes_with_missing_runtime_id() {
 #[tokio::test]
 async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     let boot = boot_with_counted_spawn().await;
-    let payload = without_runtime_id(terminal_payload(&boot.wave_id));
+    let payload = without_runtime_id(terminal_payload(&boot.track_id));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let adapter = TerminalAdapter::new(
         route_repo,
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
     );
-    let op = pending_operation("terminal-create", &boot.wave_id, payload.clone());
+    let op = pending_operation("terminal-create", &boot.track_id, payload.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
 
     let boot = boot_codex_with_counted_spawn().await;
-    let payload = without_runtime_id(codex_payload(&boot.wave_id, None));
+    let payload = without_runtime_id(codex_payload(&boot.track_id, None));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let adapter = CodexAdapter::new(
         route_repo,
@@ -2821,31 +2821,31 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         boot.state.pending_codex_threads.clone(),
         boot.state.pending_codex_threads_spawn_serial.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
     );
-    let op = pending_operation("codex-create", &boot.wave_id, payload.clone());
+    let op = pending_operation("codex-create", &boot.track_id, payload.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::CodexCard).await;
 
     let boot = boot_claude_with_counted_spawn().await;
-    let payload = without_runtime_id(claude_payload(&boot, &boot.wave_id, None));
+    let payload = without_runtime_id(claude_payload(&boot, &boot.track_id, None));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let adapter = ClaudeAdapter::new(
         route_repo,
         boot.state.codex.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
     );
-    let op = pending_operation("claude-create", &boot.wave_id, payload.clone());
+    let op = pending_operation("claude-create", &boot.track_id, payload.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
 }
 
-async fn init_git_repo_for_wave(boot: &Boot, name: &str) -> PathBuf {
+async fn init_git_repo_for_track(boot: &Boot, name: &str) -> PathBuf {
     let repo_path = boot._tmp.path().join(name);
     std::fs::create_dir_all(&repo_path).expect("create git repo dir");
     run_git(&repo_path, ["init"]);
@@ -2859,14 +2859,14 @@ async fn init_git_repo_for_wave(boot: &Boot, name: &str) -> PathBuf {
     run_git(&repo_path, ["commit", "-m", "initial"]);
     // #1147 S3 — written directly rather than through the production writer:
     // this forces "attached, frozen, pointing at a real repository", and the
-    // writer refuses a frozen row (the freeze latch) while `boot()`'s wave may
+    // writer refuses a frozen row (the freeze latch) while `boot()`'s track may
     // already carry a stamp. Registered in
-    // `calm-truth/tests/wave_write_point_registry.rs`.
+    // `calm-truth/tests/track_write_point_registry.rs`.
     sqlx::query(
-        "UPDATE waves SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
+        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
     )
     .bind(repo_path.to_string_lossy().as_ref())
-    .bind(&boot.wave_id)
+    .bind(&boot.track_id)
     .execute(boot.repo.pool())
     .await
     .unwrap();
@@ -2889,12 +2889,12 @@ fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
     );
 }
 
-fn terminal_payload(wave_id: &str) -> Value {
+fn terminal_payload(track_id: &str) -> Value {
     serde_json::to_value(TerminalCreateOperationPayload {
         actor: ActorId::User,
         runtime_id: Some(new_id()),
         request: TerminalCreateRequestPayload {
-            wave_id: wave_id.to_string(),
+            track_id: track_id.to_string(),
             title: None,
             sort: Some(1.0),
             program: "/bin/sh".into(),
@@ -2906,10 +2906,10 @@ fn terminal_payload(wave_id: &str) -> Value {
     .unwrap()
 }
 
-fn terminal_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
+fn terminal_worker_payload(track_id: &str, idempotency_key: &str) -> Value {
     serde_json::to_value(TerminalWorkerOperationPayload {
         actor: ActorId::User,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         idempotency_key: idempotency_key.to_string(),
         cmd: "printf done\n".into(),
         cwd: Some("/tmp".into()),
@@ -2917,17 +2917,17 @@ fn terminal_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
     .unwrap()
 }
 
-async fn seed_dispatched_task(repo: &SqlxRepo, wave_id: &str, task_id: &str, kind: &str) {
+async fn seed_dispatched_task(repo: &SqlxRepo, track_id: &str, task_id: &str, kind: &str) {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO tasks (
-               id, wave_id, key, kind, goal, context_json, depends_on_json,
+               id, track_id, key, kind, goal, context_json, depends_on_json,
                status, claim_context_json, created_at_ms, updated_at_ms
            ) VALUES (?1, ?2, ?1, ?3, 'worker fixture', '{}', '[]',
                      'dispatched', '[]', ?4, ?4)"#,
     )
     .bind(task_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(kind)
     .bind(now)
     .execute(repo.pool())
@@ -2935,10 +2935,10 @@ async fn seed_dispatched_task(repo: &SqlxRepo, wave_id: &str, task_id: &str, kin
     .unwrap();
 }
 
-fn codex_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
+fn codex_worker_payload(track_id: &str, idempotency_key: &str) -> Value {
     serde_json::to_value(CodexWorkerOperationPayload {
         actor: ActorId::User,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         idempotency_key: idempotency_key.to_string(),
         goal: "recover completed codex worker".into(),
         cwd: None,
@@ -2956,7 +2956,7 @@ fn install_terminal_worker_runtime_with_hook(
     let adapter = Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_area_cache.clone(),
+        boot.state.track_area_cache.clone(),
         hook,
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
@@ -2979,12 +2979,12 @@ fn install_terminal_worker_runtime_with_hook(
     adapter
 }
 
-fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
+fn codex_payload(track_id: &str, prompt: Option<&str>) -> Value {
     serde_json::to_value(CodexCreateOperationPayload {
         actor: ActorId::User,
         runtime_id: Some(new_id()),
         request: NormalizedCodexCreateRequest {
-            wave_id: wave_id.to_string(),
+            track_id: track_id.to_string(),
             title: None,
             sort: Some(1.0),
             cwd: "/workspace".into(),
@@ -2997,7 +2997,7 @@ fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
     .unwrap()
 }
 
-fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
+fn claude_payload(boot: &Boot, track_id: &str, prompt: Option<&str>) -> Value {
     let card_id = new_id();
     let claude_session_id = uuid::Uuid::new_v4().to_string();
     let settings_path = boot
@@ -3020,7 +3020,7 @@ fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
         actor: ActorId::User,
         runtime_id: Some(new_id()),
         request: PreparedClaudeCreateRequest {
-            wave_id: wave_id.to_string(),
+            track_id: track_id.to_string(),
             title: None,
             sort: Some(1.0),
             cwd: "/workspace".into(),
@@ -3058,9 +3058,9 @@ fn pending_operation(kind: &str, target_id: &str, payload: Value) -> Operation {
         kind: kind.into(),
         idempotency_key: None,
         payload_hash: "payload-hash".into(),
-        target_type: "wave".into(),
+        target_type: "track".into(),
         target_id: Some(target_id.into()),
-        target: json!({ "type": "wave", "id": target_id }),
+        target: json!({ "type": "track", "id": target_id }),
         payload,
         tx_output: None,
         phase: Phase::Pending,
@@ -3250,7 +3250,7 @@ async fn seed_codex_card_for_operation(
     card_id: String,
     prompt: Option<&str>,
 ) -> (Card, String, Value, String) {
-    let wave_id = boot.wave_id.clone();
+    let track_id = boot.track_id.clone();
     let runtime_id = new_id();
     let cache = boot.state.card_role_cache.clone();
     let env = json!({
@@ -3268,7 +3268,7 @@ async fn seed_codex_card_for_operation(
                 card_id,
                 &runtime_id_for_tx,
                 None,
-                wave_id.into(),
+                track_id.into(),
                 None,
                 None,
                 "/workspace".into(),
@@ -3301,14 +3301,14 @@ fn terminal_route_body() -> Value {
 
 async fn post_terminal_card_route(
     app: axum::Router,
-    wave_id: &str,
+    track_id: &str,
     body: Value,
     idempotency_key: Option<&str>,
     actor: Option<&str>,
 ) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{wave_id}/terminal-cards"))
+        .uri(format!("/api/tracks/{track_id}/terminal-cards"))
         .header("content-type", "application/json");
     if let Some(key) = idempotency_key {
         req = req.header("Idempotency-Key", key);

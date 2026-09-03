@@ -1,6 +1,6 @@
 //! Pure task-block vocabulary and diagnostics shared by report projection and plan upsert.
 
-use crate::wave_report::ReportBlock;
+use crate::track_report::ReportBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -132,7 +132,7 @@ pub struct TaskDeclaration {
     pub declared_by: String,
     pub released_by_user: bool,
     /// Claim-frozen execution route. Missing and explicit null normalize to
-    /// `in-wave` before projection.
+    /// `in-track` before projection.
     pub spawn: String,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
@@ -146,7 +146,7 @@ pub struct Diagnostic {
     pub message_args: BTreeMap<String, Value>,
     pub related_block_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub related_wave_id: Option<String>,
+    pub related_track_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     pub path: String,
@@ -161,7 +161,7 @@ impl Diagnostic {
         path: impl Into<String>,
         message_args: BTreeMap<String, Value>,
         related_block_ids: Vec<String>,
-        related_wave_id: Option<String>,
+        related_track_id: Option<String>,
         action: Option<String>,
     ) -> Self {
         let code = code.into();
@@ -198,7 +198,7 @@ impl Diagnostic {
             code,
             message_args,
             related_block_ids,
-            related_wave_id,
+            related_track_id,
             action,
             path,
             message,
@@ -245,7 +245,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             "cross-area reference `{}` is not schedulable",
             arg(args, "reference")
         ),
-        "declare_and_wait" => "this wave requires user release before spec tasks are queued".into(),
+        "declare_and_wait" => "this track requires user release before spec tasks are queued".into(),
         "declaration_changed_in_flight" => {
             "task is already executing; declaration changes were not applied".into()
         }
@@ -280,7 +280,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .unwrap_or(false);
             if admission_frozen && capacity_raise_unavailable {
                 format!(
-                    "the wave tree rooted at `{}` is frozen and this wave's spec task ceiling has \
+                    "the track tree rooted at `{}` is frozen and this track's spec task ceiling has \
                      no free slot, but the tree budget has no higher legal target in the current \
                      configuration; raising the local ceiling alone cannot admit another task — \
                      wait for in-flight work to finish or reduce the number of tree members",
@@ -288,22 +288,22 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 )
             } else if admission_frozen {
                 format!(
-                    "the wave tree rooted at `{}` is frozen and this wave's spec task ceiling has \
-                     no free slot — raise this wave's spec_task_ceiling to at least \
+                    "the track tree rooted at `{}` is frozen and this track's spec task ceiling has \
+                     no free slot — raise this track's spec_task_ceiling to at least \
                      {minimum_ceiling} and follow the tree-budget recovery action",
                     arg(args, "root_wave_id")
                 )
             } else if bounds_tied && capacity_raise_unavailable {
                 format!(
-                    "spec task ceiling of {ceiling} and this wave's tree share are both reached, \
+                    "spec task ceiling of {ceiling} and this track's tree share are both reached, \
                      but the tree budget has no higher legal target in the current configuration; \
                      wait for in-flight work to finish or reduce the number of tree members"
                 )
             } else if bounds_tied {
                 format!(
-                    "spec task ceiling of {ceiling} and this wave's tree share are both reached — \
-                     raise this wave's spec_task_ceiling to at least {minimum_ceiling} and also \
-                     raise tree_task_budget on root wave `{}`",
+                    "spec task ceiling of {ceiling} and this track's tree share are both reached — \
+                     raise this track's spec_task_ceiling to at least {minimum_ceiling} and also \
+                     raise tree_task_budget on root track `{}`",
                     arg(args, "root_wave_id")
                 )
             } else {
@@ -313,18 +313,18 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 )
             }
         }
-        // The cause of this one lives OUTSIDE the wave being read: it is the
-        // whole tree's budget, divided across the tree's waves. Saying only
-        // "ceiling reached" would send the reader to raise this wave's ceiling,
-        // which changes nothing — so the sentence names the root wave, the
-        // budget, how many waves share it, and this wave's slice.
+        // The cause of this one lives OUTSIDE the track being read: it is the
+        // whole tree's budget, divided across the tree's tracks. Saying only
+        // "ceiling reached" would send the reader to raise this track's ceiling,
+        // which changes nothing — so the sentence names the root track, the
+        // budget, how many tracks share it, and this track's slice.
         "tree_budget_exhausted" => {
             let root = arg(args, "root_wave_id");
             let budget = args
                 .get("tree_task_budget")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
-            let waves = args
+            let tracks = args
                 .get("tree_waves")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
@@ -343,7 +343,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .unwrap_or(false);
             let Some(minimum_budget) = minimum_budget else {
                 return format!(
-                    "the wave tree rooted at `{root}` cannot admit another spec task, and the \
+                    "the track tree rooted at `{root}` cannot admit another spec task, and the \
                      current configuration cannot be released by raising tree_task_budget within \
                      its allowed range — let in-flight work finish or reduce the number of tree \
                      members"
@@ -351,7 +351,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             };
             if admission_frozen {
                 format!(
-                    "the wave tree rooted at `{root}` is frozen because at least one member's \
+                    "the track tree rooted at `{root}` is frozen because at least one member's \
                      immutable in-flight occupancy exceeds its assigned share; no member may \
                      admit a new spec task — raise tree_task_budget to at least {minimum_budget} \
                      so every member's existing work fits with room for another task, or let the \
@@ -359,30 +359,30 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 )
             } else if bounds_tied {
                 format!(
-                    "the whole wave tree rooted at `{root}` shares a tree_task_budget of {budget}, \
-                     split across {waves} wave(s); this wave's slice of {share} and its local \
+                    "the whole track tree rooted at `{root}` shares a tree_task_budget of {budget}, \
+                     split across {tracks} track(s); this track's slice of {share} and its local \
                      spec_task_ceiling are both reached — raise both the local ceiling and \
-                     tree_task_budget on the root wave (to at least {minimum_budget})"
+                     tree_task_budget on the root track (to at least {minimum_budget})"
                 )
             } else if share == 0 {
                 format!(
-                    "the wave tree rooted at `{root}` has {waves} wave(s) but a tree_task_budget \
-                     of {budget}, so this wave receives a zero task share — raise tree_task_budget \
-                     on the root wave to at least {minimum_budget} or remove extra child waves"
+                    "the track tree rooted at `{root}` has {tracks} track(s) but a tree_task_budget \
+                     of {budget}, so this track receives a zero task share — raise tree_task_budget \
+                     on the root track to at least {minimum_budget} or remove extra child tracks"
                 )
             } else {
                 format!(
-                    "the whole wave tree rooted at `{root}` shares a tree_task_budget of {budget}, \
-                     split across {waves} wave(s); this wave's slice of {share} is used up, so no \
-                     further spec task is queued here — raise tree_task_budget on the root wave to \
+                    "the whole track tree rooted at `{root}` shares a tree_task_budget of {budget}, \
+                     split across {tracks} track(s); this track's slice of {share} is used up, so no \
+                     further spec task is queued here — raise tree_task_budget on the root track to \
                      at least {minimum_budget} or let the tree's excess in-flight work finish"
                 )
             }
         }
         "tree_root_unresolved" => {
-            "this wave belongs to a wave tree whose root cannot be resolved (a broken parent link, \
+            "this track belongs to a track tree whose root cannot be resolved (a broken parent link, \
              a cycle, or a chain deeper than the limit), so its share of the tree budget is \
-             unknown and nothing is queued here — an operator must repair the corrupted wave tree"
+             unknown and nothing is queued here — an operator must repair the corrupted track tree"
                 .into()
         }
         _ => arg(args, "detail").into(),

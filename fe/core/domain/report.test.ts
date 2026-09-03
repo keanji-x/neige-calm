@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CardWire } from './wave.js';
+import type { CardWire } from './track.js';
 import {
   backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, hasLiveTaskRun,
-  parseReportLink, readWaveReport, TASK_STATUS_DETAIL_LIMIT, WAVE_REPORT_CARD_KIND, waveTaskVerdictsOperation,
-  type TaskVerdict, type WaveBacklink,
+  parseReportLink, readTrackReport, TASK_STATUS_DETAIL_LIMIT, TRACK_REPORT_CARD_KIND, trackTaskVerdictsOperation,
+  type TaskVerdict, type TrackBacklink,
 } from './report.js';
 
 function card(overrides: Partial<CardWire> = {}): CardWire {
   return {
-    id: 'c1', wave_id: 'w1', kind: WAVE_REPORT_CARD_KIND, title: null, sort: 0,
+    id: 'c1', track_id: 'w1', kind: TRACK_REPORT_CARD_KIND, title: null, sort: 0,
     payload: {}, deletable: false, created_at: 0, updated_at: 0,
     ...overrides,
   };
@@ -19,17 +19,17 @@ function prose(id: string, markdown: string) {
   return { id, kind: 'prose', rev: 1, payload: { markdown } };
 }
 
-describe('readWaveReport', () => {
-  it('reads summary and body out of the wave-report card', () => {
+describe('readTrackReport', () => {
+  it('reads summary and body out of the track-report card', () => {
     const cards = [
       card({ id: 'other', kind: 'codex', payload: { body: 'not this one' } }),
       card({ payload: { schemaVersion: 3, docRev: 7, summary: 'One line', body: '# Goal\n\nDo the thing.' } }),
     ];
-    expect(readWaveReport(cards)).toEqual({ summary: 'One line', body: '# Goal\n\nDo the thing.', blocks: null });
+    expect(readTrackReport(cards)).toEqual({ summary: 'One line', body: '# Goal\n\nDo the thing.', blocks: null });
   });
 
   it('keeps a report whose summary is written while its body is blank', () => {
-    expect(readWaveReport([card({ payload: { summary: 'Agent finished the migration.', body: '  ' } })]))
+    expect(readTrackReport([card({ payload: { summary: 'Agent finished the migration.', body: '  ' } })]))
       .toEqual({ summary: 'Agent finished the migration.', body: '', blocks: null });
   });
 
@@ -38,30 +38,30 @@ describe('readWaveReport', () => {
   // the persistence layer grew a field.
   it('ignores fields it does not render, including ones it has never seen', () => {
     const cards = [card({ payload: { schemaVersion: 9, docRev: 1, summary: 's', body: 'b', future: {} } })];
-    expect(readWaveReport(cards)?.body).toBe('b');
+    expect(readTrackReport(cards)?.body).toBe('b');
   });
 
   it.each([
     ['no report card at all', [card({ kind: 'codex' })]],
     ['a payload that is not an object', [card({ payload: 'nope' })]],
-    ['the untouched payload a fresh wave carries', [card({ payload: {} })]],
+    ['the untouched payload a fresh track carries', [card({ payload: {} })]],
     ['a body that is only whitespace', [card({ payload: { body: '   \n  ' } })]],
     ['a blank body next to an empty blocks array', [card({ payload: { body: '', blocks: [] } })]],
   ])('reads null for %s', (_label, cards) => {
-    expect(readWaveReport(cards as readonly CardWire[])).toBeNull();
+    expect(readTrackReport(cards as readonly CardWire[])).toBeNull();
   });
 
   // The null cases above are one state to a reader — "nothing written yet" —
-  // and a wave that was created and never worked on is the common one. It must
+  // and a track that was created and never worked on is the common one. It must
   // not be distinguishable from a parse failure at the call site, because the
   // call site would then have to render an error for it.
-  it('does not distinguish a fresh wave from an unreadable payload', () => {
-    expect(readWaveReport([card({ payload: {} })]))
-      .toEqual(readWaveReport([card({ payload: 42 })]));
+  it('does not distinguish a fresh track from an unreadable payload', () => {
+    expect(readTrackReport([card({ payload: {} })]))
+      .toEqual(readTrackReport([card({ payload: 42 })]));
   });
 
   it('reads the typed blocks, which are what carries each block id', () => {
-    const report = readWaveReport([card({
+    const report = readTrackReport([card({
       payload: {
         body: '# Goal',
         blocks: [
@@ -75,7 +75,7 @@ describe('readWaveReport', () => {
   });
 
   it('drops one wire-invalid block while keeping the other blocks', () => {
-    const report = readWaveReport([card({
+    const report = readTrackReport([card({
       payload: {
         body: '# Goal',
         blocks: [prose('b-1', '# Goal'), { id: '', kind: 'prose', payload: {} }, prose('b-2', 'Still here.')],
@@ -85,12 +85,12 @@ describe('readWaveReport', () => {
   });
 
   it('falls back to body when blocks is not an array', () => {
-    expect(readWaveReport([card({ payload: { body: '# Goal', blocks: 'nope' } })]))
+    expect(readTrackReport([card({ payload: { body: '# Goal', blocks: 'nope' } })]))
       .toEqual({ summary: '', body: '# Goal', blocks: null });
   });
 
   it('keeps a task live when an absent optional field is explicit null', () => {
-    const report = readWaveReport([card({
+    const report = readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [{
@@ -107,7 +107,7 @@ describe('readWaveReport', () => {
 
   it('accepts a 2048-code-point string even when emoji use two UTF-16 code units', () => {
     const src = `/${'😀'.repeat(2047)}`;
-    const report = readWaveReport([card({
+    const report = readTrackReport([card({
       payload: { body: 'x', blocks: [{ id: 'b-1', kind: 'app', rev: 1, payload: { src } }] },
     })]);
     expect(report?.blocks?.[0]?.kind).toBe('app');
@@ -121,7 +121,7 @@ describe('readWaveReport', () => {
     ['a known kind whose payload does not fit', { id: 'b-1', kind: 'table', rev: 1, payload: { columns: [] } }],
     ['a known kind whose payload is not an object', { id: 'b-1', kind: 'prose', rev: 1, payload: 7 }],
   ])('degrades %s to one unsupported block, keeping the others', (_label, bad) => {
-    const report = readWaveReport([card({
+    const report = readTrackReport([card({
       payload: { body: 'x', blocks: [bad, prose('b-2', 'Still here.')] },
     })]);
     expect(report?.blocks?.[0]).toEqual({ id: 'b-1', kind: 'unsupported', declaredKind: bad.kind });
@@ -136,7 +136,7 @@ describe('readWaveReport', () => {
     ['an absolute URL', 'https://evil.example/x'],
     ['a control character', '/apps/a\0b'],
   ])('refuses an app block whose src is %s', (_label, src) => {
-    const report = readWaveReport([card({
+    const report = readTrackReport([card({
       payload: { body: 'x', blocks: [{ id: 'b-1', kind: 'app', rev: 1, payload: { src } }] },
     })]);
     expect(report?.blocks?.[0]?.kind).toBe('unsupported');
@@ -146,7 +146,7 @@ describe('readWaveReport', () => {
 describe('deriveReportTasks', () => {
   function tasksOf(blocks: unknown[], verdicts?: readonly TaskVerdict[]) {
     return deriveReportTasks(
-      readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null,
+      readTrackReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null,
       verdicts,
     );
   }
@@ -328,11 +328,11 @@ describe('deriveReportTasks', () => {
       [task('b-1', live('alpha', true))],
       [verdict({
         blockId: 'b-1', key: 'alpha', status: 'failed',
-        statusDetail: 'wave 9a4c is not a git repository', workerCardId: 'card-9',
+        statusDetail: 'track 9a4c is not a git repository', workerCardId: 'card-9',
       })],
     )).toEqual([{
       blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: 'failed',
-      statusDetail: 'wave 9a4c is not a git repository', kind: 'codex', workerCardId: 'card-9',
+      statusDetail: 'track 9a4c is not a git repository', kind: 'codex', workerCardId: 'card-9',
     }]);
   });
 
@@ -359,7 +359,7 @@ describe('deriveReportTasks', () => {
       [task('b-1', payload)],
       [verdict({
         blockId: 'b-1', key: 'gone', status: 'failed',
-        statusDetail: 'wave 9a4c is not a git repository', workerCardId: 'card-9',
+        statusDetail: 'track 9a4c is not a git repository', workerCardId: 'card-9',
       })],
     )[0];
     expect(row?.status).toBeNull();
@@ -457,10 +457,10 @@ describe('deriveReportTasks', () => {
    * `schedulable` does NOT mean "not waiting on a dependency", and an earlier
    * cut of this join read it that way: `pending && !schedulable` printed
    * `blocked`. The kernel clears the flag for every candidate past the spec
-   * ceiling or the wave-tree budget (`task_projection.rs`, the
+   * ceiling or the track-tree budget (`task_projection.rs`, the
    * `verdicts[index].schedulable = false` after the `spec_task_ceiling`
    * diagnostic), so an ordinary queue behind capacity rendered as `blocked` and
-   * a healthy wave looked stuck. Task-budget reasoning is out of this slice, so
+   * a healthy track looked stuck. Task-budget reasoning is out of this slice, so
    * both rows get the one word the kernel actually gave them.
    */
   it('prints pending for an unassigned pending task whether or not it is schedulable', () => {
@@ -651,7 +651,7 @@ describe('deriveReportTasks', () => {
    * The other duplicate, and the one the redeclare rule above does NOT settle:
    * two blocks declaring the same key while BOTH are live.
    *
-   * Reachable, not hypothetical. `tasks` is `UNIQUE (wave_id, key)` (migration
+   * Reachable, not hypothetical. `tasks` is `UNIQUE (track_id, key)` (migration
    * 0058) so only one run can exist, and `plan.upsert` rejects duplicates only
    * *within one batch* (`plan.rs` `validate_new_batch`); the projection accepts
    * the document and merely flags each block with a `duplicate_key` diagnostic
@@ -687,8 +687,8 @@ describe('deriveReportTasks', () => {
    * **The skew this build accepts, stated so it cannot rot into a surprise.**
    *
    * The two halves of the join are two cached queries — the blocks ride the
-   * wave detail (`['wave', waveId]`), the verdicts have their own key
-   * (`['wave-report', waveId]`) — so one can land a refresh the other missed.
+   * track detail (`['track', trackId]`), the verdicts have their own key
+   * (`['track-report', trackId]`) — so one can land a refresh the other missed.
    * The reviewable worry: a lone block's run is cached, a second live block
    * appears on the same key, the *blocks* refresh but the verdict refetch
    * fails, and the row keeps a run the kernel would now abstain from. React
@@ -704,7 +704,7 @@ describe('deriveReportTasks', () => {
    * the first block's verdict out of the key index precisely so the fallback
    * cannot reach it. The stale row is a fact that was true of itself one
    * snapshot ago — the same staleness every cached read in this app carries —
-   * and it converges on the next `wave.report_edited` or `task.*` event, on
+   * and it converges on the next `track.report_edited` or `task.*` event, on
    * window focus, and on remount. Re-deriving contention from the blocks would
    * buy a few seconds of that convergence back at the price of a second
    * authority on ownership, which is the thing #1160 removed.
@@ -737,9 +737,9 @@ describe('deriveReportTasks', () => {
    *
    * The sequence, all inside one edit: `alpha` is declared by block A, runs to
    * a terminal status, its verdict is cached — then A is **hard-deleted**
-   * (`wave_report_doc.rs` `delete_block` leaves no block-level tombstone) and
+   * (`track_report_doc.rs` `delete_block` leaves no block-level tombstone) and
    * two new blocks are pasted, both declaring `alpha`. The blocks query
-   * refreshes; the `['wave-report', waveId]` query does not, and React Query
+   * refreshes; the `['track-report', trackId]` query does not, and React Query
    * keeps the stale verdict. `b-A` now names no row, so the verdict-side gate
    * lets it into the key index, and *both* new rows miss at their own ids and
    * fall back onto it: one dead task's `done` and its worker card, painted on
@@ -869,7 +869,7 @@ describe('deriveReportTasks', () => {
 
   /*
    * The empty key is one key like any other, on both sides of the wire.
-   * `tasks` is `UNIQUE (wave_id, key)` with `key` a plain string, so two blocks
+   * `tasks` is `UNIQUE (track_id, key)` with `key` a plain string, so two blocks
    * declaring `''` still share exactly one row — and the kernel's uniqueness
    * rule groups `''` with everything else rather than skipping it (#1160,
    * `live_declaration_blocks_by_key`), so both verdicts arrive undecorated.
@@ -1042,7 +1042,7 @@ describe('deriveReportTasks', () => {
  *
  * The failure modes are asymmetric, which is why the unknown case is pinned
  * here — a word this build has not heard of must NOT keep the timer alive, or
- * the day the kernel adds a terminal status every settled wave in every open
+ * the day the kernel adds a terminal status every settled track in every open
  * tab polls forever.
  */
 describe('hasLiveTaskRun', () => {
@@ -1057,7 +1057,7 @@ describe('hasLiveTaskRun', () => {
    * declarations, which is the function the panel calls.
    */
   const blocksOf = (blocks: unknown[]) =>
-    readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null;
+    readTrackReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null;
   const declared = (id: string, key: string) =>
     ({ id, kind: 'task', rev: 1, payload: { key, kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' } });
   const rowsFor = (verdicts: TaskVerdict[], blocks: unknown[] = [declared('b-1', 'k')]) =>
@@ -1094,11 +1094,11 @@ describe('hasLiveTaskRun', () => {
    * `Event::TaskDispatched` — and `task.dispatched` is in
    * `taskVerdictInvalidatingKinds`, so the panel is told. The timer would buy
    * nothing and cost without limit: a task behind a zero task budget, behind a
-   * dependency that failed, or left pending by a canceled wave stays pending
-   * for the life of the wave, and every open tab on that wave would refetch the
+   * dependency that failed, or left pending by a canceled track stays pending
+   * for the life of the track, and every open tab on that track would refetch the
    * whole document projection every 3 seconds for as long as it stayed focused.
    */
-  it('is false for a wave holding nothing but pending rows, so a stuck wave does not poll', () => {
+  it('is false for a track holding nothing but pending rows, so a stuck track does not poll', () => {
     expect(hasLiveTaskRun(at('pending'))).toBe(false);
     expect(hasLiveTaskRun(rowsFor([
       { blockId: 'b-1', key: 'a', schedulable: false, status: 'pending', workerCardId: null },
@@ -1133,7 +1133,7 @@ describe('hasLiveTaskRun', () => {
     expect(hasLiveTaskRun(at('quiescent'))).toBe(false);
   });
 
-  /* One live row among settled ones is the ordinary mid-wave state. */
+  /* One live row among settled ones is the ordinary mid-track state. */
   it('is true when any one row is live', () => {
     expect(hasLiveTaskRun(rowsFor([
       { blockId: 'b-1', key: 'a', schedulable: true, status: 'done', workerCardId: 'c1' },
@@ -1176,18 +1176,18 @@ describe('hasLiveTaskRun', () => {
   });
 });
 
-describe('waveTaskVerdictsOperation', () => {
-  it('GETs the wave report route with the id escaped', () => {
-    const operation = waveTaskVerdictsOperation('w/1');
+describe('trackTaskVerdictsOperation', () => {
+  it('GETs the track report route with the id escaped', () => {
+    const operation = trackTaskVerdictsOperation('w/1');
     expect(operation.method).toBe('GET');
-    expect(operation.path).toBe('/api/waves/w%2F1/report');
+    expect(operation.path).toBe('/api/tracks/w%2F1/report');
   });
 
   /* Only `taskDiagnostics` is read. The rest of the response repeats the report
      card this page already holds, and decoding it here would give the document
      two sources that can disagree. */
   it('reads only the task diagnostics out of the response', () => {
-    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({
+    expect(trackTaskVerdictsOperation('w1').responseSchema.parse({
       schemaVersion: 3, docRev: 9, summary: 's', body: 'b', blocks: [{ id: 'b-1' }],
       taskDiagnostics: [{
         blockId: 'b-1', key: 'alpha', schedulable: true, status: 'running',
@@ -1203,21 +1203,21 @@ describe('waveTaskVerdictsOperation', () => {
      way the two can never disagree — and it must survive the decode, or the row
      model above has nothing to carry. */
   it('reads the kernel\'s status detail off the verdict', () => {
-    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({
+    expect(trackTaskVerdictsOperation('w1').responseSchema.parse({
       taskDiagnostics: [{
         blockId: 'b-1', key: 'alpha', schedulable: true, status: 'failed',
-        statusDetail: 'wave 9a4c is not a git repository', diagnostics: [],
+        statusDetail: 'track 9a4c is not a git repository', diagnostics: [],
       }],
     })).toEqual([{
       blockId: 'b-1', key: 'alpha', schedulable: true, status: 'failed',
-      statusDetail: 'wave 9a4c is not a git repository',
+      statusDetail: 'track 9a4c is not a git repository',
     }]);
   });
 
   /* Fail-soft, exactly as one malformed block costs only that block: one
      unreadable verdict costs that row's runtime word and nothing else. */
   it('drops a malformed verdict and keeps the rest', () => {
-    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({
+    expect(trackTaskVerdictsOperation('w1').responseSchema.parse({
       taskDiagnostics: [
         { blockId: 'b-1', key: 'alpha', schedulable: 'yes' },
         { blockId: 'b-2', key: 'beta', schedulable: false },
@@ -1228,13 +1228,13 @@ describe('waveTaskVerdictsOperation', () => {
   /* A response with no diagnostics field at all is "no verdicts", not a decode
      failure — the panel must degrade to the declaration-only list. */
   it('reads an absent taskDiagnostics as no verdicts', () => {
-    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({ summary: 's' })).toEqual([]);
+    expect(trackTaskVerdictsOperation('w1').responseSchema.parse({ summary: 's' })).toEqual([]);
   });
 });
 
 describe('deriveReportOutline', () => {
   it('numbers sections continuously across prose blocks, never restarting per block', () => {
-    const outline = deriveReportOutline(readWaveReport([card({
+    const outline = deriveReportOutline(readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [prose('b-1', '# One\n\ntext\n\n## Two\n'), prose('b-2', '# Three\n')],
@@ -1248,7 +1248,7 @@ describe('deriveReportOutline', () => {
   });
 
   it('hangs a non-prose block under the section above it, as evidence rather than a section', () => {
-    const outline = deriveReportOutline(readWaveReport([card({
+    const outline = deriveReportOutline(readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [
@@ -1264,12 +1264,12 @@ describe('deriveReportOutline', () => {
   /* Tasks are no longer drawn in the flow — `features/report/document` lifts
      them into the collapsed `Reference` appendix — so hanging them under the
      section they used to follow would point the outline at a place they are not.
-     On a real wave that was eight rows of machinery in a map of the argument.
+     On a real track that was eight rows of machinery in a map of the argument.
 
      The assertion pairs a task with a *kept* non-prose block, because "the
      outline is empty" would also pass a rule that dropped everything. */
   it('leaves task blocks out: they are not in the document flow any more', () => {
-    const outline = deriveReportOutline(readWaveReport([card({
+    const outline = deriveReportOutline(readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [
@@ -1287,7 +1287,7 @@ describe('deriveReportOutline', () => {
      `kind === 'task'` alone listed exactly those — an outline row labelled
      `task`, pointing at a block the document had moved into the appendix. */
   it('leaves out a task whose payload did not parse, which degrades to unsupported', () => {
-    const outline = deriveReportOutline(readWaveReport([card({
+    const outline = deriveReportOutline(readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [
@@ -1301,7 +1301,7 @@ describe('deriveReportOutline', () => {
   });
 
   it('promotes a leading non-prose block to an unnumbered top-level item', () => {
-    const outline = deriveReportOutline(readWaveReport([card({
+    const outline = deriveReportOutline(readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [
@@ -1320,7 +1320,7 @@ describe('deriveReportOutline', () => {
   // splitting rule, and an outline that listed H3s would promise a level the
   // document does not have.
   it('ignores headings deeper than the report max depth', () => {
-    const outline = deriveReportOutline(readWaveReport([card({
+    const outline = deriveReportOutline(readTrackReport([card({
       payload: { body: 'x', blocks: [prose('b-1', '# One\n\n### Deep\n')] },
     })])?.blocks ?? null);
     expect(outline.map((item) => item.label)).toEqual(['One']);
@@ -1332,23 +1332,23 @@ describe('deriveReportOutline', () => {
 });
 
 describe('backlinks', () => {
-  const backlink = (overrides: Partial<WaveBacklink> = {}): WaveBacklink => ({
-    src_wave_id: 'w-2', src_wave_title: 'Cash flow model', src_block_id: 'b-9',
+  const backlink = (overrides: Partial<TrackBacklink> = {}): TrackBacklink => ({
+    src_track_id: 'w-2', src_track_title: 'Cash flow model', src_block_id: 'b-9',
     dst_block_id: 'b-1', label: 'valuation', quote: null, updated_at: 0, ...overrides,
   });
 
-  it('groups by source wave and names a self-reference as such', () => {
+  it('groups by source track and names a self-reference as such', () => {
     const groups = groupBacklinks(
-      [backlink(), backlink({ src_block_id: 'b-10' }), backlink({ src_wave_id: 'w-1' })],
+      [backlink(), backlink({ src_block_id: 'b-10' }), backlink({ src_track_id: 'w-1' })],
       'w-1',
     );
-    expect(groups.map((group) => [group.waveId, group.title, group.entries.length])).toEqual([
+    expect(groups.map((group) => [group.trackId, group.title, group.entries.length])).toEqual([
       ['w-2', 'Cash flow model', 2],
-      ['w-1', 'This wave (self-reference)', 1],
+      ['w-1', 'This track (self-reference)', 1],
     ]);
   });
 
-  it('counts backlinks per target block and ignores whole-wave citations', () => {
+  it('counts backlinks per target block and ignores whole-track citations', () => {
     const counts = backlinkCountsByBlock([
       backlink(), backlink({ src_block_id: 'b-11' }), backlink({ dst_block_id: null }),
     ]);
@@ -1357,25 +1357,25 @@ describe('backlinks', () => {
 });
 
 describe('parseReportLink', () => {
-  it('resolves a wave link with a block fragment', () => {
-    expect(parseReportLink('neige://wave/w-2#b-1')).toEqual({ waveId: 'w-2', blockId: 'b-1' });
+  it('resolves a track link with a block fragment', () => {
+    expect(parseReportLink('neige://wave/w-2#b-1')).toEqual({ trackId: 'w-2', blockId: 'b-1' });
   });
 
-  it('resolves a wave link without a fragment', () => {
-    expect(parseReportLink('neige://wave/w-2')).toEqual({ waveId: 'w-2', blockId: null });
+  it('resolves a track link without a fragment', () => {
+    expect(parseReportLink('neige://wave/w-2')).toEqual({ trackId: 'w-2', blockId: null });
   });
 
-  it('keeps a malformed percent escape as a usable raw wave target', () => {
+  it('keeps a malformed percent escape as a usable raw track target', () => {
     expect(() => parseReportLink('neige://wave/%E0%A4%A')).not.toThrow();
     expect(parseReportLink('neige://wave/%E0%A4%A'))
-      .toEqual({ waveId: '%E0%A4%A', blockId: null });
+      .toEqual({ trackId: '%E0%A4%A', blockId: null });
   });
 
   // Landing at the top of the right report beats a dead link, so a malformed
   // fragment costs the fragment and not the destination.
-  it('drops a malformed fragment but keeps the wave', () => {
+  it('drops a malformed fragment but keeps the track', () => {
     expect(parseReportLink('neige://wave/w-2#../../etc/passwd'))
-      .toEqual({ waveId: 'w-2', blockId: null });
+      .toEqual({ trackId: 'w-2', blockId: null });
   });
 
   it.each([

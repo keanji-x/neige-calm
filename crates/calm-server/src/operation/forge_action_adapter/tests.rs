@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::db::prelude::*;
 use crate::db::sqlite::SqlxRepo;
-use crate::model::{NewArea, NewWave, new_id, now_ms};
+use crate::model::{NewArea, NewTrack, new_id, now_ms};
 use crate::operation::{
     OperationKey, OperationOutcome, OperationRepo, OperationResult, OperationRuntime,
     ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -16,7 +16,7 @@ use crate::terminal_renderer::TerminalRendererRegistry;
 #[test]
 fn frozen_forge_six_shape_defaults_new_optional_fields() {
     let frozen: FrozenForge = serde_json::from_value(json!({
-        "wave_id": "wave-01",
+        "track_id": "track-01",
         "area_id": "area-01",
         "card_id": "card-01",
         "subject": {
@@ -49,48 +49,48 @@ fn frozen_forge_six_shape_defaults_new_optional_fields() {
 fn operation_key_match_accepts_raw_or_scoped_payload_idem() {
     assert!(operation_key_matches_payload_idem(
         Some("idem"),
-        "wave",
+        "track",
         "card",
         "idem"
     ));
     assert!(operation_key_matches_payload_idem(
-        Some("plugin:wave:card:idem"),
-        "wave",
+        Some("plugin:track:card:idem"),
+        "track",
         "card",
         "idem"
     ));
     assert!(operation_key_matches_payload_idem(
-        Some("plugin:wave:card:idem:with:colons"),
-        "wave",
+        Some("plugin:track:card:idem:with:colons"),
+        "track",
         "card",
         "idem:with:colons"
     ));
     assert!(!operation_key_matches_payload_idem(
         Some("not-idem"),
-        "wave",
+        "track",
         "card",
         "idem"
     ));
     assert!(!operation_key_matches_payload_idem(
         Some("prefixidem"),
-        "wave",
+        "track",
         "card",
         "idem"
     ));
     assert!(!operation_key_matches_payload_idem(
-        Some("plugin:other-wave:card:idem"),
-        "wave",
+        Some("plugin:other-track:card:idem"),
+        "track",
         "card",
         "idem"
     ));
     assert!(!operation_key_matches_payload_idem(
-        Some("plugin:wave:other-card:idem"),
-        "wave",
+        Some("plugin:track:other-card:idem"),
+        "track",
         "card",
         "idem"
     ));
     assert!(!operation_key_matches_payload_idem(
-        None, "wave", "card", "idem"
+        None, "track", "card", "idem"
     ));
 }
 
@@ -190,7 +190,7 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
         .await
         .expect("insert operation");
     let frozen = FrozenForge {
-        wave_id: payload.wave_id,
+        track_id: payload.track_id,
         area_id: "area-1".into(),
         card_id: payload.card_id,
         subject: payload.subject,
@@ -203,7 +203,7 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
         result_path: payload.result_path,
         deadline_ms: payload.deadline_ms,
     };
-    let mut output = TxOutput::new("wave", Some(frozen.wave_id.clone()), json!({}));
+    let mut output = TxOutput::new("track", Some(frozen.track_id.clone()), json!({}));
     output.data = serde_json::to_value(&frozen).expect("frozen json");
     let artifacts = SpawnArtifacts {
         pid: 1,
@@ -301,7 +301,7 @@ async fn forge_action_nonzero_git_commit_clean_worktree_probe_succeeds() {
     let fx = forge_runtime_fixture().await;
     init_clean_git_repo(fx.cwd.path());
     let payload = ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: None,
         argv: vec!["git".into(), "commit".into(), "-m".into(), "nothing".into()],
@@ -332,7 +332,7 @@ async fn forge_action_clean_worktree_probe_extracts_worktree_committed_event() {
     init_clean_git_repo(fx.cwd.path());
     let head = git_stdout(fx.cwd.path(), ["rev-parse", "HEAD"]);
     let payload = ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: None,
         argv: vec!["git".into(), "commit".into(), "-m".into(), "nothing".into()],
@@ -358,7 +358,7 @@ async fn forge_action_clean_worktree_probe_extracts_worktree_committed_event() {
         probe: Some(ProbeSpec {
             probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
             output_probe_argv: Some(shell_probe(
-                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
         }),
         cwd_lease: fx.cwd.path().to_path_buf(),
@@ -379,10 +379,10 @@ async fn forge_action_clean_worktree_probe_extracts_worktree_committed_event() {
     );
     let payloads = event_payloads(&fx.repo, "worktree.committed").await;
     assert_eq!(payloads.len(), 1);
-    assert_eq!(payloads[0]["wave_id"], fx.wave_id);
+    assert_eq!(payloads[0]["track_id"], fx.track_id);
     assert_eq!(payloads[0]["card_id"], "card-1");
     assert_eq!(payloads[0]["commit_sha"], head);
-    assert_eq!(payloads[0]["branch"], "neige/wave-1/card-1");
+    assert_eq!(payloads[0]["branch"], "neige/track-1/card-1");
 }
 
 #[tokio::test]
@@ -404,7 +404,7 @@ async fn forge_action_git_commit_dirty_index_failure_does_not_emit_worktree_comm
 
     let commit_script = "git add -A || exit 1; if git diff --cached --quiet; then :; else git commit -m \"$1\" || exit 1; fi; git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$2\"'\"}'";
     let payload = ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: None,
         argv: vec![
@@ -413,7 +413,7 @@ async fn forge_action_git_commit_dirty_index_failure_does_not_emit_worktree_comm
             commit_script.into(),
             "sh".into(),
             "should fail".into(),
-            "neige/wave-1/card-1".into(),
+            "neige/track-1/card-1".into(),
         ],
         idem_key: "git.commit:dirty-index-failure".into(),
         event_spec: Some(ForgeEventSpec {
@@ -437,7 +437,7 @@ async fn forge_action_git_commit_dirty_index_failure_does_not_emit_worktree_comm
         probe: Some(ProbeSpec {
             probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
             output_probe_argv: Some(shell_probe(
-                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
         }),
         cwd_lease: fx.cwd.path().to_path_buf(),
@@ -498,7 +498,7 @@ async fn git_status_probe_infra_failure_does_not_emit_worktree_committed() {
         GIT_COMMIT_PROBE_SCRIPT
     );
     let payload = ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: None,
         argv: vec!["/bin/sh".into(), "-c".into(), "exit 7".into()],
@@ -524,7 +524,7 @@ async fn git_status_probe_infra_failure_does_not_emit_worktree_committed() {
         probe: Some(ProbeSpec {
             probe_argv: shell_probe(&probe_script),
             output_probe_argv: Some(shell_probe(
-                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
         }),
         cwd_lease: fx.cwd.path().to_path_buf(),
@@ -552,7 +552,7 @@ async fn git_add_failure_dirty_worktree_clean_index_does_not_emit_worktree_commi
 
     let commit_script = r#"git() { if [ "$1" = add ]; then return 1; fi; command git "$@"; }; printf '%s\n' dirty > worker-output.txt; git add -A || exit 1; if git diff --cached --quiet; then :; else git commit -m "$1" || exit 1; fi; git log -1 --format='{"commit":"%H","branch":"'"$2"'"}'"#;
     let payload = ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: None,
         argv: vec![
@@ -561,7 +561,7 @@ async fn git_add_failure_dirty_worktree_clean_index_does_not_emit_worktree_commi
             commit_script.into(),
             "sh".into(),
             "should fail before staging".into(),
-            "neige/wave-1/card-1".into(),
+            "neige/track-1/card-1".into(),
         ],
         idem_key: "git.commit:add-failure-dirty-worktree".into(),
         event_spec: Some(ForgeEventSpec {
@@ -585,7 +585,7 @@ async fn git_add_failure_dirty_worktree_clean_index_does_not_emit_worktree_commi
         probe: Some(ProbeSpec {
             probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
             output_probe_argv: Some(shell_probe(
-                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
         }),
         cwd_lease: fx.cwd.path().to_path_buf(),
@@ -656,7 +656,7 @@ async fn forge_action_idempotency_retry_with_different_argv_collapses_to_one_ope
 struct ForgeRuntimeFixture {
     repo: Arc<SqlxRepo>,
     runtime: Arc<OperationRuntime>,
-    wave_id: String,
+    track_id: String,
     cwd: tempfile::TempDir,
     results: tempfile::TempDir,
 }
@@ -678,8 +678,8 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "forge-action-adapter-test".into(),
@@ -691,7 +691,7 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
             theme: crate::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
     let events = EventBus::new();
     let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
     let completion = OperationCompletionBus::new();
@@ -719,7 +719,7 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
     ForgeRuntimeFixture {
         repo: sqlx_repo,
         runtime,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         cwd,
         results,
     }
@@ -737,7 +737,7 @@ fn merge_payload(
     probe: ProbeSpec,
 ) -> ForgeActionPayload {
     ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: Some(
             serde_json::from_value(json!({
@@ -774,7 +774,7 @@ fn no_event_payload(
     result_label: &str,
 ) -> ForgeActionPayload {
     ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: None,
         argv,

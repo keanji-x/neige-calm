@@ -13,12 +13,12 @@ import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = { id: 'w1', area_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
-const CARD = { id: 'card-1', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const WAVE_B = { ...WAVE, id: 'w2', title: 'Second wave', sort: 2 };
-const CARD_B = { ...CARD, id: 'card-2', wave_id: 'w2', title: 'Second chat' };
-const CARD_SAME_WAVE = { ...CARD, id: 'card-other', title: 'Other chat' };
+const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
+const CARD_B = { ...CARD, id: 'card-2', track_id: 'w2', title: 'Second chat' };
+const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -26,7 +26,7 @@ function ok(body: unknown): ApiTransportResponse {
 
 function harnessRows(count: number) {
   return Array.from({ length: count }, (_, index) => ({
-    id: index + 1, runtime_id: 'runtime', card_id: CARD.id, wave_id: WAVE.id, thread_id: 'thread',
+    id: index + 1, runtime_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, thread_id: 'thread',
     turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ item: { text: `reply ${index}` } }), created_at_ms: index + 1,
   }));
@@ -50,10 +50,10 @@ function setup(reply?: Reply) {
         if (response) return response;
       }
       if (request.path === '/api/areas') return ok([AREA]);
-      if (request.path === '/api/areas/c1/waves') return ok([WAVE, WAVE_B]);
-      if (request.path === '/api/overlays?entity_kind=wave') return ok([]);
-      if (request.path === '/api/waves/w1') return ok({ wave: WAVE, cards: [CARD], overlays: [] });
-      if (request.path === '/api/waves/w2') return ok({ wave: WAVE_B, cards: [CARD_B], overlays: [] });
+      if (request.path === '/api/areas/c1/tracks') return ok([TRACK, TRACK_B]);
+      if (request.path === '/api/overlays?entity_kind=track') return ok([]);
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, cards: [CARD], overlays: [] });
+      if (request.path === '/api/tracks/w2') return ok({ track: TRACK_B, cards: [CARD_B], overlays: [] });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/spec/run')) return ok({ card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' });
       if (request.path.endsWith('/spec/input')) return ok({ card_id: CARD.id, runtime_id: 'runtime' });
@@ -78,7 +78,7 @@ async function openConversation() {
 /*
  * `combobox`, not `textbox`, since #1189.
  *
- * The wave route is a `'rows'` route now, which means the composer carries the
+ * The track route is a `'rows'` route now, which means the composer carries the
  * `/` command menu — and `useTriggerMenu` only emits the combobox role when a
  * trigger is really configured. The accessibility tree is where that difference
  * is honest, so the lookup follows it rather than hiding it behind a `*ByRole`
@@ -106,7 +106,7 @@ async function openConversationWithTurns() {
 }
 
 beforeEach(() => {
-  window.history.pushState({}, '', `${APP_BASEPATH}/wave/w1`);
+  window.history.pushState({}, '', `${APP_BASEPATH}/track/w1`);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
 });
@@ -225,7 +225,7 @@ describe('spec conversation regressions', () => {
     fireEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByRole('button', { name: /Conversation Spec chat, on Test wave/ });
+    await screen.findByRole('button', { name: /Conversation Spec chat, on Test track/ });
     expect(requests.filter((request) => request.path.endsWith('/spec/reset'))).toHaveLength(0);
     /* And the pressing above actually did something, so an inert sweep cannot
        pass this by touching nothing. */
@@ -233,18 +233,18 @@ describe('spec conversation regressions', () => {
   });
 
   /*
-   * The wave route used to be the one route with a `+` and no `/new`: it had
+   * The track route used to be the one route with a `+` and no `/new`: it had
    * exactly one spec card, `start()` reopened the row already open, and a
    * command named `New conversation` that reopens the conversation you are
    * reading is a lie told by a control.
    *
-   * #1189 removed the premise. A wave holds as many assistant conversations as
+   * #1189 removed the premise. A track holds as many assistant conversations as
    * you start, so `/new` here means what it means on an area, and the composer
    * becomes the combobox `useTriggerMenu` emits when a trigger is configured.
    * Asserted through the accessibility tree, which is where the difference is
    * visible to a reader.
    */
-  it('offers /new in the wave composer, now that a wave can hold a second conversation', async () => {
+  it('offers /new in the track composer, now that a track can hold a second conversation', async () => {
     setupWithTurns();
     await openConversationWithTurns();
     const field = messageField();
@@ -253,72 +253,72 @@ describe('spec conversation regressions', () => {
   });
 
   /*
-   * No turn count on these labels since #1189: a wave route lists rows, and a
+   * No turn count on these labels since #1189: a track route lists rows, and a
    * row it has not opened is one it cannot count the turns of. `ChatList` says
    * nothing rather than `0 turns`, which would be a claim. The open row still
    * counts, because the drawer is reading its transcript — that is what the
    * Today test below asserts.
    */
-  it('keeps a wave route conversation list scoped after visiting another wave', async () => {
+  it('keeps a track route conversation list scoped after visiting another track', async () => {
     const { router } = setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
-    await router.navigate({ to: '/wave/w2' });
+    await router.navigate({ to: '/track/w2' });
     await screen.findByRole('button', { name: 'Conversation Second chat' });
     expect(screen.queryByRole('button', { name: 'Conversation Spec chat' })).toBeNull();
   });
 
-  it('keeps a wave conversation on Today after navigating away from the wave', async () => {
+  it('keeps a track conversation on Today after navigating away from the track', async () => {
     setup();
     await openConversation();
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
     const conversation = await screen.findByRole('button', {
-      name: 'Conversation Spec chat, on Test wave, 0 turns',
+      name: 'Conversation Spec chat, on Test track, 0 turns',
     });
-    expect(conversation.textContent).toContain('Test wave');
+    expect(conversation.textContent).toContain('Test track');
   });
 
   /*
-   * #1189 §5.1 / G5 — and the point is that the wave was only *visited*.
+   * #1189 §5.1 / G5 — and the point is that the track was only *visited*.
    *
    * The row was never opened, so nothing here went through the open-row
-   * remember: the wave route writes the rows it lists into the registry as it
+   * remember: the track route writes the rows it lists into the registry as it
    * lists them, which is the only way an assistant conversation — which exists
    * nowhere but in that list — can ever reach Today.
    */
-  it('lists a wave conversation on Today after merely visiting the wave', async () => {
+  it('lists a track conversation on Today after merely visiting the track', async () => {
     const { router } = setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     await router.navigate({ to: '/' });
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test track' });
   });
 
-  it('navigates from a Today conversation to its wave before opening it', async () => {
+  it('navigates from a Today conversation to its track before opening it', async () => {
     const { requests } = setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
     fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Spec chat, on Test wave',
+      name: 'Conversation Spec chat, on Test track',
     }));
     await screen.findByRole('complementary', { name: 'Spec chat' });
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w1`);
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w1`);
     expect(requests.some(({ path }) => path.includes('/api/cards//'))).toBe(false);
   });
 
   /*
    * An area lists its *own* conversations, from the server (#1098) — never the
-   * spec conversations of the waves inside it. Those hang off a wave and are
-   * read on that wave's page; listing them here would put rows in a panel whose
+   * spec conversations of the tracks inside it. Those hang off a track and are
+   * read on that track's page; listing them here would put rows in a panel whose
    * drawer this route deliberately opens in place, on a card it has no scope
-   * for. Today is still where a remembered wave conversation shows up.
+   * for. Today is still where a remembered track conversation shows up.
    */
-  it('does not list a wave spec conversation on that wave\'s area', async () => {
+  it('does not list a track spec conversation on that track\'s area', async () => {
     setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     fireEvent.click(screen.getByRole('button', { name: 'Work' }));
     await screen.findByText('No conversations yet.');
     expect(screen.queryByRole('button', { name: /Conversation Spec chat/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test track' });
   });
 
   /*
@@ -343,46 +343,46 @@ describe('spec conversation regressions', () => {
        arrived before the card is swapped underneath it. */
     await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' });
 
-    client.setQueryData(queryKeys.harnessItems(CARD_SAME_WAVE.id), {
+    client.setQueryData(queryKeys.harnessItems(CARD_SAME_TRACK.id), {
       pages: [harnessRows(3)], pageParams: [0],
     });
-    client.setQueryData(queryKeys.waveDetail(WAVE.id), { wave: WAVE, cards: [CARD_SAME_WAVE], overlays: [] });
+    client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, cards: [CARD_SAME_TRACK], overlays: [] });
     /* The listed row is the swapped-in card, and the drawer's row is gone with
-       the old one — a `'rows'` route lists what the server (here, the wave
+       the old one — a `'rows'` route lists what the server (here, the track
        detail) says, so the count only comes back when this one is opened. */
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
-    client.setQueryData(queryKeys.waveDetail(WAVE.id), { wave: WAVE, cards: [CARD], overlays: [] });
+    client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, cards: [CARD], overlays: [] });
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     await router.navigate({ to: '/' });
     /* Both are on Today, and the first one still carries the transcript it was
        remembered with — the swap did not cost it. */
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 3 turns' });
-    await screen.findByRole('button', { name: 'Conversation Other chat, on Test wave, 3 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test track, 3 turns' });
+    await screen.findByRole('button', { name: 'Conversation Other chat, on Test track, 3 turns' });
   });
 
-  it('clears an unclaimed open request after a wave without a spec card resolves', async () => {
+  it('clears an unclaimed open request after a track without a spec card resolves', async () => {
     let omitTargetCard = false;
     const { client, router } = setup((request) => {
-      if (request.path === '/api/waves/w1' && omitTargetCard) {
-        return ok({ wave: WAVE, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1' && omitTargetCard) {
+        return ok({ track: TRACK, cards: [], overlays: [] });
       }
-      if (request.path === '/api/waves/w2') {
-        return ok({ wave: WAVE_B, cards: [{ ...CARD, wave_id: WAVE_B.id }], overlays: [] });
+      if (request.path === '/api/tracks/w2') {
+        return ok({ track: TRACK_B, cards: [{ ...CARD, track_id: TRACK_B.id }], overlays: [] });
       }
       return undefined;
     });
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     await router.navigate({ to: '/' });
     omitTargetCard = true;
-    client.removeQueries({ queryKey: queryKeys.waveDetail(WAVE.id) });
+    client.removeQueries({ queryKey: queryKeys.trackDetail(TRACK.id) });
     fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Spec chat, on Test wave',
+      name: 'Conversation Spec chat, on Test track',
     }));
     await screen.findByText('No cards yet.');
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
 
-    await router.navigate({ to: '/wave/w2' });
+    await router.navigate({ to: '/track/w2' });
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
   });
@@ -410,7 +410,7 @@ describe('spec conversation regressions', () => {
     ];
     setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
     await openConversation();
-    /* The history is fetched when the row is *opened* now — the wave route no
+    /* The history is fetched when the row is *opened* now — the track route no
        longer holds a card scope before that — so the transcript lands a round
        trip after the drawer does. */
     await screen.findByText('interleaved reply');
@@ -521,7 +521,7 @@ describe('spec conversation regressions', () => {
    * Escape layering it protected — an inner surface eats the key before the
    * drawer does — is unchanged and still needs a guard; its new subject is the
    * `/` command menu, and that test lives in `area-conversation.test.tsx`
-   * beside the rest of the slash-command behaviour, because the wave route
+   * beside the rest of the slash-command behaviour, because the track route
    * deliberately has no `/` menu (see `startAnother` in the router).
    */
 });

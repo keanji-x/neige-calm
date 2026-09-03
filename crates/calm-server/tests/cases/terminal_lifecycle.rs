@@ -1,4 +1,4 @@
-//! Issue #197 — eager-teardown regression tests for card/wave/area
+//! Issue #197 — eager-teardown regression tests for card/track/area
 //! delete.
 //!
 //! Unix-only: SIGTERM via `nix::sys::signal::kill` is the cleanup
@@ -38,7 +38,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -63,7 +63,7 @@ fn state_from_repo(repo: Arc<dyn Repo>) -> AppState {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -85,13 +85,13 @@ async fn fresh_state() -> AppState {
     fresh_state_with_repo().await.0
 }
 
-/// Compose a minimal Axum app with the cards + waves + areas routers
+/// Compose a minimal Axum app with the cards + tracks + areas routers
 /// + the `actor_middleware` that the handlers depend on. Same shape
 ///   as `payload_validation.rs::app`.
 fn build_app(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(routes::cards::router())
-        .merge(routes::waves::router())
+        .merge(routes::tracks::router())
         .merge(routes::areas::router())
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -153,7 +153,7 @@ async fn card_delete_reaps_terminal_process() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: area → wave → terminal card → terminal row pointing at a
+    // Seed: area → track → terminal card → terminal row pointing at a
     // real spawned process.
     let area = raw
         .area_create(NewArea {
@@ -163,8 +163,8 @@ async fn card_delete_reaps_terminal_process() {
         })
         .await
         .unwrap();
-    let wave = raw
-        .wave_create(NewWave {
+    let track = raw
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -179,7 +179,7 @@ async fn card_delete_reaps_terminal_process() {
         .unwrap();
     let card = raw
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -247,16 +247,16 @@ async fn card_delete_reaps_terminal_process() {
 }
 
 // ---------------------------------------------------------------------------
-// Wave delete eager teardown
+// Track delete eager teardown
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn wave_delete_reaps_every_terminal_under_wave() {
+async fn track_delete_reaps_every_terminal_under_track() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: area → wave with TWO terminal cards, each with a live child.
-    // The wave-delete path must reap both.
+    // Seed: area → track with TWO terminal cards, each with a live child.
+    // The track-delete path must reap both.
     let area = raw
         .area_create(NewArea {
             name: "c".into(),
@@ -265,8 +265,8 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
         })
         .await
         .unwrap();
-    let wave = raw
-        .wave_create(NewWave {
+    let track = raw
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -282,7 +282,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
 
     let card_a = raw
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -292,7 +292,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
         .unwrap();
     let card_b = raw
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -337,13 +337,13 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
         .await
         .unwrap();
 
-    // DELETE /api/waves/{id}
+    // DELETE /api/tracks/{id}
     let app = build_app(state.clone());
     let resp = app
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/waves/{}", wave.id.as_str()))
+                .uri(format!("/api/tracks/{}", track.id.as_str()))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -352,11 +352,11 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     assert_eq!(
         resp.status(),
         StatusCode::NO_CONTENT,
-        "wave delete should return 204"
+        "track delete should return 204"
     );
 
     // Post-delete: both processes gone, both
-    // terminal rows + both card rows + the wave row removed.
+    // terminal rows + both card rows + the track row removed.
     await_child_killed(&mut child_a).await;
     await_child_killed(&mut child_b).await;
     assert!(state.repo.terminal_get(&term_a.id).await.unwrap().is_none());
@@ -380,7 +380,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     assert!(
         state
             .repo
-            .wave_get(wave.id.as_str())
+            .track_get(track.id.as_str())
             .await
             .unwrap()
             .is_none()
@@ -388,7 +388,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
+async fn track_delete_external_teardown_does_not_hold_the_sqlite_writer() {
     let (state, repo) = fresh_state_with_repo().await;
     let area = repo
         .area_create(NewArea {
@@ -398,11 +398,11 @@ async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
-            title: "writer-probe-wave".into(),
+            title: "writer-probe-track".into(),
             sort: None,
             cwd: String::new(),
             template_id: None,
@@ -412,21 +412,21 @@ async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
         })
         .await
         .unwrap();
-    let hook = calm_server::routes::waves::WaveDeleteTeardownHook {
+    let hook = calm_server::routes::tracks::TrackDeleteTeardownHook {
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
     };
-    calm_server::routes::waves::install_wave_delete_teardown_hook_for_test(
-        wave.id.as_str(),
+    calm_server::routes::tracks::install_track_delete_teardown_hook_for_test(
+        track.id.as_str(),
         hook.clone(),
     );
     let app = build_app(state);
-    let wave_id = wave.id.to_string();
+    let track_id = track.id.to_string();
     let deleting = tokio::spawn(async move {
         app.oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/waves/{wave_id}"))
+                .uri(format!("/api/tracks/{track_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -447,13 +447,13 @@ async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
         }),
     )
     .await
-    .expect("unrelated writer was blocked by external wave teardown")
+    .expect("unrelated writer was blocked by external track teardown")
     .expect("unrelated writer must succeed");
 
     hook.release.notify_one();
     let response = tokio::time::timeout(Duration::from_secs(5), deleting)
         .await
-        .expect("wave delete must finish after teardown release")
+        .expect("track delete must finish after teardown release")
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
@@ -467,9 +467,9 @@ async fn area_delete_reaps_every_terminal_under_area() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: area → wave → terminal card → terminal row pointing at a
+    // Seed: area → track → terminal card → terminal row pointing at a
     // real spawned process. The area-delete
-    // path walks waves → cards → terminals and must reap the terminal
+    // path walks tracks → cards → terminals and must reap the terminal
     // before the structural delete fires (else `terminals.card_id`'s
     // RESTRICT FK would trip).
     let area = raw
@@ -480,8 +480,8 @@ async fn area_delete_reaps_every_terminal_under_area() {
         })
         .await
         .unwrap();
-    let wave = raw
-        .wave_create(NewWave {
+    let track = raw
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -496,7 +496,7 @@ async fn area_delete_reaps_every_terminal_under_area() {
         .unwrap();
     let card = raw
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "terminal".into(),
             sort: None,
@@ -545,7 +545,7 @@ async fn area_delete_reaps_every_terminal_under_area() {
     );
 
     // Post-delete: child process gone and every row
-    // in the terminal/card/wave/area subtree removed.
+    // in the terminal/card/track/area subtree removed.
     await_child_killed(&mut child).await;
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_none(),
@@ -563,11 +563,11 @@ async fn area_delete_reaps_every_terminal_under_area() {
     assert!(
         state
             .repo
-            .wave_get(wave.id.as_str())
+            .track_get(track.id.as_str())
             .await
             .unwrap()
             .is_none(),
-        "wave row must be deleted with the area"
+        "track row must be deleted with the area"
     );
     assert!(
         state
@@ -598,8 +598,8 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
         })
         .await
         .unwrap();
-    let wave = raw
-        .wave_create(NewWave {
+    let track = raw
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -614,7 +614,7 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
         .unwrap();
     let card = raw
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "ui://plugin/foo".into(),
             sort: None,

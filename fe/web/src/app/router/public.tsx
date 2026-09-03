@@ -6,8 +6,8 @@
 // module singleton.
 //
 // This module is also the composition point the layering forbids anywhere
-// else: `features/area` may not import `features/wave`, so the area route is
-// where `<AreaPage>` and `<WaveList>` are put together.
+// else: `features/area` may not import `features/track`, so the area route is
+// where `<AreaPage>` and `<TrackList>` are put together.
 
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
@@ -19,24 +19,24 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { areaOf, folderConflictMessage, type Area } from '../../../../core/domain/area.ts';
 import {
-  toWave, waveActivityFrom, waveDisplayTitle,
-  type Wave, type WaveDetailWire,
-} from '../../../../core/domain/wave.ts';
+  toTrack, trackActivityFrom, trackDisplayTitle,
+  type Track, type TrackDetailWire,
+} from '../../../../core/domain/track.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
 import {
-  cardAddMenuEntries, isAssistantHarnessPayload, isSpecHarnessPayload, partitionWaveCards,
+  cardAddMenuEntries, isAssistantHarnessPayload, isSpecHarnessPayload, partitionTrackCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { AreaPage } from '../../features/area/page/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { todaySummaryFailure } from '../../../../core/domain/today.ts';
-import { WaveList } from '../../features/wave/list/public.tsx';
-import { WaveRow } from '../../features/wave/row/public.tsx';
-import { WavePage } from '../../features/wave/page/public.tsx';
-import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
-import { AddCardMenu, NewCardForm, type NewCardValues } from '../../features/wave/new-card/public.tsx';
+import { TrackList } from '../../features/track/list/public.tsx';
+import { TrackRow } from '../../features/track/row/public.tsx';
+import { TrackPage } from '../../features/track/page/public.tsx';
+import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
+import { AddCardMenu, NewCardForm, type NewCardValues } from '../../features/track/new-card/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
@@ -47,18 +47,18 @@ import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
 import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
-  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readWaveReport, type ReportLinkTarget,
+  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readTrackReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   areaConversationFailure, AREA_CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
-  waveConversationCardId, areaConversationCardId,
+  trackConversationCardId, areaConversationCardId,
   type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
-import { DELETE_CARD_COPY, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
+import { DELETE_CARD_COPY, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -68,17 +68,17 @@ import {
   ApiError, areaConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, specRunQueryOptions, todayLaunchpadQueryOptions,
   useAreaConversationMutations, useAreaMutations, useSpecMutations, useTodaySummaryMutation,
-  useWaveConversationMutations, useWaveMutations, useWaveTemplates, useWorkspace,
-  waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
-  waveTaskVerdictsQueryOptions,
+  useTrackConversationMutations, useTrackMutations, useTrackTemplates, useWorkspace,
+  trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
+  trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { NewWaveForm, type NewWaveDraft } from '../../features/area/new-wave/public.tsx';
-import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
+import { NewTrackForm, type NewTrackDraft } from '../../features/area/new-track/public.tsx';
+import { AppShell, useOpenMobileSection, useRequestNewTrack } from '../shell/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
-  useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
-  useSpecOpenIntent, useWavePanelNavigation, validateWaveSearch, type WaveSearch,
+  useGo, useGoSameTrack, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
+  useSpecOpenIntent, useTrackPanelNavigation, validateTrackSearch, type TrackSearch,
 } from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -108,12 +108,12 @@ type ConversationStore = Readonly<{
 /**
  * Where a route's conversation list comes from.
  *
- * `'all'` and `'waves'` read the session registry — conversations this tab has
+ * `'all'` and `'tracks'` read the session registry — conversations this tab has
  * opened. `'rows'` is the opposite: the server sends the list, so the registry
  * is not consulted for it.
  *
- * `'waves'` has no construction site left: the area route filtered the registry
- * by its waves before it listed conversations from the server (#1098), and
+ * `'tracks'` has no construction site left: the area route filtered the registry
+ * by its tracks before it listed conversations from the server (#1098), and
  * Today is the only registry-backed surface now, with `'all'`. It is left
  * standing rather than deleted here because deleting it is not one line — the
  * same sweep takes `ConversationPanelSource`'s `'card'` arm, `store.start` and
@@ -121,7 +121,7 @@ type ConversationStore = Readonly<{
  * than a review fix should carry.
  *
  * What that sweep would **not** change is behaviour, and an earlier version of
- * this note claimed otherwise. The live Today → wave path runs through the
+ * this note claimed otherwise. The live Today → track path runs through the
  * `rows !== null` branch of that consume (`useConversationPanel`); the `scope`
  * branch below it is only reachable when the source is `'card'`, which nothing
  * selects. So the reason to defer is size and blast radius, not risk to the
@@ -129,7 +129,7 @@ type ConversationStore = Readonly<{
  * an arm nothing selects (#1189 review).
  */
 type ConversationListIntent = Readonly<
-  { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
+  { kind: 'all' } | { kind: 'tracks'; trackIds: readonly string[] }
 >;
 
 type ConversationRouteIntent =
@@ -138,17 +138,17 @@ type ConversationRouteIntent =
     kind: 'rows';
     rows: readonly Conversation[];
     /**
-     * The wave these rows may be *sent to*, or null when there is none.
+     * The track these rows may be *sent to*, or null when there is none.
      *
      * This is what decides whether a `'rows'` route writes its list back into
-     * the session registry, and it is a wave id rather than a boolean so the
+     * the session registry, and it is a track id rather than a boolean so the
      * decision can be enforced here rather than trusted (§5.1).
      *
-     * An area route passes null: its rows live on the area's hidden chat wave,
-     * Today navigates to `conversation.waveId` when a row is opened, and
-     * remembering them would walk the reader into a wave that is deliberately
-     * on no list. A wave route passes its own wave id: its rows are on a real,
-     * navigable wave, and they are the *only* place an assistant conversation
+     * An area route passes null: its rows live on the area's hidden chat track,
+     * Today navigates to `conversation.trackId` when a row is opened, and
+     * remembering them would walk the reader into a track that is deliberately
+     * on no list. A track route passes its own track id: its rows are on a real,
+     * navigable track, and they are the *only* place an assistant conversation
      * exists — without this they could never reach Today at all.
      *
      * It lives on the route intent and not on `ConversationPanelSource` because
@@ -176,8 +176,8 @@ function errorMessage(error: unknown, fallback: string): string {
  */
 type ConversationFacts = Readonly<{
   cardId: string;
-  waveId: string;
-  waveTitle: string | undefined;
+  trackId: string;
+  trackTitle: string | undefined;
   cardTitle: string | null;
   kind: ConversationKind;
   state: ConversationState | null;
@@ -200,10 +200,10 @@ function describeConversation(
   facts: ConversationFacts, turns: readonly ConversationTurn[],
 ): Conversation {
   return {
-    id: facts.cardId, waveId: facts.waveId,
-    /* Absent, not `''`: an area conversation's wave is hidden and has no title
+    id: facts.cardId, trackId: facts.trackId,
+    /* Absent, not `''`: an area conversation's track is hidden and has no title
        to show. `ChatList` renders the difference; `''` would render a blank. */
-    ...(facts.waveTitle === undefined ? {} : { waveTitle: facts.waveTitle }),
+    ...(facts.trackTitle === undefined ? {} : { trackTitle: facts.trackTitle }),
     title: facts.cardTitle
       ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
     kind: facts.kind,
@@ -232,8 +232,8 @@ export function useConversationStore(
 ): ConversationStore {
   const registry = useConversationRegistry();
   const cardId = scope?.cardId ?? '';
-  const waveId = scope?.id;
-  const waveTitle = scope?.title;
+  const trackId = scope?.id;
+  const trackTitle = scope?.title;
   const cardTitle = scope?.cardTitle;
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
@@ -371,10 +371,10 @@ export function useConversationStore(
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
-  const facts = useMemo<ConversationFacts | null>(() => waveId === undefined ? null : {
-    cardId, waveId, waveTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
+  const facts = useMemo<ConversationFacts | null>(() => trackId === undefined ? null : {
+    cardId, trackId, trackTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
     state: scopeState, working, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, waveId, waveTitle, working]);
+  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working]);
   /**
    * What the reader is looking at: every turn, echoes included.
    *
@@ -421,15 +421,15 @@ export function useConversationStore(
      * The registry exists so a conversation stays visible on routes that cannot
      * fetch it — which is exactly what a `'rows'` route can do for itself. What
      * remembering would add on an area route is a leak: those rows live on the
-     * area's hidden chat wave, and Today lists everything the registry holds and
-     * navigates to `conversation.waveId` when a row is opened, which would walk
-     * the reader into the hidden wave. Today has no second filter.
+     * area's hidden chat track, and Today lists everything the registry holds and
+     * navigates to `conversation.trackId` when a row is opened, which would walk
+     * the reader into the hidden track. Today has no second filter.
      *
-     * A `'rows'` route that named a wave (`rememberOn`) is the exception, and
-     * it carries that defence itself: only the named wave's rows are written,
+     * A `'rows'` route that named a track (`rememberOn`) is the exception, and
+     * it carries that defence itself: only the named track's rows are written,
      * here and in the effect below.
      */
-    if (serverRows !== null && (rememberOn === null || durableConversation.waveId !== rememberOn)) return;
+    if (serverRows !== null && (rememberOn === null || durableConversation.trackId !== rememberOn)) return;
     /* Remember the transcript so reopening the conversation preserves its
        activity lines and looks identical to the route the user just left — the
        confirmed one, for the reason `durableConversation` gives: a message that
@@ -438,18 +438,18 @@ export function useConversationStore(
   }, [confirmedTranscript, durableConversation, registry, rememberOn, serverRows]);
   useEffect(() => {
     /*
-     * A `'rows'` route that named a wave remembers **every** row it lists.
+     * A `'rows'` route that named a track remembers **every** row it lists.
      *
      * Not only the open one, and not only on open. An assistant conversation
      * exists nowhere but in this list — no other surface fetches it — so a
      * registry that only learned about opened rows would leave Today permanently
-     * without them, and the whole Today → wave path below would be dead code for
+     * without them, and the whole Today → track path below would be dead code for
      * the one kind of conversation it was written for (§5.1).
      *
      * `rememberOn` is compared against each row rather than merely consulted:
-     * Today navigates to `conversation.waveId`, so a row belonging to some other
-     * wave — or to a hidden one — would be a link into a place this route never
-     * claimed. Remembering exactly the rows of the named wave is the defence,
+     * Today navigates to `conversation.trackId`, so a row belonging to some other
+     * track — or to a hidden one — would be a link into a place this route never
+     * claimed. Remembering exactly the rows of the named track is the defence,
      * held here rather than downstream.
      *
      * Turns are carried over from whatever the registry already holds, never
@@ -458,22 +458,22 @@ export function useConversationStore(
      */
     if (serverRows === null || rememberOn === null) return;
     for (const row of serverRows) {
-      if (row.waveId !== rememberOn) continue;
+      if (row.trackId !== rememberOn) continue;
       /* The open row belongs to the effect above, which knows its transcript
          and its live name. Writing the plain row over that here would undo it
          on every render, and the two effects would then take turns rewriting
          one entry for as long as the drawer stayed open. */
       if (row.id === conversation?.id) continue;
       /* A turn count this tab really read is not unread by a list that does not
-         send one. The server will not count turns (`WaveConversationSummary`),
+         send one. The server will not count turns (`TrackConversationSummary`),
          so a row always arrives with `turns` absent; writing that over an entry
          the drawer counted would make a conversation lose its count on Today
-         the moment its own wave was visited again. The transcript is carried
+         the moment its own track was visited again. The transcript is carried
          over for the same reason and by the same rule.
 
          And so is the **name**, which is that rule a third time and was the one
          omission: an assistant card is minted `title: None`
-         (`wave_conversations.rs`) and nothing backfills it, so `row.title` is
+         (`track_conversations.rs`) and nothing backfills it, so `row.title` is
          permanently null on the wire. The name a reader sees is derived by the
          effect above from the conversation's first message. The moment the
          drawer closes — or opens on another row — this effect stops skipping
@@ -507,7 +507,7 @@ export function useConversationStore(
   const allConversations = conversation === null
     ? registry.conversations
     : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
-  const waveIds = routeIntent.kind === 'waves' ? new Set(routeIntent.waveIds) : null;
+  const trackIds = routeIntent.kind === 'tracks' ? new Set(routeIntent.trackIds) : null;
   const conversations = serverRows !== null
     /* The open row is replaced in place by the live one: same id, but with the
        turns and the name this route can only know from the transcript it is
@@ -515,9 +515,9 @@ export function useConversationStore(
     ? (conversation === null
       ? serverRows
       : serverRows.map((row) => row.id === conversation.id ? conversation : row))
-    : waveIds === null
+    : trackIds === null
       ? allConversations
-      : allConversations.filter((candidate) => waveIds.has(candidate.waveId));
+      : allConversations.filter((candidate) => trackIds.has(candidate.trackId));
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -675,8 +675,8 @@ export function useConversationStore(
 /**
  * The one conversation whose transcript is being read.
  *
- * `id` is the wave the card hangs off; `title` is that wave's title *when the
- * surface knows one*, which an area route does not — its chat wave is hidden on
+ * `id` is the track the card hangs off; `title` is that track's title *when the
+ * surface knows one*, which an area route does not — its chat track is hidden on
  * purpose. `kind` carries what the list row already knew, so opening a chat row
  * cannot make it read as a spec one. `state` carries the row's server state as
  * the *baseline*; the open row is the only one this route can watch live, so it
@@ -700,14 +700,14 @@ type SpecConversationScope = Readonly<{
  *
  * That conflated "there is a card open" with two facts that have nothing to do
  * with a card: whether this route can *hold* a drawer at all, and where a new
- * conversation would go. Today cannot hold one (it has no wave and no area), so
+ * conversation would go. Today cannot hold one (it has no track and no area), so
  * opening a row there navigates; an area route can hold one for every row it
- * lists, so opening one must not navigate — the wave it would navigate to is
+ * lists, so opening one must not navigate — the track it would navigate to is
  * hidden.
  *
  * Two routes select two of the three: Today is `'elsewhere'` and both the area
- * and the wave route are `'rows'`. **`'card'` is selected by nothing** since the
- * wave route stopped forking on its spec card (#1189 §5.3) — it is dead, and it
+ * and the track route are `'rows'`. **`'card'` is selected by nothing** since the
+ * track route stopped forking on its spec card (#1189 §5.3) — it is dead, and it
  * is left standing for the reason given on `ConversationListIntent`: removing it
  * also removes `store.start`, the `scope` arm of the open-request consume, and
  * the `/new` parity argument below, none of which belongs in a review fix. Read
@@ -719,13 +719,13 @@ type ConversationPanelSource =
   | Readonly<{
     kind: 'rows';
     /**
-     * What a draft on this route belongs to — an area id on an area route, a wave
-     * id on a wave route. Two routes, one drawer, and the reducer tells their
+     * What a draft on this route belongs to — an area id on an area route, a track
+     * id on a track route. Two routes, one drawer, and the reducer tells their
      * drafts apart by this value alone (`ConversationDraft`).
      */
     scopeId: string;
     rows: readonly Conversation[];
-    /** See `ConversationRouteIntent`: the wave these rows may be sent to, or
+    /** See `ConversationRouteIntent`: the track these rows may be sent to, or
      *  null when there is none and nothing may be remembered. */
     rememberOn: string | null;
     scopeOf: (conversationId: string) => SpecConversationScope | null;
@@ -761,21 +761,21 @@ type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
  * `area-conversation.test.tsx`'s `keeps a failed draft to the area it belongs
  * to` holds down, and it is the whole of what the guard is *proved* to do.
  *
- * Area → wave is a different walk and has no twin test, because it cannot: the
- * area and wave routes are two sibling components under `rootRoute`, so that
+ * Area → track is a different walk and has no twin test, because it cannot: the
+ * area and track routes are two sibling components under `rootRoute`, so that
  * walk unmounts the panel and takes the reducer — draft and all — with it.
  * Nothing can leak across it, and nothing survives it either (#1225 is the
  * second half of that sentence: an unsent draft, and the idempotency key that
  * makes a retry a retry, are simply lost).
  *
- * #1189 is still why the field is `scopeId` and not `areaId`: a wave route now
+ * #1189 is still why the field is `scopeId` and not `areaId`: a track route now
  * holds drafts too, and one field carrying values from two id spaces is what
  * keeps the guard total should a future route ever hold both — a generalisation
  * that costs nothing and closes the shape rather than a claim about today's
  * routing.
  */
 type ConversationDraft = Readonly<{
-  /** The area or wave this draft belongs to. It is only ever visible there. */
+  /** The area or track this draft belongs to. It is only ever visible there. */
   scopeId: string;
   /** Identifies the draft to the server for as long as it exists; minted when
    *  the drawer opens and *never* per send. */
@@ -802,7 +802,7 @@ type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'error' | 'remedy'>>;
 
 /**
  * The card runtime, created once at boot and injected like every other
- * instance-owned dependency. The wave route mounts visible cards into the
+ * instance-owned dependency. The track route mounts visible cards into the
  * grid overlay through `host`.
  */
 export type CardRuntime = Readonly<{ registry: CardRegistry; host: CardHost }>;
@@ -826,7 +826,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     path: '/',
     /**
      * INV-APP-084 — the index loader primes **only** the areas list. The
-     * area → waves fan-out stays lazy inside the page (`useQueries` in
+     * area → tracks fan-out stays lazy inside the page (`useQueries` in
      * `useWorkspace`); awaiting it here would let one slow area block the
      * whole calendar behind the route commit.
      */
@@ -842,17 +842,17 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
 
   /* Declared after `areaRoute` and matched by its own literal segment: `/new`
      is not an area id, and TanStack prefers the more specific path. */
-  const newWaveRoute = createRoute({
+  const newTrackRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/area/$areaId/new',
-    component: () => <NewWaveRoute transport={transport} unauthorized={unauthorized} />,
+    component: () => <NewTrackRoute transport={transport} unauthorized={unauthorized} />,
   });
 
-  const waveRoute = createRoute({
+  const trackRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/wave/$waveId',
-    validateSearch: (search: Record<string, unknown>): WaveSearch => validateWaveSearch(search),
-    component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
+    path: '/track/$trackId',
+    validateSearch: (search: Record<string, unknown>): TrackSearch => validateTrackSearch(search),
+    component: () => <TrackRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
   /*
@@ -890,7 +890,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, areaRoute, newWaveRoute, waveRoute, settingsRoute,
+    indexRoute, areaRoute, newTrackRoute, trackRoute, settingsRoute,
     pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
@@ -919,7 +919,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 }
 
 /** Everything needed to say "is this still the draft I was working on?": the
- *  area or wave it belongs to and the key that is the identity of its attempt. */
+ *  area or track it belongs to and the key that is the identity of its attempt. */
 type DraftId = Readonly<{ scopeId: string; key: string }>;
 
 /**
@@ -997,7 +997,7 @@ function useConversationPanel(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
-  options?: { showWave?: boolean },
+  options?: { showTrack?: boolean },
 ) {
   /* One draft at a time, and it names the area it belongs to — see
      `ConversationDraft`. It shares a reducer with the drawer's target because
@@ -1014,7 +1014,7 @@ function useConversationPanel(
   const [creating, setCreating] = useState(false);
   /*
    * The conversation whose composer this route was asked to put the caret in
-   * — a just-created wave's spec row (#1211 S2), and nothing else.
+   * — a just-created track's spec row (#1211 S2), and nothing else.
    *
    * It has to be held here rather than read off the registry at render time,
    * because the request is cleared in the same commit that opens the row. Read
@@ -1048,7 +1048,7 @@ function useConversationPanel(
    * is held at a time.
    *
    * "Walking back" means within one route component — area → area. A draft
-   * written on a wave is never seen by an area for a blunter reason: the two are
+   * written on a track is never seen by an area for a blunter reason: the two are
    * separate route components, so the walk unmounted this hook and there is no
    * held draft left to filter (see `ConversationDraft`, and #1225). The test is
    * the same either way, and being the same is the point.
@@ -1109,10 +1109,10 @@ function useConversationPanel(
    * The condition is "the rows are loaded **and** contain this id", never
    * "the rows do not contain it, so clear". The list arrives a round trip
    * later than the request, and a request cleared while it was still empty is
-   * lost for good — the reader lands on the wave with the drawer shut and no
+   * lost for good — the reader lands on the track with the drawer shut and no
    * second chance. The registry is also tab-wide, so the id may belong to
-   * another wave entirely; that case is not this effect's to decide either, and
-   * the route clears it from outside (`WaveRoute`, and the failed-read fallback
+   * another track entirely; that case is not this effect's to decide either, and
+   * the route clears it from outside (`TrackRoute`, and the failed-read fallback
    * beside the rows query).
    */
   useEffect(() => {
@@ -1166,10 +1166,10 @@ function useConversationPanel(
   }, [open, store]);
 
   /*
-   * The `+` opens a conversation. On a wave that is the wave's one spec card,
+   * The `+` opens a conversation. On a track that is the track's one spec card,
    * which already exists; on an area it is a draft, because the card is minted
    * by the first message and there is nothing to open until then. On Today
-   * there is neither a wave nor an area to attach one to, so the action is not
+   * there is neither a track nor an area to attach one to, so the action is not
    * offered rather than offered and refused.
    */
   const start = () => {
@@ -1218,19 +1218,19 @@ function useConversationPanel(
    * `/new` in the composer runs `start` — the very callback the `+` runs — and
    * it is offered on exactly one of the three sources.
    *
-   * `'elsewhere'` (Today): no `+` either. There is no wave and no area to
+   * `'elsewhere'` (Today): no `+` either. There is no track and no area to
    * attach a conversation to, so the action is not offered rather than offered
    * and refused. Strict parity, and it is what `action:` below already decides.
    *
-   * `'card'` (a wave route): the `+` is offered, and `/new` is **not**. This is
-   * the one place the two differ, deliberately. On a wave there is exactly one
+   * `'card'` (a track route): the `+` is offered, and `/new` is **not**. This is
+   * the one place the two differ, deliberately. On a track there is exactly one
    * spec card, so `start()` there does not create anything — it opens the row,
    * and from inside the drawer that row is the one already open, which makes
    * the command a no-op. A menu entry named `New conversation` that reopens the
    * conversation you are reading is a lie told by a control, and the honest
    * `+` gets away with it only because it is pressed from *outside* the drawer,
    * where "bring that one up" is a real outcome. Nothing is lost by omitting
-   * it: the wave route has no second conversation to start.
+   * it: the track route has no second conversation to start.
    *
    * `'rows'` (an area route): offered, and this is the case the whole thing
    * exists for — the `+` mints a draft, the drawer hides the panel column the
@@ -1268,7 +1268,7 @@ function useConversationPanel(
    *
    * So the question asked is the exact one: the card id is a pure public
    * function of `(scopeId, key)` — `areaConversationCardId` on an area and
-   * `waveConversationCardId` on a wave, each golden-tested against the server's
+   * `trackConversationCardId` on a track, each golden-tested against the server's
    * own golden and each hashing its **own namespace**, which is what stops one
    * `(id, key)` pair naming one card from two endpoints. The route supplies the
    * derivation (`source.derivedCardId`); this asks it. So the row this attempt
@@ -1486,21 +1486,21 @@ function useConversationPanel(
       <ChatList
         conversations={store.conversations}
         activeId={open?.id ?? null}
-        showWave={options?.showWave ?? true}
+        showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {
           /* Only a route that cannot hold the drawer sends the reader
              somewhere else. A `'rows'` route holds one for every row it lists,
-             and the wave it would navigate to is hidden. */
+             and the track it would navigate to is hidden. */
           if (source.kind !== 'elsewhere') {
             moveDrawerTo({ kind: 'open-row', id: conversation.id });
             return;
           }
           registry.requestOpen(conversation.id);
-          go({ name: 'wave', waveId: conversation.waveId });
+          go({ name: 'track', trackId: conversation.trackId });
         }}
       />
     ),
-    /* The module head's action, composed by the page — same slot the WAVES and
+    /* The module head's action, composed by the page — same slot the TRACKS and
        CARDS modules already use, which is why this needed no new mechanism. */
     action: source.kind === 'elsewhere'
       ? undefined
@@ -1549,9 +1549,9 @@ function useConversationPanel(
               /* Read at mount only, which is what makes it one-shot: the
                  composer mounts when the drawer opens on a row, and the flag
                  is dropped when it closes (the effect beside
-                 `composerFocusFor`). #1211 S2 — a wave created from the `+`
+                 `composerFocusFor`). #1211 S2 — a track created from the `+`
                  lands with its spec conversation open and the caret in it,
-                 because the reader's first sentence is the wave's intent. */
+                 because the reader's first sentence is the track's intent. */
               focusOnMount={composerFocusFor === open.id}
               disabled={store.sending}
               onSend={(text) => store.send(open.id, text)}
@@ -1617,7 +1617,7 @@ function useConversationPanel(
               *
               * `Reset conversation` used to be here, one line under the last
               * reply. It is gone from the product (#1139), not moved: an area's
-              * chat wave holds as many conversations as you start, so "empty
+              * chat track holds as many conversations as you start, so "empty
               * this one in place" was never the answer to a thread going
               * wrong — opening another one is, and the old thread stays
               * readable in the list. The endpoint behind it is still served;
@@ -1635,14 +1635,14 @@ function useConversationPanel(
 function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const workspace = useWorkspace(transport, unauthorized);
   const go = useGo();
-  const waveMutations = useWaveMutations(transport, unauthorized);
-  const deletion = useDeleteConfirm((waveId, signal) => {
-    const wave = workspace.waves.find((candidate) => candidate.id === waveId);
-    if (wave === undefined) throw new Error('This wave is no longer available.');
-    return waveMutations.remove(wave.id, wave.areaId, signal);
+  const trackMutations = useTrackMutations(transport, unauthorized);
+  const deletion = useDeleteConfirm((trackId, signal) => {
+    const track = workspace.tracks.find((candidate) => candidate.id === trackId);
+    if (track === undefined) throw new Error('This track is no longer available.');
+    return trackMutations.remove(track.id, track.areaId, signal);
   });
-  /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
-     a card, and cards belong to waves), and this route has no single wave in
+  /* No `+`: a conversation attaches to a track (the kernel's sessions hang off
+     a card, and cards belong to tracks), and this route has no single track in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
   const chat = useConversationPanel(transport, unauthorized, {
@@ -1672,8 +1672,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * keeping exactly that off the render path).
    *
    * A success does not refresh the document here. The agent's write arrives
-   * later as `wave.report_edited`, which the event bridge turns into
-   * `['today-launchpad']` and `['wave', id]` — refetching the report at 200
+   * later as `track.report_edited`, which the event bridge turns into
+   * `['today-launchpad']` and `['track', id]` — refetching the report at 200
    * would only fetch the OLD one, and it would hide a broken invalidation
    * chain behind a lucky refresh.
    */
@@ -1690,28 +1690,28 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       : <span role="alert" data-nc-role="hint">{classified.message}</span>;
   }, [summary.failure]);
   const launchpad = launchpadQuery.data;
-  const launchpadWaveId = launchpad?.wave_id ?? '';
-  /* The document itself comes from the ordinary wave detail — the resolve
-     carries no `report_card_id` because `readWaveReport` locates the card by
-     `kind === 'wave-report'` and that field would have no consumer (§5.1).
+  const launchpadTrackId = launchpad?.track_id ?? '';
+  /* The document itself comes from the ordinary track detail — the resolve
+     carries no `report_card_id` because `readTrackReport` locates the card by
+     `kind === 'track-report'` and that field would have no consumer (§5.1).
 
-     Gated on the server's own answer, not merely on having a wave id: when
+     Gated on the server's own answer, not merely on having a track id: when
      `report_has_noninitial_content` is false there is nothing to draw, so the
      page load stays at one request. It also keeps the states below honest —
      every one of them is then about a document the reader is actually owed. */
   const launchpadHasContent = launchpad?.report_has_noninitial_content === true;
   const launchpadDetailQuery = useQuery({
-    ...waveDetailQueryOptions(transport, launchpadWaveId, unauthorized),
-    enabled: launchpadWaveId !== '' && launchpadHasContent,
+    ...trackDetailQueryOptions(transport, launchpadTrackId, unauthorized),
+    enabled: launchpadTrackId !== '' && launchpadHasContent,
   });
   const launchpadReport = useMemo(
-    () => readWaveReport(launchpadDetailQuery.data?.cards ?? []),
+    () => readTrackReport(launchpadDetailQuery.data?.cards ?? []),
     [launchpadDetailQuery.data],
   );
   /*
    * Three states, three answers — and they must not be collapsed.
    *
-   * `readWaveReport(...) === null` is true in all three: while the detail is
+   * `readTrackReport(...) === null` is true in all three: while the detail is
    * in flight (which is EVERY page load, because this query cannot start until
    * the resolve has answered), when the detail read fails, and when the
    * payload genuinely will not decode. Handing all three to `ReportDocument`'s
@@ -1738,7 +1738,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
              so the in-flight and read-failed states are both behind us. What
              remains is "this build could not make a report out of what
              arrived" — almost always an undecodable payload, but also a 200
-             carrying no `kind === 'wave-report'` card at all. That second
+             carrying no `kind === 'track-report'` card at all. That second
              shape is effectively unreachable (the card is `deletable: false`)
              and its wording would be slightly off if it happened; it is not
              worth a third branch, but it is worth not claiming a universal the
@@ -1753,36 +1753,36 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         />
       );
   const workspaceError = workspace.areasError
-    ?? workspace.waveErrorsByArea.values().next().value ?? null;
+    ?? workspace.trackErrorsByArea.values().next().value ?? null;
   if (workspace.areasLoading
-    || (workspace.waves.length === 0 && [...workspace.wavesLoadingByArea.values()].some(Boolean))) return null;
+    || (workspace.tracks.length === 0 && [...workspace.tracksLoadingByArea.values()].some(Boolean))) return null;
   return (
     <>
     {workspaceError !== null && <ErrorBox
       message={workspaceError.message}
       onRetry={() => {
         workspace.retryAreas(); workspace.retryOverlays();
-        for (const area of workspace.areas) workspace.retryWaves(area.id);
+        for (const area of workspace.areas) workspace.retryTracks(area.id);
       }}
     />}
-    {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+    {workspace.overlaysError !== null && <ErrorBox message={`Track activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
     {deletion.feedback.error !== null && <div role="alert" data-nc-error-box="">
       <span>{deletion.feedback.error}</span>
       <button type="button" data-nc-action="tertiary" onClick={deletion.feedback.clear}>Dismiss</button>
     </div>}
     <TodayPage
-      waves={workspace.waves}
+      tracks={workspace.tracks}
       areas={workspace.areas}
-      // The row belongs to features/wave and Today may not import a sibling
+      // The row belongs to features/track and Today may not import a sibling
       // domain, so the composition layer injects it — the same reason AreaPage
-      // takes its list as a prop. One WaveRow still, per INV-DUP-009.
-      renderWaveRow={(wave, options) => (
-        <WaveRow
-          wave={wave}
+      // takes its list as a prop. One TrackRow still, per INV-DUP-009.
+      renderTrackRow={(track, options) => (
+        <TrackRow
+          track={track}
           variant={options.variant}
           hourLabel={options.hourLabel}
           areaName={options.areaName}
-          onOpen={(waveId) => go({ name: 'wave', waveId })}
+          onOpen={(trackId) => go({ name: 'track', trackId })}
           /* The panel variant only — that is the calendar's agenda, inside the
              card, where every other list already puts a delete under the status
              dot. The main column's sections stay read-only: they are the day's
@@ -1810,9 +1810,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     />
     <ConfirmDialog
       open={deletion.open}
-      title={DELETE_WAVE_COPY.title}
-      description={DELETE_WAVE_COPY.description}
-      confirmLabel={DELETE_WAVE_COPY.confirmLabel}
+      title={DELETE_TRACK_COPY.title}
+      description={DELETE_TRACK_COPY.description}
+      confirmLabel={DELETE_TRACK_COPY.confirmLabel}
       confirmBusyLabel="Deleting…"
       confirmState={deletion.pending ? 'busy' : 'ready'}
       onConfirm={deletion.confirm}
@@ -1824,7 +1824,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
 }
 
 /**
- * `/area/$areaId/new` — the page you start a wave on (#1211).
+ * `/area/$areaId/new` — the page you start a track on (#1211).
  *
  * It owns the whole create, which used to be split between the shell (the POST,
  * the 409, the navigation) and a dialog inside it. There is no reason for the
@@ -1834,8 +1834,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  *
  * ## What it does NOT do yet: deliver the first message (#1299)
  *
- * The composer's sentence is the wave's *intent*, and its destination is the
- * wave's spec card as the first message. That is deliberately **not** done
+ * The composer's sentence is the track's *intent*, and its destination is the
+ * track's spec card as the first message. That is deliberately **not** done
  * here, and the reason is worth stating so nobody adds it back casually.
  *
  * Doing it from this page takes three writes — create, read the detail to find
@@ -1843,7 +1843,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  * sequence cannot be made sound from a component:
  *
  *  * the reader can navigate away mid-flight; the requests are not cancelled,
- *    the route unmounts, and the wave exists with the sentence lost and nothing
+ *    the route unmounts, and the track exists with the sentence lost and nothing
  *    said; and
  *  * `POST /api/cards/{id}/spec/input` carries no idempotency key, and the
  *    server enqueues *before* it writes audit and responds — so a lost response
@@ -1851,27 +1851,27 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  *
  * Neither is a defect in this file; both are what running a distributed
  * transaction in a component costs. The kernel already has the right shape —
- * `POST /api/waves/{id}/conversations` takes a first message with a required
+ * `POST /api/tracks/{id}/conversations` takes a first message with a required
  * `Idempotency-Key` and validates it *before* anything is minted — and #1299
- * gives `POST /api/waves` the same treatment. When it lands this becomes one
+ * gives `POST /api/tracks` the same treatment. When it lands this becomes one
  * write and both failure classes stop existing rather than being defended
  * against.
  *
  * Until then the sentence is not sent, the form says so where the reader can
- * see it before pressing anything, and this route lands them on the wave with
+ * see it before pressing anything, and this route lands them on the track with
  * the spec conversation **already open and holding the caret** so saying it
  * again is one keystroke. That landing is stated on the navigation itself
  * (`openSpec`), and its only effect is a drawer.
  *
  * The create posts **no title** — the kernel stores the empty string and the
- * spec agent names the wave through `calm.wave.rename` once it knows what the
+ * spec agent names the track through `calm.track.rename` once it knows what the
  * work is (#1211 S1).
  */
-function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const areaId = useRouteParam('/area/');
   const workspace = useWorkspace(transport, unauthorized);
-  const waveMutations = useWaveMutations(transport, unauthorized);
-  const templates = useWaveTemplates(transport, unauthorized);
+  const trackMutations = useTrackMutations(transport, unauthorized);
+  const templates = useTrackTemplates(transport, unauthorized);
   const go = useGo();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1897,29 +1897,29 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
    * Landing in the spec conversation is stated on the **navigation**, not read
    * here (#1211 S2, `useSpecOpenIntent`).
    *
-   * This route cannot name the card to open — `POST /api/waves` answers with a
-   * `Wave`, and the spec card arrives a route later with the wave detail — so
+   * This route cannot name the card to open — `POST /api/tracks` answers with a
+   * `Track`, and the spec card arrives a route later with the track detail — so
    * an earlier shape of this slice read the detail here, raced it against a
    * deadline, and wrote the card id into the conversation registry before
    * navigating. That registry outlives every route, which is what made the
    * write unsound in a way a deadline cannot fix: a landing that never reaches
-   * the wave (a failing detail read, an error box) leaves the request standing,
+   * the track (a failing detail read, an error box) leaves the request standing,
    * and it springs a drawer open on some later visit nobody asked for.
    *
    * `openSpec` puts the intent on the history entry this navigation creates, so
-   * it is scoped to exactly one landing, is redeemed by the wave route body
+   * it is scoped to exactly one landing, is redeemed by the track route body
    * against its own cards, and cannot be seen — or cleared — by any other
-   * route. `focusComposer` comes with it: the wave is unnamed and empty, and
+   * route. `focusComposer` comes with it: the track is unnamed and empty, and
    * the reader's first sentence is its intent, so the caret has to be where
    * they can type it.
    */
-  const submit = (draft: NewWaveDraft) => {
+  const submit = (draft: NewTrackDraft) => {
     if (areaId === undefined) return;
     setCreating(true);
     setError(null);
-    void waveMutations.create({
+    void trackMutations.create({
       area_id: areaId,
-      /* No `title` (#1211): the sentence the reader typed is the wave's intent,
+      /* No `title` (#1211): the sentence the reader typed is the track's intent,
          not its name. It is not put on the wire at all yet — see the #1299 note
          on this route — which is why the landing opens the spec composer. */
       theme: readHostThemeRgb(),
@@ -1935,18 +1935,18 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
        * whenever it is not — so the omitted-flag default is a request that
        * fails for every folder the user has not already bound. `true` is what
        * "I picked this folder for this area" means, and it is a no-op when this
-       * area already covers the path (`waves.rs`'s same-area arm), so a second
-       * wave in the same repository does not conflict with the first.
+       * area already covers the path (`tracks.rs`'s same-area arm), so a second
+       * track in the same repository does not conflict with the first.
        */
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
-    }).then((wave) => {
+    }).then((track) => {
       /*
        * And only if the reader is still here.
        *
-       * `POST /api/waves` can be slow, and nothing stops them pressing Back or
+       * `POST /api/tracks` can be slow, and nothing stops them pressing Back or
        * picking a rail row while it is in flight. This route unmounts, but the
        * promise continuation still runs — and an unguarded `go()` yanked them
-       * off the page they had just chosen and onto the wave. The wave is
+       * off the page they had just chosen and onto the track. The track is
        * created either way and is in the rail; what they lose by not being
        * navigated is nothing, and what they lose by being navigated is their
        * own last action.
@@ -1960,7 +1960,7 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
        * a real "is this surface current" signal rather than a mount flag.
        */
       if (!liveRef.current) return;
-      go({ name: 'wave', waveId: wave.id, openSpec: true });
+      go({ name: 'track', trackId: track.id, openSpec: true });
     }).catch((failure: unknown) => {
       const conflict = folderConflictOf(failure);
       if (conflict !== null) {
@@ -1970,13 +1970,13 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
         setError(folderConflictMessage(conflict, owner?.name ?? null));
         return;
       }
-      setError(failure instanceof ApiError ? failure.message : 'Could not create the wave.');
+      setError(failure instanceof ApiError ? failure.message : 'Could not create the track.');
     }).finally(() => { setCreating(false); });
   };
 
   if (areaId === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
   return (
-    <NewWaveForm
+    <NewTrackForm
       submitting={creating}
       error={error}
       templates={templates.templates}
@@ -1991,23 +1991,23 @@ function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
   const areaId = useRouteParam('/area/');
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
-  const waveMutations = useWaveMutations(transport, unauthorized);
-  const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, areaId ?? '', signal));
+  const trackMutations = useTrackMutations(transport, unauthorized);
+  const trackDeletion = useDeleteConfirm((trackId, signal) => trackMutations.remove(trackId, areaId ?? '', signal));
   const go = useGo();
   /* #1211 — the `+` navigates to `/area/{id}/new`; there is no dialog. Two
-     surfaces reach it — every area row's `+` in the rail and this page's WAVES
+     surfaces reach it — every area row's `+` in the rail and this page's TRACKS
      module head — and the rail is a sibling of the outlet, so the callback is
      a context rather than a prop. This route only names the area whose id the
-     new-wave page will post. */
-  const requestNewWave = useRequestNewWave();
+     new-track page will post. */
+  const requestNewTrack = useRequestNewTrack();
   /*
    * An area's conversations are its own, listed by the server (#1098). They are
-   * plain-chat cards on the area's hidden chat wave, so nothing here reads the
-   * session registry and nothing here is written back into it: the wave they
+   * plain-chat cards on the area's hidden chat track, so nothing here reads the
+   * session registry and nothing here is written back into it: the track they
    * belong to is not a place the reader can be sent.
    *
-   * The list is intentionally not the waves' spec conversations any more. Those
-   * belong to a wave and are read on that wave's page; mixing them in would put
+   * The list is intentionally not the tracks' spec conversations any more. Those
+   * belong to a track and are read on that track's page; mixing them in would put
    * rows in this panel whose drawer this route cannot open.
    */
   const conversationsQuery = useQuery({
@@ -2021,22 +2021,22 @@ function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
     scopeId: areaId ?? '',
     rows: areaConversations,
     /* Null, and this is the one gate on this route: every row here lives on the
-       area's hidden chat wave, and Today navigates to `conversation.waveId`
+       area's hidden chat track, and Today navigates to `conversation.trackId`
        when a row is opened. */
     rememberOn: null,
     derivedCardId: (idempotencyKey) => areaConversationCardId(areaId ?? '', idempotencyKey),
     scopeOf: (conversationId) => {
       const row = areaConversations.find((candidate) => candidate.id === conversationId);
-      /* No `title`: the chat wave is hidden, so there is no wave name to pass
-         down, and `showWave: false` below is what keeps the rows honest. */
+      /* No `title`: the chat track is hidden, so there is no track name to pass
+         down, and `showTrack: false` below is what keeps the rows honest. */
       return row === undefined ? null : {
-        id: row.waveId, cardId: row.id, cardTitle: row.title,
+        id: row.trackId, cardId: row.id, cardTitle: row.title,
         updatedAt: row.updatedAt, kind: row.kind, state: row.state,
       };
     },
     create: conversationMutations.create,
     refresh: conversationMutations.refresh,
-  }, { showWave: false });
+  }, { showTrack: false });
 
   const area = areaId === undefined ? undefined : areaOf(areaId, workspace.areas);
   if (area === undefined) {
@@ -2047,21 +2047,21 @@ function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
     if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
     return <PendingRoute label="Area" owner="features/area" missing />;
   }
-  const waveError = workspace.waveErrorsByArea.get(area.id);
-  if (waveError !== null && waveError !== undefined && !workspace.wavesByArea.has(area.id)) return <ErrorBox
-    message={waveError.message}
-    onRetry={() => { workspace.retryWaves(area.id); workspace.retryOverlays(); }}
+  const trackError = workspace.trackErrorsByArea.get(area.id);
+  if (trackError !== null && trackError !== undefined && !workspace.tracksByArea.has(area.id)) return <ErrorBox
+    message={trackError.message}
+    onRetry={() => { workspace.retryTracks(area.id); workspace.retryOverlays(); }}
   />;
-  if (workspace.wavesLoadingByArea.get(area.id) || !workspace.wavesByArea.has(area.id)) return null;
-  const waves = workspace.wavesByArea.get(area.id) ?? [];
+  if (workspace.tracksLoadingByArea.get(area.id) || !workspace.tracksByArea.has(area.id)) return null;
+  const tracks = workspace.tracksByArea.get(area.id) ?? [];
 
   return (
     <>
-      {waveError !== null && waveError !== undefined && <ErrorBox
-        message={waveError.message}
-        onRetry={() => { workspace.retryWaves(area.id); workspace.retryOverlays(); }}
+      {trackError !== null && trackError !== undefined && <ErrorBox
+        message={trackError.message}
+        onRetry={() => { workspace.retryTracks(area.id); workspace.retryOverlays(); }}
       />}
-      {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+      {workspace.overlaysError !== null && <ErrorBox message={`Track activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
       {/* Without this the panel would render "No conversations yet." over a
           failed read, which is a different sentence from "we could not look". */}
       {conversationsQuery.error instanceof Error && <ErrorBox
@@ -2070,10 +2070,10 @@ function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
       />}
       <AreaPage
         area={area}
-        waveCount={waves.length}
+        trackCount={tracks.length}
         /*
          * Always empty, and honestly so: the kernel has no area-level document.
-         * `wave-report` is a card, and cards belong to waves — there is no
+         * `track-report` is a card, and cards belong to tracks — there is no
          * area-report card kind, no column, no writer. Rendering the empty
          * state here is not a placeholder for a feature being built; it is this
          * column saying what it would hold, which is what the reader needs
@@ -2083,82 +2083,82 @@ function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
           lead="This area has no document yet."
           hints={[
             'An area document is written by hand — notes, decisions, links you want on the way in.',
-            'Each wave keeps its own report, which the agent writes as it works.',
+            'Each track keeps its own report, which the agent writes as it works.',
           ]}
         />}
         onRenameArea={(name) => areaMutations.rename(area.id, { name }).then(() => undefined)}
         onDeleteArea={(signal) => areaMutations.remove(area.id, signal).then(() => {
           if (!signal.aborted) go({ name: 'today' });
         })}
-        onRequestNewWave={() => requestNewWave(area.id)}
+        onRequestNewTrack={() => requestNewTrack(area.id)}
         conversationList={chat.list}
         conversationAction={chat.action}
-        waveList={(
-          <WaveList
-            waves={waves}
+        trackList={(
+          <TrackList
+            tracks={tracks}
             areas={workspace.areas}
             variant="panel"
-            emptyMessage="This area is quiet. Start a wave."
-            onOpenWave={(waveId) => go({ name: 'wave', waveId })}
+            emptyMessage="This area is quiet. Start a track."
+            onOpenTrack={(trackId) => go({ name: 'track', trackId })}
             /* No pin here. The trailing column in a panel row holds exactly one
                thing at a time — the status dot, becoming the delete on hover —
                and pinning already has a permanent home in the rail, which is
-               also the only place a pinned wave surfaces. */
-            onDeleteWave={waveDeletion.request}
+               also the only place a pinned track surfaces. */
+            onDeleteTrack={trackDeletion.request}
           />
         )}
       />
       <ConfirmDialog
-        open={waveDeletion.open}
-        title={DELETE_WAVE_COPY.title}
-        description={DELETE_WAVE_COPY.description}
-        confirmLabel={DELETE_WAVE_COPY.confirmLabel}
+        open={trackDeletion.open}
+        title={DELETE_TRACK_COPY.title}
+        description={DELETE_TRACK_COPY.description}
+        confirmLabel={DELETE_TRACK_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
-        confirmState={waveDeletion.pending ? 'busy' : 'ready'}
-        onConfirm={waveDeletion.confirm}
-        onCancel={waveDeletion.cancel}
+        confirmState={trackDeletion.pending ? 'busy' : 'ready'}
+        onConfirm={trackDeletion.confirm}
+        onCancel={trackDeletion.cancel}
       />
-      <OperationFeedback feedback={waveDeletion.feedback} />
+      <OperationFeedback feedback={trackDeletion.feedback} />
       {chat.drawer}
     </>
   );
 }
 
 /*
- * Split in two on purpose. The conversation panel's `+` needs the wave in
- * scope, and the wave is only known after the detail query resolves and three
+ * Split in two on purpose. The conversation panel's `+` needs the track in
+ * scope, and the track is only known after the detail query resolves and three
  * early returns have run — a hook cannot live below those. So this half owns
  * the fetching and the returns, and the half below owns the hooks that need a
- * wave.
+ * track.
  */
-function WaveRoute({ transport, unauthorized, cardRuntime }: {
+function TrackRoute({ transport, unauthorized, cardRuntime }: {
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; cardRuntime: CardRuntime;
 }) {
-  const waveId = useRouteParam('/wave/');
+  const trackId = useRouteParam('/track/');
   const workspace = useWorkspace(transport, unauthorized);
   const registry = useConversationRegistry();
   const detail = useQuery({
-    ...waveDetailQueryOptions(transport, waveId ?? '', unauthorized),
-    enabled: waveId !== undefined,
+    ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized),
+    enabled: trackId !== undefined,
   });
   /*
-   * The card Today asked for, if this wave has it and it is a conversation card
+   * The card Today asked for, if this track has it and it is a conversation card
    * at all. **Both** conversation markers, not just the spec one (#1189 §5.2):
    * an assistant card is a `codex` card carrying `harness_profile: 'assistant'`,
    * and while this predicate said `isSpecHarnessPayload` alone every assistant
    * request answered `undefined` here and was cleared by the effect below —
-   * before `WaveRouteBody`'s conversation list had even loaded. The Today →
+   * before `TrackRouteBody`'s conversation list had even loaded. The Today →
    * assistant path was cut here, one level above the effect that consumes it,
    * and no change down there could have reached it.
    *
-   * Reading the markers off the wave detail is also what makes the consuming
+   * Reading the markers off the track detail is also what makes the consuming
    * effect's "wait for the rows" honest: the card and the row are two views of
    * one thing, and the card arrives with the route.
    */
   const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
     && card.kind === 'codex'
     && (isSpecHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)));
-  const detailMatchesRoute = waveId !== undefined && detail.data?.wave.id === waveId;
+  const detailMatchesRoute = trackId !== undefined && detail.data?.track.id === trackId;
   useEffect(() => {
     if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
     if (!detailMatchesRoute || requestedCard === undefined) registry.clearOpenRequest();
@@ -2167,50 +2167,50 @@ function WaveRoute({ transport, unauthorized, cardRuntime }: {
   if (!detail.data) {
     if (detail.isLoading || detail.isFetching) return null;
     if (detail.error instanceof Error) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
-    return <PendingRoute label="Wave" owner="features/wave" missing />;
+    return <PendingRoute label="Track" owner="features/track" missing />;
   }
-  // `detail.data` can still be the previously-viewed wave while this one
-  // fetches; rendering it under this URL would show the wrong wave.
-  if (waveId !== undefined && detail.data.wave.id !== waveId) return null;
+  // `detail.data` can still be the previously-viewed track while this one
+  // fetches; rendering it under this URL would show the wrong track.
+  if (trackId !== undefined && detail.data.track.id !== trackId) return null;
 
-  const detailActivity = waveActivityFrom(detail.data.wave.id, detail.data.overlays);
-  const wave = toWave(detail.data.wave, detailActivity);
+  const detailActivity = trackActivityFrom(detail.data.track.id, detail.data.overlays);
+  const track = toTrack(detail.data.track, detailActivity);
 
   return (
-    <WaveRouteBody
-      key={wave.id}
+    <TrackRouteBody
+      key={track.id}
       transport={transport}
       unauthorized={unauthorized}
-      wave={wave}
-      area={areaOf(wave.areaId, workspace.areas)}
+      track={track}
+      area={areaOf(track.areaId, workspace.areas)}
       cards={detail.data.cards}
       cardRuntime={cardRuntime}
     />
   );
 }
 
-function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime }: {
+function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRuntime }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
-  wave: Wave;
+  track: Track;
   area: Area | undefined;
-  cards: WaveDetailWire['cards'];
+  cards: TrackDetailWire['cards'];
   cardRuntime: CardRuntime;
 }) {
-  const waveMutations = useWaveMutations(transport, unauthorized);
-  const conversationMutations = useWaveConversationMutations(transport, wave.id, unauthorized);
+  const trackMutations = useTrackMutations(transport, unauthorized);
+  const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
   const go = useGo();
-  const goSameWave = useGoSameWave();
-  const { openPanel, closePanel } = useWavePanelNavigation();
+  const goSameTrack = useGoSameTrack();
+  const { openPanel, closePanel } = useTrackPanelNavigation();
   const requestedCardId = useRouteCardId();
   /*
    * The URL is read, validated and turned into props **here**, in `app/**`:
-   * `features-no-app` is an error-level dependency-cruiser rule, so `WavePage`
+   * `features-no-app` is an error-level dependency-cruiser rule, so `TrackPage`
    * cannot reach the router at all and stays a pure renderer (#1191 §2.4).
    *
    * A live `?card=` wins over `?panel=`. The two describe one surface and
-   * `buildWaveSearch` already refuses to emit both, so this only decides what a
+   * `buildTrackSearch` already refuses to emit both, so this only decides what a
    * hand-edited URL means — and it means the card, the older deep-linkable one.
    */
   const routePanel = useRoutePanel();
@@ -2219,13 +2219,13 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
   const compactViewport = useCompactViewport();
   /*
    * `?from=` is a property of *this* visit to the report, so every move that
-   * stays on this wave has to hand it back explicitly — `go` clears whatever it
-   * is not given (#1191 §1.3). Crossing to another wave drops it, because the
-   * return path belonged to the wave being left.
+   * stays on this track has to hand it back explicitly — `go` clears whatever it
+   * is not given (#1191 §1.3). Crossing to another track drops it, because the
+   * return path belonged to the track being left.
    */
   const routeFrom = useRouteFrom() ?? undefined;
   const cardRegistry = cardRuntime.registry;
-  // `showWave: false` — on a wave's own page the wave's name is the page title,
+  // `showTrack: false` — on a track's own page the track's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
   // The same predicate the spec entry resolves by (`INV-CARD-182`), imported
   // rather than copied: hiding the card from CARDS and giving it a drawer are
@@ -2233,25 +2233,25 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
   const specCard = cards.find((card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload));
   const registry = useConversationRegistry();
   /*
-   * ── Redeeming "open the spec conversation of the wave I just created" ────
+   * ── Redeeming "open the spec conversation of the track I just created" ────
    *
    * The intent rides on the history entry the create navigated to
-   * (`useSpecOpenIntent`), so `armed` is already "this wave, this visit": no
+   * (`useSpecOpenIntent`), so `armed` is already "this track, this visit": no
    * other route body can see it, and there is no global slot for one of them
    * to clear out from under another. What is left here is the half only this
-   * component knows — which card the intent names. `POST /api/waves` answers
-   * with a `Wave`, and the spec card's id exists only once the detail has
+   * component knows — which card the intent names. `POST /api/tracks` answers
+   * with a `Track`, and the spec card's id exists only once the detail has
    * landed, which is here.
    *
-   * `disarm()` before the open, unconditionally: a wave with no spec card has
+   * `disarm()` before the open, unconditionally: a track with no spec card has
    * nothing to open, and an intent left armed on this entry would fire on the
    * next visit to it (the Back button reaches one).
    *
-   * `focusComposer` is what makes the landing complete: the wave is unnamed
+   * `focusComposer` is what makes the landing complete: the track is unnamed
    * and empty, and the reader's first sentence *is* the intent, so the caret
    * has to be where they can type it.
    */
-  const specOpenIntent = useSpecOpenIntent(wave.id);
+  const specOpenIntent = useSpecOpenIntent(track.id);
   useEffect(() => {
     if (!specOpenIntent.armed) return;
     specOpenIntent.disarm();
@@ -2259,15 +2259,15 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     registry.requestOpen(specCard.id, { focusComposer: true });
   }, [registry, specCard, specOpenIntent]);
   /*
-   * The wave's assistant conversations (#1189). Its own endpoint, its own list;
+   * The track's assistant conversations (#1189). Its own endpoint, its own list;
    * the spec card is deliberately not in it — the server's list predicate is
    * `role == Assistant` — so the row for it is injected below.
    */
-  const conversationsQuery = useQuery(waveConversationsQueryOptions(transport, wave.id, unauthorized));
+  const conversationsQuery = useQuery(trackConversationsQueryOptions(transport, track.id, unauthorized));
   const assistantRows = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
-  const waveTitle = waveDisplayTitle(wave.title);
+  const trackTitle = trackDisplayTitle(track.title);
   /*
-   * The wave's opening conversation, derived from the spec card rather than
+   * The track's opening conversation, derived from the spec card rather than
    * listed — it is the one row on this route the server does not send.
    *
    * `updatedAt` comes from the card's own `updated_at`. That is the same
@@ -2288,26 +2288,26 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    */
   const specRow = useMemo<Conversation | null>(() => specCard === undefined ? null : {
     id: specCard.id,
-    waveId: wave.id,
-    waveTitle,
+    trackId: track.id,
+    trackTitle,
     title: specCard.title,
     kind: 'shared-spec',
     state: null,
     updatedAt: specCard.updated_at,
-  }, [specCard, wave.id, waveTitle]);
-  /* Every row carries the wave's title, so a row that reaches Today can say
-     where it is. On this page `showWave: false` hides it again.
+  }, [specCard, track.id, trackTitle]);
+  /* Every row carries the track's title, so a row that reaches Today can say
+     where it is. On this page `showTrack: false` hides it again.
      *
      * Unconditionally, and *before* the spec row is considered: whether this
-     * wave happens to have a spec card has nothing to do with whether its
+     * track happens to have a spec card has nothing to do with whether its
      * assistant rows know where they live, and while the two were one
      * expression the `specRow === null` arm returned the rows untouched. A
-     * reader who had only ever visited waves without a spec card then saw a
-     * Today list of rows reading `Assistant` with no wave named on any of
-     * them — the waves that most need the `+` (§5.3) losing the label first. */
+     * reader who had only ever visited tracks without a spec card then saw a
+     * Today list of rows reading `Assistant` with no track named on any of
+     * them — the tracks that most need the `+` (§5.3) losing the label first. */
   const placedRows = useMemo(
-    () => assistantRows.map((row) => ({ ...row, waveTitle })),
-    [assistantRows, waveTitle],
+    () => assistantRows.map((row) => ({ ...row, trackTitle })),
+    [assistantRows, trackTitle],
   );
   const rows = useMemo<readonly Conversation[]>(
     () => specRow === null ? placedRows : [specRow, ...placedRows],
@@ -2317,8 +2317,8 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    * `'rows'`, unconditionally — no longer `'card'` when a spec card exists and
    * `'elsewhere'` when it does not (§5.3).
    *
-   * The branch that is gone took the `+` away from exactly the waves that need
-   * it most: a wave with no spec card had no conversation at all and no way to
+   * The branch that is gone took the `+` away from exactly the tracks that need
+   * it most: a track with no spec card had no conversation at all and no way to
    * start one. The list being empty is a state this panel already renders, and
    * an empty list with a `+` over it is the whole feature.
    */
@@ -2327,55 +2327,55 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     unauthorized,
     {
       kind: 'rows',
-      scopeId: wave.id,
+      scopeId: track.id,
       rows,
-      /* Unlike an area's, these rows are on a wave the reader can be sent to —
+      /* Unlike an area's, these rows are on a track the reader can be sent to —
          this very route — so Today may hold and open them. The store checks
-         each row's `waveId` against this, so a row from anywhere else is not
+         each row's `trackId` against this, so a row from anywhere else is not
          remembered whatever put it in the list. */
-      rememberOn: wave.id,
-      derivedCardId: (idempotencyKey) => waveConversationCardId(wave.id, idempotencyKey),
+      rememberOn: track.id,
+      derivedCardId: (idempotencyKey) => trackConversationCardId(track.id, idempotencyKey),
       scopeOf: (conversationId) => {
         /* The spec row first: it is not in `assistantRows`, and without this
-           arm the one conversation a wave has always had would stop opening. */
+           arm the one conversation a track has always had would stop opening. */
         if (specCard !== undefined && conversationId === specCard.id) {
           return {
-            id: wave.id, title: waveTitle, cardId: specCard.id,
+            id: track.id, title: trackTitle, cardId: specCard.id,
             cardTitle: specCard.title, updatedAt: specCard.updated_at,
             kind: 'shared-spec', state: null,
           };
         }
         const row = assistantRows.find((candidate) => candidate.id === conversationId);
         /*
-         * `id: row.waveId` — the row's own wave, never `wave.id`.
+         * `id: row.trackId` — the row's own track, never `track.id`.
          *
          * This is the line the whole `rememberOn` defence rests on. `scope.id`
-         * becomes `conversation.waveId` in the store, which is what
-         * `conversation.waveId !== rememberOn` compares against the wave this
-         * route claimed. Written `id: wave.id` it would be a tautology — every
-         * open row would pass, whatever wave it really belongs to — and no
-         * existing test would notice: the fixtures list rows of this wave, so
+         * becomes `conversation.trackId` in the store, which is what
+         * `conversation.trackId !== rememberOn` compares against the track this
+         * route claimed. Written `id: track.id` it would be a tautology — every
+         * open row would pass, whatever track it really belongs to — and no
+         * existing test would notice: the fixtures list rows of this track, so
          * the two values are equal in every green case. The comparison is only
          * a comparison because this side is the row's.
          */
         return row === undefined ? null : {
-          id: row.waveId, title: waveTitle, cardId: row.id, cardTitle: row.title,
+          id: row.trackId, title: trackTitle, cardId: row.id, cardTitle: row.title,
           updatedAt: row.updatedAt, kind: row.kind, state: row.state,
         };
       },
       create: conversationMutations.create,
       refresh: conversationMutations.refresh,
     },
-    { showWave: false },
+    { showTrack: false },
   );
   /*
    * The fallback clear, for the one case the effects on both sides leave open.
    *
-   * `WaveRoute` clears a request whose card this wave does not have, and the
+   * `TrackRoute` clears a request whose card this track does not have, and the
    * panel consumes one whose row it does. What neither covers is a request for
-   * a card this wave *does* have while the list that would open it could not be
+   * a card this track *does* have while the list that would open it could not be
    * read: the panel is right to keep waiting, and the wait would never end. The
-   * reader then walks into this wave some other day and the drawer springs open
+   * reader then walks into this track some other day and the drawer springs open
    * for a conversation they asked about once.
    *
    * So: the read is over, it failed, and the id is not among whatever rows did
@@ -2391,31 +2391,31 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
   /*
    * The runtime half of the TASKS panel.
    *
-   * Deliberately keyed `['wave-report', waveId]`, which is the key
+   * Deliberately keyed `['track-report', trackId]`, which is the key
    * `core/events/invalidation-plan` has always planned for every `task.*`
-   * event and for `wave.report_edited` — naming it anything else would have
+   * event and for `track.report_edited` — naming it anything else would have
    * meant a second, hand-rolled refresh path for a panel the event plan
    * already knew how to keep live.
    */
   /* Read before the query, not inside the join below it: the poll's own
      interval is a question about the rows this report can produce, so the
      declarations have to be in hand when the query options are built. */
-  const report = useMemo(() => readWaveReport(cards), [cards]);
+  const report = useMemo(() => readTrackReport(cards), [cards]);
   const reportBlocks = report?.blocks ?? null;
   const verdictsQuery = useQuery(
-    waveTaskVerdictsQueryOptions(transport, wave.id, unauthorized, reportBlocks),
+    trackTaskVerdictsQueryOptions(transport, track.id, unauthorized, reportBlocks),
   );
   const verdicts = verdictsQuery.data;
   const { outline, tasks: joinedTasks } = useMemo(() => ({
     outline: deriveReportOutline(reportBlocks),
-    /* The declarations arrive with the wave detail and the verdicts land a
+    /* The declarations arrive with the track detail and the verdicts land a
        round-trip later; passing `undefined` through as "none yet" renders the
        same statusless list this panel shipped with rather than a hole. */
     tasks: deriveReportTasks(reportBlocks, verdicts),
   }), [reportBlocks, verdicts]);
   /*
    * INV-CARD-226 — the CARDS module lists cards that have a surface. `spec` and
-   * `wave-report` resolve to headless adapters and are dropped; anything no
+   * `track-report` resolve to headless adapters and are dropped; anything no
    * adapter claimed stays, because an unlisted card is worse than an
    * unrecognised one. Both branches carry `originalIndex`, bound before the
    * filter, and the merge re-sorts on it so the panel keeps the wire order the
@@ -2423,13 +2423,13 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    * moment remove/action callbacks land (S2).
    */
   const panelCards = useMemo(() => {
-    const { visible, unknown } = partitionWaveCards(cardRegistry, cards);
+    const { visible, unknown } = partitionTrackCards(cardRegistry, cards);
     return [...visible, ...unknown]
       .sort((left, right) => left.originalIndex - right.originalIndex)
       .map((slot) => slot.wire);
   }, [cardRegistry, cards]);
   const gridItems: readonly BoardHostItem[] = useMemo(() => {
-    const { visible } = partitionWaveCards(cardRegistry, cards);
+    const { visible } = partitionTrackCards(cardRegistry, cards);
     return [...visible]
       .sort((left, right) => {
         const sort = left.wire.sort - right.wire.sort;
@@ -2460,7 +2460,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    * is `unknown`: it is not in `gridItems`, `knownCard` below is false for it,
    * and the effect under this line bounces `?card=` straight back off the URL.
    * A row that clicked there would land the reader nowhere and lose the reveal
-   * it used to have. Filtering here rather than teaching `WavePage` about the
+   * it used to have. Filtering here rather than teaching `TrackPage` about the
    * registry keeps the panel a pure renderer.
    */
   const tasks = useMemo(() => {
@@ -2477,13 +2477,13 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     // panel, the return surface and the block anchor describe where the reader
     // is, not which card they asked for. Clearing them here was a regression
     // this route shipped with.
-    goSameWave(wave.id, { card: undefined }, { replace: true });
-  }, [goSameWave, knownCard, requestedCardId, wave.id]);
+    goSameTrack(track.id, { card: undefined }, { replace: true });
+  }, [goSameTrack, knownCard, requestedCardId, track.id]);
   /*
    * `?panel=` is a *compact* concept, and above the breakpoint it does not just
    * sit there unused — it takes the desktop panel down with it.
    *
-   * `WavePage` derives `mobilePanelOpen` from this prop alone and puts `inert` +
+   * `TrackPage` derives `mobilePanelOpen` from this prop alone and puts `inert` +
    * `aria-hidden` on the desktop panel surface while it is open; on desktop the
    * mobile list is `display: none`. A shared `?panel=cards` link opened on a
    * laptop therefore rendered a panel that is fully visible and completely
@@ -2498,8 +2498,8 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    */
   useEffect(() => {
     if (compactViewport || routePanel === null) return;
-    goSameWave(wave.id, { panel: undefined }, { replace: true });
-  }, [compactViewport, goSameWave, routePanel, wave.id]);
+    goSameTrack(track.id, { panel: undefined }, { replace: true });
+  }, [compactViewport, goSameTrack, routePanel, track.id]);
   /*
    * One confirm for both delete gestures.
    *
@@ -2514,7 +2514,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    * always did. A `go()` here would be a second, racing route write.
    */
   const cardDeletion = useDeleteConfirm(
-    (cardId, signal) => waveMutations.removeCard(wave.id, cardId, signal),
+    (cardId, signal) => trackMutations.removeCard(track.id, cardId, signal),
   );
 
   /*
@@ -2532,7 +2532,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    *     `codex-cards`). A worker card has a daemon behind it, so there is no
    *     generic form of this create and the mapping below is explicit.
    *   - `generic` — the row is all there is (`file-viewer`), so it goes through
-   *     `POST /api/waves/:id/cards` with the kind's own `buildPayload`, and the
+   *     `POST /api/tracks/:id/cards` with the kind's own `buildPayload`, and the
    *     kind on the wire is the entry's `claim`, which is why `registerCard`
    *     refuses a generic entry that does not claim one exactly.
    *
@@ -2565,7 +2565,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
    *
    * `submitNewCard` navigates on success, and the post outlives this route body
    * whenever the reader moves on while it is in flight — the navigation would
-   * then yank them back to a wave they deliberately left. The shape is the one
+   * then yank them back to a track they deliberately left. The shape is the one
    * `useDeleteConfirm` already uses (INV-CONFIRM-001): one `AbortController`
    * per attempt, aborted when this body unmounts, and read before the
    * navigation and before every state write. The card is still created — the
@@ -2584,15 +2584,15 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     };
     const title = given('title');
     /* Read at click time from `<html data-theme>` rather than through
-       `useTheme()`: subscribing here would re-render the wave subtree on every
+       `useTheme()`: subscribing here would re-render the track subtree on every
        theme toggle and remount any live terminal under it (#177). */
     const theme = readHostThemeRgb();
     if (entry.type === 'terminal') {
-      return waveMutations.createTerminal(wave.id, { theme, ...(title === undefined ? {} : { title }) });
+      return trackMutations.createTerminal(track.id, { theme, ...(title === undefined ? {} : { title }) });
     }
     if (entry.type === 'codex') {
       const cwd = given('cwd');
-      return waveMutations.createCodex(wave.id, {
+      return trackMutations.createCodex(track.id, {
         theme,
         ...(title === undefined ? {} : { title }),
         ...(cwd === undefined ? {} : { cwd }),
@@ -2603,7 +2603,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     if (strategy?.mode !== 'generic' || registered?.claim?.mode !== 'exact') {
       throw new Error(`CardCreateUnsupported(${entry.type})`);
     }
-    return waveMutations.createCard(wave.id, {
+    return trackMutations.createCard(track.id, {
       kind: registered.claim.kind,
       payload: strategy.buildPayload(values),
       ...(title === undefined ? {} : { title }),
@@ -2616,7 +2616,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     /* Landing on the card you just made is a gesture, and only the newest
        gesture may own it. A second create supersedes the first, so the first is
        aborted here rather than merely forgotten — forgetting it left it holding
-       a live `goSameWave` that steers a reader who has since gone elsewhere.
+       a live `goSameTrack` that steers a reader who has since gone elsewhere.
        The superseded attempt's card is still created server-side; the abort only
        stops it steering, and stops its `finally` clearing a busy state that now
        belongs to the newer attempt. Unmount still aborts whatever is current. */
@@ -2629,7 +2629,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
         createCardOfKind(entry, values).then((card) => {
           if (controller.signal.aborted) return;
           setCardDraft(null);
-          goSameWave(wave.id, { card: card.id });
+          goSameTrack(track.id, { card: card.id });
         }),
         `Could not create the ${entry.label} card.`,
         () => controller.signal.aborted,
@@ -2652,40 +2652,40 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
     if (entry.fields.length === 0) submitNewCard(entry, {});
     else setCardDraft(entry);
   };
-  const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
+  const backlinksQuery = useQuery(trackBacklinksQueryOptions(transport, track.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
   /*
-   * A `neige://wave/…` citation. Same wave — the common case, since a report
+   * A `neige://wave/…` citation. Same track — the common case, since a report
    * mostly cites its own sections — reveals immediately so activating an
    * unchanged hash still flashes the destination, then records that destination
-   * in the URL. The route body is keyed by wave id, so the hash update preserves
-   * the document. Another wave is a real navigation carrying the same hash.
+   * in the URL. The route body is keyed by track id, so the hash update preserves
+   * the document. Another track is a real navigation carrying the same hash.
    */
   const arrivalAnchorId = useRouteHash();
   const openReportLink = (target: ReportLinkTarget) => {
-    if (target.waveId === wave.id) {
+    if (target.trackId === track.id) {
       if (target.blockId !== null) revealReportAnchor(target.blockId);
-      // Same wave: landing on a block is a move *within* the report, so the
+      // Same track: landing on a block is a move *within* the report, so the
       // return surface survives and the panel closes (the document is now what
       // the reader is looking at).
-      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined, from: routeFrom });
+      go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined, from: routeFrom });
       return;
     }
-    // Another wave: a real navigation. Nothing carries over.
-    go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+    // Another track: a real navigation. Nothing carries over.
+    go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined });
   };
 
   const openReportAnchor = (blockId: string) => {
     revealReportAnchor(blockId);
-    go({ name: 'wave', waveId: wave.id, blockId, from: routeFrom });
+    go({ name: 'track', trackId: track.id, blockId, from: routeFrom });
   };
 
   return (
     <>
-    <WaveStage>
-    <WavePage
-      wave={wave}
+    <TrackStage>
+    <TrackPage
+      track={track}
       cards={panelCards}
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
@@ -2696,7 +2696,7 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
       cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} />}
-      onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId, from: routeFrom }); }}
+      onOpenCard={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
       onDeleteCard={cardDeletion.request}
       board={
         <CardGridOverlay
@@ -2706,25 +2706,25 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
           activeCardId={requestedCardId}
           onRemoveCard={cardDeletion.request}
           onClose={knownCard
-            ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
+            ? () => { go({ name: 'track', trackId: track.id, from: routeFrom }, { replace: true }); }
             : undefined}
         />
       }
       onCloseBoard={knownCard
-        ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
+        ? () => { go({ name: 'track', trackId: track.id, from: routeFrom }, { replace: true }); }
         : undefined}
       /* Gated on the viewport, not only on the card: the effect above cannot
          have run yet on a desktop cold start, and one render with the panel
          "open" is one render with the desktop panel `inert`. */
       panel={renderedMobilePanel(routePanel, { compact: compactViewport, cardOpen: requestedCardId !== null })}
-      onOpenPanel={(kind) => { openPanel(wave.id, kind); }}
-      onClosePanel={() => { closePanel(wave.id); }}
+      onOpenPanel={(kind) => { openPanel(track.id, kind); }}
+      onClosePanel={() => { closePanel(track.id); }}
       /* `?from=` is the whole memory of how the reader got here; absent means
          Pages, which is the default this route shipped with (§1.2). The area to
-         return to is the wave's own, not a stored restore id. */
-      mobileBackLabel={routeFrom === 'area' ? 'Waves' : 'Pages'}
+         return to is the track's own, not a stored restore id. */
+      mobileBackLabel={routeFrom === 'area' ? 'Tracks' : 'Pages'}
       onMobileBack={() => {
-        if (routeFrom === 'area') openMobileSection('areas', wave.areaId);
+        if (routeFrom === 'area') openMobileSection('areas', track.areaId);
         else openMobileSection('pages');
       }}
       report={<ReportDocument
@@ -2735,30 +2735,30 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
         arrivalAnchorId={arrivalAnchorId}
         /*
           #1211 S2 — "Nothing written here yet." described a missing artefact,
-          and it read as an omission the reader had made. It is not one: a wave
+          and it read as an omission the reader had made. It is not one: a track
           now starts with no name and no words in it *by design*, and the true
-          state of this page on arrival is "this wave has not taken shape yet
+          state of this page on arrival is "this track has not taken shape yet
           — say the first thing". The lead says that, and the first hint names
           the one action that changes it, which is the conversation already
           open beside it.
         */
         empty={<ReportEmpty
-          lead="This wave has not taken shape yet."
+          lead="This track has not taken shape yet."
           hints={[
             'Say what you want in the conversation — the agent works it out with you and writes it up here.',
-            'It stays with the wave, so it is here the next time you open it.',
+            'It stays with the track, so it is here the next time you open it.',
           ]}
         />}
       />}
       backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
         ? (
           <ReportBacklinks
-            waveId={wave.id}
+            trackId={track.id}
             backlinks={backlinks}
-            onOpen={(waveId, blockId) => {
-              // Same wave keeps the return surface; a backlink into another wave
+            onOpen={(trackId, blockId) => {
+              // Same track keeps the return surface; a backlink into another track
               // is a departure and carries nothing.
-              go({ name: 'wave', waveId, blockId, from: waveId === wave.id ? routeFrom : undefined });
+              go({ name: 'track', trackId, blockId, from: trackId === track.id ? routeFrom : undefined });
             }}
           />
         )
@@ -2766,14 +2766,14 @@ function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
-      onRenameWave={(title) => waveMutations.patch(wave.id, wave.areaId, { title }).then(() => undefined)}
-      onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.areaId, signal).then(() => {
+      onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
+      onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {
         if (signal.aborted) return;
         if (area !== undefined) go({ name: 'area', areaId: area.id });
         else go({ name: 'today' });
       })}
     />
-    </WaveStage>
+    </TrackStage>
     {/* Keyed by kind: switching kinds is a different form, and a shared mount
         would carry the previous kind's typed values into it. */}
     <Dialog

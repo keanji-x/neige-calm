@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use calm_exec::flow::WorkerFlowSource;
 use calm_server::db::sqlite::{
-    SqlxRepo, area_create_tx, card_create_with_id_tx, session_start_runtime_tx, wave_create_tx,
+    SqlxRepo, area_create_tx, card_create_with_id_tx, session_start_runtime_tx, track_create_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, RequestTheme};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
@@ -92,12 +92,12 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
     )
     .await
     .unwrap();
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
-            title: "wave".into(),
+            title: "track".into(),
             sort: None,
             cwd: "/tmp".into(),
             template_id: None,
@@ -106,8 +106,8 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
             theme: RequestTheme::default_dark(),
         },
         None,
-        &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
     .unwrap();
@@ -115,7 +115,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
         &mut tx,
         card_id.to_string(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -143,12 +143,12 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
     )
     .await
     .unwrap();
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
-            title: "wave".into(),
+            title: "track".into(),
             sort: None,
             cwd: cwd.into(),
             template_id: None,
@@ -157,8 +157,8 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
             theme: RequestTheme::default_dark(),
         },
         None,
-        &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
     .unwrap();
@@ -166,7 +166,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
         &mut tx,
         card_id.to_string(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "claude".into(),
             sort: None,
@@ -245,7 +245,7 @@ pub async fn seed_claude_runtime_for_card_with_status(
 pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(seed.runtime.id.clone()),
-        wave_id: seed.card.wave_id.clone(),
+        track_id: seed.card.track_id.clone(),
         provider: match seed.runtime.agent_provider.as_ref() {
             Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
             Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,
@@ -622,7 +622,7 @@ pub fn app_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
             events,
             WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

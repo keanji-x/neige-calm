@@ -1,5 +1,5 @@
 /*
- * The exact bytes `WaveReportPayload::initial().body` ships (#1185 §4.4 F).
+ * The exact bytes `TrackReportPayload::initial().body` ships (#1185 §4.4 F).
  *
  * Test-only. A hand-written fixture proves the front end can hide *a* comment;
  * it cannot prove it hides *the* comment the kernel actually emits. The two
@@ -8,9 +8,9 @@
  * parser may treat as raw HTML. So we read the shipped fragments off disk
  * instead of transcribing them.
  *
- * The concatenation mirrors `crates/calm-types/src/wave_report.rs`; the Rust
+ * The concatenation mirrors `crates/calm-types/src/track_report.rs`; the Rust
  * side pins its own shape (`initial_body_is_the_default_structural_skeleton`),
- * and `crates/calm-server/tests/cases/mcp_wave_report_blocks.rs` pins the same
+ * and `crates/calm-server/tests/cases/mcp_track_report_blocks.rs` pins the same
  * five-block result end to end through a real card.
  *
  * Everything here is a function, not a module-level binding: reading files at
@@ -29,11 +29,11 @@ function fragment(name: string): string {
   return readFileSync(resolve(repoRoot, 'crates/calm-types/src', name), 'utf8');
 }
 
-/** The exact body a freshly minted wave's report card holds. */
+/** The exact body a freshly minted track's report card holds. */
 export function initialBody(): string {
   return (
-    fragment('wave_report_contract_rules.md') +
-    fragment('wave_report_section_rules.md') +
+    fragment('track_report_contract_rules.md') +
+    fragment('track_report_section_rules.md') +
     CLOSE +
     SECTIONS
   );

@@ -18,7 +18,7 @@ import {
 } from './schemaVersions';
 
 declare module '../../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     terminal: TerminalCardData;
   }
 }
@@ -241,8 +241,8 @@ export const TerminalEntry: CardEntry<
   accessibleName: (card) => (card.title ? `Terminal: ${card.title}` : 'Terminal'),
   create: {
     mode: 'atomic',
-    async submit(waveId, _input, ctx) {
-      const card = await createTerminalCard(waveId, { theme: ctx.themeRgb });
+    async submit(trackId, _input, ctx) {
+      const card = await createTerminalCard(trackId, { theme: ctx.themeRgb });
       return { cardId: card.id, raw: card };
     },
   },

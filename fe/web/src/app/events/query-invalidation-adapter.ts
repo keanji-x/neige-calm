@@ -34,29 +34,29 @@ export interface QueryCachePort {
 export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   const [head, first, second] = key;
   if (head === 'areas' && key.length === 1) return queryKeys.areas();
-  if (head === 'waves' && first === 'area' && typeof second === 'string') return queryKeys.wavesInArea(second);
-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);
-  if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);
+  if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);
+  if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);
+  if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);
-  /* The wave's task verdicts. Both arities are mapped, and the bare one is not
-     an oversight: the four `task.*` events carry no wave-id *field*, so
-     `derivedWaveId` cannot name one and the plan emits the prefix. (Their
-     `idempotency_key` is the task id, which embeds the wave id — the plan
-     declines to parse it; see `queryKeys.waveReportPrefix` for why.) Dropping
+  /* The track's task verdicts. Both arities are mapped, and the bare one is not
+     an oversight: the four `task.*` events carry no track-id *field*, so
+     `derivedTrackId` cannot name one and the plan emits the prefix. (Their
+     `idempotency_key` is the task id, which embeds the track id — the plan
+     declines to parse it; see `queryKeys.trackReportPrefix` for why.) Dropping
      the prefix would leave the TASKS panel dead for exactly the events that
      change it. */
-  if (head === 'wave-report' && key.length === 1) return queryKeys.waveReportPrefix();
-  if (head === 'wave-report' && typeof first === 'string' && key.length === 2) return queryKeys.waveReport(first);
+  if (head === 'track-report' && key.length === 1) return queryKeys.trackReportPrefix();
+  if (head === 'track-report' && typeof first === 'string' && key.length === 2) return queryKeys.trackReport(first);
   /* The area drawer's conversation list. Only the bare form exists: no
      conversation-writing event carries a `area_id` and no cached row can supply
      one, so the plan emits the prefix and `queryKeys.areaConversations` keeps
      the area id in second position precisely so this prefix reaches it. */
   if (head === 'area-conversations' && key.length === 1) return queryKeys.areaConversationsPrefix();
-  /* One wave's conversation list. Both arities are mapped, same as
-     `wave-report` above: the plan names the wave whenever `derivedWaveId`
+  /* One track's conversation list. Both arities are mapped, same as
+     `track-report` above: the plan names the track whenever `derivedTrackId`
      resolves one and falls back to the prefix when a `runtime.*` event's card
-     belongs to a wave no cached detail owns.
+     belongs to a track no cached detail owns.
 
      The query behind these keys arrives in S5. Mapping them now is harmless —
      invalidating a key with no mounted query neither marks nor refetches
@@ -64,13 +64,13 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
      query with no adapter arm is a list that silently never refreshes. */
   /* #1253 §6 — the Today resolve. One entry with no id: the kernel's partial
      unique index makes `purpose = 'launchpad'` a singleton, and the id is what
-     that query is fetching. Without this arm `wave.report_edited`'s
+     that query is fetching. Without this arm `track.report_edited`'s
      `['today-launchpad']` is dropped right here and the page never learns the
      report stopped being empty. */
   if (head === 'today-launchpad' && key.length === 1) return queryKeys.todayLaunchpad();
-  if (head === 'wave-conversations' && key.length === 1) return queryKeys.waveConversationsPrefix();
-  if (head === 'wave-conversations' && typeof first === 'string' && key.length === 2) {
-    return queryKeys.waveConversations(first);
+  if (head === 'track-conversations' && key.length === 1) return queryKeys.trackConversationsPrefix();
+  if (head === 'track-conversations' && typeof first === 'string' && key.length === 2) {
+    return queryKeys.trackConversations(first);
   }
   return null;
 }

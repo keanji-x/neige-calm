@@ -5,9 +5,9 @@
 // (or any keyboard-only user, screen-reader user, etc.) can drive every
 // flow the product cares about using role/name and key events alone.
 //
-// The one carve-out is entry-point setup (sidebar → area → wave) in the
-// list-view reorder test: that test clicks its way to the wave surface to
-// sidestep `tabUntil` brittleness across test runs that accumulate waves.
+// The one carve-out is entry-point setup (sidebar → area → track) in the
+// list-view reorder test: that test clicks its way to the track surface to
+// sidestep `tabUntil` brittleness across test runs that accumulate tracks.
 // Sidebar / area navigation has its own dedicated keyboard coverage
 // elsewhere in this suite — the plumbing clicks there are not the
 // contract under test. Every such click carries an inline comment.
@@ -22,7 +22,7 @@
 // does NOT project them onto the entity tables (see
 // `crates/calm-server/src/replay.rs`); that's intentional, so the entity
 // tables start empty. Issue #175 — the web app's Today page then
-// auto-creates a hidden **system** area + "Today" wave + terminal card
+// auto-creates a hidden **system** area + "Today" track + terminal card
 // via `useTodayTerminal` on first paint; that area is filtered out of
 // `GET /api/areas` by default, so the sidebar never renders it. Each
 // `beforeEach` below mints an `Atlas` **user** area via the REST API
@@ -36,9 +36,9 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   createIframeCard,
   createUserArea,
-  createWaveInArea,
+  createTrackInArea,
   resetReplayServer,
-  seedWaveViewMode,
+  seedTrackViewMode,
 } from './helpers/reset';
 import {
   attachedWorkspacePath,
@@ -54,8 +54,8 @@ interface FocusInfo {
   description: string | null;
   /** `className` of the focused element, lowercased. Used to disambiguate
    *  same-named role buttons when role + name alone aren't unique — e.g.
-   *  two buttons named "Today" share the page (sidebar nav, WaveRow)
-   *  and only the WaveRow carries `wave-row` in its class list. */
+   *  two buttons named "Today" share the page (sidebar nav, TrackRow)
+   *  and only the TrackRow carries `track-row` in its class list. */
   className: string;
 }
 
@@ -71,7 +71,7 @@ interface FocusInfo {
 // can match on whichever is most stable. The `className` field
 // disambiguates same-role/same-name buttons when role + name alone
 // aren't unique (e.g. two "Today" buttons share the page — sidebar
-// nav, WaveRow; only the WaveRow has `wave-row` in its classes).
+// nav, TrackRow; only the TrackRow has `track-row` in its classes).
 async function tabUntil(
   page: Page,
   predicate: (info: FocusInfo) => boolean,
@@ -118,7 +118,7 @@ async function tabUntil(
         }
       }
       // aria-describedby → joined text of referenced elements. Mirrors
-      // the aria-labelledby path above; used by the Area/Wave rename
+      // the aria-labelledby path above; used by the Area/Track rename
       // surfaces to convey the rename verb without polluting the name.
       const describedBy = el.getAttribute('aria-describedby');
       let describedByText: string | null = null;
@@ -150,7 +150,7 @@ async function tabUntil(
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
 // paint of the Today page and creates a hidden system area + "Today"
-// wave + terminal card (issue #175 — the system area is not visible
+// track + terminal card (issue #175 — the system area is not visible
 // in the sidebar). The `beforeEach` below also mints an `Atlas` user
 // area via REST so the keyboard tests have a stable sidebar anchor;
 // this helper waits for that user area to render (the WS feed
@@ -190,21 +190,21 @@ test.describe('a11y · keyboard-only navigation', () => {
     // page navigation below mounts against a hermetic starting state
     // regardless of what an earlier spec did. The endpoint is mounted
     // only by `replay --serve` (see `crates/calm-server/src/bin/replay.rs`).
-    // Without this hook, accumulating area/wave/card mutations across
+    // Without this hook, accumulating area/track/card mutations across
     // tests cause flakes — see issue #56 followup.
     await resetReplayServer(request);
     // Issue #175 — the kernel hides the system area that hosts the
     // default Today terminal from the sidebar. Mint a user-visible
-    // `Atlas` area + `Today` wave via the REST API so the keyboard
+    // `Atlas` area + `Today` track via the REST API so the keyboard
     // tests below have a stable sidebar anchor (they all
-    // `tabUntil(... /atlas/i)`) and a Today wave under it (the
-    // WaveRow tests anchor on /today/i inside the Waves region). The
-    // replay server's `POST /api/areas` + `POST /api/waves` are the
+    // `tabUntil(... /atlas/i)`) and a Today track under it (the
+    // TrackRow tests anchor on /today/i inside the Tracks region). The
+    // replay server's `POST /api/areas` + `POST /api/tracks` are the
     // same handlers production uses; the live frontend invalidates the
-    // areas / waves queries on the resulting WS events and renders the
+    // areas / tracks queries on the resulting WS events and renders the
     // new rows without a reload.
     const atlas = await createUserArea(request, 'Atlas');
-    await createWaveInArea(request, atlas.id, 'Today');
+    await createTrackInArea(request, atlas.id, 'Today');
     // Every spec opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.
@@ -212,12 +212,12 @@ test.describe('a11y · keyboard-only navigation', () => {
     await waitForBootstrap(page);
     // Clear the trace once bootstrap is done so each test's assertions
     // see a clean ring buffer — the bootstrap path generates its own
-    // events (`area.updated`, `wave.updated`, …) that would otherwise
+    // events (`area.updated`, `track.updated`, …) that would otherwise
     // pollute per-test trace expectations.
     await clearEventTrace(page);
   });
 
-  // #1147 S3 — remove any per-run attached-workspace fixture the wave-
+  // #1147 S3 — remove any per-run attached-workspace fixture the track-
   // create test minted under `$HOME`, so repeated runs don't accumulate
   // directories on the runner. No-op for the tests that mint none.
   test.afterEach(() => {
@@ -227,7 +227,7 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('Today → Area via keyboard', async ({ page }) => {
     // Tab forward from the document start until focus lands on the
     // Atlas area nav button in the sidebar. Its textContent-derived
-    // helper name includes the wave-count badge (e.g. "Atlas1"), so
+    // helper name includes the track-count badge (e.g. "Atlas1"), so
     // match the nav button class plus the area-name prefix.
     await tabUntil(
       page,
@@ -248,23 +248,23 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page.getByRole('heading', { name: /atlas/i })).toBeVisible();
   });
 
-  // Issue #250 PR 3 — keyboard-driven wave creation through NewTaskForm.
-  // The area-page "+ New wave" CTA expands inline into the shared
+  // Issue #250 PR 3 — keyboard-driven track creation through NewTaskForm.
+  // The area-page "+ New track" CTA expands inline into the shared
   // configuration card (task description + cwd + area inference); the
   // legacy single-line title input is gone (replaced by the full form
   // per the issue's "all creation entrypoints must go through the
   // same configuration card" comment).
   //
   // Keyboard contract exercised here:
-  //   - Tab lands on the "+ New wave" CTA.
+  //   - Tab lands on the "+ New track" CTA.
   //   - Enter expands it into the form; focus auto-lands on the task
   //     description textarea (NewTaskForm's useEffect → focus).
   //   - Tab from there reaches the cwd input.
   //   - Enter on the cwd input submits (the form binds Enter-to-submit
   //     specifically on cwd; the title textarea preserves Enter for
   //     newlines, per the form's design).
-  //   - Successful submit navigates to /calm/wave/<id>.
-  test('Area → New wave via keyboard creates a wave', async ({ page }) => {
+  //   - Successful submit navigates to /calm/track/<id>.
+  test('Area → New track via keyboard creates a track', async ({ page }) => {
     // First land on the area page via keyboard (same path as above).
     await tabUntil(
       page,
@@ -275,9 +275,9 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
 
-    // Tab to the "+ New wave" CTA. Its accessible name comes from the
-    // button text (no aria-label); the title attribute is "New wave".
-    await tabUntil(page, (info) => /new wave/i.test(info.name ?? ''));
+    // Tab to the "+ New track" CTA. Its accessible name comes from the
+    // button text (no aria-label); the title attribute is "New track".
+    await tabUntil(page, (info) => /new track/i.test(info.name ?? ''));
     // Enter expands the CTA into the inline NewTaskForm.
     await page.keyboard.press('Enter');
 
@@ -288,7 +288,7 @@ test.describe('a11y · keyboard-only navigation', () => {
 
     // Type the description. Avoid Enter here — it would insert a
     // newline (the textarea is multi-line).
-    const title = `a11y wave ${Date.now()}`;
+    const title = `a11y track ${Date.now()}`;
     await page.keyboard.type(title);
 
     // Tab to the cwd input. The area section between cwd and the
@@ -322,24 +322,24 @@ test.describe('a11y · keyboard-only navigation', () => {
     // `attach_folder: true`.
     await page.keyboard.press('Enter');
 
-    // The AreaPage's onWaveCreated handler navigates straight to the
-    // new wave's detail page (router.tsx wires
-    // `go({name:'wave',id:...})`).
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/, { timeout: 10_000 });
+    // The AreaPage's onTrackCreated handler navigates straight to the
+    // new track's detail page (router.tsx wires
+    // `go({name:'track',id:...})`).
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/, { timeout: 10_000 });
     await expect(page.getByText(title, { exact: false }).first()).toBeVisible();
 
-    // Event-trace contract: the create round-trip emits a wave.updated
-    // for the new wave. We wait for it (poll-based) rather than reading
+    // Event-trace contract: the create round-trip emits a track.updated
+    // for the new track. We wait for it (poll-based) rather than reading
     // the trace once and racing the WS pump.
-    await waitForEvent(page, 'wave.updated');
+    await waitForEvent(page, 'track.updated');
     const trace = await getEventTrace(page);
-    expect(trace.map((e) => e.ev)).toContain('wave.updated');
+    expect(trace.map((e) => e.ev)).toContain('track.updated');
   });
 
-  test('Wave → AddPanel opens with Enter and closes with Escape', async ({ page }) => {
-    // Navigate to a wave page via keyboard so the AddPanel trigger
-    // exists in the DOM. We use the auto-created "Today" wave under the
-    // Atlas area — it's the only wave that exists at this point.
+  test('Track → AddPanel opens with Enter and closes with Escape', async ({ page }) => {
+    // Navigate to a track page via keyboard so the AddPanel trigger
+    // exists in the DOM. We use the auto-created "Today" track under the
+    // Atlas area — it's the only track that exists at this point.
     await tabUntil(
       page,
       (info) =>
@@ -348,20 +348,20 @@ test.describe('a11y · keyboard-only navigation', () => {
     );
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
-    // From the area page, the "Today" wave row is a real <button> with
-    // the wave title as its accessible name (see WaveRow.tsx). Two
-    // buttons share the name "Today" — sidebar nav and the WaveRow — so
-    // we filter on `wave-row` in className to land on the row button
+    // From the area page, the "Today" track row is a real <button> with
+    // the track title as its accessible name (see TrackRow.tsx). Two
+    // buttons share the name "Today" — sidebar nav and the TrackRow — so
+    // we filter on `track-row` in className to land on the row button
     // specifically.
     await tabUntil(
       page,
       (info) =>
         info.tag === 'button' &&
-        info.className.split(/\s+/).includes('wave-row') &&
+        info.className.split(/\s+/).includes('track-row') &&
         /today/i.test(info.name ?? ''),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/);
 
     // Tab to the AddPanel trigger. It's a real <button> with
     // aria-haspopup="menu" + aria-expanded — glyph-only (+/×) since the
@@ -380,10 +380,10 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(menu).toBeHidden();
   });
 
-  test('Wave → AddPanel terminal menuitem creates a card via keyboard', async ({
+  test('Track → AddPanel terminal menuitem creates a card via keyboard', async ({
     page,
   }) => {
-    // Navigate to the Atlas/Today wave via keyboard so the AddPanel
+    // Navigate to the Atlas/Today track via keyboard so the AddPanel
     // trigger is reached through the same user-visible path as the
     // broader keyboard contract tests.
     await tabUntil(
@@ -398,14 +398,14 @@ test.describe('a11y · keyboard-only navigation', () => {
       page,
       (info) =>
         info.tag === 'button' &&
-        info.className.split(/\s+/).includes('wave-row') &&
+        info.className.split(/\s+/).includes('track-row') &&
         /today/i.test(info.name ?? ''),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
-    const waveUrl = page.url();
-    const waveId = waveUrl.match(/\/calm\/wave\/([^/?#]+)/)?.[1];
-    expect(waveId, `wave id parsed from ${waveUrl}`).toBeTruthy();
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/);
+    const trackUrl = page.url();
+    const trackId = trackUrl.match(/\/calm\/track\/([^/?#]+)/)?.[1];
+    expect(trackId, `track id parsed from ${trackUrl}`).toBeTruthy();
 
     // Old #632-removed coverage: focus the Add-card button, open with
     // Enter, assert the terminal menuitem receives focus, then activate
@@ -426,7 +426,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect
       .poll(
         async () => {
-          const response = await page.request.get(`/api/waves/${encodeURIComponent(waveId!)}`);
+          const response = await page.request.get(`/api/tracks/${encodeURIComponent(trackId!)}`);
           if (!response.ok()) {
             return false;
           }
@@ -445,8 +445,8 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('AddPanel: arrow keys, Home/End, typeahead, focus restore', async ({
     page,
   }) => {
-    // Navigate to a wave page via keyboard. We use the auto-created
-    // "Today" wave under the Atlas area — the only one that exists at
+    // Navigate to a track page via keyboard. We use the auto-created
+    // "Today" track under the Atlas area — the only one that exists at
     // bootstrap time on the replay fixture.
     await tabUntil(
       page,
@@ -456,18 +456,18 @@ test.describe('a11y · keyboard-only navigation', () => {
     );
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
-    // WaveRow is a real <button>; filter on `wave-row` className to
+    // TrackRow is a real <button>; filter on `track-row` className to
     // disambiguate from the sidebar Today nav button (both real
     // <button>s with the same accessible name).
     await tabUntil(
       page,
       (info) =>
         info.tag === 'button' &&
-        info.className.split(/\s+/).includes('wave-row') &&
+        info.className.split(/\s+/).includes('track-row') &&
         /today/i.test(info.name ?? ''),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/);
 
     // Tab to the AddPanel trigger (glyph-only since #594; accessible
     // name "Add card" while closed) and capture it for the focus-restore
@@ -554,7 +554,7 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('Modal: opens with Enter, traps Tab, Escape closes and restores focus', async ({
     page,
   }) => {
-    // Navigate to the wave page via keyboard.
+    // Navigate to the track page via keyboard.
     await tabUntil(
       page,
       (info) =>
@@ -562,18 +562,18 @@ test.describe('a11y · keyboard-only navigation', () => {
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
-    // WaveRow is a real <button>; filter on `wave-row` className to
+    // TrackRow is a real <button>; filter on `track-row` className to
     // disambiguate from the sidebar Today nav button (both real
     // <button>s with the same accessible name).
     await tabUntil(
       page,
       (info) =>
         info.tag === 'button' &&
-        info.className.split(/\s+/).includes('wave-row') &&
+        info.className.split(/\s+/).includes('track-row') &&
         /today/i.test(info.name ?? ''),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/);
 
     // Open the AddPanel and pick a menuitem that opens a Modal. In the
     // current registry that's "codex" — terminal has no createSchema
@@ -652,10 +652,10 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(trigger).toBeFocused();
   });
 
-  test('Wave title rename: F2 enters, Enter commits, focus restored', async ({
+  test('Track title rename: F2 enters, Enter commits, focus restored', async ({
     page,
   }) => {
-    // Land on the wave page via keyboard.
+    // Land on the track page via keyboard.
     await tabUntil(
       page,
       (info) =>
@@ -663,33 +663,33 @@ test.describe('a11y · keyboard-only navigation', () => {
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
-    // WaveRow is a real <button>; filter on `wave-row` className to
+    // TrackRow is a real <button>; filter on `track-row` className to
     // disambiguate from the sidebar Today nav button (both real
     // <button>s with the same accessible name).
     await tabUntil(
       page,
       (info) =>
         info.tag === 'button' &&
-        info.className.split(/\s+/).includes('wave-row') &&
+        info.className.split(/\s+/).includes('track-row') &&
         /today/i.test(info.name ?? ''),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/);
 
-    // The wave title display is a <span role="button"> — see
-    // pages/Wave.tsx. After #56 followup its accessible name is just the
-    // wave title (e.g. "Today"); the rename verb is conveyed via
+    // The track title display is a <span role="button"> — see
+    // pages/Track.tsx. After #56 followup its accessible name is just the
+    // track title (e.g. "Today"); the rename verb is conveyed via
     // aria-describedby. We match the span by its description to land
     // specifically on the rename target (and not on the area crumb
     // button, which also carries text but no rename description).
-    await tabUntil(page, (info) => /^rename wave$/i.test(info.description ?? ''));
+    await tabUntil(page, (info) => /^rename track$/i.test(info.description ?? ''));
     // F2 is the documented rename shortcut (Windows convention). Enter
     // also works (Slice 3) but we exercise F2 here for variety.
     await page.keyboard.press('F2');
 
-    // The display swaps to an <input aria-label="Wave title">. It auto-
+    // The display swaps to an <input aria-label="Track title">. It auto-
     // focuses via the queueMicrotask in startRename().
-    const input = page.getByLabel('Wave title');
+    const input = page.getByLabel('Track title');
     await expect(input).toBeFocused();
 
     // The input pre-selects the existing value (.select() in startRename);
@@ -701,30 +701,30 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Commit collapses the input back to the display span and returns
     // focus there. After the WS event lands the display shows the new
     // title (we wait for both halves so the test is order-independent).
-    await waitForEvent(page, 'wave.updated');
+    await waitForEvent(page, 'track.updated');
     // Disambiguate via `description` — the rename span carries
-    // `aria-describedby` → "Rename wave",
+    // `aria-describedby` → "Rename track",
     // while the sibling Delete button matches `newTitle` only as a
-    // substring inside its own accessible name ("Delete wave \"<title>\"")
+    // substring inside its own accessible name ("Delete track \"<title>\"")
     // and would otherwise collide here under Playwright strict mode.
-    const display = page.getByRole('button', { name: newTitle, description: 'Rename wave' });
+    const display = page.getByRole('button', { name: newTitle, description: 'Rename track' });
     await expect(display).toBeVisible();
     await expect(display).toBeFocused();
   });
 
-  // Slice 9 — list-view alternative to the WaveGrid. The header now exposes
+  // Slice 9 — list-view alternative to the TrackGrid. The header now exposes
   // a single Grid / List / Report cycle button backed by the same
-  // per-wave view-mode overlay row that this spec seeds via REST.
+  // per-track view-mode overlay row that this spec seeds via REST.
   // List view replaces the RGL grid with a semantic `<ul>` whose `<li>`
   // items use roving tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the
   // focused card by swapping `card.sort` via the existing optimistic
   // mutation.
-  test('Wave: toggle to list view, reorder with Alt+Arrow, persist across reload', async ({
+  test('Track: toggle to list view, reorder with Alt+Arrow, persist across reload', async ({
     page,
   }) => {
-    // Click (not keyboard) into the wave: skips tabUntil to avoid tab-count
-    // brittleness when previous tests accumulate waves. The Atlas area
-    // and its auto-created Today wave are the stable entrypoints; this
+    // Click (not keyboard) into the track: skips tabUntil to avoid tab-count
+    // brittleness when previous tests accumulate tracks. The Atlas area
+    // and its auto-created Today track are the stable entrypoints; this
     // test exercises the list-view toggle + Alt+Arrow reorder contract,
     // not the sidebar / area navigation (those have their own keyboard
     // coverage elsewhere in this suite).
@@ -736,54 +736,54 @@ test.describe('a11y · keyboard-only navigation', () => {
       .getByRole('button', { name: 'Atlas', exact: true })
       .click();
     await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
-    // Click into the auto-bootstrapped "Today" wave row. WaveRow is a
-    // real <button> with the wave title as its accessible name (see
-    // WaveRow.tsx). The AreaPage wraps its single sorted wave list in a
-    // `<section aria-label="Waves">` landmark so role-scoped queries
+    // Click into the auto-bootstrapped "Today" track row. TrackRow is a
+    // real <button> with the track title as its accessible name (see
+    // TrackRow.tsx). The AreaPage wraps its single sorted track list in a
+    // `<section aria-label="Tracks">` landmark so role-scoped queries
     // can disambiguate the row from the sidebar "Today" nav button
     // (both real <button>s with the same accessible name).
     // Click (not keyboard): same rationale as the area-nav click above —
-    // skip tabUntil to avoid tab-count brittleness across accumulating waves.
+    // skip tabUntil to avoid tab-count brittleness across accumulating tracks.
     await page
-      .getByRole('region', { name: 'Waves' })
+      .getByRole('region', { name: 'Tracks' })
       .getByRole('button', { name: /today/i })
       .first()
       .click();
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
-    const waveUrl = page.url();
+    await expect(page).toHaveURL(/\/calm\/track\/[^/]+(\?|$)/);
+    const trackUrl = page.url();
 
     // Add two renderer-free worker cards so the reorder test has two
     // list items to swap. Card creation itself is covered by the
     // AddPanel tests above; this spec's contract is the list surface +
     // Alt+Arrow reorder. Use direct iframe cards here so the replay
     // harness does not depend on a terminal/codex daemon being available.
-    const waveId = waveUrl.match(/\/calm\/wave\/([^/?#]+)/)?.[1];
-    expect(waveId, `wave id parsed from ${waveUrl}`).toBeTruthy();
+    const trackId = trackUrl.match(/\/calm\/track\/([^/?#]+)/)?.[1];
+    expect(trackId, `track id parsed from ${trackUrl}`).toBeTruthy();
     await createIframeCard(
       page.request,
-      waveId!,
+      trackId!,
       'https://example.invalid/e2e-list-card-1',
       1,
     );
     await createIframeCard(
       page.request,
-      waveId!,
+      trackId!,
       'https://example.invalid/e2e-list-card-2',
       2,
     );
 
-    // Enter list mode by seeding the per-wave `view-mode` overlay via REST,
+    // Enter list mode by seeding the per-track `view-mode` overlay via REST,
     // then reload. `?trace=1`
     // re-arms the event ring buffer for the reorder assertions below
     // (the flag is read once per page load, and the client-side route
     // URL we captured may not carry it).
-    await seedWaveViewMode(page.request, waveId!, 'list');
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await seedTrackViewMode(page.request, trackId!, 'list');
+    await page.goto(`/calm/track/${trackId}?trace=1`);
     await page.waitForFunction(() => Array.isArray(window.__neigeEvents__));
 
     // List view: cards now render as semantic <li>. Wait for the list
-    // to mount (it's lazy-loaded — same chunk pattern as WaveGrid).
-    const list = page.getByRole('list', { name: /wave cards/i });
+    // to mount (it's lazy-loaded — same chunk pattern as TrackGrid).
+    const list = page.getByRole('list', { name: /track cards/i });
     await expect(list).toBeVisible({ timeout: 5_000 });
     const items = page.getByRole('listitem');
     // Poll until at least two items have *both* mounted AND have their
@@ -851,14 +851,14 @@ test.describe('a11y · keyboard-only navigation', () => {
 
     // Reload — the view-mode overlay must persist, so the page comes
     // back in list view and the cycle button advertises list as current.
-    await page.goto(waveUrl);
-    const listAfter = page.getByRole('list', { name: /wave cards/i });
+    await page.goto(trackUrl);
+    const listAfter = page.getByRole('list', { name: /track cards/i });
     await expect(listAfter).toBeVisible({ timeout: 5_000 });
     const viewButton = page.getByRole('button', {
       name: /^List view — switch to report view$/i,
     });
     await expect(viewButton).toBeVisible();
-    // Do not do a full-page Tab walk after reload: this wave includes
+    // Do not do a full-page Tab walk after reload: this track includes
     // Web-page iframe cards that can retain focus. Keyboard reachability
     // for this control is already covered earlier in this test.
     await viewButton.focus();

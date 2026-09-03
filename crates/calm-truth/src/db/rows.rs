@@ -6,7 +6,7 @@
 //! `FromRow` and converts via `From<XRow> for X`:
 //!
 //! ```text
-//!   query_as::<_, WaveRow>(…).fetch_one(…).await?.into()   // → Wave
+//!   query_as::<_, TrackRow>(…).fetch_one(…).await?.into()   // → Track
 //! ```
 //!
 //! Field lists mirror the SELECT column lists 1:1; typed ids and persisted
@@ -20,10 +20,10 @@
 //! This module is the shim-window home for row mapping; #679 PR2 moves it
 //! into calm-truth together with the repos.
 
-use crate::ids::{AreaId, CardId, WaveId};
+use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::{
-    Area, AreaFolder, AreaKind, Card, HarnessItem, Overlay, Wave, WaveLifecycle, WaveWorkspace,
-    WaveWorkspaceKind,
+    Area, AreaFolder, AreaKind, Card, HarnessItem, Overlay, Track, TrackLifecycle, TrackWorkspace,
+    TrackWorkspaceKind,
 };
 
 /// Row mirror of [`Area`].
@@ -75,31 +75,31 @@ impl From<AreaFolderRow> for AreaFolder {
     }
 }
 
-/// The `waves` column list every `query_as::<_, WaveRow>` SELECT must use,
-/// in `WaveRow` field order.
+/// The `tracks` column list every `query_as::<_, TrackRow>` SELECT must use,
+/// in `TrackRow` field order.
 ///
 /// Issue #1147 S1: this used to be nine hand-copied literals. `query_as`
-/// binds columns by name at **runtime**, so a column added to `WaveRow`
+/// binds columns by name at **runtime**, so a column added to `TrackRow`
 /// without touching all nine SELECTs compiles fine and then blows up in
 /// production on whichever route happened to keep the stale list — the
-/// `waves` replay of the `CardRow` incident. One const kills the class.
-/// Use [`WAVE_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
-pub const WAVE_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
+/// `tracks` replay of the `CardRow` incident. One const kills the class.
+/// Use [`TRACK_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
+pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
      plugin_scope, purpose, template_input, terminal_at, workspace_kind, workspace_path, \
      workspace_frozen_at, created_at, updated_at";
 
-/// [`WAVE_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
+/// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
 /// `#[sqlx(flatten)]` / `FromRow` still resolve the *unqualified* names, so the
-/// two lists must stay in lockstep — `wave_select_columns_lists_agree` pins that.
-pub const WAVE_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
+/// two lists must stay in lockstep — `track_select_columns_lists_agree` pins that.
+pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
      w.workspace_kind, w.workspace_path, w.workspace_frozen_at, w.created_at, w.updated_at";
 
-/// Row mirror of [`Wave`].
+/// Row mirror of [`Track`].
 #[derive(Debug, sqlx::FromRow)]
-pub struct WaveRow {
+pub struct TrackRow {
     #[sqlx(try_from = "String")]
-    pub id: WaveId,
+    pub id: TrackId,
     #[sqlx(try_from = "String")]
     pub area_id: AreaId,
     pub title: String,
@@ -107,7 +107,7 @@ pub struct WaveRow {
     pub archived_at: Option<i64>,
     pub pinned_at: Option<i64>,
     #[sqlx(try_from = "String")]
-    pub lifecycle: WaveLifecycle,
+    pub lifecycle: TrackLifecycle,
     pub template_id: Option<String>,
     pub plugin_scope: Option<String>,
     pub purpose: Option<String>,
@@ -117,20 +117,20 @@ pub struct WaveRow {
     #[sqlx(json(nullable))]
     pub template_input: Option<serde_json::Value>,
     pub terminal_at: Option<i64>,
-    /// #1147 S1 — migration 0077. The three columns behind [`WaveWorkspace`].
+    /// #1147 S1 — migration 0077. The three columns behind [`TrackWorkspace`].
     /// `workspace_path` is the only stored copy of the path; the old `cwd`
     /// column was dropped by that same migration.
     #[sqlx(try_from = "String")]
-    pub workspace_kind: WaveWorkspaceKind,
+    pub workspace_kind: TrackWorkspaceKind,
     pub workspace_path: String,
     pub workspace_frozen_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-impl From<WaveRow> for Wave {
-    fn from(r: WaveRow) -> Self {
-        Wave {
+impl From<TrackRow> for Track {
+    fn from(r: TrackRow) -> Self {
+        Track {
             id: r.id,
             area_id: r.area_id,
             title: r.title,
@@ -146,7 +146,7 @@ impl From<WaveRow> for Wave {
             purpose: r.purpose,
             template_input: r.template_input,
             terminal_at: r.terminal_at,
-            workspace: WaveWorkspace {
+            workspace: TrackWorkspace {
                 kind: r.workspace_kind,
                 path: r.workspace_path,
                 frozen_at: r.workspace_frozen_at,
@@ -158,20 +158,20 @@ impl From<WaveRow> for Wave {
 }
 
 #[cfg(test)]
-mod wave_select_columns_tests {
-    use super::{WAVE_SELECT_COLUMNS, WAVE_SELECT_COLUMNS_W};
+mod track_select_columns_tests {
+    use super::{TRACK_SELECT_COLUMNS, TRACK_SELECT_COLUMNS_W};
 
     /// The aliased list must be the unaliased list with `w.` in front of each
     /// name — nothing added, nothing dropped, same order. Without this the two
-    /// consts drift and the aliased `wave_detail` SELECT silently loses a
+    /// consts drift and the aliased `track_detail` SELECT silently loses a
     /// column at runtime, which is the exact failure the consts exist to stop.
     #[test]
-    fn wave_select_columns_lists_agree() {
-        let plain: Vec<String> = WAVE_SELECT_COLUMNS
+    fn track_select_columns_lists_agree() {
+        let plain: Vec<String> = TRACK_SELECT_COLUMNS
             .split(',')
             .map(|c| c.trim().to_string())
             .collect();
-        let aliased: Vec<String> = WAVE_SELECT_COLUMNS_W
+        let aliased: Vec<String> = TRACK_SELECT_COLUMNS_W
             .split(',')
             .map(|c| c.trim().to_string())
             .collect();
@@ -191,7 +191,7 @@ pub struct CardRow {
     #[sqlx(try_from = "String")]
     pub id: CardId,
     #[sqlx(try_from = "String")]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub kind: String,
     pub sort: f64,
     #[sqlx(json)]
@@ -206,7 +206,7 @@ impl From<CardRow> for Card {
     fn from(r: CardRow) -> Self {
         Card {
             id: r.id,
-            wave_id: r.wave_id,
+            track_id: r.track_id,
             kind: r.kind,
             sort: r.sort,
             payload: r.payload,
@@ -227,7 +227,7 @@ pub struct HarnessItemRow {
     #[sqlx(try_from = "String")]
     pub card_id: CardId,
     #[sqlx(try_from = "String")]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub thread_id: String,
     pub turn_id: Option<String>,
     pub item_uuid: Option<String>,
@@ -243,7 +243,7 @@ impl From<HarnessItemRow> for HarnessItem {
             id: r.id,
             runtime_id: r.runtime_id,
             card_id: r.card_id,
-            wave_id: r.wave_id,
+            track_id: r.track_id,
             thread_id: r.thread_id,
             turn_id: r.turn_id,
             item_uuid: r.item_uuid,
@@ -269,14 +269,14 @@ impl From<HarnessItemRow> for HarnessItem {
 /// and `runtime_id` is populated with the same value by the PR5 sink; the
 /// row type keeps these as `Option<String>` so older fixture rows can still
 /// decode in tests that exercise migration boundaries. Plain `String` ids
-/// (not the typed `CardId` / `WaveId`) keep the row decode total even for
+/// (not the typed `CardId` / `TrackId`) keep the row decode total even for
 /// orphaned (`card_id = NULL`) rows.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct WorkerFlowItemRow {
     pub id: i64,
     pub card_id: Option<String>,
     pub runtime_id: Option<String>,
-    pub wave_id: Option<String>,
+    pub track_id: Option<String>,
     pub worker_session_id: Option<String>,
     pub kind: String,
     pub payload: String,

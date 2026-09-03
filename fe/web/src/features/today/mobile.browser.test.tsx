@@ -22,10 +22,10 @@ describe('Today mobile presentation', () => {
     await page.viewport(390, 844);
     const { container } = render(
       <TodayPage
-        waves={[]}
+        tracks={[]}
         areas={[]}
         nowMs={Date.UTC(2026, 7, 31, 9, 30)}
-        renderWaveRow={() => null}
+        renderTrackRow={() => null}
       />,
     );
 

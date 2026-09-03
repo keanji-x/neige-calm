@@ -45,7 +45,7 @@ import styles from './mobile-list.module.css';
  * read `core/view/panel.ts`'s `MARKER` / `FIELD`. The props therefore take the
  * marker *value* as a bare `string`, and the attribute names are literals here.
  * What stops that second spelling drifting is not review:
- * `features/wave/page/mobile-projection.test.tsx` runs `checkProjectionIn` —
+ * `features/track/page/mobile-projection.test.tsx` runs `checkProjectionIn` —
  * whose selectors are built from `MARKER` — over the real rendered mobile panel,
  * so a literal that disagreed would leave the checker finding no marker at all.
  */
@@ -267,7 +267,7 @@ export function MobileListItem({
      * accessibility hole that is invisible from the DOM — nothing about a
      * described first button says a second one was skipped — so development and
      * CI throw, which is where an Astryx upgrade is looked at. Production does
-     * not: this component renders inside the wave route, the app configures no
+     * not: this component renders inside the track route, the app configures no
      * `errorComponent`, and a throw from a layout effect is caught by the
      * router's global `CatchBoundary`, which replaces the whole match — shell
      * and navigation included — with a bare error page. Trading the entire

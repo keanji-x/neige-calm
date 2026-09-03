@@ -58,11 +58,11 @@ pub fn row_head_sha(row: &EventRow) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, wave_id: &str) {
+pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, track_id: &str) {
     let rounds = event_rows(repo, "review.round").await;
     let merges = event_rows(repo, "forge.pr.merged").await;
     let issue_closed = event_rows(repo, "forge.issue.closed").await;
-    let lifecycle = event_rows(repo, "wave.lifecycle_changed").await;
+    let lifecycle = event_rows(repo, "track.lifecycle_changed").await;
     let ratify_resolved = event_rows(repo, "ratify.resolved").await;
 
     let mut max_round_by_subject: HashMap<SubjectKey, EventRow> = HashMap::new();
@@ -94,7 +94,7 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, wave_id: &str
 
         let later_grant = ratify_resolved.iter().find(|row| {
             row.id > max_round.id
-                && row.scope_wave.as_deref() == Some(wave_id)
+                && row.scope_track.as_deref() == Some(track_id)
                 && row.payload["decision"] == "grant"
         });
         let later_converged = later_grant.and_then(|grant| {
@@ -133,7 +133,7 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, wave_id: &str
         assert!(
             !lifecycle.iter().any(|row| {
                 row.id > max_round.id
-                    && row.scope_wave.as_deref() == Some(wave_id)
+                    && row.scope_track.as_deref() == Some(track_id)
                     && row.payload["to"] == "done"
             }),
             "unconverged max-n subject {key:?} must not reach done later"
@@ -142,7 +142,7 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, wave_id: &str
 }
 
 /// Direct executable form of INV-CAP-EXT (#888 design §3.3/§7c′), validating
-/// the wave's `review.round` rows however they were written: per subject, in
+/// the track's `review.round` rows however they were written: per subject, in
 /// event-row-id order, every adjacent pair `(prev, next)` must satisfy
 /// `n(next) == n(prev) + 1` and either `cap(next) == cap(prev)` (in-window) or
 /// all of `cap(next) == cap(prev) + 2` AND `n(prev) == cap(prev)` (prev
@@ -156,16 +156,16 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, wave_id: &str
 /// Returns per-subject extension counts so callers can pin exact totals.
 pub async fn assert_cap_extension_history(
     repo: &SqlxRepo,
-    wave_id: &str,
+    track_id: &str,
 ) -> HashMap<SubjectKey, usize> {
     let rounds: Vec<EventRow> = event_rows(repo, "review.round")
         .await
         .into_iter()
-        .filter(|row| row.scope_wave.as_deref() == Some(wave_id))
+        .filter(|row| row.scope_track.as_deref() == Some(track_id))
         .collect();
 
     let resolved_rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, actor, scope_wave, payload FROM events \
+        "SELECT id, actor, scope_track, payload FROM events \
          WHERE kind = 'ratify.resolved' ORDER BY id ASC",
     )
     .fetch_all(repo.pool())
@@ -173,10 +173,10 @@ pub async fn assert_cap_extension_history(
     .expect("ratify.resolved rows");
     let user_grant_ids: Vec<i64> = resolved_rows
         .into_iter()
-        .filter_map(|(id, actor, scope_wave, payload)| {
+        .filter_map(|(id, actor, scope_track, payload)| {
             let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
             let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            (scope_wave.as_deref() == Some(wave_id)
+            (scope_track.as_deref() == Some(track_id)
                 && payload["decision"] == "grant"
                 && actor == ActorId::User)
                 .then_some(id)
@@ -413,8 +413,8 @@ mod tests {
     fn row(id: i64, payload: serde_json::Value) -> EventRow {
         EventRow {
             id,
-            scope_kind: "wave".to_string(),
-            scope_wave: Some("w1".to_string()),
+            scope_kind: "track".to_string(),
+            scope_track: Some("w1".to_string()),
             scope_card: None,
             payload,
         }

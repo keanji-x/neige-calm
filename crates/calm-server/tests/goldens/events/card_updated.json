@@ -4,7 +4,7 @@
     "ev": "card.updated",
     "data": {
       "id": "card-01",
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "kind": "ui://plugin-x/view-y",
       "sort": 2.5,
       "payload": {

@@ -1,4 +1,4 @@
-// The Areas sheet: the area list, and one area's waves.
+// The Areas sheet: the area list, and one area's tracks.
 //
 // Presentational. The drill-in used to live here as `selectedAreaId` plus a
 // coupled `motion`, and the shell learned about it through a `window`
@@ -14,40 +14,40 @@
 import type { Area } from '../../../../core/domain/area.ts';
 import { visibleAreas } from '../../../../core/domain/area.ts';
 import {
-  lifecycleLabel, visibleWaves, waveDisplayTitle, type Wave,
-} from '../../../../core/domain/wave.ts';
+  lifecycleLabel, visibleTracks, trackDisplayTitle, type Track,
+} from '../../../../core/domain/track.ts';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
 
 export function MobileAreas({
-  areas, wavesByArea, selectedAreaId, motion, onSelectArea, onBack, onOpenWave,
+  areas, tracksByArea, selectedAreaId, motion, onSelectArea, onBack, onOpenTrack,
 }: Readonly<{
   areas: readonly Area[];
-  wavesByArea: ReadonlyMap<string, readonly Wave[]>;
+  tracksByArea: ReadonlyMap<string, readonly Track[]>;
   selectedAreaId: string | null;
   motion: 'none' | 'forward' | 'back';
   onSelectArea: (areaId: string) => void;
   onBack: () => void;
-  onOpenWave: (waveId: string) => void;
+  onOpenTrack: (trackId: string) => void;
 }>) {
   const rows = visibleAreas(areas);
   const selected = selectedAreaId === null ? undefined : rows.find((area) => area.id === selectedAreaId);
 
   if (selected !== undefined) {
-    const waves = visibleWaves(wavesByArea.get(selected.id) ?? []);
+    const tracks = visibleTracks(tracksByArea.get(selected.id) ?? []);
     return (
       <MobileListPage title={selected.name} backLabel="Areas" motion={motion} onBack={onBack}>
-        <MobileList title="Waves">
-          {waves.map((wave) => (
+        <MobileList title="Tracks">
+          {tracks.map((track) => (
             <MobileListItem
-              key={wave.id}
-              title={waveDisplayTitle(wave.title)}
-              meta={lifecycleLabel(wave.lifecycle)}
-              onSelect={() => onOpenWave(wave.id)}
+              key={track.id}
+              title={trackDisplayTitle(track.title)}
+              meta={lifecycleLabel(track.lifecycle)}
+              onSelect={() => onOpenTrack(track.id)}
             />
           ))}
-          {waves.length === 0 && <MobileListEmpty>No waves in this area yet.</MobileListEmpty>}
+          {tracks.length === 0 && <MobileListEmpty>No tracks in this area yet.</MobileListEmpty>}
         </MobileList>
       </MobileListPage>
     );
@@ -57,12 +57,12 @@ export function MobileAreas({
     <MobileListPage title="Areas" motion={motion}>
       <MobileList>
         {rows.map((area) => {
-          const waves = visibleWaves(wavesByArea.get(area.id) ?? []);
+          const tracks = visibleTracks(tracksByArea.get(area.id) ?? []);
           return (
             <MobileListItem
               key={area.id}
               title={area.name}
-              meta={`${waves.length} ${waves.length === 1 ? 'wave' : 'waves'}`}
+              meta={`${tracks.length} ${tracks.length === 1 ? 'track' : 'tracks'}`}
               onSelect={() => onSelectArea(area.id)}
             />
           );

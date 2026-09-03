@@ -6,7 +6,7 @@
 //!
 //!   * an exact-kind allowlist — `claude.hook`, `codex.hook`,
 //!     `harness.phase.changed`, `harness.item.added`, `overlay.set`.
-//!     Structural kinds (`card.*`, `wave.*`, `terminal.*`, …) and
+//!     Structural kinds (`card.*`, `track.*`, `terminal.*`, …) and
 //!     `overlay.deleted` are untouchable by construction; a new transient
 //!     kind accumulates until explicitly opted in here (allowlist fails
 //!     safe, blocklist would not);
@@ -32,8 +32,8 @@
 //! `codex.hook` rows older than the retention horizon disappear from the two
 //! production consumers that replay them from genesis:
 //!
-//!   1. the wave-fs hook transcript, `hook_events_for_card`
-//!      (crates/calm-truth/src/wave_fs_view.rs), which reads both hook kinds
+//!   1. the track-fs hook transcript, `hook_events_for_card`
+//!      (crates/calm-truth/src/track_fs_view.rs), which reads both hook kinds
 //!      and loses history older than the horizon for a card's transcript
 //!      projection;
 //!   2. harness recovery catch-up, `replay_harness_events_since`
@@ -48,7 +48,7 @@
 //! a positions-less `overlay.set` (`.or(current)`), so if the latest kept row
 //! lacked `positions` while a pruned older row carried them, the fold would
 //! change after pruning. Today's kernel writer always sends a full positions
-//! map (`spec_harness_layout_payload`, crates/calm-server/src/routes/waves.rs
+//! map (`spec_harness_layout_payload`, crates/calm-server/src/routes/tracks.rs
 //! — pinned by a unit test there), and the frontend layout writer PUTs the
 //! complete map on every drag. Any future partial-write overlay producer must
 //! revisit this carve-out.
@@ -155,7 +155,7 @@ pub fn spawn_events_pruner(pool: SqlitePool) {
 
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
-        // Match the wave-history pruner: skip the immediate boot tick and
+        // Match the track-history pruner: skip the immediate boot tick and
         // let the server settle before taking SQLite writer locks.
         tick.tick().await;
         loop {
@@ -991,7 +991,7 @@ mod tests {
     fn allowlist_never_contains_structural_or_tombstone_kinds() {
         assert!(!EVENTS_PRUNE_KINDS.contains(&"overlay.deleted"));
         assert!(EVENTS_PRUNE_KINDS.iter().all(|k| !k.starts_with("card.")
-            && !k.starts_with("wave.")
+            && !k.starts_with("track.")
             && !k.starts_with("area.")
             && !k.starts_with("terminal.")));
     }

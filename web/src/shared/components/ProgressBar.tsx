@@ -1,7 +1,7 @@
 // ---------------- ProgressBar ----------------
 //
 // `running=true` adds the live-pulse class so the bar gets the accent
-// shimmer. Callers compute the boolean via `isRunning(wave.lifecycle)`
+// shimmer. Callers compute the boolean via `isRunning(track.lifecycle)`
 // from `shared/lifecycle.ts`.
 
 export function ProgressBar({

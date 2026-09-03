@@ -15,7 +15,7 @@ import { ReportAppBlock } from './app';
 import {
   taskBlockPayloadSchema,
   type ReportBlock,
-} from '../../cards/builtins/wave-report';
+} from '../../cards/builtins/track-report';
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>();
@@ -26,11 +26,11 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
       hash,
       children,
     }: {
-      params: { waveId: string };
+      params: { trackId: string };
       hash?: string;
       children: React.ReactNode;
     }) => (
-      <a href={`/wave/${params.waveId}${hash ? `#${hash}` : ''}`}>{children}</a>
+      <a href={`/track/${params.trackId}${hash ? `#${hash}` : ''}`}>{children}</a>
     ),
   };
 });
@@ -382,27 +382,27 @@ describe('prose report links', () => {
       payload: { markdown },
     }) as ReportBlock;
 
-  it('renders a neige wave link as an in-app link with its block anchor', () => {
+  it('renders a neige track link as an in-app link with its block anchor', () => {
     render(
       <ReportBlockView
-        block={prose('[Source](neige://wave/wave_2#b_cafe)')}
+        block={prose('[Source](neige://wave/track_2#b_cafe)')}
       />,
     );
     expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute(
       'href',
-      '/wave/wave_2#b_cafe',
+      '/track/track_2#b_cafe',
     );
   });
 
   it('degrades an invalid fragment to a whole-report link', () => {
     render(
       <ReportBlockView
-        block={prose('[Source](neige://wave/wave_2#section)')}
+        block={prose('[Source](neige://wave/track_2#section)')}
       />,
     );
     expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute(
       'href',
-      '/wave/wave_2',
+      '/track/track_2',
     );
   });
 
@@ -763,7 +763,7 @@ describe('degraded blocks', () => {
     );
     expect(screen.getByRole('region', { name: 'Task review' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'source' })).toHaveAttribute(
-      'href', '/wave/w2#b_abcd',
+      'href', '/track/w2#b_abcd',
     );
     expect(screen.getByText('All checks pass')).toBeInTheDocument();
     expect(screen.getByText('Waits for: draft')).toBeInTheDocument();
@@ -807,22 +807,22 @@ describe('degraded blocks', () => {
     expect(screen.queryByText('Ready to queue')).not.toBeInTheDocument();
   });
 
-  it('acceptance 14b renders a deleted child wave as a non-clickable tombstone', () => {
+  it('acceptance 14b renders a deleted child track as a non-clickable tombstone', () => {
     const baseVerdict = {
       blockId: 'b_child', key: 'child', schedulable: false, status: 'running' as const,
-      gateResult: null, workerCardId: null, diagnostics: [], childWaveId: 'wave-child',
+      gateResult: null, workerCardId: null, diagnostics: [], childTrackId: 'track-child',
     };
     const { rerender } = render(<ReportTaskBlock payload={{
       key: 'child', kind: 'codex', goal: 'Delegate', ready: true, declared_by: 'spec',
-    }} verdict={{ ...baseVerdict, childWaveDeleted: true }} />);
-    expect(screen.getByText('Child wave deleted')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /child wave/i })).not.toBeInTheDocument();
+    }} verdict={{ ...baseVerdict, childTrackDeleted: true }} />);
+    expect(screen.getByText('Child track deleted')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /child track/i })).not.toBeInTheDocument();
 
     rerender(<ReportTaskBlock payload={{
       key: 'child', kind: 'codex', goal: 'Delegate', ready: true, declared_by: 'spec',
-    }} verdict={{ ...baseVerdict, childWaveDeleted: false }} />);
-    expect(screen.getByRole('link', { name: 'Open child wave' })).toHaveAttribute(
-      'href', '/wave/wave-child',
+    }} verdict={{ ...baseVerdict, childTrackDeleted: false }} />);
+    expect(screen.getByRole('link', { name: 'Open child track' })).toHaveAttribute(
+      'href', '/track/track-child',
     );
   });
 
@@ -843,16 +843,16 @@ describe('degraded blocks', () => {
     ['declaration_changed_in_flight', {}, /worker output is still available/],
     ['task_key_completed', {}, /already been delivered/],
     ['invalid_declaration', {}, /incomplete or invalid/],
-    ['tree_budget_exhausted', { tree_waves: 3, tree_task_budget: 2, share: 0, minimum_tree_task_budget: 3 }, /remove extra child waves/],
-    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, minimum_tree_task_budget: 4 }, /group’s excess in-progress work finish/],
-    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, admission_frozen: true, minimum_tree_task_budget: 6 }, /immutable in-progress work than its share/],
-    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, bounds_tied: true, minimum_tree_task_budget: 4 }, /raising either one alone will not admit another card/],
+    ['tree_budget_exhausted', { tree_tracks: 3, tree_task_budget: 2, share: 0, minimum_tree_task_budget: 3 }, /remove extra child tracks/],
+    ['tree_budget_exhausted', { tree_tracks: 2, tree_task_budget: 2, share: 1, minimum_tree_task_budget: 4 }, /group’s excess in-progress work finish/],
+    ['tree_budget_exhausted', { tree_tracks: 2, tree_task_budget: 2, share: 1, admission_frozen: true, minimum_tree_task_budget: 6 }, /immutable in-progress work than its share/],
+    ['tree_budget_exhausted', { tree_tracks: 2, tree_task_budget: 2, share: 1, bounds_tied: true, minimum_tree_task_budget: 4 }, /raising either one alone will not admit another card/],
     ['spec_task_ceiling', { ceiling: 2, occupied: 3, minimum_spec_task_ceiling: 4, bounds_tied: true }, /settings to at least 4.*raising either one alone/],
     ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1, admission_frozen: true }, /group is frozen.*settings to at least 1/],
     ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1, admission_frozen: true, capacity_raise_unavailable: true }, /group is frozen.*no higher legal target.*local limit alone/],
     ['spec_task_ceiling', { ceiling: 64, occupied: 64, minimum_spec_task_ceiling: 65, bounds_tied: true, capacity_raise_unavailable: true }, /both full.*no higher legal target/],
     ['tree_budget_exhausted', {}, /cannot be released by raising/],
-    ['tree_root_unresolved', {}, /operator must repair the wave tree/],
+    ['tree_root_unresolved', {}, /operator must repair the track tree/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
   });
@@ -915,7 +915,7 @@ describe('degraded blocks', () => {
         log_tail: 'secret implementation output', attempt: 7, status_detail: 'gate-infra',
       },
       diagnostics: taskDiagnosticCodes.map((code) => ({
-        code, messageArgs: {}, relatedBlockIds: ['b_abcd'], relatedWaveId: 'wave-safe',
+        code, messageArgs: {}, relatedBlockIds: ['b_abcd'], relatedTrackId: 'track-safe',
         path: 'refs', message: '', action: 'relink_reference',
       })),
     }} />);
@@ -946,39 +946,39 @@ describe('degraded blocks', () => {
 
     const treeCopy = taskDiagnosticText({
       code: 'tree_budget_exhausted', messageArgs: {
-        root_wave_id: 'wave-root-985', tree_waves: 2, tree_task_budget: 2, share: 1,
+        root_track_id: 'track-root-985', tree_tracks: 2, tree_task_budget: 2, share: 1,
         minimum_tree_task_budget: 4,
       },
       relatedBlockIds: [], path: 'key', message: '', action: actions.get('tree_budget_exhausted'),
     });
-    expect(treeCopy).toMatch(/top wave/);
-    expect(treeCopy).toContain('wave-root-985');
-    expect(treeCopy).not.toMatch(/wave settings/);
+    expect(treeCopy).toMatch(/top track/);
+    expect(treeCopy).toContain('track-root-985');
+    expect(treeCopy).not.toMatch(/track settings/);
 
     const unavailableTreeCopy = taskDiagnosticText({
       code: 'tree_budget_exhausted', messageArgs: {
-        root_wave_id: 'wave-root-985', tree_waves: 1, tree_task_budget: 64, share: 64,
+        root_track_id: 'track-root-985', tree_tracks: 1, tree_task_budget: 64, share: 64,
       },
       relatedBlockIds: [], path: 'key', message: '',
     });
     expect(unavailableTreeCopy).toMatch(/cannot be released by raising/);
-    expect(unavailableTreeCopy).toMatch(/in-progress work finish|reduce the number of linked waves/);
+    expect(unavailableTreeCopy).toMatch(/in-progress work finish|reduce the number of linked tracks/);
     expect(unavailableTreeCopy).not.toMatch(/at least\s*(?:0|$)/);
 
     const ceilingCopy = taskDiagnosticText({
       code: 'spec_task_ceiling', messageArgs: { ceiling: 1, occupied: 3, minimum_spec_task_ceiling: 4 },
       relatedBlockIds: [], path: 'key', message: '', action: actions.get('spec_task_ceiling'),
     });
-    expect(ceilingCopy).toMatch(/wave settings/);
+    expect(ceilingCopy).toMatch(/track settings/);
     expect(ceilingCopy).toMatch(/at least 4/);
-    expect(ceilingCopy).not.toMatch(/top wave/);
+    expect(ceilingCopy).not.toMatch(/top track/);
 
     // The server-rendered compatibility message and the web copy must both
     // preserve the executable numeric target in frozen recovery guidance.
     expect(rust).toContain('raise tree_task_budget to at least {minimum_budget}');
     const frozenTreeCopy = taskDiagnosticText({
       code: 'tree_budget_exhausted', messageArgs: {
-        root_wave_id: 'wave-root-985', tree_waves: 2, tree_task_budget: 2, share: 1,
+        root_track_id: 'track-root-985', tree_tracks: 2, tree_task_budget: 2, share: 1,
         admission_frozen: true, minimum_tree_task_budget: 6,
       },
       relatedBlockIds: [], path: 'key', message: '', action: actions.get('tree_budget_exhausted'),
@@ -995,19 +995,19 @@ describe('degraded blocks', () => {
       }} verdict={{
         blockId: 'b_tree', key: 'tree-action', schedulable: false,
         diagnostics: [diagnostic('tree_budget_exhausted', actions.get('tree_budget_exhausted') ?? '')],
-      }} waveId="wave-root-985" />
+      }} trackId="track-root-985" />
       <ReportTaskBlock payload={{
         key: 'ceiling-action', kind: 'codex', goal: 'Ceiling action', ready: true, declared_by: 'spec',
       }} verdict={{
         blockId: 'b_ceiling', key: 'ceiling-action', schedulable: false,
         diagnostics: [diagnostic('spec_task_ceiling', actions.get('spec_task_ceiling') ?? '')],
-      }} waveId="wave-root-985" />
+      }} trackId="track-root-985" />
       <ReportTaskBlock payload={{
         key: 'ordinary-action', kind: 'codex', goal: 'Ordinary action', ready: true, declared_by: 'spec',
       }} verdict={{
         blockId: 'b_ordinary', key: 'ordinary-action', schedulable: false,
         diagnostics: [diagnostic('reference_missing', 'relink_reference')],
-      }} waveId="wave-root-985" />
+      }} trackId="track-root-985" />
     </>);
     expect(screen.getAllByText(/Review capacity:/)).toHaveLength(2);
     expect(screen.getByText(/Open related item:/)).toBeInTheDocument();
@@ -1036,9 +1036,9 @@ describe('degraded blocks', () => {
  * printed the whole contract, escaped, at the top of every user's report.
  */
 describe('a prose block that carries a maintenance contract (#1185)', () => {
-  /* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+  /* The kernel's own bytes, read off `crates/calm-types/src/track_report_*.md`
      — not a transcription. Only the shipped text proves this front end hides
-     *the* contract every wave is born with.
+     *the* contract every track is born with.
 
      Read in `beforeAll`, not at module scope: `kernel-initial-body.ts`
      promises it never touches the filesystem at import time, and a

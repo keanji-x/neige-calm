@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cardIdFromLocation, cardIdFromSearchString, fromFromLocation, fromFromSearchString,
   hasPanelPushedMarker, hasSpecOpenMarker, panelFromLocation, panelFromSearchString, pathFor,
-  renderedMobilePanel, sameWaveSearch, validateWaveSearch,
+  renderedMobilePanel, sameTrackSearch, validateTrackSearch,
 } from './navigation.ts';
 
 describe('cardIdFromSearchString', () => {
@@ -29,7 +29,7 @@ describe('cardIdFromLocation', () => {
 
 describe('pathFor', () => {
   it('does not embed the card query in the path', () => {
-    expect(pathFor({ name: 'wave', waveId: 'w1', cardId: 'c1' })).toBe('/wave/w1');
+    expect(pathFor({ name: 'track', trackId: 'w1', cardId: 'c1' })).toBe('/track/w1');
   });
 });
 
@@ -65,57 +65,57 @@ describe('panel and from parsers', () => {
   });
 });
 
-describe('validateWaveSearch', () => {
+describe('validateTrackSearch', () => {
   it('keeps the three whitelisted fields and drops everything else', () => {
-    expect(validateWaveSearch({ panel: 'tasks', from: 'area', other: 'x' }))
+    expect(validateTrackSearch({ panel: 'tasks', from: 'area', other: 'x' }))
       .toEqual({ panel: 'tasks', from: 'area' });
   });
 
   it('drops illegal values, empty strings, and repeated keys parsed as arrays', () => {
-    expect(validateWaveSearch({ panel: 'report', from: 'today', card: '' })).toEqual({});
-    expect(validateWaveSearch({ panel: ['cards', 'tasks'], from: ['pages'] })).toEqual({});
-    expect(validateWaveSearch({})).toEqual({});
+    expect(validateTrackSearch({ panel: 'report', from: 'today', card: '' })).toEqual({});
+    expect(validateTrackSearch({ panel: ['cards', 'tasks'], from: ['pages'] })).toEqual({});
+    expect(validateTrackSearch({})).toEqual({});
   });
 
   it('[#1191 §0.1] drops the panel when a card is present', () => {
-    expect(validateWaveSearch({ card: 'c1', panel: 'cards', from: 'pages' }))
+    expect(validateTrackSearch({ card: 'c1', panel: 'cards', from: 'pages' }))
       .toEqual({ card: 'c1', from: 'pages' });
   });
 });
 
-describe('sameWaveSearch', () => {
-  const onW1 = { pathname: '/wave/w1', searchStr: '?card=c1&from=area' };
+describe('sameTrackSearch', () => {
+  const onW1 = { pathname: '/track/w1', searchStr: '?card=c1&from=area' };
 
-  it('refuses a location that is not on the expected wave', () => {
-    expect(sameWaveSearch(onW1, 'w2', { card: undefined })).toBeNull();
-    expect(sameWaveSearch({ pathname: '/', searchStr: '' }, 'w1', {})).toBeNull();
-    expect(sameWaveSearch({ pathname: '/area/w1', searchStr: '' }, 'w1', {})).toBeNull();
+  it('refuses a location that is not on the expected track', () => {
+    expect(sameTrackSearch(onW1, 'w2', { card: undefined })).toBeNull();
+    expect(sameTrackSearch({ pathname: '/', searchStr: '' }, 'w1', {})).toBeNull();
+    expect(sameTrackSearch({ pathname: '/area/w1', searchStr: '' }, 'w1', {})).toBeNull();
   });
 
   it('keeps the fields the patch does not mention', () => {
-    expect(sameWaveSearch(onW1, 'w1', {})).toEqual({ card: 'c1', from: 'area' });
-    expect(sameWaveSearch(onW1, 'w1', { card: undefined })).toEqual({ from: 'area' });
+    expect(sameTrackSearch(onW1, 'w1', {})).toEqual({ card: 'c1', from: 'area' });
+    expect(sameTrackSearch(onW1, 'w1', { card: undefined })).toEqual({ from: 'area' });
   });
 
   it('distinguishes an absent key from an explicit undefined', () => {
-    const location = { pathname: '/wave/w1', searchStr: '?panel=tasks&from=pages' };
-    expect(sameWaveSearch(location, 'w1', { from: undefined })).toEqual({ panel: 'tasks' });
-    expect(sameWaveSearch(location, 'w1', {})).toEqual({ panel: 'tasks', from: 'pages' });
+    const location = { pathname: '/track/w1', searchStr: '?panel=tasks&from=pages' };
+    expect(sameTrackSearch(location, 'w1', { from: undefined })).toEqual({ panel: 'tasks' });
+    expect(sameTrackSearch(location, 'w1', {})).toEqual({ panel: 'tasks', from: 'pages' });
   });
 
   it('rebuilds from the whitelist instead of spreading the previous search', () => {
     const polluted = {
-      pathname: '/wave/w1',
+      pathname: '/track/w1',
       searchStr: '?panel=tasks&debug=1&card=a&card=b&from=area',
     };
     // `debug` never crosses; the duplicated `card` is rejected rather than
     // carried through as an array.
-    expect(sameWaveSearch(polluted, 'w1', {})).toEqual({ panel: 'tasks', from: 'area' });
+    expect(sameTrackSearch(polluted, 'w1', {})).toEqual({ panel: 'tasks', from: 'area' });
   });
 
   it('[#1191 §0.1] clears the panel whenever a card is set', () => {
-    const location = { pathname: '/wave/w1', searchStr: '?panel=cards&from=pages' };
-    expect(sameWaveSearch(location, 'w1', { card: 'c9' })).toEqual({ card: 'c9', from: 'pages' });
+    const location = { pathname: '/track/w1', searchStr: '?panel=cards&from=pages' };
+    expect(sameTrackSearch(location, 'w1', { card: 'c9' })).toEqual({ card: 'c9', from: 'pages' });
   });
 
   /*
@@ -130,10 +130,10 @@ describe('sameWaveSearch', () => {
    * parameter was unopenable.
    */
   it('[#1191 §1.4] keeps the panel when the illegal-card bounce clears the card', () => {
-    const location = { pathname: '/wave/w1', searchStr: '?card=bad&panel=tasks&from=area' };
-    expect(sameWaveSearch(location, 'w1', { card: undefined })).toEqual({ panel: 'tasks', from: 'area' });
+    const location = { pathname: '/track/w1', searchStr: '?card=bad&panel=tasks&from=area' };
+    expect(sameTrackSearch(location, 'w1', { card: undefined })).toEqual({ panel: 'tasks', from: 'area' });
     // Reading alone still never emits the pair: the patch is what releases it.
-    expect(sameWaveSearch(location, 'w1', {})).toEqual({ card: 'bad', from: 'area' });
+    expect(sameTrackSearch(location, 'w1', {})).toEqual({ card: 'bad', from: 'area' });
   });
 });
 

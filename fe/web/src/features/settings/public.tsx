@@ -69,7 +69,7 @@ export type SettingsSection = 'network' | 'appearance' | 'plugins' | 'about';
  *
  *   externalLink — traffic leaving this machine, which is all Network is about
  *   viewColumns  — how the app is laid out and painted
- *   copy         — a template is the thing that gets copied into a new wave
+ *   copy         — a template is the thing that gets copied into a new track
  *   wrench       — the workspace's tooling
  *   info         — read-only facts about the build
  */

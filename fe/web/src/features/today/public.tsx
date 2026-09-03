@@ -1,5 +1,5 @@
 // Today — the landing route. Presentational and props-driven: the data comes
-// from app/router, and navigation leaves through `onOpenWave` (features must
+// from app/router, and navigation leaves through `onOpenTrack` (features must
 // not import app).
 //
 // §8.1 — the user opens this to answer one question: *is anything waiting for
@@ -20,8 +20,8 @@ import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/co
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import {
-  activeWavesOn, isRunning, needsUserAttention, visibleWaves, type Wave,
-} from '../../../../core/domain/wave.ts';
+  activeTracksOn, isRunning, needsUserAttention, visibleTracks, type Track,
+} from '../../../../core/domain/track.ts';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
@@ -37,27 +37,27 @@ import styles from './today.module.css';
  *
  * The list of these is **permanently empty today, and that is a seam, not dead
  * code**. The mockup carried a synthetic `SURF_SCHEDULE` keyed on hand-written
- * wave ids; under real kernel data those ids never appear, so hour-scheduled
+ * track ids; under real kernel data those ids never appear, so hour-scheduled
  * events stay empty until a scheduling plugin lands (drop-in: derive
  * `ScheduledEvent[]` from overlays where `kind === 'scheduled'`).
  *
- * The two agenda sources — scheduled events and live wave activity — **must
- * co-exist**: a day with scheduled work *and* an open wave shows both, rather
+ * The two agenda sources — scheduled events and live track activity — **must
+ * co-exist**: a day with scheduled work *and* an open track shows both, rather
  * than letting the schedule layer monopolise the surface. That is why this
  * arrives as a prop with an empty default instead of a hard-coded `[]` inside
  * the component: deleting the branch would silently delete the seam, and the
  * contract test feeds a synthetic event through it to prove it still works.
  */
-export type ScheduledEvent = Readonly<{ wave: Wave; date: Date; hour: number }>;
+export type ScheduledEvent = Readonly<{ track: Track; date: Date; hour: number }>;
 
 /**
- * How Today draws one wave. It is injected rather than imported because the row
- * belongs to `features/wave` and a feature domain may not import a sibling;
+ * How Today draws one track. It is injected rather than imported because the row
+ * belongs to `features/track` and a feature domain may not import a sibling;
  * `app/router` supplies it, the same way it composes the area page's list. The
  * variant vocabulary is §6.3's, so every surface still renders the one row.
  */
-export type WaveRowRenderer = (
-  wave: Wave,
+export type TrackRowRenderer = (
+  track: Track,
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
 ) => ReactNode;
 
@@ -83,7 +83,7 @@ const WRITE_SUMMARY = 'Write today\u2019s progress';
 const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
 
 export type TodayPageProps = Readonly<{
-  waves: readonly Wave[];
+  tracks: readonly Track[];
   areas: readonly Area[];
   /**
    * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
@@ -96,14 +96,14 @@ export type TodayPageProps = Readonly<{
    * the server's** (INV-TODAYDOC-003). Nothing on this page may re-derive it
    * from the document: the kernel's freshly-minted report is a well-formed
    * document carrying the maintenance-contract comment and four empty H1s, so
-   * `readWaveReport` returns non-null for it and a null-check here would
+   * `readTrackReport` returns non-null for it and a null-check here would
    * render four empty headings where the empty state belongs. Matching on the
    * body text would be worse — it is mirror code for a body the kernel owns.
    */
   launchpad?: TodayLaunchpadWire | null;
   /**
    * The launchpad's report, already rendered. Injected rather than imported
-   * for the same reason `renderWaveRow` is: `ReportDocument` is
+   * for the same reason `renderTrackRow` is: `ReportDocument` is
    * `features/report` and a feature domain may not import a sibling.
    */
   launchpadDocument?: ReactNode;
@@ -143,13 +143,13 @@ export type TodayPageProps = Readonly<{
    */
   summaryNotice?: ReactNode;
   /** Navigation lives inside the injected row; Today itself opens nothing. */
-  renderWaveRow: WaveRowRenderer;
+  renderTrackRow: TrackRowRenderer;
   /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
   scheduledEvents?: readonly ScheduledEvent[];
   /**
    * The panel card's second module, composed by `app/router`.
    *
-   * A slot rather than props for the same reason `renderWaveRow` is a callback:
+   * A slot rather than props for the same reason `renderTrackRow` is a callback:
    * `features/**` may not import a sibling domain, and the conversation list is
    * `features/chat`. The same slot appears on all three routes — that identical
    * second module is the point of the skeleton.
@@ -181,11 +181,11 @@ const RECENT_LIMIT = 12;
  * and that is the whole load-bearing reason for the order: a bar that grew with
  * the workspace would push the document off the first screen, which is the one
  * thing the layout exists to prevent. `waiting` has no natural bound — every
- * blocked wave in every area lands in it — so without a cap that property is
- * simply false, and a review found it false with 100 blocked waves.
+ * blocked track in every area lands in it — so without a cap that property is
+ * simply false, and a review found it false with 100 blocked tracks.
  *
  * The overflow is not dropped. It sits behind one inert-until-clicked control,
- * so the *loaded* page is bounded while every waiting wave stays reachable:
+ * so the *loaded* page is bounded while every waiting track stays reachable:
  * these rows are not repeated in the panel (RUNNING and RECENT both exclude
  * anything already counted as waiting), so hiding them outright would make
  * them unreachable from this page.
@@ -222,7 +222,7 @@ function isoDate(day: Date): ISODateString {
 }
 
 export function TodayPage({
-  waves, areas, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
+  tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
   onWriteSummary, summaryPending, summaryNotice,
 }: TodayPageProps) {
@@ -258,15 +258,15 @@ export function TodayPage({
     );
   }
 
-  const shownWaves = visibleWaves(waves);
-  const waiting = shownWaves.filter(needsUserAttention);
-  const running = shownWaves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
-  // RECENT shares the same wave list — no second request — and excludes anything
-  // already shown above: one wave appearing twice on a page distorts both the
+  const shownTracks = visibleTracks(tracks);
+  const waiting = shownTracks.filter(needsUserAttention);
+  const running = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsUserAttention(track));
+  // RECENT shares the same track list — no second request — and excludes anything
+  // already shown above: one track appearing twice on a page distorts both the
   // counts and the scan.
-  const shown = new Set([...waiting, ...running].map((wave) => wave.id));
-  const recent = shownWaves
-    .filter((wave) => !shown.has(wave.id))
+  const shown = new Set([...waiting, ...running].map((track) => track.id));
+  const recent = shownTracks
+    .filter((track) => !shown.has(track.id))
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, RECENT_LIMIT);
 
@@ -275,13 +275,13 @@ export function TodayPage({
    * A brand-new workspace: one hero line, and *still the document*.
    *
    * `areas` is the user-visible list — #175 filters the system area out of
-   * `GET /api/areas`, and the launchpad wave lives in the system area. So
-   * "no areas and no waves" does NOT mean "no Today report": a workspace whose
+   * `GET /api/areas`, and the launchpad track lives in the system area. So
+   * "no areas and no tracks" does NOT mean "no Today report": a workspace whose
    * only content is the day's report lands exactly here, and returning early
    * with just the hero made that report invisible and swallowed a failed
    * resolve along with it.
    */
-  if (waves.length === 0 && areas.length === 0) {
+  if (tracks.length === 0 && areas.length === 0) {
     return (
       <div className={styles.page}>
         <TodayHeader
@@ -316,7 +316,7 @@ export function TodayPage({
         <div className={styles.mainColumn}>
           {/* The status bar. An empty section renders nothing at all — no
               label, no dashed box. The absence is the message. */}
-          <WaitingSection waves={waiting} render={renderWaveRow} />
+          <WaitingSection tracks={waiting} render={renderTrackRow} />
 
           {/* …and the document immediately after it. */}
           <TodayDocument
@@ -345,7 +345,7 @@ export function TodayPage({
             Module class is not nameable from the shell's stylesheet, so the
             marker is the seam.
 
-            Today needs it more than the area and wave pages do, not less. Their
+            Today needs it more than the area and track pages do, not less. Their
             panels are sticky at the same offset the drawer starts at, so they
             stay behind it; this column is not sticky, so it scrolls up out from
             under the drawer's top edge and would surface above it. */}
@@ -354,10 +354,10 @@ export function TodayPage({
             <PanelModule title="Calendar">
               <Calendar
                 today={today}
-                waves={shownWaves}
+                tracks={shownTracks}
                 areas={areas}
                 scheduledEvents={scheduledEvents}
-                renderWaveRow={renderWaveRow}
+                renderTrackRow={renderTrackRow}
                 nowMs={now.getTime()}
               />
             </PanelModule>
@@ -365,8 +365,8 @@ export function TodayPage({
                 modules follow §6.1's rule that a section with zero rows is not
                 rendered, which is what `Section` already does in the main
                 column — an empty RUNNING module would read as a gap. */}
-            <PanelRows title="Running" waves={running} render={renderWaveRow} />
-            <PanelRows title="Recent" waves={recent} render={renderWaveRow} />
+            <PanelRows title="Running" tracks={running} render={renderTrackRow} />
+            <PanelRows title="Recent" tracks={recent} render={renderTrackRow} />
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
@@ -387,15 +387,15 @@ export function TodayPage({
  * anywhere (INV-A11Y-061), and it navigates nowhere — it reveals rows that are
  * already on this page.
  */
-function WaitingSection({ waves, render }: {
-  waves: readonly Wave[];
-  render: WaveRowRenderer;
+function WaitingSection({ tracks, render }: {
+  tracks: readonly Track[];
+  render: TrackRowRenderer;
 }) {
   const [expanded, setExpanded] = useState(false);
   const rowsId = 'today-waiting-rows';
-  if (waves.length === 0) return null;
-  const hidden = waves.length - WAITING_ROW_LIMIT;
-  const shown = expanded ? waves : waves.slice(0, WAITING_ROW_LIMIT);
+  if (tracks.length === 0) return null;
+  const hidden = tracks.length - WAITING_ROW_LIMIT;
+  const shown = expanded ? tracks : tracks.slice(0, WAITING_ROW_LIMIT);
   return (
     <section className={styles.section}>
       <h2 className={styles.sectionLabel}>Waiting on you</h2>
@@ -404,8 +404,8 @@ function WaitingSection({ waves, render }: {
           reader cannot jump to what just appeared. Today renders one of these
           per page, so a constant id is not a collision risk. */}
       <div className={styles.rows} id={rowsId}>
-        {shown.map((wave) => (
-          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
+        {shown.map((track) => (
+          <span key={track.id}>{render(track, { variant: 'compact' })}</span>
         ))}
       </div>
       {hidden > 0 && (
@@ -508,25 +508,25 @@ function SummaryTrigger({ label, onWrite, pending, notice }: {
 }
 
 /**
- * A wave list as a panel module, rendered only when it has rows.
+ * A track list as a panel module, rendered only when it has rows.
  *
  * `variant: 'compact'` — the same rows these two lists have always been, moved
  * from the main column into the panel and nothing else. The `panel` variant is
  * the *agenda's*, and it is what `app/router` keys the row's delete affordance
  * off; handing it to Running and Recent would put a second Delete button on
- * every wave that is also on today's agenda, in the same card.
+ * every track that is also on today's agenda, in the same card.
  */
-function PanelRows({ title, waves, render }: {
+function PanelRows({ title, tracks, render }: {
   title: string;
-  waves: readonly Wave[];
-  render: WaveRowRenderer;
+  tracks: readonly Track[];
+  render: TrackRowRenderer;
 }) {
-  if (waves.length === 0) return null;
+  if (tracks.length === 0) return null;
   return (
     <PanelModule title={title}>
       <div className={styles.rows}>
-        {waves.map((wave) => (
-          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
+        {tracks.map((track) => (
+          <span key={track.id}>{render(track, { variant: 'compact' })}</span>
         ))}
       </div>
     </PanelModule>
@@ -575,12 +575,12 @@ function Clock({ now }: { now: Date }) {
   );
 }
 
-function Calendar({ today, waves, areas, scheduledEvents, renderWaveRow, nowMs }: {
+function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs }: {
   today: Date;
-  waves: readonly Wave[];
+  tracks: readonly Track[];
   areas: readonly Area[];
   scheduledEvents: readonly ScheduledEvent[];
-  renderWaveRow: WaveRowRenderer;
+  renderTrackRow: TrackRowRenderer;
   nowMs?: number;
 }) {
   const [selected, setSelected] = useState<Date>(today);
@@ -596,10 +596,10 @@ function Calendar({ today, waves, areas, scheduledEvents, renderWaveRow, nowMs }
   const scheduledAgenda = scheduledEvents
     .filter((event) => sameDay(event.date, selected))
     .toSorted((left, right) => left.hour - right.hour);
-  // INV-TODAY-002 — live wave activity is computed independently of the
+  // INV-TODAY-002 — live track activity is computed independently of the
   // scheduled list; both render into the same agenda below, as the same row.
-  const waveAgenda = activeWavesOn(waves, selected, now);
-  const scheduledIds = new Set(scheduledAgenda.map((event) => event.wave.id));
+  const trackAgenda = activeTracksOn(tracks, selected, now);
+  const scheduledIds = new Set(scheduledAgenda.map((event) => event.track.id));
 
   return (
     /*
@@ -637,14 +637,14 @@ function Calendar({ today, waves, areas, scheduledEvents, renderWaveRow, nowMs }
 
         <div className={styles.weekGrid}>
           {days.map((day) => {
-            // De-dup by wave id: a wave with both a scheduled event and an
+            // De-dup by track id: a track with both a scheduled event and an
             // overlapping activity window is counted once, not twice.
             const seen = new Set<string>();
             for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day))) {
-              seen.add(event.wave.id);
+              seen.add(event.track.id);
             }
-            for (const wave of activeWavesOn(waves, day, now)) {
-              seen.add(wave.id);
+            for (const track of activeTracksOn(tracks, day, now)) {
+              seen.add(track.id);
             }
             const isToday = sameDay(day, today);
             const isSelected = sameDay(day, selected);
@@ -662,14 +662,14 @@ function Calendar({ today, waves, areas, scheduledEvents, renderWaveRow, nowMs }
                    assistive tech, so this is the only route to "how much is on
                    Thursday?" for anyone not reading it by eye. */
                 aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
-                  + (seen.size === 0 ? '' : `, ${seen.size} wave${seen.size === 1 ? '' : 's'}`)}
+                  + (seen.size === 0 ? '' : `, ${seen.size} track${seen.size === 1 ? '' : 's'}`)}
                 onClick={() => setSelected(day)}
               >
                 <span className={styles.dayNumber}>{day.getDate()}</span>
                 {/*
                   A count, in hint tone, not a coloured dot.
 
-                  The dot was one mark for any number of waves, coloured by
+                  The dot was one mark for any number of tracks, coloured by
                   whichever area happened to sort first — so it answered "whose
                   is the first one?", which nobody asks, while the question you
                   scan a week for ("how much is on Thursday?") went unanswered.
@@ -710,21 +710,21 @@ function Calendar({ today, waves, areas, scheduledEvents, renderWaveRow, nowMs }
         <div className={styles.rows}>
           {/* Only when *both* sources are empty. The string is the one the live
               contract pins; it satisfies §5.3 as well as any rewrite would. */}
-          {scheduledAgenda.length === 0 && waveAgenda.length === 0 && (
+          {scheduledAgenda.length === 0 && trackAgenda.length === 0 && (
             <p className={styles.inlineEmpty}>Nothing scheduled.</p>
           )}
           {scheduledAgenda.map((event) => (
-            <span key={`scheduled-${event.wave.id}-${event.hour}`}>
-              {renderWaveRow(event.wave, {
+            <span key={`scheduled-${event.track.id}-${event.hour}`}>
+              {renderTrackRow(event.track, {
                 variant: 'panel',
                 hourLabel: formatHour(event.hour),
-                areaName: areaOf(event.wave.areaId, areas)?.name ?? UNKNOWN_AREA,
+                areaName: areaOf(event.track.areaId, areas)?.name ?? UNKNOWN_AREA,
               })}
             </span>
           ))}
-          {waveAgenda.filter((wave) => !scheduledIds.has(wave.id)).map((wave) => (
-            <span key={`wave-${wave.id}`}>
-              {renderWaveRow(wave, { variant: 'panel', areaName: areaOf(wave.areaId, areas)?.name ?? UNKNOWN_AREA })}
+          {trackAgenda.filter((track) => !scheduledIds.has(track.id)).map((track) => (
+            <span key={`track-${track.id}`}>
+              {renderTrackRow(track, { variant: 'panel', areaName: areaOf(track.areaId, areas)?.name ?? UNKNOWN_AREA })}
             </span>
           ))}
         </div>

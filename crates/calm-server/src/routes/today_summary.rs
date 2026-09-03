@@ -2,8 +2,8 @@
 //! progress into Today's document.
 //!
 //! This is the action the whole issue was opened for ("有一个 conversation 总结
-//! 今天做了些什么"). The document is the launchpad wave's `wave-report` card
-//! (design D1); the writer is an assistant conversation on that wave, which the
+//! 今天做了些什么"). The document is the launchpad track's `track-report` card
+//! (design D1); the writer is an assistant conversation on that track, which the
 //! user can read in Today's Conversations module — it *is* the conversation
 //! they asked for.
 //!
@@ -28,7 +28,7 @@
 //!
 //! Steps 4 and 5 are **one path, not two branches**. An earlier revision gave
 //! the summary to a "re-run" branch and let the create path carry only its
-//! first message; because `create_wave_conversation` skips its send once
+//! first message; because `create_track_conversation` skips its send once
 //! `user_message_already_enqueued` is true, that shape produced a summary with
 //! no material on the very first use — the one impression the user gets. See
 //! the design's §0c.1.
@@ -47,7 +47,7 @@ use crate::activity_window::{
     WorkspaceActivityWindow, local_day_window, workspace_activity_window,
 };
 use crate::actor::Actor;
-use crate::conversation_keys::{DerivedConversationKeys, derive_wave_conversation_keys};
+use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversation_keys};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::ActorId;
 use crate::model::now_ms;
@@ -58,7 +58,7 @@ use crate::per_card_lock::lock_card;
 use crate::routes::cards::{SendSpecInputRequest, run_spec_card_operation, send_spec_input};
 use crate::routes::conversations_shared::user_message_already_enqueued;
 use crate::routes::today::ensure_today_launchpad;
-use crate::routes::wave_conversations::{NewWaveConversationBody, create_wave_conversation};
+use crate::routes::track_conversations::{NewTrackConversationBody, create_track_conversation};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
 pub fn router() -> Router<AppState> {
@@ -71,7 +71,7 @@ pub fn router() -> Router<AppState> {
 /// the actor, not the date.** This has been got wrong once already and the
 /// failure is quiet, so the reason is written out in full.
 ///
-/// `derive_wave_conversation_keys` feeds one digest to **both** ids: the card is
+/// `derive_track_conversation_keys` feeds one digest to **both** ids: the card is
 /// `conv-{digest[..32]}` and the operation key is `wave-conversation-{digest}`
 /// (`conversation_keys.rs`). So anything mixed into the key changes the **card
 /// id** too. Mix in `workspace_key_digest(cwd)` and one workspace re-point
@@ -97,19 +97,19 @@ pub const TODAY_SUMMARY_CONVERSATION_KEY: &str = "today-summary";
 /// **this** function. Copying `conversation_keys.rs`'s own golden would prove
 /// nothing here — that one stays green with every line of this module deleted.
 ///
-/// It is also the only route from a wave id to a card id in this module, which
+/// It is also the only route from a track id to a card id in this module, which
 /// is what makes the golden a statement about the endpoint rather than about a
 /// helper the endpoint might not use.
-pub(crate) fn summary_conversation_keys(wave_id: &str) -> DerivedConversationKeys {
-    derive_wave_conversation_keys(wave_id, TODAY_SUMMARY_CONVERSATION_KEY)
+pub(crate) fn summary_conversation_keys(track_id: &str) -> DerivedConversationKeys {
+    derive_track_conversation_keys(track_id, TODAY_SUMMARY_CONVERSATION_KEY)
 }
 
 /// The derived summary-conversation card id, for tests that must assert the
 /// endpoint landed on *the* card rather than on *a* card.
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
-pub fn today_summary_card_id_for_test(wave_id: &str) -> String {
-    summary_conversation_keys(wave_id).card_id
+pub fn today_summary_card_id_for_test(track_id: &str) -> String {
+    summary_conversation_keys(track_id).card_id
 }
 
 /// The actor every request from this endpoint is attributed to.
@@ -184,7 +184,7 @@ fn synthetic_actor() -> Actor {
 ///   plus frontend schema and goldens, and is outside this slice.
 ///
 /// **What the text must still be: static, byte-for-byte, forever.**
-/// `POST /api/waves/{id}/conversations` binds it into the operation payload as
+/// `POST /api/tracks/{id}/conversations` binds it into the operation payload as
 /// a SHA-256 (arm (e)), so a date, a timestamp or the activity counts in here
 /// would make every later retry under the same key a 409. It is one of the
 /// three variables D5 has to eliminate to keep the deterministic key safe; the
@@ -200,7 +200,7 @@ fn synthetic_actor() -> Actor {
 /// fail-closed and already named in D5's residual-window paragraph; what it is
 /// not is impossible, and an earlier wording here said it was.
 pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-progress writer. \
-     Stand by and do nothing yet: do not read or touch the wave report until a \
+     Stand by and do nothing yet: do not read or touch the track report until a \
      later message tells you the day's activity. When that message arrives, \
      rewrite the report in full following the maintenance contract carried in \
      its body.";
@@ -284,8 +284,8 @@ impl TodaySummaryCreateCounters {
 /// What the caller gets back on success.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TodaySummaryStarted {
-    /// The launchpad wave, whose report the agent is being asked to rewrite.
-    pub wave_id: String,
+    /// The launchpad track, whose report the agent is being asked to rewrite.
+    pub track_id: String,
     /// The summary conversation's card. Stable for the launchpad's lifetime
     /// (INV-TODAYDOC-011) and openable in Today's Conversations module.
     pub card_id: String,
@@ -298,7 +298,7 @@ pub struct TodaySummaryStarted {
 /// `MAX_SPEC_INPUT_CHARS` (32,768), and a prompt built from a fixed template
 /// and five `i64`s has a maximum length that can be computed by reading it —
 /// `the_prompt_is_bounded_far_below_the_spec_input_ceiling` computes it. Adding
-/// wave titles or a detail list would remove that property, and the design says
+/// track titles or a detail list would remove that property, and the design says
 /// what re-adding it would then cost (a deterministic character budget plus
 /// 32,768/32,769/CJK boundary cases).
 ///
@@ -307,7 +307,7 @@ pub struct TodaySummaryStarted {
 /// it could would be an instruction to hallucinate.
 fn summary_prompt(activity: &WorkspaceActivityWindow) -> String {
     format!(
-        "Write today's progress into this wave's report card, following the \
+        "Write today's progress into this track's report card, following the \
          maintenance contract carried in the report body: it is a snapshot of \
          now, it has four fixed sections, and each write REWRITES it in full.\n\
          \n\
@@ -315,23 +315,23 @@ fn summary_prompt(activity: &WorkspaceActivityWindow) -> String {
          counts are all the activity data available to you — there is no tool \
          to query for more, so write about what these numbers plus the \
          workspace itself support, and do not invent specifics:\n\
-         - waves whose lifecycle changed: {}\n\
+         - tracks whose lifecycle changed: {}\n\
          - report edits: {}\n\
          - tasks completed: {}\n\
          - tasks failed: {}\n\
-         - distinct waves touched: {}\n",
-        activity.wave_lifecycle_changed,
-        activity.wave_report_edited,
+         - distinct tracks touched: {}\n",
+        activity.track_lifecycle_changed,
+        activity.track_report_edited,
         activity.task_completed,
         activity.task_failed,
-        activity.waves_touched,
+        activity.tracks_touched,
     )
 }
 
 #[utoipa::path(
     post,
     path = "/api/today/summary",
-    tag = "waves",
+    tag = "tracks",
     responses(
         (status = 200, description = "The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response.", body = TodaySummaryStarted),
         (status = 409, description = "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.", body = ErrorBody),
@@ -358,20 +358,20 @@ pub(crate) async fn write_today_summary(
     // id when it has one, and an absent launchpad simply excludes nothing.
     // Ensuring here would mean an empty day still materialized a workspace and
     // started a harness — the thing step 2 exists to avoid.
-    let launchpad = app.repo.wave_get_launchpad().await?;
+    let launchpad = app.repo.track_get_launchpad().await?;
     let (start_ms, end_ms) = local_day_window(now_ms());
     let activity = workspace_activity_window(
         &pool,
         start_ms,
         end_ms,
-        launchpad.as_ref().map(|wave| wave.id.as_str()),
+        launchpad.as_ref().map(|track| track.id.as_str()),
     )
     .await?;
 
     // INV-TODAYDOC-007's enforcement point, and it is here rather than in the
     // frontend on purpose: hiding the button is UI, and a POST straight at this
     // endpoint would sail past it. The statement is deliberately narrow — it is
-    // about *this* endpoint. `POST /api/waves/{id}/conversations` and
+    // about *this* endpoint. `POST /api/tracks/{id}/conversations` and
     // `POST /api/cards/{id}/spec/input` stay reachable and are not in scope: a
     // user typing to an agent by hand is not the thing being prevented.
     if activity.is_empty() {
@@ -388,8 +388,8 @@ pub(crate) async fn write_today_summary(
     // an explicit action — is where it belongs (§5.1).
     let (_status, Json(launchpad)) =
         ensure_today_launchpad(State(app.clone()), synthetic_actor()).await?;
-    let wave_id = launchpad.wave_id;
-    let derived = summary_conversation_keys(&wave_id);
+    let track_id = launchpad.track_id;
+    let derived = summary_conversation_keys(&track_id);
 
     // **The branch predicate is "the card exists AND it has ever been sent a
     // message", not "the card exists".** Two review channels found the gap from
@@ -401,7 +401,7 @@ pub(crate) async fn write_today_summary(
     //   behind (`deletable: false`, so the user cannot clear it) with no
     //   runtime and no first message.
     // * The create operation *succeeds* — card and harness minted — and then
-    //   `create_wave_conversation`'s own first `send_spec_input` fails (a 503
+    //   `create_track_conversation`'s own first `send_spec_input` fails (a 503
     //   from a shared app-server that went down in between). It returns `Err`,
     //   so no summary is sent either, and the card is left with an empty
     //   transcript.
@@ -419,7 +419,7 @@ pub(crate) async fn write_today_summary(
     // that way one statement covers both entrances, plus the ordinary one where
     // the card was minted seconds ago by this very request.
     //
-    // The recovery is NOT "call `create_wave_conversation` again". Against an
+    // The recovery is NOT "call `create_track_conversation` again". Against an
     // existing card the adapter's `validate` refuses to re-mint and answers 409
     // — correctly, since the card is not the thing missing. What is missing is
     // the message, so the message is what gets sent, down the one channel that
@@ -446,14 +446,14 @@ pub(crate) async fn write_today_summary(
         // The real handler, not a reimplementation of it: the mint, the
         // derived-id guard, the four retry arms and the first-message claim all
         // have to be the ones production uses.
-        let created = create_wave_conversation(
+        let created = create_track_conversation(
             State(s.clone()),
             State(w.clone()),
             State(cs.clone()),
             synthetic_actor(),
             headers,
-            Path(wave_id.clone()),
-            Json(NewWaveConversationBody {
+            Path(track_id.clone()),
+            Json(NewTrackConversationBody {
                 text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
             }),
         )
@@ -511,11 +511,11 @@ pub(crate) async fn write_today_summary(
     // deduplicated by a permanent row in the ordinary case.
     //
     // **Under the per-card first-message claim, and that is not optional.**
-    // This is the same read-then-send `create_wave_conversation` and
+    // This is the same read-then-send `create_track_conversation` and
     // `create_area_conversation` perform, and all three need the same claim for
     // the same reason: two concurrent requests both read "no user message yet"
     // and both send, so the agent gets the same standing instruction twice.
-    // Moving this step out of `create_wave_conversation` and into here moved it
+    // Moving this step out of `create_track_conversation` and into here moved it
     // out from under that lock; measured, two concurrent triggers against a
     // card with an empty transcript delivered two bootstraps.
     //
@@ -562,7 +562,7 @@ pub(crate) async fn write_today_summary(
         // claim" is not true here.
         let _first_message_claim =
             lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
-        if !user_message_already_enqueued(&w, &wave_id, &derived.card_id).await? {
+        if !user_message_already_enqueued(&w, &track_id, &derived.card_id).await? {
             send_summary(
                 &s,
                 &w,
@@ -579,7 +579,7 @@ pub(crate) async fn write_today_summary(
     send_summary(&s, &w, &cs, &derived.card_id, summary_prompt(&activity)).await?;
 
     Ok(Json(TodaySummaryStarted {
-        wave_id,
+        track_id,
         card_id: derived.card_id,
     }))
 }
@@ -670,21 +670,23 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let wave = s
+    let track = s
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {card_id}", card.wave_id)))?;
+        .ok_or_else(|| {
+            CalmError::NotFound(format!("track {} for card {card_id}", card.track_id))
+        })?;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         // Constructed directly, because `Actor::to_actor_id` cannot produce it:
         // `Actor("kernel")` falls through to `ActorId::User`. This restart is
         // not the user's act — nobody asked for it — so it is the kernel's.
         actor: ActorId::Kernel,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: card.id.clone(),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: None,
         // The whole point. `true` here is `/spec/reset`'s behaviour and would
         // delete the conversation.
@@ -706,7 +708,7 @@ mod tests {
     use super::*;
 
     /// INV-TODAYDOC-011 — the key this endpoint derives from is the bare
-    /// constant, so the card id depends on the wave and on nothing else.
+    /// constant, so the card id depends on the track and on nothing else.
     ///
     /// A golden, and a golden on **this module's** function: mixing anything
     /// into the key — a workspace digest, an actor, a date — changes these two
@@ -723,11 +725,11 @@ mod tests {
     #[test]
     fn the_summary_conversation_key_is_bare() {
         assert_eq!(TODAY_SUMMARY_CONVERSATION_KEY, "today-summary");
-        let derived = summary_conversation_keys("wave-1");
-        assert_eq!(derived.card_id, "conv-fc3a9cd32d1edca695e58ec734b27ec5");
+        let derived = summary_conversation_keys("track-1");
+        assert_eq!(derived.card_id, "conv-afe76dc78204daed3ab52a9007298eb0");
         assert_eq!(
             derived.operation_key,
-            "wave-conversation-fc3a9cd32d1edca695e58ec734b27ec52f64dcfb2abe0a43a8f192f4ec10917d"
+            "wave-conversation-afe76dc78204daed3ab52a9007298eb07f6e17761e2ec9da3718288dad41baff"
         );
     }
 
@@ -757,11 +759,11 @@ mod tests {
     #[test]
     fn the_prompt_is_bounded_far_below_the_spec_input_ceiling() {
         let widest = summary_prompt(&WorkspaceActivityWindow {
-            wave_lifecycle_changed: i64::MIN,
-            wave_report_edited: i64::MIN,
+            track_lifecycle_changed: i64::MIN,
+            track_report_edited: i64::MIN,
             task_completed: i64::MIN,
             task_failed: i64::MIN,
-            waves_touched: i64::MIN,
+            tracks_touched: i64::MIN,
         });
         assert!(
             widest.chars().count() < crate::routes::cards::MAX_SPEC_INPUT_CHARS,

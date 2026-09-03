@@ -1,11 +1,11 @@
 use crate::mcp_server::framing::RpcError;
-use crate::model::WaveLifecycle;
+use crate::model::TrackLifecycle;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WriteArgs {
     pub message: String,
-    pub lifecycle: Option<WaveLifecycle>,
+    pub lifecycle: Option<TrackLifecycle>,
 }
 
 pub(crate) fn parse_write_args(args: &Value, tool: &str) -> Result<WriteArgs, RpcError> {
@@ -35,17 +35,17 @@ pub(crate) fn parse_write_args(args: &Value, tool: &str) -> Result<WriteArgs, Rp
     Ok(WriteArgs { message, lifecycle })
 }
 
-pub(crate) fn parse_lifecycle_name(s: &str, tool: &str) -> Result<WaveLifecycle, RpcError> {
+pub(crate) fn parse_lifecycle_name(s: &str, tool: &str) -> Result<TrackLifecycle, RpcError> {
     match s {
-        "draft" => Ok(WaveLifecycle::Draft),
-        "planning" => Ok(WaveLifecycle::Planning),
-        "dispatching" => Ok(WaveLifecycle::Dispatching),
-        "working" => Ok(WaveLifecycle::Working),
-        "blocked" => Ok(WaveLifecycle::Blocked),
-        "reviewing" => Ok(WaveLifecycle::Reviewing),
-        "done" => Ok(WaveLifecycle::Done),
-        "canceled" => Ok(WaveLifecycle::Canceled),
-        "failed" => Ok(WaveLifecycle::Failed),
+        "draft" => Ok(TrackLifecycle::Draft),
+        "planning" => Ok(TrackLifecycle::Planning),
+        "dispatching" => Ok(TrackLifecycle::Dispatching),
+        "working" => Ok(TrackLifecycle::Working),
+        "blocked" => Ok(TrackLifecycle::Blocked),
+        "reviewing" => Ok(TrackLifecycle::Reviewing),
+        "done" => Ok(TrackLifecycle::Done),
+        "canceled" => Ok(TrackLifecycle::Canceled),
+        "failed" => Ok(TrackLifecycle::Failed),
         other => Err(RpcError::invalid_params(format!(
             "{tool}: unknown lifecycle `{other}`. Allowed: draft, planning, \
              dispatching, working, blocked, reviewing, done, canceled, failed."
@@ -60,7 +60,7 @@ pub(crate) fn lifecycle_schema() -> Value {
             "draft", "planning", "dispatching", "working",
             "blocked", "reviewing", "done", "canceled", "failed"
         ],
-        "description": "Optional wave lifecycle transition. Use planning after \
+        "description": "Optional track lifecycle transition. Use planning after \
             understanding the goal, dispatching when requesting workers, working \
             when work is underway, blocked when user input is needed, reviewing \
             when validating worker results, done after acceptance, or failed \
@@ -74,7 +74,7 @@ pub(crate) fn message_schema() -> Value {
         "minLength": 1,
         "description": "Required human-readable rationale for this write. The \
             kernel persists it on the emitted event as agent_message and on \
-            WaveUpdated.agent_message when a lifecycle transition is requested."
+            TrackUpdated.agent_message when a lifecycle transition is requested."
     })
 }
 

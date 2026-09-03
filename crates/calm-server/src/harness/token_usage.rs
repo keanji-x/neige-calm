@@ -78,7 +78,7 @@ pub const BASELINE_TOKENS: i64 = 12_000;
 /// is why this rides the runtime snapshot (`worker_sessions.handle_state`,
 /// one row per runtime, rewritten in place) rather than being appended to
 /// `harness_items`. An append-per-response would need either its own event —
-/// a wave-vcs commit plus a 300-row transcript refetch for every model
+/// a track-vcs commit plus a 300-row transcript refetch for every model
 /// response — or no event at all, in which case no reader would ever see it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsage {

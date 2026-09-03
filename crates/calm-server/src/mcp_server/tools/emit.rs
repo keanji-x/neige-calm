@@ -21,9 +21,9 @@
 //! ## Scope construction
 //!
 //! Every emitted event's `EventScope` is anchored on the *caller's*
-//! card — the kernel pulls `wave_id` + `area_id` by looking up the
-//! card row + the wave row, so the spec card's emissions land under
-//! `EventScope::Card { card, wave, area }`. Worker cards emit under
+//! card — the kernel pulls `track_id` + `area_id` by looking up the
+//! card row + the track row, so the spec card's emissions land under
+//! `EventScope::Card { card, track, area }`. Worker cards emit under
 //! their own card scope; the role gate enforces that they can't
 //! escape it.
 
@@ -40,7 +40,7 @@ use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action};
 use crate::model::CardRole;
 use crate::operation::forge_action_adapter::ProbeSpec;
 use crate::operation::workspace_lease::{
-    git_repo_root_for_wave_cwd, workspace_lease_path_for, workspace_slice_branch_for,
+    git_repo_root_for_track_cwd, workspace_lease_path_for, workspace_slice_branch_for,
 };
 use crate::session_projection_repo::AgentProvider;
 use calm_types::forge_git::{
@@ -187,7 +187,7 @@ async fn task_complete(
     if let Err(error) = submit_worker_success_commit(&ctx, &identity).await {
         tracing::warn!(
             card_id = %identity.card_id,
-            wave_id = identity.wave_id.as_deref().unwrap_or("<missing>"),
+            track_id = identity.track_id.as_deref().unwrap_or("<missing>"),
             error = %error,
             "task_complete: worker success persisted but deterministic commit enqueue failed"
         );
@@ -199,29 +199,29 @@ async fn submit_worker_success_commit(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
 ) -> Result<(), String> {
-    let wave_id = identity
-        .wave_id
+    let track_id = identity
+        .track_id
         .clone()
-        .ok_or_else(|| "worker success commit requires a wave-scoped caller".to_string())?;
-    let wave = ctx
+        .ok_or_else(|| "worker success commit requires a track-scoped caller".to_string())?;
+    let track = ctx
         .repo
-        .wave_get(&wave_id)
+        .track_get(&track_id)
         .await
-        .map_err(|e| format!("worker success commit wave lookup: {e}"))?
-        .ok_or_else(|| format!("unknown wave `{wave_id}`"))?;
-    if wave.area_id.as_str() != identity.area_id.as_str() {
-        return Err("worker success commit wave belongs to a different area".into());
+        .map_err(|e| format!("worker success commit track lookup: {e}"))?
+        .ok_or_else(|| format!("unknown track `{track_id}`"))?;
+    if track.area_id.as_str() != identity.area_id.as_str() {
+        return Err("worker success commit track belongs to a different area".into());
     }
 
     let card_id = identity.card_id.clone();
     let Some(cwd_lease) =
-        codex_git_worktree_lease_for_completion(identity, &wave_id, &wave.workspace.path)?
+        codex_git_worktree_lease_for_completion(identity, &track_id, &track.workspace.path)?
     else {
         return Ok(());
     };
-    let branch = workspace_slice_branch_for(&wave_id, &card_id)
+    let branch = workspace_slice_branch_for(&track_id, &card_id)
         .map_err(|e| format!("worker success commit branch: {e}"))?;
-    let message = format!("neige: worker {card_id} @ wave {wave_id}");
+    let message = format!("neige: worker {card_id} @ track {track_id}");
 
     let payload = PluginForgePayload {
         argv: vec![
@@ -257,7 +257,7 @@ async fn submit_worker_success_commit(
     match submit_forge_action(
         ctx,
         GIT_FORGE_PLUGIN_ID,
-        wave_id,
+        track_id,
         card_id,
         cwd_lease,
         payload,
@@ -272,27 +272,27 @@ async fn submit_worker_success_commit(
 
 fn codex_git_worktree_lease_for_completion(
     identity: &ToolCallIdentity,
-    wave_id: &str,
-    wave_cwd: &str,
+    track_id: &str,
+    track_cwd: &str,
 ) -> Result<Option<PathBuf>, String> {
     if identity.provider != AgentProvider::Codex {
         tracing::debug!(
             card_id = %identity.card_id,
-            wave_id,
+            track_id,
             provider = ?identity.provider,
             "task_complete: skipping auto commit for non-codex worker"
         );
         return Ok(None);
     }
 
-    let repo_root = git_repo_root_for_wave_cwd(wave_id, wave_cwd)
+    let repo_root = git_repo_root_for_track_cwd(track_id, track_cwd)
         .map_err(|e| format!("worker success commit repo root lookup: {e}"))?;
-    let path = workspace_lease_path_for(&repo_root, wave_id, &identity.card_id)
+    let path = workspace_lease_path_for(&repo_root, track_id, &identity.card_id)
         .map_err(|e| format!("worker success commit workspace path: {e}"))?;
     if !is_isolated_git_worktree(&path) {
         tracing::debug!(
             card_id = %identity.card_id,
-            wave_id,
+            track_id,
             path = %path.display(),
             "task_complete: skipping auto commit because workspace lease is not an isolated git worktree"
         );
@@ -441,8 +441,8 @@ mod tests {
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx, session_start_runtime_tx};
     use crate::db::{RepoSyncDomainRaw, RouteRepo};
     use crate::event::EventBus;
-    use crate::ids::WaveId;
-    use crate::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+    use crate::ids::TrackId;
+    use crate::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
     use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
     use crate::operation::workspace_lease::{
         acquire_plain_workspace_lease_tx, release_workspace_lease_for_card_repo,
@@ -455,7 +455,7 @@ mod tests {
     };
     use crate::state::{DaemonClient, WriteContext};
     use crate::terminal_renderer::TerminalRendererRegistry;
-    use crate::wave_area_cache::WaveAreaCache;
+    use crate::track_area_cache::TrackAreaCache;
     use std::fs;
     use tempfile::TempDir;
     use tokio::sync::OnceCell;
@@ -464,7 +464,7 @@ mod tests {
         _tmp: TempDir,
         repo: Arc<SqlxRepo>,
         ctx: Arc<AppContext>,
-        wave_id: String,
+        track_id: String,
         area_id: String,
         repo_root: PathBuf,
     }
@@ -510,8 +510,8 @@ mod tests {
             )
             .await;
         let codex_worktree_path = fx.worktree_path(&codex_worktree.card_id);
-        let branch =
-            workspace_slice_branch_for(&fx.wave_id, &codex_worktree.card_id).expect("slice branch");
+        let branch = workspace_slice_branch_for(&fx.track_id, &codex_worktree.card_id)
+            .expect("slice branch");
         fx.add_git_worktree(&codex_worktree_path, &branch);
         fx.lease(&codex_worktree.card_id, &codex_worktree_path)
             .await;
@@ -532,8 +532,8 @@ mod tests {
             )
             .await;
         let codex_worktree_path = fx.worktree_path(&codex_worktree.card_id);
-        let branch =
-            workspace_slice_branch_for(&fx.wave_id, &codex_worktree.card_id).expect("slice branch");
+        let branch = workspace_slice_branch_for(&fx.track_id, &codex_worktree.card_id)
+            .expect("slice branch");
         fx.add_git_worktree(&codex_worktree_path, &branch);
         fx.lease(&codex_worktree.card_id, &codex_worktree_path)
             .await;
@@ -544,12 +544,12 @@ mod tests {
 
         let idem_key = format!(
             "{GIT_FORGE_PLUGIN_ID}:{}:{}:git.commit:auto",
-            fx.wave_id, codex_worktree.card_id
+            fx.track_id, codex_worktree.card_id
         );
         let payload = forge_payload_by_idem(&fx.repo, &idem_key).await;
         let message = format!(
-            "neige: worker {} @ wave {}",
-            codex_worktree.card_id, fx.wave_id
+            "neige: worker {} @ track {}",
+            codex_worktree.card_id, fx.track_id
         );
         assert_eq!(
             payload["argv"],
@@ -576,8 +576,8 @@ mod tests {
             )
             .await;
         let codex_worktree_path = fx.worktree_path(&codex_worktree.card_id);
-        let branch =
-            workspace_slice_branch_for(&fx.wave_id, &codex_worktree.card_id).expect("slice branch");
+        let branch = workspace_slice_branch_for(&fx.track_id, &codex_worktree.card_id)
+            .expect("slice branch");
         fx.add_git_worktree(&codex_worktree_path, &branch);
         fx.lease(&codex_worktree.card_id, &codex_worktree_path)
             .await;
@@ -596,7 +596,7 @@ mod tests {
 
         let payloads = wait_for_event_payloads(&fx.repo, "worktree.committed", 1).await;
         let head = git_stdout(&codex_worktree_path, ["rev-parse", "HEAD"]);
-        assert_eq!(payloads[0]["wave_id"], fx.wave_id);
+        assert_eq!(payloads[0]["track_id"], fx.track_id);
         assert_eq!(payloads[0]["card_id"], codex_worktree.card_id);
         assert_eq!(payloads[0]["branch"], branch);
         assert_eq!(payloads[0]["commit_sha"], head);
@@ -619,7 +619,7 @@ mod tests {
             let card = self
                 .repo
                 .card_create(NewCard {
-                    wave_id: WaveId::from(self.wave_id.clone()),
+                    track_id: TrackId::from(self.track_id.clone()),
                     title: None,
                     kind: "codex".into(),
                     sort: None,
@@ -655,7 +655,7 @@ mod tests {
                 role: CardRole::Worker,
                 provider: identity_provider,
                 session_id: runtime_id,
-                wave_id: Some(self.wave_id.clone()),
+                track_id: Some(self.track_id.clone()),
                 area_id: self.area_id.clone(),
                 thread_id: format!("thread-{}", card.id),
             }
@@ -665,7 +665,7 @@ mod tests {
             self.repo_root
                 .join(".claude")
                 .join("worktrees")
-                .join(&self.wave_id)
+                .join(&self.track_id)
                 .join(card_id)
         }
 
@@ -690,7 +690,7 @@ mod tests {
             let mut tx = begin_immediate_tx(self.repo.pool())
                 .await
                 .expect("begin lease tx");
-            acquire_plain_workspace_lease_tx(&mut tx, card_id, &self.wave_id, "op-test", path)
+            acquire_plain_workspace_lease_tx(&mut tx, card_id, &self.track_id, "op-test", path)
                 .await
                 .expect("acquire lease");
             tx.commit().await.expect("commit lease tx");
@@ -730,8 +730,8 @@ mod tests {
             })
             .await
             .expect("create area");
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "commit guard".into(),
@@ -743,7 +743,7 @@ mod tests {
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
-            .expect("create wave");
+            .expect("create track");
         let events = EventBus::new();
         let completion = OperationCompletionBus::new();
         let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
@@ -769,9 +769,9 @@ mod tests {
         let plugin_host = Arc::new(OnceCell::new());
         let ctx = Arc::new(AppContext {
             repo: route_repo,
-            wave_vcs: None,
+            track_vcs: None,
             events,
-            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: tmp.path().join("gate-logs"),
             plugin_host,
@@ -782,7 +782,7 @@ mod tests {
             _tmp: tmp,
             repo,
             ctx,
-            wave_id: wave.id.to_string(),
+            track_id: track.id.to_string(),
             area_id: area.id.to_string(),
             repo_root,
         }

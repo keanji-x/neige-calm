@@ -9,10 +9,10 @@ declare module '../registry.js' {
 export type AssistantCard = Readonly<{ type: 'assistant'; id: string }>;
 
 /**
- * The wave-assistant discriminator (#1189), and the *only* copy of it.
+ * The track-assistant discriminator (#1189), and the *only* copy of it.
  *
  * The kernel writes `harness_profile: "assistant"` onto the card it mints for a
- * wave conversation (`crates/calm-server/src/plain_chat.rs::card_is_wave_assistant`)
+ * track conversation (`crates/calm-server/src/plain_chat.rs::card_is_track_assistant`)
  * and that marker is what every question about the card is answered from: it is
  * hidden from CARDS because it has no surface, and it opens the conversation
  * drawer instead. Those are one decision, so the router imports this predicate
@@ -45,7 +45,7 @@ export const ASSISTANT_CARD_ENTRY = Object.freeze({
   headless: true,
   defaultSize: Object.freeze({ w: 1, h: 1, minW: 1, minH: 1 }),
   title: () => 'Assistant',
-  accessibleName: () => 'Wave assistant',
+  accessibleName: () => 'Track assistant',
   create: Object.freeze({ mode: 'kernel-minted-only' } as const),
   fromKernel: (card: KernelCardInput): AssistantCard | null => (
     card.kind === 'codex' && isAssistantHarnessPayload(card.payload)

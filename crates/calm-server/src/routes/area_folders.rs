@@ -10,8 +10,8 @@
 //! covering row is unique and needs no tiebreak (issue #275).
 //!
 //! The claim rules themselves live in [`calm_truth::area_folder_claim`]
-//! so this route and the wave-create `attach_folder` path in
-//! [`crate::routes::waves`] cannot drift apart.
+//! so this route and the track-create `attach_folder` path in
+//! [`crate::routes::tracks`] cannot drift apart.
 //!
 //! These endpoints sit outside the event-sourced sync domain in PR 1
 //! — folders are operational mapping state, not co-edit content. PR 2+
@@ -196,7 +196,7 @@ pub(crate) async fn resolve_path(
     // `area_folder_create_checked` rejects ancestor/descendant overlap
     // atomically, so at most one row can be an ancestor of (or equal to)
     // the query. `find_owner` is therefore a uniqueness oracle and needs
-    // no tiebreak — and it is the *same* function the wave-create owner
+    // no tiebreak — and it is the *same* function the track-create owner
     // scan calls, so the two resolvers cannot disagree (issue #275).
     let best = find_owner(&folders, &normalized).cloned();
     Ok(Json(best.map(|f| AreaResolve {

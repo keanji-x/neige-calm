@@ -1,16 +1,16 @@
 // The area route, on the skeleton every route now shares: a one-row header, an
 // unbounded document in the main column, and one rounded card top-right holding
-// two modules — the wave list, then the conversation list.
+// two modules — the track list, then the conversation list.
 //
-// This overturns §8.2's "这一页*就是*一个列表". Picking a wave is still the
+// This overturns §8.2's "这一页*就是*一个列表". Picking a track is still the
 // page's first job and the list is still the card's first module; what changed
 // is that an area now has somewhere to put what comes *out* of the work, which
 // it previously did not.
 //
 // Presentational by construction. It never fetches, never deletes, never
-// navigates; every escape is a prop. In particular it does NOT render the wave
+// navigates; every escape is a prop. In particular it does NOT render the track
 // list itself — `features/**` may not import a sibling feature domain, so
-// `app/router` composes `<AreaPage waveList={<WaveList …/>} />`.
+// `app/router` composes `<AreaPage trackList={<TrackList …/>} />`.
 
 import type { ReactNode } from 'react';
 
@@ -27,9 +27,9 @@ import styles from './page.module.css';
 
 export type AreaPageProps = Readonly<{
   area: Area;
-  waveCount: number;
-  /** The wave list, composed by `app/router`. Owns the empty state too. */
-  waveList: ReactNode;
+  trackCount: number;
+  /** The track list, composed by `app/router`. Owns the empty state too. */
+  trackList: ReactNode;
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
@@ -38,7 +38,7 @@ export type AreaPageProps = Readonly<{
   conversationAction?: ReactNode;
   onRenameArea: (name: string) => void | Promise<void>;
   onDeleteArea: (signal: AbortSignal) => void | Promise<void>;
-  onRequestNewWave: () => void;
+  onRequestNewTrack: () => void;
 }>;
 
 /**
@@ -51,12 +51,12 @@ export type AreaPageProps = Readonly<{
  * both flags so a *rejected* `onDeleteArea` cannot strand the dialog.
  */
 export function AreaPage({
-  area, waveCount, waveList, report, conversationList, conversationAction,
-  onRenameArea, onDeleteArea, onRequestNewWave,
+  area, trackCount, trackList, report, conversationList, conversationAction,
+  onRenameArea, onDeleteArea, onRequestNewTrack,
 }: AreaPageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteArea(signal));
   const typed = useTypedConfirm(deletion.open ? area.name : '');
-  const copy = deleteAreaCopy(area.name, waveCount);
+  const copy = deleteAreaCopy(area.name, trackCount);
 
   return (
     <div className={styles.page}>
@@ -66,17 +66,17 @@ export function AreaPage({
         is gone with it, so `--header-h` is 32.
 
         The cwd was not an area's fact. An area has no `cwd` column; this page
-        synthesised one by asking whether every wave inside happened to agree,
+        synthesised one by asking whether every track inside happened to agree,
         and printed the answer as though it were an attribute of the area. That
-        is the same defect as the wave count, one layer down: a derived number
-        dressed as a stored one. Worse, it was unstable — adding one wave in
-        another folder made the area's "identity" vanish. A wave's cwd is real
-        (the agent literally runs there) and stays on the wave page.
+        is the same defect as the track count, one layer down: a derived number
+        dressed as a stored one. Worse, it was unstable — adding one track in
+        another folder made the area's "identity" vanish. A track's cwd is real
+        (the agent literally runs there) and stays on the track page.
       */}
       <PageHeader
         align="document"
         /*
-         * No identity dot and no wave count.
+         * No identity dot and no track count.
          *
          * The dot was the only colour on the page, and it was restating the
          * name directly beside it — on a route whose whole content is a quiet
@@ -85,7 +85,7 @@ export function AreaPage({
          * the calendar day dot.
          *
          * The count answered a question nobody asks. You open an area to pick a
-         * wave, not to learn how many there are, and the list below already
+         * track, not to learn how many there are, and the list below already
          * says it — at a glance, and with the names attached.
          */
         title={
@@ -100,8 +100,8 @@ export function AreaPage({
         }
         actions={
           /*
-            One control. The `+` moved to the WAVES module head, next to the
-            list it creates into — a page-level "new wave" and a list-level one
+            One control. The `+` moved to the TRACKS module head, next to the
+            list it creates into — a page-level "new track" and a list-level one
             are the same action, and two buttons with the same accessible name
             is a defect rather than redundancy.
 
@@ -156,17 +156,17 @@ export function AreaPage({
         <aside className={styles.panel} data-nc-panel="">
           <PanelCard>
             <PanelModule
-              title="Waves"
-              action={<PanelAction label="New wave" onClick={onRequestNewWave}><Icon name="plus" size="sm" /></PanelAction>}
+              title="Tracks"
+              action={<PanelAction label="New track" onClick={onRequestNewTrack}><Icon name="plus" size="sm" /></PanelAction>}
             >
-              {waveList}
+              {trackList}
             </PanelModule>
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
       </div>
 
-      {/* Deleting an area cascades to every wave in it: the one operation in the
+      {/* Deleting an area cascades to every track in it: the one operation in the
           product that earns a typed confirm (§4.3 / §6.13). The rail's entry
           point opens the same dialog with the same copy. */}
       <ConfirmDialog

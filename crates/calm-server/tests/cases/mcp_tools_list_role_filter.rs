@@ -27,7 +27,7 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.task.verdict",
         // #1211 S3 — the spec agent's naming write. Added as an entry, not by
         // loosening the assertion: the exact set is the contract.
-        "calm.wave.rename",
+        "calm.track.rename",
     ]
 }
 
@@ -84,7 +84,7 @@ async fn tools_list_for_spec_role_does_not_leak_aliases() {
         "calm.task.dispatch",
         "calm.task_completed",
         "calm.task_failed",
-        "calm.get_wave_state",
+        "calm.get_track_state",
         "calm.plan.upsert",
         "calm.update_task_meta",
     ] {
@@ -96,11 +96,11 @@ async fn tools_list_for_spec_role_does_not_leak_aliases() {
 }
 
 #[tokio::test]
-async fn retired_update_wave_state_shadow_is_not_registered() {
+async fn retired_update_track_state_shadow_is_not_registered() {
     let registry = calm_server::mcp_server::build_default_registry();
     assert!(
-        registry.lookup("calm.update_wave_state").is_none(),
-        "retired update_wave_state name must not remain as a hidden tool or alias",
+        registry.lookup("calm.update_track_state").is_none(),
+        "retired update_track_state name must not remain as a hidden tool or alias",
     );
 }
 

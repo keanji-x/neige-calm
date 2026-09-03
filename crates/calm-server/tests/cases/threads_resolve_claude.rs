@@ -6,7 +6,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -27,8 +27,8 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "thread claude map".into(),
@@ -55,7 +55,7 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
             events,
             calm_server::state::WriteContext::new(
                 CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -65,17 +65,17 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
     let app = axum::Router::new()
         .merge(routes::router())
         .with_state(state);
-    (app, repo, wave.id.to_string())
+    (app, repo, track.id.to_string())
 }
 
-async fn create_claude_card(repo: &SqlxRepo, wave_id: &str) -> String {
+async fn create_claude_card(repo: &SqlxRepo, track_id: &str) -> String {
     let cache = CardRoleCache::new();
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave_id.into(),
+            track_id: track_id.into(),
             title: None,
             kind: "claude".into(),
             sort: None,
@@ -134,8 +134,8 @@ async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn resolve_card_for_claude_session_requires_claude_provider() {
-    let (app, repo, wave_id) = fresh().await;
-    let card_id = create_claude_card(&repo, &wave_id).await;
+    let (app, repo, track_id) = fresh().await;
+    let card_id = create_claude_card(&repo, &track_id).await;
     let session_id = "11111111-1111-4111-8111-111111111111";
     bind_claude_session(&repo, &card_id, session_id).await;
 
@@ -148,7 +148,7 @@ async fn resolve_card_for_claude_session_requires_claude_provider() {
     assert_eq!(body["thread_id"], session_id);
     assert_eq!(body["card_id"], card_id);
     assert_eq!(body["role"], "worker");
-    assert_eq!(body["wave_id"], wave_id);
+    assert_eq!(body["track_id"], track_id);
 
     let (status, body) = get(app, format!("/api/threads/{session_id}/card")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body:?}");

@@ -57,14 +57,14 @@ const KERNEL_PLUGIN_ID = 'kernel';
 /** Permitted entity kinds. Matches the union on `NewOverlayBody.entity_kind`.
  *  Kept local so callers don't have to import it; `entity_kind` accepts the
  *  same shape via the public string type alias below. */
-export type OverlayEntityKind = 'wave' | 'card' | 'view';
+export type OverlayEntityKind = 'track' | 'card' | 'view';
 
 export interface UseOverlayStateOptions<T> {
   /** Kernel entity that owns this overlay. Today: `'view'` for app-level
-   *  state (e.g. WaveGrid layout), `'wave'` / `'card'` for content-attached
+   *  state (e.g. TrackGrid layout), `'track'` / `'card'` for content-attached
    *  overlays. */
   entity_kind: OverlayEntityKind;
-  /** Stable id of the owning entity — `waveId`, `cardId`, etc. */
+  /** Stable id of the owning entity — `trackId`, `cardId`, etc. */
   entity_id: string;
   /** Overlay kind. Matched against `validate_overlay_payload` on the
    *  server: `'layout'`, `'status'`, `'progress'`, … (plugin-defined kinds
@@ -91,7 +91,7 @@ export type UseOverlayStateReturn<T> = readonly [
  * @example
  * const [layout, setLayout] = useOverlayState({
  *   entity_kind: 'view',
- *   entity_id: waveId,
+ *   entity_id: trackId,
  *   kind: 'layout',
  *   default: { positions: {} },
  * });
@@ -112,7 +112,7 @@ export function useOverlayState<T>(
   const query = useQuery<T, Error>({
     queryKey,
     // Disable the auto-fetch when entity_id is empty — mirrors the pattern
-    // in `useWaveDetailQuery`. A loader / parent should always supply a
+    // in `useTrackDetailQuery`. A loader / parent should always supply a
     // real id, but defensive: empty id => return default without hitting
     // the network.
     enabled: entity_id.length > 0,

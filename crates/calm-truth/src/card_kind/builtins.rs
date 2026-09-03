@@ -7,7 +7,7 @@ use super::{
 };
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
-    WAVE_REPORT_PAYLOAD_SCHEMA_VERSION,
+    TRACK_REPORT_PAYLOAD_SCHEMA_VERSION,
 };
 
 pub struct TerminalCardHandler;
@@ -95,11 +95,11 @@ impl CardKindHandler for ClaudeCardHandler {
     }
 }
 
-pub struct WaveReportCardHandler;
+pub struct TrackReportCardHandler;
 
-impl CardKindHandler for WaveReportCardHandler {
+impl CardKindHandler for TrackReportCardHandler {
     fn kind_id(&self) -> &'static str {
-        "wave-report"
+        "track-report"
     }
 
     fn create_mode(&self) -> CardCreateMode {
@@ -107,13 +107,13 @@ impl CardKindHandler for WaveReportCardHandler {
     }
 
     fn schema_version(&self) -> Option<u32> {
-        Some(WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)
+        Some(TRACK_REPORT_PAYLOAD_SCHEMA_VERSION)
     }
 
     fn persistence_invariants(&self) -> CardPersistenceInvariants {
         CardPersistenceInvariants {
             deletable_after_create: false,
-            unique_per_wave: true,
+            unique_per_track: true,
         }
     }
 
@@ -121,7 +121,7 @@ impl CardKindHandler for WaveReportCardHandler {
         #[derive(Deserialize)]
         #[allow(dead_code)]
         #[serde(rename_all = "camelCase")]
-        struct WaveReportShape {
+        struct TrackReportShape {
             #[serde(default)]
             schema_version: Option<u32>,
             #[serde(default)]
@@ -130,10 +130,10 @@ impl CardKindHandler for WaveReportCardHandler {
             body: String,
         }
 
-        check_schema_version(self.kind_id(), payload, WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)?;
-        let shape = serde_json::from_value::<WaveReportShape>(payload.clone())
+        check_schema_version(self.kind_id(), payload, TRACK_REPORT_PAYLOAD_SCHEMA_VERSION)?;
+        let shape = serde_json::from_value::<TrackReportShape>(payload.clone())
             .map_err(|e| bad(self.kind_id(), e))?;
-        if shape.schema_version == Some(WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)
+        if shape.schema_version == Some(TRACK_REPORT_PAYLOAD_SCHEMA_VERSION)
             && shape.doc_rev.is_none()
         {
             return Err(bad(self.kind_id(), "missing field `docRev`"));
@@ -156,7 +156,7 @@ impl CardKindHandler for SpecCardHandler {
     fn persistence_invariants(&self) -> CardPersistenceInvariants {
         CardPersistenceInvariants {
             deletable_after_create: false,
-            unique_per_wave: true,
+            unique_per_track: true,
         }
     }
 

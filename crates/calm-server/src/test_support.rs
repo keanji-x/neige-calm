@@ -282,7 +282,7 @@ mod tests {
 pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO tasks
-           (id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+           (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
             gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
             running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms)
@@ -290,7 +290,7 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
                   ?18,?19,?20,?21,?22,?23,?24)"#,
     )
     .bind(&task.id)
-    .bind(&task.wave_id)
+    .bind(&task.track_id)
     .bind(&task.key)
     .bind(task.kind)
     .bind(&task.goal)

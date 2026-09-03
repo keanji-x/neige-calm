@@ -11,8 +11,8 @@ use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, AreaId, CardId, WaveId};
-use crate::model::{WaveWorkspaceKind, new_id, now_ms};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
+use crate::model::{TrackWorkspaceKind, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
 use calm_truth::decision_gate::PermissiveGate;
 
@@ -23,7 +23,7 @@ use super::{PhaseTag, TimestampMs, Tx};
 pub(crate) struct WorkspaceLease {
     pub lease_id: String,
     pub card_id: String,
-    pub wave_id: String,
+    pub track_id: String,
     pub path: String,
     pub state: String,
     pub boot_id: Option<String>,
@@ -46,23 +46,26 @@ const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
     PhaseTag::Compensating,
 ];
 
-/// Defensive wave/area teardown fence for in-flight forge actions.
+/// Defensive track/area teardown fence for in-flight forge actions.
 ///
 /// This is a non-transactional read used before the teardown transaction, so it
 /// has a TOCTOU window: a forge-action could enter a recoverable phase after
 /// this check and before the worktree sweep. It shrinks the route-level race;
 /// the durable forge-op parked-recovery contract remains the real backstop.
 /// The airtight in-tx/lease-hold guard is intentionally left to slice ⑤.
-pub(crate) async fn wave_has_active_forge_action(pool: &SqlitePool, wave_id: &str) -> Result<bool> {
-    any_wave_has_active_forge_action(pool, &[wave_id]).await
+pub(crate) async fn track_has_active_forge_action(
+    pool: &SqlitePool,
+    track_id: &str,
+) -> Result<bool> {
+    any_track_has_active_forge_action(pool, &[track_id]).await
 }
 
-/// Area-friendly variant of [`wave_has_active_forge_action`].
-pub(crate) async fn any_wave_has_active_forge_action(
+/// Area-friendly variant of [`track_has_active_forge_action`].
+pub(crate) async fn any_track_has_active_forge_action(
     pool: &SqlitePool,
-    wave_ids: &[&str],
+    track_ids: &[&str],
 ) -> Result<bool> {
-    if wave_ids.is_empty() {
+    if track_ids.is_empty() {
         return Ok(false);
     }
 
@@ -72,11 +75,11 @@ pub(crate) async fn any_wave_has_active_forge_action(
              WHERE kind = "#,
     );
     query.push_bind(FORGE_ACTION_KIND);
-    query.push(" AND target_type = 'wave' AND target_id IN (");
+    query.push(" AND target_type = 'track' AND target_id IN (");
     {
         let mut separated = query.separated(", ");
-        for wave_id in wave_ids {
-            separated.push_bind(*wave_id);
+        for track_id in track_ids {
+            separated.push_bind(*track_id);
         }
         separated.push_unseparated(") AND phase IN (");
     }
@@ -104,26 +107,26 @@ impl WorkspaceLeaseTarget {
 
 pub(crate) async fn prepare_workspace_lease_target_tx(
     tx: &mut Tx<'_>,
-    wave_id: &str,
+    track_id: &str,
     card_id: &str,
     workspace_root: &Path,
 ) -> Result<WorkspaceLeaseTarget> {
-    validate_path_segment("wave_id", wave_id)?;
+    validate_path_segment("track_id", track_id)?;
     validate_path_segment("card_id", card_id)?;
-    // #1147 S1 — `waves.cwd` dropped by migration 0077.
+    // #1147 S1 — `tracks.cwd` dropped by migration 0077.
     let (kind, cwd): (String, String) =
-        sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE id = ?1")
-            .bind(wave_id)
+        sqlx::query_as("SELECT workspace_kind, workspace_path FROM tracks WHERE id = ?1")
+            .bind(track_id)
             .fetch_optional(&mut **tx)
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+            .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     // #1147 S2 (red-team B5) — last-chance materialize before a worker commits
     // to this directory.
     //
-    // Wave create materializes too, but that call happens after its
-    // transaction commits, so a failure there leaves a committed wave row
+    // Track create materializes too, but that call happens after its
+    // transaction commits, so a failure there leaves a committed track row
     // pointing at a directory that does not exist, and NO other path would
-    // ever retry it. Every codex task on such a wave would then die in
+    // ever retry it. Every codex task on such a track would then die in
     // `git rev-parse --show-toplevel` with nothing but `spawn-failed`
     // visible — which is precisely the bug #1147 was opened on, re-created by
     // the slice meant to fix it.
@@ -132,18 +135,19 @@ pub(crate) async fn prepare_workspace_lease_target_tx(
     // `materialize_managed_workspace`), and a no-op for attached workspaces —
     // those are the user's directories and must never be created or
     // `git init`-ed here.
-    if WaveWorkspaceKind::try_from(kind).map_err(CalmError::Internal)? == WaveWorkspaceKind::Managed
+    if TrackWorkspaceKind::try_from(kind).map_err(CalmError::Internal)?
+        == TrackWorkspaceKind::Managed
     {
         crate::workspace_materialize::materialize_managed_workspace(
             workspace_root,
             Path::new(&cwd),
-            wave_id,
+            track_id,
         )?;
     }
-    let repo_root = git_repo_root_for_wave_cwd(wave_id, &cwd)?;
+    let repo_root = git_repo_root_for_track_cwd(track_id, &cwd)?;
     Ok(WorkspaceLeaseTarget {
-        path: workspace_lease_path_for(&repo_root, wave_id, card_id)?,
-        branch: workspace_slice_branch_for(wave_id, card_id)?,
+        path: workspace_lease_path_for(&repo_root, track_id, card_id)?,
+        branch: workspace_slice_branch_for(track_id, card_id)?,
         repo_root,
     })
 }
@@ -151,14 +155,14 @@ pub(crate) async fn prepare_workspace_lease_target_tx(
 pub(crate) async fn acquire_workspace_lease_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     lease_owner: &str,
     target: &WorkspaceLeaseTarget,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     acquire_workspace_lease_at_path_tx(
         tx,
         card_id,
-        wave_id,
+        track_id,
         lease_owner,
         &target.path,
         WorkspaceLeaseDirectoryMode::ParentOnly,
@@ -169,14 +173,14 @@ pub(crate) async fn acquire_workspace_lease_tx(
 pub(crate) async fn acquire_plain_workspace_lease_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     lease_owner: &str,
     path: &Path,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     acquire_workspace_lease_at_path_tx(
         tx,
         card_id,
-        wave_id,
+        track_id,
         lease_owner,
         path,
         WorkspaceLeaseDirectoryMode::Leaf,
@@ -193,7 +197,7 @@ enum WorkspaceLeaseDirectoryMode {
 async fn acquire_workspace_lease_at_path_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     lease_owner: &str,
     path: &Path,
     directory_mode: WorkspaceLeaseDirectoryMode,
@@ -204,14 +208,14 @@ async fn acquire_workspace_lease_at_path_tx(
     let boot_id = read_boot_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(&path_string)
     .bind(lease_owner)
     .bind(now + WORKSPACE_LEASE_MS)
@@ -221,7 +225,7 @@ async fn acquire_workspace_lease_at_path_tx(
     .await?;
 
     // #1147 S3 — freeze point 1 of 4 (design §更换与冻结): "the first workspace
-    // lease". A lease row stores an absolute path derived from the wave's
+    // lease". A lease row stores an absolute path derived from the track's
     // workspace, and the worktree it is about to create is anchored to that
     // repository by two absolute pointers (`<wt>/.git` and
     // `<repo>/.git/worktrees/<n>/gitdir`) that a rename would leave dangling
@@ -232,15 +236,15 @@ async fn acquire_workspace_lease_at_path_tx(
     // statement both of them bottom out in, so a third lease flavour added
     // later inherits the freeze instead of having to remember it. The system
     // area is excluded inside the freeze itself — the launchpad takes leases
-    // on every codex task and is the one wave whose path the kernel keeps
+    // on every codex task and is the one track whose path the kernel keeps
     // re-deriving.
-    crate::db::sqlite::wave_workspace_freeze_tx(tx, wave_id, now).await?;
+    crate::db::sqlite::track_workspace_freeze_tx(tx, track_id, now).await?;
 
     create_workspace_lease_directory(path, directory_mode)?;
 
-    let scope = workspace_scope_tx(tx, card_id, wave_id).await?;
+    let scope = workspace_scope_tx(tx, card_id, track_id).await?;
     let event = Event::WorkspaceLeased {
-        wave_id: WaveId::from(wave_id.to_string()),
+        track_id: TrackId::from(track_id.to_string()),
         card_id: CardId::from(card_id.to_string()),
         lease_id: lease_id.clone(),
         path: path_string.clone(),
@@ -258,7 +262,7 @@ async fn acquire_workspace_lease_at_path_tx(
     let lease = WorkspaceLease {
         lease_id,
         card_id: card_id.to_string(),
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         path: path_string,
         state: "held".into(),
         boot_id,
@@ -340,7 +344,7 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
         let card_id = card_id.clone();
         Box::pin(async move {
             let row = sqlx::query(
-                r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+                r#"SELECT lease_id, card_id, track_id, path, state, boot_id
                    FROM workspace_leases
                    WHERE card_id = ?1
                      AND state IN ('held','releasing')
@@ -373,7 +377,7 @@ pub(crate) async fn release_workspace_lease_for_card_tx(
     card_id: &str,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
     let row = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
            FROM workspace_leases
            WHERE card_id = ?1
              AND state IN ('held','releasing')
@@ -455,7 +459,7 @@ async fn complete_workspace_lease_release(
     lease: WorkspaceLease,
 ) -> Result<bool> {
     let mut tx = begin_immediate_tx(pool).await?;
-    let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.wave_id).await?;
+    let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.track_id).await?;
     let now = now_ms();
     let rows = sqlx::query(
         r#"UPDATE workspace_leases
@@ -477,7 +481,7 @@ async fn complete_workspace_lease_release(
 
     let mut envelopes = Vec::new();
     let event = Event::WorkspaceReleased {
-        wave_id: WaveId::from(lease.wave_id.clone()),
+        track_id: TrackId::from(lease.track_id.clone()),
         card_id: CardId::from(lease.card_id.clone()),
         lease_id: lease.lease_id.clone(),
     };
@@ -505,19 +509,19 @@ async fn complete_workspace_lease_release(
     Ok(true)
 }
 
-pub(crate) async fn release_workspace_leases_for_wave_tx(
+pub(crate) async fn release_workspace_leases_for_track_tx(
     tx: &mut Tx<'_>,
-    wave_id: &str,
-) -> Result<WorkspaceWaveRelease> {
-    let sweep = workspace_wave_sweep_for_wave_tx(tx, wave_id).await;
+    track_id: &str,
+) -> Result<WorkspaceTrackRelease> {
+    let sweep = workspace_track_sweep_for_track_tx(tx, track_id).await;
     let rows = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
            FROM workspace_leases
-           WHERE wave_id = ?1
+           WHERE track_id = ?1
              AND state IN ('held','releasing')
            ORDER BY created_at_ms ASC, lease_id ASC"#,
     )
-    .bind(wave_id)
+    .bind(track_id)
     .fetch_all(&mut **tx)
     .await?;
     let leases: Vec<WorkspaceLease> = rows
@@ -528,14 +532,14 @@ pub(crate) async fn release_workspace_leases_for_wave_tx(
     for lease in leases {
         events.extend(release_workspace_lease_tx(tx, lease).await?);
     }
-    Ok(WorkspaceWaveRelease { events, sweep })
+    Ok(WorkspaceTrackRelease { events, sweep })
 }
 
 async fn release_workspace_lease_tx(
     tx: &mut Tx<'_>,
     lease: WorkspaceLease,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
-    let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
+    let scope = workspace_scope_tx(tx, &lease.card_id, &lease.track_id).await?;
     let now = now_ms();
     let rows = sqlx::query(
         r#"UPDATE workspace_leases
@@ -557,7 +561,7 @@ async fn release_workspace_lease_tx(
         ActorId::KernelDispatcher,
         scope,
         Event::WorkspaceReleased {
-            wave_id: WaveId::from(lease.wave_id),
+            track_id: TrackId::from(lease.track_id),
             card_id: CardId::from(lease.card_id),
             lease_id: lease.lease_id,
         },
@@ -565,34 +569,34 @@ async fn release_workspace_lease_tx(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct WorkspaceWaveRelease {
+pub(crate) struct WorkspaceTrackRelease {
     pub(crate) events: Vec<(ActorId, EventScope, Event)>,
-    pub(crate) sweep: Option<WorkspaceWaveSweep>,
+    pub(crate) sweep: Option<WorkspaceTrackSweep>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct WorkspaceWaveSweep {
-    wave_id: String,
+pub(crate) struct WorkspaceTrackSweep {
+    track_id: String,
     area_id: String,
     cwd: String,
     leases: Vec<WorkspaceLease>,
 }
 
-async fn workspace_wave_sweep_for_wave_tx(
+async fn workspace_track_sweep_for_track_tx(
     tx: &mut Tx<'_>,
-    wave_id: &str,
-) -> Option<WorkspaceWaveSweep> {
-    if let Err(error) = validate_path_segment("wave_id", wave_id) {
+    track_id: &str,
+) -> Option<WorkspaceTrackSweep> {
+    if let Err(error) = validate_path_segment("track_id", track_id) {
         tracing::warn!(
-            wave_id,
+            track_id,
             error = %error,
-            "workspace wave teardown skipped preserved worktree sweep for invalid wave id"
+            "workspace track teardown skipped preserved worktree sweep for invalid track id"
         );
         return None;
     }
-    // #1147 S1 — `waves.cwd` dropped by migration 0077.
-    let row = match sqlx::query("SELECT workspace_path, area_id FROM waves WHERE id = ?1")
-        .bind(wave_id)
+    // #1147 S1 — `tracks.cwd` dropped by migration 0077.
+    let row = match sqlx::query("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_optional(&mut **tx)
         .await
     {
@@ -600,9 +604,9 @@ async fn workspace_wave_sweep_for_wave_tx(
         Ok(None) => return None,
         Err(error) => {
             tracing::warn!(
-                wave_id,
+                track_id,
                 error = %error,
-                "workspace wave teardown could not read cwd for preserved worktree sweep"
+                "workspace track teardown could not read cwd for preserved worktree sweep"
             );
             return None;
         }
@@ -614,9 +618,9 @@ async fn workspace_wave_sweep_for_wave_tx(
         Ok(cwd) => cwd,
         Err(error) => {
             tracing::warn!(
-                wave_id,
+                track_id,
                 error = %error,
-                "workspace wave teardown could not read workspace_path for preserved worktree sweep"
+                "workspace track teardown could not read workspace_path for preserved worktree sweep"
             );
             return None;
         }
@@ -625,20 +629,20 @@ async fn workspace_wave_sweep_for_wave_tx(
         Ok(area_id) => area_id,
         Err(error) => {
             tracing::warn!(
-                wave_id,
+                track_id,
                 error = %error,
-                "workspace wave teardown could not read area_id column for preserved worktree sweep"
+                "workspace track teardown could not read area_id column for preserved worktree sweep"
             );
             return None;
         }
     };
     let leases = match sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
            FROM workspace_leases
-           WHERE wave_id = ?1
+           WHERE track_id = ?1
            ORDER BY created_at_ms ASC, lease_id ASC"#,
     )
-    .bind(wave_id)
+    .bind(track_id)
     .fetch_all(&mut **tx)
     .await
     {
@@ -648,9 +652,9 @@ async fn workspace_wave_sweep_for_wave_tx(
                 Ok(lease) => Some(lease),
                 Err(error) => {
                     tracing::warn!(
-                        wave_id,
+                        track_id,
                         error = %error,
-                        "workspace wave teardown skipped unparseable persisted lease row"
+                        "workspace track teardown skipped unparseable persisted lease row"
                     );
                     None
                 }
@@ -658,15 +662,15 @@ async fn workspace_wave_sweep_for_wave_tx(
             .collect(),
         Err(error) => {
             tracing::warn!(
-                wave_id,
+                track_id,
                 error = %error,
-                "workspace wave teardown could not read persisted lease paths for sweep"
+                "workspace track teardown could not read persisted lease paths for sweep"
             );
             Vec::new()
         }
     };
-    Some(WorkspaceWaveSweep {
-        wave_id: wave_id.to_string(),
+    Some(WorkspaceTrackSweep {
+        track_id: track_id.to_string(),
         area_id,
         cwd,
         leases,
@@ -679,35 +683,35 @@ struct RemovedWorkspaceWorktree {
     path: String,
 }
 
-pub(crate) async fn sweep_workspace_worktrees_for_wave_repo(
+pub(crate) async fn sweep_workspace_worktrees_for_track_repo(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
-    sweep: WorkspaceWaveSweep,
+    sweep: WorkspaceTrackSweep,
 ) -> Result<usize> {
-    let repo_roots = repo_roots_for_wave_sweep(&sweep);
+    let repo_roots = repo_roots_for_track_sweep(&sweep);
     if repo_roots.is_empty() {
         return Ok(0);
     }
     let mut removed = Vec::new();
     for repo_root in repo_roots {
-        removed.extend(sweep_workspace_worktree_root_for_wave(
+        removed.extend(sweep_workspace_worktree_root_for_track(
             &repo_root,
-            &sweep.wave_id,
+            &sweep.track_id,
         ));
-        sweep_workspace_slice_branches_for_wave(&repo_root, &sweep.wave_id);
+        sweep_workspace_slice_branches_for_track(&repo_root, &sweep.track_id);
     }
     let removed_count = removed.len();
     if removed.is_empty() {
         return Ok(0);
     }
-    let envelopes = persist_wave_sweep_removed_events(repo, &sweep, removed).await?;
+    let envelopes = persist_track_sweep_removed_events(repo, &sweep, removed).await?;
     for envelope in envelopes {
         events.emit_envelope(envelope);
     }
     Ok(removed_count)
 }
 
-fn repo_roots_for_wave_sweep(sweep: &WorkspaceWaveSweep) -> Vec<PathBuf> {
+fn repo_roots_for_track_sweep(sweep: &WorkspaceTrackSweep) -> Vec<PathBuf> {
     let mut roots = BTreeSet::new();
     for lease in &sweep.leases {
         match workspace_lease_target_from_lease(lease) {
@@ -717,11 +721,11 @@ fn repo_roots_for_wave_sweep(sweep: &WorkspaceWaveSweep) -> Vec<PathBuf> {
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(
-                    wave_id = %sweep.wave_id,
+                    track_id = %sweep.track_id,
                     lease_id = %lease.lease_id,
                     path = %lease.path,
                     error = %error,
-                    "workspace wave teardown skipped invalid persisted lease path"
+                    "workspace track teardown skipped invalid persisted lease path"
                 );
             }
         }
@@ -729,48 +733,48 @@ fn repo_roots_for_wave_sweep(sweep: &WorkspaceWaveSweep) -> Vec<PathBuf> {
     if !roots.is_empty() {
         return roots.into_iter().collect();
     }
-    match git_repo_root_for_wave_cwd(&sweep.wave_id, &sweep.cwd) {
+    match git_repo_root_for_track_cwd(&sweep.track_id, &sweep.cwd) {
         Ok(repo_root) => vec![repo_root],
         Err(error) => {
             tracing::error!(
-                wave_id = %sweep.wave_id,
+                track_id = %sweep.track_id,
                 cwd = %sweep.cwd,
                 error = %error,
-                "workspace wave teardown could not derive repo root from persisted lease paths or wave cwd"
+                "workspace track teardown could not derive repo root from persisted lease paths or track cwd"
             );
             Vec::new()
         }
     }
 }
 
-pub(crate) async fn sweep_workspace_worktrees_for_waves_repo(
+pub(crate) async fn sweep_workspace_worktrees_for_tracks_repo(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
-    sweeps: Vec<WorkspaceWaveSweep>,
+    sweeps: Vec<WorkspaceTrackSweep>,
 ) -> Result<usize> {
     let mut removed = 0;
     for sweep in sweeps {
-        removed += sweep_workspace_worktrees_for_wave_repo(repo, events, sweep).await?;
+        removed += sweep_workspace_worktrees_for_track_repo(repo, events, sweep).await?;
     }
     Ok(removed)
 }
 
-fn sweep_workspace_worktree_root_for_wave(
+fn sweep_workspace_worktree_root_for_track(
     repo_root: &Path,
-    wave_id: &str,
+    track_id: &str,
 ) -> Vec<RemovedWorkspaceWorktree> {
     let mut removed = Vec::new();
-    let wave_root = repo_root.join(".claude").join("worktrees").join(wave_id);
-    let entries = match std::fs::read_dir(&wave_root) {
+    let track_root = repo_root.join(".claude").join("worktrees").join(track_id);
+    let entries = match std::fs::read_dir(&track_root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return removed,
         Err(error) => {
             tracing::warn!(
                 repo_root = %repo_root.display(),
-                wave_id,
-                path = %wave_root.display(),
+                track_id,
+                path = %track_root.display(),
                 error = %error,
-                "workspace wave teardown could not read preserved worktree root"
+                "workspace track teardown could not read preserved worktree root"
             );
             return removed;
         }
@@ -781,9 +785,9 @@ fn sweep_workspace_worktree_root_for_wave(
             Err(error) => {
                 tracing::warn!(
                     repo_root = %repo_root.display(),
-                    wave_id,
+                    track_id,
                     error = %error,
-                    "workspace wave teardown could not read preserved worktree entry"
+                    "workspace track teardown could not read preserved worktree entry"
                 );
                 continue;
             }
@@ -792,44 +796,44 @@ fn sweep_workspace_worktree_root_for_wave(
         let Some(parts) = workspace_lease_path_parts(&path) else {
             tracing::warn!(
                 repo_root = %repo_root.display(),
-                wave_id,
+                track_id,
                 path = %path.display(),
-                "workspace wave teardown skipped non-lease-shaped preserved worktree path"
+                "workspace track teardown skipped non-lease-shaped preserved worktree path"
             );
             continue;
         };
-        if parts.repo_root.as_path() != repo_root || parts.wave_id != wave_id {
+        if parts.repo_root.as_path() != repo_root || parts.track_id != track_id {
             tracing::warn!(
                 repo_root = %repo_root.display(),
-                wave_id,
+                track_id,
                 path = %path.display(),
-                "workspace wave teardown skipped preserved worktree outside wave root"
+                "workspace track teardown skipped preserved worktree outside track root"
             );
             continue;
         }
         if let Err(error) = validate_path_segment("card_id", &parts.card_id) {
             tracing::warn!(
                 repo_root = %repo_root.display(),
-                wave_id,
+                track_id,
                 card_id = %parts.card_id,
                 path = %path.display(),
                 error = %error,
-                "workspace wave teardown skipped preserved worktree with invalid card id"
+                "workspace track teardown skipped preserved worktree with invalid card id"
             );
             continue;
         }
         let target = WorkspaceLeaseTarget {
             repo_root: repo_root.to_path_buf(),
             path,
-            branch: match workspace_slice_branch_for(wave_id, &parts.card_id) {
+            branch: match workspace_slice_branch_for(track_id, &parts.card_id) {
                 Ok(branch) => branch,
                 Err(error) => {
                     tracing::warn!(
                         repo_root = %repo_root.display(),
-                        wave_id,
+                        track_id,
                         card_id = %parts.card_id,
                         error = %error,
-                        "workspace wave teardown skipped preserved worktree branch derivation"
+                        "workspace track teardown skipped preserved worktree branch derivation"
                     );
                     continue;
                 }
@@ -844,16 +848,16 @@ fn sweep_workspace_worktree_root_for_wave(
             Err(error) => {
                 tracing::warn!(
                     repo_root = %repo_root.display(),
-                    wave_id,
+                    track_id,
                     card_id = %parts.card_id,
                     path = %target.path.display(),
                     error = %error,
-                    "workspace wave teardown could not remove preserved worktree"
+                    "workspace track teardown could not remove preserved worktree"
                 );
             }
         }
     }
-    match std::fs::remove_dir(&wave_root) {
+    match std::fs::remove_dir(&track_root) {
         Ok(()) => {}
         Err(error)
             if matches!(
@@ -863,19 +867,19 @@ fn sweep_workspace_worktree_root_for_wave(
         Err(error) => {
             tracing::warn!(
                 repo_root = %repo_root.display(),
-                wave_id,
-                path = %wave_root.display(),
+                track_id,
+                path = %track_root.display(),
                 error = %error,
-                "workspace wave teardown could not remove empty preserved worktree root"
+                "workspace track teardown could not remove empty preserved worktree root"
             );
         }
     }
     removed
 }
 
-fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
-    let branch_prefix = format!("neige/{wave_id}/");
-    let ref_prefix = format!("refs/heads/neige/{wave_id}");
+fn sweep_workspace_slice_branches_for_track(repo_root: &Path, track_id: &str) {
+    let branch_prefix = format!("neige/{track_id}/");
+    let ref_prefix = format!("refs/heads/neige/{track_id}");
     let output = match Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -886,9 +890,9 @@ fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
         Err(error) => {
             tracing::warn!(
                 repo_root = %repo_root.display(),
-                wave_id,
+                track_id,
                 error = %error,
-                "workspace wave teardown could not list preserved slice branches"
+                "workspace track teardown could not list preserved slice branches"
             );
             return;
         }
@@ -896,9 +900,9 @@ fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
     if !output.status.success() {
         tracing::warn!(
             repo_root = %repo_root.display(),
-            wave_id,
+            track_id,
             error = %git_failed("git for-each-ref", repo_root, &output),
-            "workspace wave teardown could not list preserved slice branches"
+            "workspace track teardown could not list preserved slice branches"
         );
         return;
     }
@@ -920,10 +924,10 @@ fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
             Err(error) => {
                 tracing::warn!(
                     repo_root = %repo_root.display(),
-                    wave_id,
+                    track_id,
                     branch,
                     error = %error,
-                    "workspace wave teardown could not spawn preserved branch delete"
+                    "workspace track teardown could not spawn preserved branch delete"
                 );
                 continue;
             }
@@ -932,35 +936,35 @@ fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
             Ok(true) if !output.status.success() => {
                 tracing::warn!(
                     repo_root = %repo_root.display(),
-                    wave_id,
+                    track_id,
                     branch,
                     error = %git_failed("git branch -D", repo_root, &output),
-                    "workspace wave teardown could not delete preserved slice branch"
+                    "workspace track teardown could not delete preserved slice branch"
                 );
             }
             Ok(_) => {}
             Err(error) => {
                 tracing::warn!(
                     repo_root = %repo_root.display(),
-                    wave_id,
+                    track_id,
                     branch,
                     error = %error,
-                    "workspace wave teardown could not verify preserved slice branch deletion"
+                    "workspace track teardown could not verify preserved slice branch deletion"
                 );
             }
         }
     }
 }
 
-async fn persist_wave_sweep_removed_events(
+async fn persist_track_sweep_removed_events(
     repo: &dyn RepoEventWrite,
-    sweep: &WorkspaceWaveSweep,
+    sweep: &WorkspaceTrackSweep,
     removed: Vec<RemovedWorkspaceWorktree>,
 ) -> Result<Vec<BroadcastEnvelope>> {
-    let wave_id = sweep.wave_id.clone();
+    let track_id = sweep.track_id.clone();
     let area_id = sweep.area_id.clone();
     write_in_tx_typed(repo, move |tx| {
-        let wave_id = wave_id.clone();
+        let track_id = track_id.clone();
         let area_id = area_id.clone();
         let removed = removed.clone();
         Box::pin(async move {
@@ -968,14 +972,14 @@ async fn persist_wave_sweep_removed_events(
             for removed in removed {
                 let scope = EventScope::Card {
                     card: CardId::from(removed.card_id.clone()),
-                    wave: WaveId::from(wave_id.clone()),
+                    track: TrackId::from(track_id.clone()),
                     area: AreaId::from(area_id.clone()),
                 };
                 events.push((
                     ActorId::KernelDispatcher,
                     scope,
                     Event::WorktreeRemoved {
-                        wave_id: WaveId::from(wave_id.clone()),
+                        track_id: TrackId::from(track_id.clone()),
                         card_id: CardId::from(removed.card_id),
                         path: removed.path,
                     },
@@ -993,9 +997,9 @@ async fn persist_worktree_removed_for_lease(
     lease: &WorkspaceLease,
 ) -> Result<()> {
     let mut tx = begin_immediate_tx(pool).await?;
-    let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.wave_id).await?;
+    let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.track_id).await?;
     let event = Event::WorktreeRemoved {
-        wave_id: WaveId::from(lease.wave_id.clone()),
+        track_id: TrackId::from(lease.track_id.clone()),
         card_id: CardId::from(lease.card_id.clone()),
         path: lease.path.clone(),
     };
@@ -1038,15 +1042,15 @@ async fn append_workspace_events_tx(
     Ok(envelopes)
 }
 
-async fn workspace_scope_tx(tx: &mut Tx<'_>, card_id: &str, wave_id: &str) -> Result<EventScope> {
-    let area_id: String = sqlx::query_scalar("SELECT area_id FROM waves WHERE id = ?1")
-        .bind(wave_id)
+async fn workspace_scope_tx(tx: &mut Tx<'_>, card_id: &str, track_id: &str) -> Result<EventScope> {
+    let area_id: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_optional(&mut **tx)
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     Ok(EventScope::Card {
         card: CardId::from(card_id.to_string()),
-        wave: WaveId::from(wave_id.to_string()),
+        track: TrackId::from(track_id.to_string()),
         area: AreaId::from(area_id),
     })
 }
@@ -1056,7 +1060,7 @@ async fn workspace_lease_by_id(
     lease_id: &str,
 ) -> Result<Option<WorkspaceLease>> {
     let row = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
            FROM workspace_leases
            WHERE lease_id = ?1
              AND state IN ('held','releasing')"#,
@@ -1069,7 +1073,7 @@ async fn workspace_lease_by_id(
 
 async fn active_workspace_leases(pool: &SqlitePool) -> Result<Vec<WorkspaceLease>> {
     let rows = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+        r#"SELECT lease_id, card_id, track_id, path, state, boot_id
            FROM workspace_leases
            WHERE state IN ('held','releasing')
            ORDER BY created_at_ms ASC, lease_id ASC"#,
@@ -1083,7 +1087,7 @@ fn row_to_workspace_lease(row: sqlx::sqlite::SqliteRow) -> Result<WorkspaceLease
     Ok(WorkspaceLease {
         lease_id: row.try_get("lease_id")?,
         card_id: row.try_get("card_id")?,
-        wave_id: row.try_get("wave_id")?,
+        track_id: row.try_get("track_id")?,
         path: row.try_get("path")?,
         state: row.try_get("state")?,
         boot_id: row.try_get("boot_id")?,
@@ -1385,10 +1389,10 @@ fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {
 
 pub(crate) fn workspace_lease_path_for(
     repo_root: &Path,
-    wave_id: &str,
+    track_id: &str,
     card_id: &str,
 ) -> Result<PathBuf> {
-    validate_path_segment("wave_id", wave_id)?;
+    validate_path_segment("track_id", track_id)?;
     validate_path_segment("card_id", card_id)?;
     if !repo_root.is_absolute() {
         return Err(CalmError::BadRequest(format!(
@@ -1399,23 +1403,23 @@ pub(crate) fn workspace_lease_path_for(
     Ok(repo_root
         .join(".claude")
         .join("worktrees")
-        .join(wave_id)
+        .join(track_id)
         .join(card_id))
 }
 
-pub(crate) fn plain_workspace_lease_path_for(wave_id: &str, card_id: &str) -> Result<PathBuf> {
-    validate_path_segment("wave_id", wave_id)?;
+pub(crate) fn plain_workspace_lease_path_for(track_id: &str, card_id: &str) -> Result<PathBuf> {
+    validate_path_segment("track_id", track_id)?;
     validate_path_segment("card_id", card_id)?;
     Ok(PathBuf::from(".claude")
         .join("worktrees")
-        .join(wave_id)
+        .join(track_id)
         .join(card_id))
 }
 
-pub(crate) fn workspace_slice_branch_for(wave_id: &str, card_id: &str) -> Result<String> {
-    validate_path_segment("wave_id", wave_id)?;
+pub(crate) fn workspace_slice_branch_for(track_id: &str, card_id: &str) -> Result<String> {
+    validate_path_segment("track_id", track_id)?;
     validate_path_segment("card_id", card_id)?;
-    Ok(format!("neige/{wave_id}/{card_id}"))
+    Ok(format!("neige/{track_id}/{card_id}"))
 }
 
 fn validate_path_segment(label: &str, value: &str) -> Result<()> {
@@ -1432,11 +1436,11 @@ fn validate_path_segment(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<PathBuf> {
+pub(crate) fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<PathBuf> {
     let cwd_path = Path::new(cwd);
     if cwd.trim().is_empty() || !cwd_path.is_absolute() {
         return Err(CalmError::BadRequest(format!(
-            "wave {wave_id} cwd must be an absolute git repository path for workspace leasing"
+            "track {track_id} cwd must be an absolute git repository path for workspace leasing"
         )));
     }
     let output = Command::new("git")
@@ -1446,13 +1450,13 @@ pub(crate) fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<Pat
         .output()
         .map_err(|e| {
             CalmError::Internal(format!(
-                "spawn git rev-parse --show-toplevel for wave {wave_id} cwd {}: {e}",
+                "spawn git rev-parse --show-toplevel for track {track_id} cwd {}: {e}",
                 cwd_path.display()
             ))
         })?;
     if !output.status.success() {
         return Err(CalmError::BadRequest(format!(
-            "wave {wave_id} cwd {} is not a git repository: {}",
+            "track {track_id} cwd {} is not a git repository: {}",
             cwd_path.display(),
             output_summary(&output)
         )));
@@ -1461,14 +1465,14 @@ pub(crate) fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<Pat
     let repo_root = stdout.trim_end_matches(&['\r', '\n'][..]);
     if repo_root.is_empty() {
         return Err(CalmError::BadRequest(format!(
-            "wave {wave_id} cwd {} did not resolve to a git repository root",
+            "track {track_id} cwd {} did not resolve to a git repository root",
             cwd_path.display()
         )));
     }
     let repo_root = PathBuf::from(repo_root);
     if !repo_root.is_absolute() {
         return Err(CalmError::BadRequest(format!(
-            "wave {wave_id} git repository root must be absolute: {}",
+            "track {track_id} git repository root must be absolute: {}",
             repo_root.display()
         )));
     }
@@ -1478,26 +1482,26 @@ pub(crate) fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<Pat
 fn workspace_lease_target_from_lease(
     lease: &WorkspaceLease,
 ) -> Result<Option<WorkspaceLeaseTarget>> {
-    validate_path_segment("wave_id", &lease.wave_id)?;
+    validate_path_segment("track_id", &lease.track_id)?;
     validate_path_segment("card_id", &lease.card_id)?;
     let path = PathBuf::from(&lease.path);
     let Some(parts) = workspace_lease_path_parts(&path) else {
         return Ok(None);
     };
-    if parts.card_id != lease.card_id || parts.wave_id != lease.wave_id {
+    if parts.card_id != lease.card_id || parts.track_id != lease.track_id {
         return Ok(None);
     }
     Ok(Some(WorkspaceLeaseTarget {
         repo_root: parts.repo_root,
         path,
-        branch: workspace_slice_branch_for(&lease.wave_id, &lease.card_id)?,
+        branch: workspace_slice_branch_for(&lease.track_id, &lease.card_id)?,
     }))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceLeasePathParts {
     repo_root: PathBuf,
-    wave_id: String,
+    track_id: String,
     card_id: String,
 }
 
@@ -1506,9 +1510,9 @@ fn workspace_lease_path_parts(path: &Path) -> Option<WorkspaceLeasePathParts> {
         return None;
     }
     let card_id = path.file_name()?.to_str()?;
-    let wave_path = path.parent()?;
-    let wave_id = wave_path.file_name()?.to_str()?;
-    let worktrees_path = wave_path.parent()?;
+    let track_path = path.parent()?;
+    let track_id = track_path.file_name()?.to_str()?;
+    let worktrees_path = track_path.parent()?;
     let worktrees_dir = worktrees_path.file_name()?.to_str()?;
     let claude_path = worktrees_path.parent()?;
     let claude_dir = claude_path.file_name()?.to_str()?;
@@ -1518,7 +1522,7 @@ fn workspace_lease_path_parts(path: &Path) -> Option<WorkspaceLeasePathParts> {
     }
     Some(WorkspaceLeasePathParts {
         repo_root: repo_root.to_path_buf(),
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         card_id: card_id.to_string(),
     })
 }
@@ -1530,7 +1534,7 @@ fn ensure_lease_owned_worktree_target(target: &WorkspaceLeaseTarget) -> Result<(
             target.path.display()
         )));
     };
-    validate_path_segment("wave_id", &parts.wave_id)?;
+    validate_path_segment("track_id", &parts.track_id)?;
     validate_path_segment("card_id", &parts.card_id)?;
     if parts.repo_root.as_path() != target.repo_root.as_path() {
         return Err(CalmError::Internal(format!(
@@ -1539,7 +1543,7 @@ fn ensure_lease_owned_worktree_target(target: &WorkspaceLeaseTarget) -> Result<(
             target.repo_root.display()
         )));
     }
-    let expected_branch = workspace_slice_branch_for(&parts.wave_id, &parts.card_id)?;
+    let expected_branch = workspace_slice_branch_for(&parts.track_id, &parts.card_id)?;
     if target.branch != expected_branch {
         return Err(CalmError::Internal(format!(
             "refusing to clear workspace worktree path {} for unexpected branch {}",

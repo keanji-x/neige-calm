@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { createArea, createWave } from './helpers/seed.js';
+import { createArea, createTrack } from './helpers/seed.js';
 
 const createdAreaIds: string[] = [];
 
@@ -26,16 +26,16 @@ test('the application routes are reachable through the real kernel', async ({ pa
 
   const area = await createArea(request);
   createdAreaIds.push(area.id);
-  const wave = await createWave(request, area.id);
+  const track = await createTrack(request, area.id);
   const routes = [
     { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
     { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
-    /* #1211 — the new-wave page is a route like the others, so it belongs in
+    /* #1211 — the new-track page is a route like the others, so it belongs in
        the reachability sweep: this is what would catch it failing to render at
        all behind the real kernel. Anchored on the composer because the page has
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
-    { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this wave should do') },
-    { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
+    { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
+    { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },
     { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
     { path: '/next/settings/appearance', anchor: page.getByRole('combobox', { name: 'Theme' }) },
   ];

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-pub use crate::ids::{ActorId, AreaId, CardId, WaveId};
+pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;
 
@@ -25,8 +25,8 @@ pub enum CardRole {
     Worker,
     Spec,
     ReportCard,
-    /// #1189 — a wave-scoped assistant conversation. Reads/writes the
-    /// wave report through the block channel, runs shell in the wave
+    /// #1189 — a track-scoped assistant conversation. Reads/writes the
+    /// track report through the block channel, runs shell in the track
     /// workspace, and has **no** lifecycle / plan / review / admin
     /// authority. See `role_gate::enforce_assistant_scope`.
     Assistant,
@@ -171,23 +171,23 @@ pub struct AreaResolve {
     pub folder_path: String,
 }
 
-// ---------------- WaveLifecycle ----------------
+// ---------------- TrackLifecycle ----------------
 
-/// Issue #145 — Wave lifecycle state machine.
+/// Issue #145 — Track lifecycle state machine.
 ///
-/// One explicit state per wave, advanced through a typed state machine
-/// (see `crate::wave_lifecycle`). The Spec Agent drives the happy path
+/// One explicit state per track, advanced through a typed state machine
+/// (see `crate::track_lifecycle`). The Spec Agent drives the happy path
 /// (`draft → planning → dispatching → working → reviewing → done`);
 /// the user can cancel any non-terminal state and reopen terminals;
 /// worker cards have no authority to touch this field at all.
 ///
 /// **`archived` is intentionally NOT a lifecycle state.** Archive is
 /// visibility / history management, orthogonal to execution semantics —
-/// a `done`/`failed`/`canceled` wave can also be archived without
+/// a `done`/`failed`/`canceled` track can also be archived without
 /// destroying the lifecycle truth. Archival continues to live on the
 /// existing `archived_at: Option<i64>` field.
 ///
-/// Persisted as a lowercase string in `waves.lifecycle` (migration
+/// Persisted as a lowercase string in `tracks.lifecycle` (migration
 /// 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
 /// and storage shape stable; ts-rs exports the matching TS union into
 /// `fe/core/api/generated/wire.ts` so the frontend can render the
@@ -197,9 +197,9 @@ pub struct AreaResolve {
 )]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum WaveLifecycle {
-    /// New wave; user is editing goal/context and hasn't handed off to
-    /// the Spec Agent yet. **Default for every newly minted wave.**
+pub enum TrackLifecycle {
+    /// New track; user is editing goal/context and hasn't handed off to
+    /// the Spec Agent yet. **Default for every newly minted track.**
     #[default]
     Draft,
     /// Spec Agent is reading the goal + code context and producing a plan.
@@ -207,72 +207,72 @@ pub enum WaveLifecycle {
     /// Spec Agent has emitted one or more dispatch requests and the
     /// Dispatcher is spawning worker cards.
     Dispatching,
-    /// At least one worker card is executing; the wave has not reached
+    /// At least one worker card is executing; the track has not reached
     /// review.
     Working,
-    /// Wave needs human input, or a worker failed in a way the Spec
+    /// Track needs human input, or a worker failed in a way the Spec
     /// Agent cannot recover from autonomously.
     Blocked,
     /// Workers have produced results; Spec Agent or the user is
     /// validating them.
     Reviewing,
-    /// Wave goal achieved; results accepted. **Terminal.**
+    /// Track goal achieved; results accepted. **Terminal.**
     Done,
-    /// User chose to abandon the wave. **Terminal.**
+    /// User chose to abandon the track. **Terminal.**
     Canceled,
     /// System-level failure that cannot recover. **Terminal.**
     Failed,
 }
 
-impl WaveLifecycle {
+impl TrackLifecycle {
     /// Convenience: is this a terminal state? Terminal states (`done`,
     /// `canceled`, `failed`) cannot transition to anything except via
-    /// a user-driven reopen (per `crate::wave_lifecycle`).
+    /// a user-driven reopen (per `crate::track_lifecycle`).
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            WaveLifecycle::Done | WaveLifecycle::Canceled | WaveLifecycle::Failed
+            TrackLifecycle::Done | TrackLifecycle::Canceled | TrackLifecycle::Failed
         )
     }
 
-    /// The lowercase string persisted in `waves.lifecycle` (migration
+    /// The lowercase string persisted in `tracks.lifecycle` (migration
     /// 0012). See [`CardRole::as_db_str`] for the sqlx-replacement
     /// rationale.
     pub fn as_db_str(self) -> &'static str {
         match self {
-            WaveLifecycle::Draft => "draft",
-            WaveLifecycle::Planning => "planning",
-            WaveLifecycle::Dispatching => "dispatching",
-            WaveLifecycle::Working => "working",
-            WaveLifecycle::Blocked => "blocked",
-            WaveLifecycle::Reviewing => "reviewing",
-            WaveLifecycle::Done => "done",
-            WaveLifecycle::Canceled => "canceled",
-            WaveLifecycle::Failed => "failed",
+            TrackLifecycle::Draft => "draft",
+            TrackLifecycle::Planning => "planning",
+            TrackLifecycle::Dispatching => "dispatching",
+            TrackLifecycle::Working => "working",
+            TrackLifecycle::Blocked => "blocked",
+            TrackLifecycle::Reviewing => "reviewing",
+            TrackLifecycle::Done => "done",
+            TrackLifecycle::Canceled => "canceled",
+            TrackLifecycle::Failed => "failed",
         }
     }
 }
 
-impl TryFrom<String> for WaveLifecycle {
+impl TryFrom<String> for TrackLifecycle {
     type Error = String;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
-            "draft" => Ok(WaveLifecycle::Draft),
-            "planning" => Ok(WaveLifecycle::Planning),
-            "dispatching" => Ok(WaveLifecycle::Dispatching),
-            "working" => Ok(WaveLifecycle::Working),
-            "blocked" => Ok(WaveLifecycle::Blocked),
-            "reviewing" => Ok(WaveLifecycle::Reviewing),
-            "done" => Ok(WaveLifecycle::Done),
-            "canceled" => Ok(WaveLifecycle::Canceled),
-            "failed" => Ok(WaveLifecycle::Failed),
-            other => Err(format!("unknown waves.lifecycle value `{other}`")),
+            "draft" => Ok(TrackLifecycle::Draft),
+            "planning" => Ok(TrackLifecycle::Planning),
+            "dispatching" => Ok(TrackLifecycle::Dispatching),
+            "working" => Ok(TrackLifecycle::Working),
+            "blocked" => Ok(TrackLifecycle::Blocked),
+            "reviewing" => Ok(TrackLifecycle::Reviewing),
+            "done" => Ok(TrackLifecycle::Done),
+            "canceled" => Ok(TrackLifecycle::Canceled),
+            "failed" => Ok(TrackLifecycle::Failed),
+            other => Err(format!("unknown tracks.lifecycle value `{other}`")),
         }
     }
 }
 
-// ---------------- Wave workspace ----------------
+// ---------------- Track workspace ----------------
 
 /// Ownership must be explicit because only managed workspaces may be recycled.
 #[derive(
@@ -280,7 +280,7 @@ impl TryFrom<String> for WaveLifecycle {
 )]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum WaveWorkspaceKind {
+pub enum TrackWorkspaceKind {
     /// Server-created, exclusively owned, and recyclable.
     Managed,
     /// User-owned; never deleted or initialized by the server.
@@ -288,32 +288,32 @@ pub enum WaveWorkspaceKind {
     Attached,
 }
 
-impl WaveWorkspaceKind {
+impl TrackWorkspaceKind {
     pub fn as_db_str(&self) -> &'static str {
         match self {
-            WaveWorkspaceKind::Managed => "managed",
-            WaveWorkspaceKind::Attached => "attached",
+            TrackWorkspaceKind::Managed => "managed",
+            TrackWorkspaceKind::Attached => "attached",
         }
     }
 }
 
-impl TryFrom<String> for WaveWorkspaceKind {
+impl TryFrom<String> for TrackWorkspaceKind {
     type Error = String;
 
     fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
         match value.as_str() {
-            "managed" => Ok(WaveWorkspaceKind::Managed),
-            "attached" => Ok(WaveWorkspaceKind::Attached),
-            other => Err(format!("unknown waves.workspace_kind value `{other}`")),
+            "managed" => Ok(TrackWorkspaceKind::Managed),
+            "attached" => Ok(TrackWorkspaceKind::Attached),
+            other => Err(format!("unknown tracks.workspace_kind value `{other}`")),
         }
     }
 }
 
-/// A wave's typed workspace. `path` is its single stored path.
+/// A track's typed workspace. `path` is its single stored path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct WaveWorkspace {
-    pub kind: WaveWorkspaceKind,
+pub struct TrackWorkspace {
+    pub kind: TrackWorkspaceKind,
     /// Absolute path.
     pub path: String,
     /// One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
@@ -324,23 +324,23 @@ pub struct WaveWorkspace {
     pub frozen_at: Option<i64>,
 }
 
-impl Default for WaveWorkspace {
+impl Default for TrackWorkspace {
     fn default() -> Self {
-        WaveWorkspace {
-            kind: WaveWorkspaceKind::Attached,
+        TrackWorkspace {
+            kind: TrackWorkspaceKind::Attached,
             path: String::new(),
             frozen_at: None,
         }
     }
 }
 
-// ---------------- Wave ----------------
+// ---------------- Track ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct Wave {
+pub struct Track {
     #[schema(value_type = String)]
-    pub id: WaveId,
+    pub id: TrackId,
     #[schema(value_type = String)]
     pub area_id: AreaId,
     pub title: String,
@@ -348,19 +348,19 @@ pub struct Wave {
     pub archived_at: Option<i64>,
     pub pinned_at: Option<i64>,
     #[serde(default)]
-    pub lifecycle: WaveLifecycle,
+    pub lifecycle: TrackLifecycle,
     /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
     ///
     /// Rust readers must use `workspace.path`; this field only preserves the
     /// existing wire shape.
     #[serde(rename = "cwd", default)]
     pub cwd_wire_alias: String,
-    /// Template this wave was created from.
+    /// Template this track was created from.
     ///
     /// The `serde(alias)` below is a deserialization-only compatibility read
     /// for pre-#1209 event-log rows; serialization emits only this name.
     // #1209 PR-2 — this field was renamed, and the alias exists for exactly one
-    // carrier: `Wave` is `#[serde(flatten)]`-ed into `WaveUpdatedPayload`, so it
+    // carrier: `Track` is `#[serde(flatten)]`-ed into `TrackUpdatedPayload`, so it
     // is embedded verbatim in the immutable event log. Rows written before the
     // rename spell this key with the old name. Without the alias,
     // `#[serde(default)]` would silently replay them as `None` — a lost field
@@ -368,7 +368,7 @@ pub struct Wave {
     // would fail, and `events_since`'s caller of `Event::from_kind_and_payload`
     // logs and *skips the whole row*. So keep BOTH attributes.
     //
-    // The asymmetry with `CreateWaveRequest`, which must NOT carry the alias, is
+    // The asymmetry with `CreateTrackRequest`, which must NOT carry the alias, is
     // deliberate. A request body is a live contract with someone on the other
     // end, so the old spelling there is an observable, fixable 400 via
     // `deny_unknown_fields`. The event log is immutable history, and rejecting
@@ -382,7 +382,7 @@ pub struct Wave {
     /// Owning plugin copied from the bound template. Immutable after creation.
     #[serde(default)]
     pub plugin_scope: Option<String>,
-    /// Server-owned structural marker. Public wave creation cannot set this.
+    /// Server-owned structural marker. Public track creation cannot set this.
     #[serde(default)]
     pub purpose: Option<String>,
     /// Template input is validated at creation and otherwise remains opaque.
@@ -394,14 +394,14 @@ pub struct Wave {
     #[schema(value_type = Option<Object>)]
     #[ts(type = "unknown")]
     pub template_input: Option<serde_json::Value>,
-    /// Issue #250 PR 2 — unix-ms timestamp the wave most recently
+    /// Issue #250 PR 2 — unix-ms timestamp the track most recently
     /// entered a terminal lifecycle state (Done / Canceled / Failed),
-    /// or `None` while the wave is non-terminal. Stamped inside the
-    /// same transaction as the `WaveLifecycleChanged` event by
-    /// `wave_update_tx`; cleared back to `None` on reopen
+    /// or `None` while the track is non-terminal. Stamped inside the
+    /// same transaction as the `TrackLifecycleChanged` event by
+    /// `track_update_tx`; cleared back to `None` on reopen
     /// (Done/Canceled/Failed → Planning). The calendar window query
-    /// `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
-    /// terminal_at >= since)` to keep open waves visible across every
+    /// `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
+    /// terminal_at >= since)` to keep open tracks visible across every
     /// day they span.
     ///
     /// Backfill semantics: rows that existed before this migration
@@ -414,7 +414,7 @@ pub struct Wave {
     #[serde(default)]
     pub terminal_at: Option<i64>,
     #[serde(default)]
-    pub workspace: WaveWorkspace,
+    pub workspace: TrackWorkspace,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -455,29 +455,29 @@ pub struct CardRuntimeView {
     pub thread_status: Option<String>,
 }
 
-/// One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
+/// One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
 ///
 /// Its own type rather than a reuse of [`AreaConversationSummary`], which is
 /// what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
-/// the area type's contract says "`waveTitle` is absent because every row lives
-/// on one hidden wave", and on a wave that reasoning is simply not true. Two
+/// the area type's contract says "`trackTitle` is absent because every row lives
+/// on one hidden track", and on a track that reasoning is simply not true. Two
 /// lists with different contracts should not share one name just because their
 /// current fields coincide.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct WaveConversationSummary {
+pub struct TrackConversationSummary {
     /// The assistant card's id. This is the conversation's identity everywhere,
     /// and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
     /// address.
     pub id: String,
-    /// The wave this conversation lives on. Always the wave in the request
+    /// The track this conversation lives on. Always the track in the request
     /// path; carried so a client holding a bare row can navigate.
-    pub wave_id: String,
+    pub track_id: String,
     /// The conversation's own name, or null before it has one. Never the
-    /// wave's title.
+    /// track's title.
     pub title: Option<String>,
-    /// Always `"wave-assistant"`, derived from the card's persisted marker.
+    /// Always `"track-assistant"`, derived from the card's persisted marker.
     /// A distinct value from the area list's `"shared-chat"` on purpose: the
     /// frontend branches on it, and a shared value would route assistant rows
     /// through the area chat's presentation.
@@ -495,7 +495,7 @@ pub struct WaveConversationSummary {
 /// One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
 ///
 /// Deliberately absent:
-/// * `waveTitle` — every row belongs to the same hidden area chat wave, so
+/// * `trackTitle` — every row belongs to the same hidden area chat track, so
 ///   returning its title would leak an object the user is never shown.
 /// * `turns` — the server cannot produce a turn count that agrees with the
 ///   drawer without re-parsing every `harness_items.params` blob; a number
@@ -506,9 +506,9 @@ pub struct WaveConversationSummary {
 pub struct AreaConversationSummary {
     /// The chat card's id. This is the conversation's identity everywhere.
     pub id: String,
-    pub wave_id: String,
+    pub track_id: String,
     /// The conversation's own name, or null before it has one. Never the
-    /// wave's title.
+    /// track's title.
     pub title: Option<String>,
     /// Always `"shared-chat"`, derived from the card's persisted marker rather
     /// than from the session kind (the session is an ordinary codex-card
@@ -533,7 +533,7 @@ pub struct Card {
     #[schema(value_type = String)]
     pub id: CardId,
     #[schema(value_type = String)]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     /// `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
     /// plugin-provided cards (the canonical MCP Apps resource URI). The
     /// kernel never interprets beyond that prefix. `[legacy]`
@@ -557,7 +557,7 @@ pub struct Card {
     /// migration 0013). `false` for kernel-owned cards that the user
     /// cannot remove via REST / plugin callbacks — currently spec cards
     /// (retroactively undeletable via the same migration's UPDATE) and
-    /// PR B's wave-report cards.
+    /// PR B's track-report cards.
     ///
     /// `#[serde(default = "default_deletable")]` so wire payloads emitted
     /// before #229 landed (event-log replay fixtures, old test seeds)
@@ -589,7 +589,7 @@ pub struct HarnessItem {
     #[schema(value_type = String)]
     pub card_id: CardId,
     #[schema(value_type = String)]
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub thread_id: String,
     pub turn_id: Option<String>,
     pub item_uuid: Option<String>,
@@ -606,7 +606,7 @@ pub struct HarnessItem {
 pub struct Overlay {
     pub id: String,
     pub plugin_id: String,
-    /// `"wave"` or `"card"`.
+    /// `"track"` or `"card"`.
     pub entity_kind: String,
     pub entity_id: String,
     /// Plugin-defined string. Kernel does not interpret.
@@ -631,7 +631,7 @@ mod card_role_tests {
         for (role, json) in [
             (CardRole::Worker, "\"worker\""),
             (CardRole::Spec, "\"spec\""),
-            // Issue #229 PR A — wave-report card role. Lowercase, no
+            // Issue #229 PR A — track-report card role. Lowercase, no
             // hyphen, matches the existing variant style. Migration
             // 0013's partial unique index hardcodes the same literal.
             (CardRole::ReportCard, "\"reportcard\""),
@@ -704,19 +704,19 @@ mod area_kind_tests {
 }
 
 #[cfg(test)]
-mod wave_lifecycle_db_str_tests {
-    use super::WaveLifecycle;
+mod track_lifecycle_db_str_tests {
+    use super::TrackLifecycle;
 
-    const ALL: [WaveLifecycle; 9] = [
-        WaveLifecycle::Draft,
-        WaveLifecycle::Planning,
-        WaveLifecycle::Dispatching,
-        WaveLifecycle::Working,
-        WaveLifecycle::Blocked,
-        WaveLifecycle::Reviewing,
-        WaveLifecycle::Done,
-        WaveLifecycle::Canceled,
-        WaveLifecycle::Failed,
+    const ALL: [TrackLifecycle; 9] = [
+        TrackLifecycle::Draft,
+        TrackLifecycle::Planning,
+        TrackLifecycle::Dispatching,
+        TrackLifecycle::Working,
+        TrackLifecycle::Blocked,
+        TrackLifecycle::Reviewing,
+        TrackLifecycle::Done,
+        TrackLifecycle::Canceled,
+        TrackLifecycle::Failed,
     ];
 
     #[test]
@@ -725,9 +725,9 @@ mod wave_lifecycle_db_str_tests {
         for state in ALL {
             let wire = serde_json::to_string(&state).expect("serialize");
             assert_eq!(format!("\"{}\"", state.as_db_str()), wire);
-            let back = WaveLifecycle::try_from(state.as_db_str().to_string()).expect("decode");
+            let back = TrackLifecycle::try_from(state.as_db_str().to_string()).expect("decode");
             assert_eq!(back, state);
         }
-        assert!(WaveLifecycle::try_from("bogus".to_string()).is_err());
+        assert!(TrackLifecycle::try_from("bogus".to_string()).is_err());
     }
 }

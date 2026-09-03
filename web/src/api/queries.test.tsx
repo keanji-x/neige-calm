@@ -14,14 +14,14 @@ import type { ReactNode } from 'react';
 // React Query treats them as proper async resolutions.
 vi.mock('./calm', () => ({
   listAreas: vi.fn(),
-  wavesInArea: vi.fn(),
-  getWaveDetail: vi.fn(),
+  tracksInArea: vi.fn(),
+  getTrackDetail: vi.fn(),
   createArea: vi.fn(),
   updateArea: vi.fn(),
   deleteArea: vi.fn(),
-  createWave: vi.fn(),
-  updateWave: vi.fn(),
-  deleteWave: vi.fn(),
+  createTrack: vi.fn(),
+  updateTrack: vi.fn(),
+  deleteTrack: vi.fn(),
   createCard: vi.fn(),
   updateCard: vi.fn(),
   deleteCard: vi.fn(),
@@ -30,11 +30,11 @@ vi.mock('./calm', () => ({
 import * as api from './calm';
 import {
   areasQueryOptions,
-  wavesByAreaQueryOptions,
-  waveDetailQueryOptions,
+  tracksByAreaQueryOptions,
+  trackDetailQueryOptions,
   queryKeys,
   useAreasQuery,
-  useWaveDetailQuery,
+  useTrackDetailQuery,
   useCreateAreaMutation,
 } from './queries';
 
@@ -71,20 +71,20 @@ describe('queryKeys / query option factories', () => {
     expect(typeof opts.queryFn).toBe('function');
   });
 
-  it('wavesByAreaQueryOptions interpolates areaId', () => {
-    const opts = wavesByAreaQueryOptions('area_xyz');
-    expect(opts.queryKey).toEqual(['waves', 'area_xyz']);
+  it('tracksByAreaQueryOptions interpolates areaId', () => {
+    const opts = tracksByAreaQueryOptions('area_xyz');
+    expect(opts.queryKey).toEqual(['tracks', 'area_xyz']);
   });
 
-  it('waveDetailQueryOptions interpolates waveId', () => {
-    const opts = waveDetailQueryOptions('wave_abc');
-    expect(opts.queryKey).toEqual(['wave', 'wave_abc']);
+  it('trackDetailQueryOptions interpolates trackId', () => {
+    const opts = trackDetailQueryOptions('track_abc');
+    expect(opts.queryKey).toEqual(['track', 'track_abc']);
   });
 
   it('queryKeys helpers match the factory output', () => {
     expect(queryKeys.areas()).toEqual(['areas']);
-    expect(queryKeys.wavesInArea('c1')).toEqual(['waves', 'c1']);
-    expect(queryKeys.waveDetail('w1')).toEqual(['wave', 'w1']);
+    expect(queryKeys.tracksInArea('c1')).toEqual(['tracks', 'c1']);
+    expect(queryKeys.trackDetail('w1')).toEqual(['track', 'w1']);
   });
 });
 
@@ -120,16 +120,16 @@ describe('useAreasQuery', () => {
   });
 });
 
-describe('useWaveDetailQuery', () => {
-  it('stays disabled (no fetch) when waveId is null', () => {
+describe('useTrackDetailQuery', () => {
+  it('stays disabled (no fetch) when trackId is null', () => {
     const client = makeClient();
-    renderHook(() => useWaveDetailQuery(null), { wrapper: wrapper(client) });
-    expect(api.getWaveDetail).not.toHaveBeenCalled();
+    renderHook(() => useTrackDetailQuery(null), { wrapper: wrapper(client) });
+    expect(api.getTrackDetail).not.toHaveBeenCalled();
   });
 
-  it('fires the fetch when waveId is provided', async () => {
-    (api.getWaveDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
-      wave: {
+  it('fires the fetch when trackId is provided', async () => {
+    (api.getTrackDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      track: {
         id: 'w1',
         area_id: 'c1',
         title: 't',
@@ -142,22 +142,22 @@ describe('useWaveDetailQuery', () => {
       overlays: [],
     });
     const client = makeClient();
-    const { result } = renderHook(() => useWaveDetailQuery('w1'), {
+    const { result } = renderHook(() => useTrackDetailQuery('w1'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.data).toBeDefined());
-    expect(api.getWaveDetail).toHaveBeenCalledWith('w1');
+    expect(api.getTrackDetail).toHaveBeenCalledWith('w1');
   });
 
   it('keeps previous data visible across an invalidate-driven refetch (#177)', async () => {
     // Regression guard for the `placeholderData: keepPreviousData` flip.
-    // Without it, an `invalidateQueries({ queryKey: ['wave', 'w1'] })`
+    // Without it, an `invalidateQueries({ queryKey: ['track', 'w1'] })`
     // call would briefly surface `data: undefined` for the duration of
     // the refetch — exactly the "subtree unmount" trigger that wiped
     // XtermView's `pendingThemeRef` / `sendRef` and dropped the in-
     // flight theme dispatch in the #177 bug chain.
     const firstSnapshot = {
-      wave: {
+      track: {
         id: 'w1',
         area_id: 'c1',
         title: 'first',
@@ -170,7 +170,7 @@ describe('useWaveDetailQuery', () => {
       overlays: [],
     };
     const secondSnapshot = {
-      wave: { ...firstSnapshot.wave, title: 'second', updated_at: 3 },
+      track: { ...firstSnapshot.track, title: 'second', updated_at: 3 },
       cards: [],
       overlays: [],
     };
@@ -181,17 +181,17 @@ describe('useWaveDetailQuery', () => {
     const secondPromise = new Promise<typeof secondSnapshot>((resolve) => {
       releaseSecond = resolve;
     });
-    (api.getWaveDetail as ReturnType<typeof vi.fn>)
+    (api.getTrackDetail as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(firstSnapshot)
       .mockReturnValueOnce(secondPromise);
 
     const client = makeClient();
-    const { result } = renderHook(() => useWaveDetailQuery('w1'), {
+    const { result } = renderHook(() => useTrackDetailQuery('w1'), {
       wrapper: wrapper(client),
     });
 
     await waitFor(() =>
-      expect(result.current.data?.wave.title).toBe('first'),
+      expect(result.current.data?.track.title).toBe('first'),
     );
 
     // Kick off the refetch via invalidate. The returned promise only
@@ -200,7 +200,7 @@ describe('useWaveDetailQuery', () => {
     // defined across the refetch window — that's the core invariant
     // `placeholderData: keepPreviousData` provides.
     const invalidated = client.invalidateQueries({
-      queryKey: queryKeys.waveDetail('w1'),
+      queryKey: queryKeys.trackDetail('w1'),
     });
 
     // Poll a few ticks; if `placeholderData` is missing, `data` would
@@ -209,14 +209,14 @@ describe('useWaveDetailQuery', () => {
     for (let i = 0; i < 5; i += 1) {
       await new Promise((r) => setTimeout(r, 10));
       expect(result.current.data).toBeDefined();
-      expect(result.current.data!.wave.title).toBe('first');
+      expect(result.current.data!.track.title).toBe('first');
     }
 
     // Release the second resolution; the hook should swap to the new data.
     releaseSecond(secondSnapshot);
     await invalidated;
     await waitFor(() =>
-      expect(result.current.data?.wave.title).toBe('second'),
+      expect(result.current.data?.track.title).toBe('second'),
     );
   });
 });

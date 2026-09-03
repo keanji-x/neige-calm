@@ -1,9 +1,9 @@
 {
-  "description": "forge.pr.diff.read carries the wave routing id, PR/base/head identity, and diff artifact path",
+  "description": "forge.pr.diff.read carries the track routing id, PR/base/head identity, and diff artifact path",
   "wire": {
     "ev": "forge.pr.diff.read",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "pr_number": 1,
       "base_sha": "base-sha",
       "head_sha": "head-sha",

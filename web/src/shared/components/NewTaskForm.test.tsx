@@ -33,7 +33,7 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>>
 
 // Variant that wraps NewTaskForm in a Dialog — required for the Browse…
 // button's `useModalView()` path to exercise (the dialog provides the
-// modal-view context). Matches how AreaPage's NewWaveCTA renders the
+// modal-view context). Matches how AreaPage's NewTrackCTA renders the
 // form in production.
 function renderFormInDialog(
   overrides: Partial<React.ComponentProps<typeof NewTaskForm>> = {},
@@ -45,7 +45,7 @@ function renderFormInDialog(
   });
   const utils = render(
     <QueryClientProvider client={qc}>
-      <Dialog open onClose={() => {}} title="New wave">
+      <Dialog open onClose={() => {}} title="New track">
         <NewTaskForm onCreated={onCreated} onCancel={onCancel} {...overrides} />
       </Dialog>
     </QueryClientProvider>,
@@ -155,12 +155,12 @@ describe('NewTaskForm — cwd validation + area inference', () => {
 });
 
 describe('NewTaskForm — submit', () => {
-  it('posts createWave with attach_folder=true for the existing-area branch', async () => {
+  it('posts createTrack with attach_folder=true for the existing-area branch', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
       { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
+    const createSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
       id: 'w-new',
       area_id: 'area-1',
       title: 'do the thing',
@@ -170,7 +170,7 @@ describe('NewTaskForm — submit', () => {
       archived_at: null,
       terminal_at: null,
       updated_at: 0,
-    } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+    } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
@@ -195,12 +195,12 @@ describe('NewTaskForm — submit', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 
-  it('posts createWave with an empty title when task description is blank', async () => {
+  it('posts createTrack with an empty title when task description is blank', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
       { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
+    const createSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
       id: 'w-empty',
       area_id: 'area-1',
       title: '',
@@ -210,7 +210,7 @@ describe('NewTaskForm — submit', () => {
       archived_at: null,
       terminal_at: null,
       updated_at: 0,
-    } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+    } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
@@ -233,7 +233,7 @@ describe('NewTaskForm — submit', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 
-  it('mints a new area first, then posts the wave for the new-area branch', async () => {
+  it('mints a new area first, then posts the track for the new-area branch', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const newArea = {
@@ -247,7 +247,7 @@ describe('NewTaskForm — submit', () => {
     const areaSpy = vi.spyOn(api, 'createArea').mockResolvedValue(
       newArea as unknown as Awaited<ReturnType<typeof api.createArea>>,
     );
-    const waveSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
+    const trackSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
       id: 'w-new',
       area_id: 'area-new',
       title: 'hi',
@@ -257,7 +257,7 @@ describe('NewTaskForm — submit', () => {
       archived_at: null,
       terminal_at: null,
       updated_at: 0,
-    } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+    } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
@@ -275,8 +275,8 @@ describe('NewTaskForm — submit', () => {
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(areaSpy).toHaveBeenCalled());
     expect(areaSpy.mock.calls[0][0].name).toBe('Project Z');
-    await waitFor(() => expect(waveSpy).toHaveBeenCalled());
-    const body = waveSpy.mock.calls[0][0];
+    await waitFor(() => expect(trackSpy).toHaveBeenCalled());
+    const body = trackSpy.mock.calls[0][0];
     expect(body.area_id).toBe('area-new');
     expect(body.attach_folder).toBe(true);
   });
@@ -286,7 +286,7 @@ describe('NewTaskForm — submit', () => {
       { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    vi.spyOn(api, 'createWave').mockRejectedValue(
+    vi.spyOn(api, 'createTrack').mockRejectedValue(
       new CalmApiError(409, 'conflict', 'conflict', {
         folder_id: 2,
         area_id: 'area-other',
@@ -324,7 +324,7 @@ describe('NewTaskForm — submit', () => {
       { id: 'area-other', name: 'Atlas', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    vi.spyOn(api, 'createWave').mockRejectedValue(
+    vi.spyOn(api, 'createTrack').mockRejectedValue(
       new CalmApiError(409, 'conflict', 'conflict', {
         folder_id: 2,
         area_id: 'area-other',
@@ -371,7 +371,7 @@ describe('NewTaskForm — auto-match override', () => {
       folder_id: 1,
       folder_path: '/Users/me/code',
     });
-    const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
+    const createSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
       id: 'w-new',
       area_id: 'area-2',
       title: 'do it',
@@ -381,7 +381,7 @@ describe('NewTaskForm — auto-match override', () => {
       archived_at: null,
       terminal_at: null,
       updated_at: 0,
-    } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+    } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
@@ -443,7 +443,7 @@ describe('NewTaskForm — auto-match override', () => {
         folder_id: 1,
         folder_path: '/Users/me/code',
       });
-    const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
+    const createSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
       id: 'w-new',
       area_id: 'area-2',
       title: 'x',
@@ -453,7 +453,7 @@ describe('NewTaskForm — auto-match override', () => {
       archived_at: null,
       terminal_at: null,
       updated_at: 0,
-    } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+    } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
@@ -577,7 +577,7 @@ describe('NewTaskForm — cancel', () => {
 
 // Browse… → DirectoryBrowser flow.
 //
-// In production NewTaskForm always renders inside a Dialog (NewWaveCTA
+// In production NewTaskForm always renders inside a Dialog (NewTrackCTA
 // in Area.tsx), so the Browse button's `useModalView()` push lands on a
 // real modal-view context. The test mirrors that wrapping so the
 // pushed-view path is the one we exercise — the inline fallback is

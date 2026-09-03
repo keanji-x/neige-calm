@@ -1,4 +1,4 @@
-// CAP-WAVEWORKSPACE-003's fail-closed sweep: every surface that can put a
+// CAP-TRACKWORKSPACE-003's fail-closed sweep: every surface that can put a
 // directory picker on screen must be registered, with how it hosts it.
 //
 // ## Why a sweep and not a test
@@ -19,7 +19,7 @@
 // for hosts that are not dialogs — but it means "did the picker open as a
 // modal?" is a property of the *call site*, decided silently, with no type and
 // no runtime error to announce it. #1211 walked straight into it: moving the
-// new-wave form from a dialog onto a route flipped that branch, and the picker
+// new-track form from a dialog onto a route flipped that branch, and the picker
 // became a file list unrolled under a chip with no focus trap, no Escape and no
 // click-outside. Every suite stayed green, because the control was still
 // `DirectoryField` and every assertion was about `DirectoryField`.
@@ -32,9 +32,9 @@
 // ## What this does and does not prove
 //
 // It proves the set is *known*. It does not prove each entry's claim — that
-// `new-card` really pushes into a surrounding dialog, and that `new-wave`
+// `new-card` really pushes into a surrounding dialog, and that `new-track`
 // really opens its own modal, are behavioural facts, and each is pinned by the
-// `authoritative_test` its oracle row names (CAP-WAVEWORKSPACE-006 and -003
+// `authoritative_test` its oracle row names (CAP-TRACKWORKSPACE-006 and -003
 // respectively). The two halves are deliberate: this file cannot execute React,
 // and those tests cannot see a call site nobody wrote yet.
 
@@ -47,16 +47,16 @@ import { extname, resolve } from 'node:path';
  *   `pushes-into-host-dialog` — the surface is itself inside a `Dialog`, so
  *     `DirectoryField` takes its `useDialogView()` branch and the picker
  *     replaces the host dialog's body. Nesting a second dialog here would
- *     fight the outer one's focus trap (CAP-WAVEWORKSPACE-006).
+ *     fight the outer one's focus trap (CAP-TRACKWORKSPACE-006).
  *
  *   `owns-its-modal` — the surface is not inside a dialog, so it must mount a
  *     `Dialog` of its own around `DirectoryBrowser`. Using `DirectoryField`
- *     here would silently take the inline fallback (CAP-WAVEWORKSPACE-003).
+ *     here would silently take the inline fallback (CAP-TRACKWORKSPACE-003).
  */
 export const DIRECTORY_PICKER_HOSTS = Object.freeze({
   'web/src/ui/schema-form/fields/DirectoryField/public.tsx': 'component',
-  'web/src/features/wave/new-card/public.tsx': 'pushes-into-host-dialog',
-  'web/src/features/area/new-wave/public.tsx': 'owns-its-modal',
+  'web/src/features/track/new-card/public.tsx': 'pushes-into-host-dialog',
+  'web/src/features/area/new-track/public.tsx': 'owns-its-modal',
 });
 
 /** The two components whose presence makes a file a picker host. */
@@ -89,7 +89,7 @@ export function checkDirectoryPickerHosts(webSrc = 'web/src') {
     if (!(path in DIRECTORY_PICKER_HOSTS)) {
       problems.push(`${path} renders a directory picker but is not registered in `
         + 'tools/architecture/directory-picker-hosts.mjs — declare whether it pushes into a '
-        + 'host dialog or owns its own modal (CAP-WAVEWORKSPACE-003 / -006)');
+        + 'host dialog or owns its own modal (CAP-TRACKWORKSPACE-003 / -006)');
     }
   }
   for (const path of Object.keys(DIRECTORY_PICKER_HOSTS)) {

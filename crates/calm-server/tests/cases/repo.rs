@@ -2,7 +2,7 @@
 //!
 //! These tests exercise the observable contract of the `Repo` trait against
 //! the real sqlx-backed implementation: CRUD round-trips, cascade deletes,
-//! sort defaulting, `wave_detail` composition, overlay upsert idempotency,
+//! sort defaulting, `track_detail` composition, overlay upsert idempotency,
 //! and terminal-per-card uniqueness.
 
 use calm_server::db::prelude::*;
@@ -34,8 +34,8 @@ async fn make_area(repo: &SqlxRepo, name: &str) -> Area {
     .expect("create area")
 }
 
-async fn make_wave(repo: &SqlxRepo, area_id: &str, title: &str) -> Wave {
-    repo.wave_create(NewWave {
+async fn make_track(repo: &SqlxRepo, area_id: &str, title: &str) -> Track {
+    repo.track_create(NewTrack {
         template_input: None,
         area_id: area_id.into(),
         title: title.into(),
@@ -47,12 +47,12 @@ async fn make_wave(repo: &SqlxRepo, area_id: &str, title: &str) -> Wave {
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
-    .expect("create wave")
+    .expect("create track")
 }
 
-async fn make_card(repo: &SqlxRepo, wave_id: &str, kind: &str) -> Card {
+async fn make_card(repo: &SqlxRepo, track_id: &str, kind: &str) -> Card {
     repo.card_create(NewCard {
-        wave_id: wave_id.into(),
+        track_id: track_id.into(),
         title: None,
         kind: kind.into(),
         sort: None,
@@ -162,28 +162,28 @@ async fn area_crud_round_trip() {
 }
 
 #[tokio::test]
-async fn wave_crud_round_trip() {
+async fn track_crud_round_trip() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "first").await;
+    let w = make_track(&repo, c.id.as_str(), "first").await;
     assert!(w.archived_at.is_none());
-    // Issue #145 — every newly minted wave seeds at Draft.
+    // Issue #145 — every newly minted track seeds at Draft.
     assert_eq!(
         w.lifecycle,
-        WaveLifecycle::Draft,
-        "new wave defaults to Draft"
+        TrackLifecycle::Draft,
+        "new track defaults to Draft"
     );
 
     let updated = repo
-        .wave_update(
+        .track_update(
             w.id.as_str(),
-            WavePatch {
+            TrackPatch {
                 title: Some("renamed".into()),
                 sort: None,
                 archived_at: Some(Some(42)),
                 pinned_at: None,
                 lifecycle: None,
-                ..WavePatch::default()
+                ..TrackPatch::default()
             },
         )
         .await
@@ -192,15 +192,15 @@ async fn wave_crud_round_trip() {
     assert_eq!(updated.archived_at, Some(42));
 
     let cleared = repo
-        .wave_update(
+        .track_update(
             w.id.as_str(),
-            WavePatch {
+            TrackPatch {
                 title: None,
                 sort: None,
                 archived_at: Some(None),
                 pinned_at: None,
                 lifecycle: None,
-                ..WavePatch::default()
+                ..TrackPatch::default()
             },
         )
         .await
@@ -208,7 +208,7 @@ async fn wave_crud_round_trip() {
     assert_eq!(cleared.archived_at, None);
 
     let err = repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: "no-such-area".into(),
             title: "x".into(),
@@ -225,8 +225,8 @@ async fn wave_crud_round_trip() {
 }
 
 #[tokio::test]
-async fn wave_lifecycle_round_trips_through_patch() {
-    // Issue #145 — `WavePatch.lifecycle` writes the column and the
+async fn track_lifecycle_round_trips_through_patch() {
+    // Issue #145 — `TrackPatch.lifecycle` writes the column and the
     // next read reflects the new value. The validator (whose job is
     // to refuse illegal transitions) lives one layer up in the
     // routes / MCP tool; the DB layer accepts any value and is the
@@ -235,69 +235,69 @@ async fn wave_lifecycle_round_trips_through_patch() {
     // statement surfaces here.
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "lifecycle-test").await;
-    assert_eq!(w.lifecycle, WaveLifecycle::Draft);
+    let w = make_track(&repo, c.id.as_str(), "lifecycle-test").await;
+    assert_eq!(w.lifecycle, TrackLifecycle::Draft);
 
     let patched = repo
-        .wave_update(
+        .track_update(
             w.id.as_str(),
-            WavePatch {
+            TrackPatch {
                 title: None,
                 sort: None,
                 archived_at: None,
                 pinned_at: None,
-                lifecycle: Some(WaveLifecycle::Planning),
-                ..WavePatch::default()
+                lifecycle: Some(TrackLifecycle::Planning),
+                ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
-    assert_eq!(patched.lifecycle, WaveLifecycle::Planning);
+    assert_eq!(patched.lifecycle, TrackLifecycle::Planning);
 
-    let re_read = repo.wave_get(w.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(re_read.lifecycle, WaveLifecycle::Planning);
+    let re_read = repo.track_get(w.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(re_read.lifecycle, TrackLifecycle::Planning);
 
     // Patch with `lifecycle: None` leaves the column alone.
     let no_change = repo
-        .wave_update(
+        .track_update(
             w.id.as_str(),
-            WavePatch {
+            TrackPatch {
                 title: Some("renamed-only".into()),
                 sort: None,
                 archived_at: None,
                 pinned_at: None,
                 lifecycle: None,
-                ..WavePatch::default()
+                ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
-    assert_eq!(no_change.lifecycle, WaveLifecycle::Planning);
+    assert_eq!(no_change.lifecycle, TrackLifecycle::Planning);
 }
 
 #[tokio::test]
-async fn events_for_wave_filters_since_in_query() {
+async fn events_for_track_filters_since_in_query() {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::event::{Event, EventBus, EventScope};
     use calm_server::ids::ActorId;
-    use calm_server::wave_area_cache::WaveAreaCache;
+    use calm_server::track_area_cache::TrackAreaCache;
 
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let wave = make_wave(&repo, c.id.as_str(), "events-wave").await;
-    let other_wave = make_wave(&repo, c.id.as_str(), "other-wave").await;
+    let track = make_track(&repo, c.id.as_str(), "events-track").await;
+    let other_track = make_track(&repo, c.id.as_str(), "other-track").await;
     let bus = EventBus::new();
     let role_cache = CardRoleCache::new();
-    let area_cache = WaveAreaCache::new();
+    let area_cache = TrackAreaCache::new();
     repo.seed_card_role_cache(&role_cache).await.unwrap();
-    repo.seed_wave_area_cache(&area_cache).await.unwrap();
+    repo.seed_track_area_cache(&area_cache).await.unwrap();
 
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
         area: c.id.clone(),
     };
-    let other_scope = EventScope::Wave {
-        wave: other_wave.id.clone(),
+    let other_scope = EventScope::Track {
+        track: other_track.id.clone(),
         area: c.id.clone(),
     };
     let first_id = repo
@@ -324,7 +324,7 @@ async fn events_for_wave_filters_since_in_query() {
         &role_cache,
         &area_cache,
         Event::TaskFailed {
-            idempotency_key: "other-wave".into(),
+            idempotency_key: "other-track".into(),
             reason: "other".into(),
             agent_message: None,
         },
@@ -349,28 +349,28 @@ async fn events_for_wave_filters_since_in_query() {
         .unwrap();
 
     let all = repo
-        .events_for_wave(wave.id.as_str(), &["task.failed"], None)
+        .events_for_track(track.id.as_str(), &["task.failed"], None)
         .await
         .unwrap();
     assert_eq!(
         all.iter().map(|row| row.id).collect::<Vec<_>>(),
         vec![first_id, second_id],
-        "unbounded wave query should include both matching events for the wave"
+        "unbounded track query should include both matching events for the track"
     );
 
     let since_first = repo
-        .events_for_wave(wave.id.as_str(), &["task.failed"], Some(first_id))
+        .events_for_track(track.id.as_str(), &["task.failed"], Some(first_id))
         .await
         .unwrap();
     assert_eq!(
         since_first.iter().map(|row| row.id).collect::<Vec<_>>(),
         vec![second_id],
-        "bounded wave query should apply id > watermark before returning rows"
+        "bounded track query should apply id > watermark before returning rows"
     );
     assert_eq!(since_first[0].actor, ActorId::Kernel);
 
     let since_second = repo
-        .events_for_wave(wave.id.as_str(), &["task.failed"], Some(second_id))
+        .events_for_track(track.id.as_str(), &["task.failed"], Some(second_id))
         .await
         .unwrap();
     assert!(since_second.is_empty());
@@ -380,7 +380,7 @@ async fn events_for_wave_filters_since_in_query() {
 async fn card_crud_round_trip() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     assert_eq!(card.payload, json!({"hello": "world"}));
 
@@ -400,7 +400,7 @@ async fn card_crud_round_trip() {
     assert_eq!(updated.kind, "plugin:x:view");
     assert_eq!(updated.payload, json!({"replaced": true}));
 
-    let listed = repo.cards_by_wave(w.id.as_str()).await.unwrap();
+    let listed = repo.cards_by_track(w.id.as_str()).await.unwrap();
     assert_eq!(listed.len(), 1);
 
     repo.card_delete(card.id.as_str()).await.unwrap();
@@ -412,33 +412,33 @@ async fn card_crud_round_trip() {
 // ----------------------------------------------------------- Cascades ----
 
 #[tokio::test]
-async fn area_delete_cascades_to_waves_and_cards() {
+async fn area_delete_cascades_to_tracks_and_cards() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w1 = make_wave(&repo, c.id.as_str(), "w1").await;
-    let w2 = make_wave(&repo, c.id.as_str(), "w2").await;
+    let w1 = make_track(&repo, c.id.as_str(), "w1").await;
+    let w2 = make_track(&repo, c.id.as_str(), "w2").await;
     let c1 = make_card(&repo, w1.id.as_str(), "terminal").await;
     let c2 = make_card(&repo, w2.id.as_str(), "terminal").await;
 
     repo.area_delete(c.id.as_str()).await.unwrap();
 
-    assert!(repo.wave_get(w1.id.as_str()).await.unwrap().is_none());
-    assert!(repo.wave_get(w2.id.as_str()).await.unwrap().is_none());
+    assert!(repo.track_get(w1.id.as_str()).await.unwrap().is_none());
+    assert!(repo.track_get(w2.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(c1.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(c2.id.as_str()).await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn area_delete_succeeds_when_wave_references_root_session() {
+async fn area_delete_succeeds_when_track_references_root_session() {
     let repo = fresh_repo().await;
     let area = make_area(&repo, "rooted").await;
-    let wave = make_wave(&repo, area.id.as_str(), "rooted wave").await;
-    let root_card = make_card(&repo, wave.id.as_str(), "codex").await;
+    let track = make_track(&repo, area.id.as_str(), "rooted track").await;
+    let root_card = make_card(&repo, track.id.as_str(), "codex").await;
     let root_session_id = start_root_runtime(&repo, &root_card).await;
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -447,7 +447,7 @@ async fn area_delete_succeeds_when_wave_references_root_session() {
     repo.area_delete(area.id.as_str()).await.unwrap();
 
     assert!(repo.area_get(area.id.as_str()).await.unwrap().is_none());
-    assert!(repo.wave_get(wave.id.as_str()).await.unwrap().is_none());
+    assert!(repo.track_get(track.id.as_str()).await.unwrap().is_none());
     assert!(
         repo.card_get(root_card.id.as_str())
             .await
@@ -457,21 +457,21 @@ async fn area_delete_succeeds_when_wave_references_root_session() {
 }
 
 #[tokio::test]
-async fn wave_delete_cascades_to_cards() {
+async fn track_delete_cascades_to_cards() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
-    let other_wave = make_wave(&repo, c.id.as_str(), "other").await;
-    let other_card = make_card(&repo, other_wave.id.as_str(), "terminal").await;
+    let other_track = make_track(&repo, c.id.as_str(), "other").await;
+    let other_card = make_card(&repo, other_track.id.as_str(), "terminal").await;
 
-    repo.wave_delete(w.id.as_str()).await.unwrap();
+    repo.track_delete(w.id.as_str()).await.unwrap();
 
-    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_none());
+    assert!(repo.track_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
-    // unrelated wave and card untouched
+    // unrelated track and card untouched
     assert!(
-        repo.wave_get(other_wave.id.as_str())
+        repo.track_get(other_track.id.as_str())
             .await
             .unwrap()
             .is_some()
@@ -485,17 +485,17 @@ async fn wave_delete_cascades_to_cards() {
 }
 
 #[tokio::test]
-async fn root_card_delete_clears_wave_root_session_id() {
+async fn root_card_delete_clears_track_root_session_id() {
     let repo = fresh_repo().await;
     let area = make_area(&repo, "rooted-card").await;
-    let wave = make_wave(&repo, area.id.as_str(), "rooted wave").await;
-    let root_card = make_card(&repo, wave.id.as_str(), "codex").await;
-    let other_card = make_card(&repo, wave.id.as_str(), "terminal").await;
+    let track = make_track(&repo, area.id.as_str(), "rooted track").await;
+    let root_card = make_card(&repo, track.id.as_str(), "codex").await;
+    let other_card = make_card(&repo, track.id.as_str(), "terminal").await;
     let root_session_id = start_root_runtime(&repo, &root_card).await;
 
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -516,14 +516,14 @@ async fn root_card_delete_clears_wave_root_session_id() {
             .is_some()
     );
     let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-            .bind(wave.id.as_str())
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
     assert_eq!(
         root, None,
-        "deleting the root card must detach the wave root"
+        "deleting the root card must detach the track root"
     );
 }
 
@@ -531,7 +531,7 @@ async fn root_card_delete_clears_wave_root_session_id() {
 async fn card_delete_sweeps_card_overlays() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
 
     make_overlay(&repo, "p1", "card", card.id.as_str(), "status").await;
@@ -548,17 +548,17 @@ async fn card_delete_sweeps_card_overlays() {
 }
 
 #[tokio::test]
-async fn wave_delete_sweeps_card_overlays() {
+async fn track_delete_sweeps_card_overlays() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card1 = make_card(&repo, w.id.as_str(), "terminal").await;
     let card2 = make_card(&repo, w.id.as_str(), "terminal").await;
 
     make_overlay(&repo, "p", "card", card1.id.as_str(), "status").await;
     make_overlay(&repo, "p", "card", card2.id.as_str(), "status").await;
 
-    repo.wave_delete(w.id.as_str()).await.unwrap();
+    repo.track_delete(w.id.as_str()).await.unwrap();
 
     assert!(
         repo.overlays_for("card", card1.id.as_str())
@@ -575,18 +575,18 @@ async fn wave_delete_sweeps_card_overlays() {
 }
 
 #[tokio::test]
-async fn wave_delete_sweeps_wave_and_view_overlays() {
+async fn track_delete_sweeps_track_and_view_overlays() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    make_overlay(&repo, "p", "wave", w.id.as_str(), "status").await;
+    make_overlay(&repo, "p", "track", w.id.as_str(), "status").await;
     make_overlay(&repo, "p", "view", w.id.as_str(), "status").await;
 
-    repo.wave_delete(w.id.as_str()).await.unwrap();
+    repo.track_delete(w.id.as_str()).await.unwrap();
 
     assert!(
-        repo.overlays_for("wave", w.id.as_str())
+        repo.overlays_for("track", w.id.as_str())
             .await
             .unwrap()
             .is_empty()
@@ -605,18 +605,18 @@ async fn area_delete_sweeps_all_overlays_transitively() {
     let c = make_area(&repo, "C").await;
     make_overlay(&repo, "p", "area", c.id.as_str(), "status").await;
 
-    let waves = [
-        make_wave(&repo, c.id.as_str(), "w1").await,
-        make_wave(&repo, c.id.as_str(), "w2").await,
+    let tracks = [
+        make_track(&repo, c.id.as_str(), "w1").await,
+        make_track(&repo, c.id.as_str(), "w2").await,
     ];
     let mut card_ids: Vec<String> = Vec::new();
 
-    for wave in &waves {
-        make_overlay(&repo, "p", "wave", wave.id.as_str(), "status").await;
-        make_overlay(&repo, "p", "view", wave.id.as_str(), "status").await;
+    for track in &tracks {
+        make_overlay(&repo, "p", "track", track.id.as_str(), "status").await;
+        make_overlay(&repo, "p", "view", track.id.as_str(), "status").await;
 
         for name in ["c1", "c2"] {
-            let card = make_card(&repo, wave.id.as_str(), name).await;
+            let card = make_card(&repo, track.id.as_str(), name).await;
             make_overlay(&repo, "p", "card", card.id.as_str(), "status").await;
             card_ids.push(card.id.to_string());
         }
@@ -630,15 +630,15 @@ async fn area_delete_sweeps_all_overlays_transitively() {
             .unwrap()
             .is_empty()
     );
-    for wave in &waves {
+    for track in &tracks {
         assert!(
-            repo.overlays_for("wave", wave.id.as_str())
+            repo.overlays_for("track", track.id.as_str())
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            repo.overlays_for("view", wave.id.as_str())
+            repo.overlays_for("view", track.id.as_str())
                 .await
                 .unwrap()
                 .is_empty()
@@ -665,17 +665,17 @@ async fn overlay_sweep_is_idempotent_no_rows() {
 // --- Terminal FK contract regression tests (issues #4, #197) ---------------
 //
 // Originally these three tests documented the `ON DELETE CASCADE` FK on
-// `terminals.card_id`: deleting a card / wave / area silently nuked the
+// `terminals.card_id`: deleting a card / track / area silently nuked the
 // terminal row beneath it. Issue #197 inverted that contract: the FK is now
 // `ON DELETE RESTRICT` (migration 0011) so the schema **refuses** to nuke
 // the terminal row implicitly — eager teardown in the route handlers
-// (`routes/cards.rs::delete_card`, `routes/waves.rs::delete_wave`,
+// (`routes/cards.rs::delete_card`, `routes/tracks.rs::delete_track`,
 // `routes/areas.rs::delete_area`) owns the kill-daemon-unlink-socket
 // sequence and explicitly drops the terminal row before the parent.
 //
 // The tests below now verify the RESTRICT semantics at the bare
-// `Repo::card_delete` / `wave_delete` / `area_delete` surface: a card/
-// wave/area that has a live terminal underneath cannot be deleted; once
+// `Repo::card_delete` / `track_delete` / `area_delete` surface: a card/
+// track/area that has a live terminal underneath cannot be deleted; once
 // the terminal row is removed, the parent delete proceeds.
 
 async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
@@ -694,7 +694,7 @@ async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
 async fn fk_restrict_card_delete_blocked_by_terminal() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
@@ -717,41 +717,41 @@ async fn fk_restrict_card_delete_blocked_by_terminal() {
 }
 
 #[tokio::test]
-async fn fk_restrict_wave_delete_blocked_by_terminal_under_card() {
+async fn fk_restrict_track_delete_blocked_by_terminal_under_card() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    // Unrelated wave/card/terminal that must NOT be touched on either
+    // Unrelated track/card/terminal that must NOT be touched on either
     // attempt (the second attempt succeeds, but only on `w`'s subtree).
-    let other_wave = make_wave(&repo, c.id.as_str(), "other").await;
-    let other_card = make_card(&repo, other_wave.id.as_str(), "terminal").await;
+    let other_track = make_track(&repo, c.id.as_str(), "other").await;
+    let other_card = make_card(&repo, other_track.id.as_str(), "terminal").await;
     let other_term = make_terminal(&repo, other_card.id.as_str()).await;
 
-    // RESTRICT bites: the wave-delete cascade through `cards.wave_id`
+    // RESTRICT bites: the track-delete cascade through `cards.track_id`
     // would try to delete `card`, which still has `term` pointing at
     // it — schema refuses.
-    let err = repo.wave_delete(w.id.as_str()).await.unwrap_err();
+    let err = repo.track_delete(w.id.as_str()).await.unwrap_err();
     assert!(
         matches!(err, CalmError::Db(_)),
         "expected an FK constraint error from sqlx, got: {err:?}"
     );
-    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_some());
+    assert!(repo.track_get(w.id.as_str()).await.unwrap().is_some());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
     assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
 
     // Drain the terminal first (the eager-teardown shape), then the
-    // wave delete clears the rest via CASCADE on `cards.wave_id`.
+    // track delete clears the rest via CASCADE on `cards.track_id`.
     repo.terminal_delete(term.id.as_str()).await.unwrap();
-    repo.wave_delete(w.id.as_str()).await.unwrap();
-    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_none());
+    repo.track_delete(w.id.as_str()).await.unwrap();
+    assert!(repo.track_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
 
     // Sibling subtree intact across both attempts.
     assert!(
-        repo.wave_get(other_wave.id.as_str())
+        repo.track_get(other_track.id.as_str())
             .await
             .unwrap()
             .is_some()
@@ -774,7 +774,7 @@ async fn fk_restrict_wave_delete_blocked_by_terminal_under_card() {
 async fn fk_restrict_area_delete_blocked_by_terminal_under_subtree() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
@@ -784,14 +784,14 @@ async fn fk_restrict_area_delete_blocked_by_terminal_under_subtree() {
         "expected an FK constraint error from sqlx, got: {err:?}"
     );
     assert!(repo.area_get(c.id.as_str()).await.unwrap().is_some());
-    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_some());
+    assert!(repo.track_get(w.id.as_str()).await.unwrap().is_some());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
     assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
 
     repo.terminal_delete(term.id.as_str()).await.unwrap();
     repo.area_delete(c.id.as_str()).await.unwrap();
     assert!(repo.area_get(c.id.as_str()).await.unwrap().is_none());
-    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_none());
+    assert!(repo.track_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
 }
 
@@ -809,25 +809,25 @@ async fn sort_defaulting_assigns_1_2_3_for_areas() {
 }
 
 #[tokio::test]
-async fn sort_defaulting_is_scoped_per_area_for_waves() {
+async fn sort_defaulting_is_scoped_per_area_for_tracks() {
     let repo = fresh_repo().await;
     let c1 = make_area(&repo, "c1").await;
     let c2 = make_area(&repo, "c2").await;
-    let w1a = make_wave(&repo, c1.id.as_str(), "w1a").await;
-    let w1b = make_wave(&repo, c1.id.as_str(), "w1b").await;
-    let w2a = make_wave(&repo, c2.id.as_str(), "w2a").await;
+    let w1a = make_track(&repo, c1.id.as_str(), "w1a").await;
+    let w1b = make_track(&repo, c1.id.as_str(), "w1b").await;
+    let w2a = make_track(&repo, c2.id.as_str(), "w2a").await;
     assert_eq!(w1a.sort, 1.0);
     assert_eq!(w1b.sort, 2.0);
-    // w2a is the first wave in c2 so it should also start at 1.0.
+    // w2a is the first track in c2 so it should also start at 1.0.
     assert_eq!(w2a.sort, 1.0);
 }
 
 #[tokio::test]
-async fn sort_defaulting_is_scoped_per_wave_for_cards() {
+async fn sort_defaulting_is_scoped_per_track_for_cards() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "c").await;
-    let w1 = make_wave(&repo, c.id.as_str(), "w1").await;
-    let w2 = make_wave(&repo, c.id.as_str(), "w2").await;
+    let w1 = make_track(&repo, c.id.as_str(), "w1").await;
+    let w2 = make_track(&repo, c.id.as_str(), "w2").await;
     let c1a = make_card(&repo, w1.id.as_str(), "terminal").await;
     let c1b = make_card(&repo, w1.id.as_str(), "terminal").await;
     let c1c = make_card(&repo, w1.id.as_str(), "terminal").await;
@@ -838,14 +838,14 @@ async fn sort_defaulting_is_scoped_per_wave_for_cards() {
     assert_eq!(c2a.sort, 1.0);
 }
 
-// ------------------------------------------------------- wave_detail ----
+// ------------------------------------------------------- track_detail ----
 
 #[tokio::test]
-async fn wave_detail_includes_sorted_cards_and_scoped_overlays() {
+async fn track_detail_includes_sorted_cards_and_scoped_overlays() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
-    let other_w = make_wave(&repo, c.id.as_str(), "other").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
+    let other_w = make_track(&repo, c.id.as_str(), "other").await;
 
     // Create cards in an out-of-order manner; expect sort = 1,2,3 sequential.
     let card_a = make_card(&repo, w.id.as_str(), "a").await;
@@ -853,12 +853,12 @@ async fn wave_detail_includes_sorted_cards_and_scoped_overlays() {
     let card_c = make_card(&repo, w.id.as_str(), "c").await;
     let other_card = make_card(&repo, other_w.id.as_str(), "other").await;
 
-    // Overlays: one wave-scoped, one card-scoped (on card_b), and one on a
-    // card in an unrelated wave (must be excluded).
-    let wave_overlay = repo
+    // Overlays: one track-scoped, one card-scoped (on card_b), and one on a
+    // card in an unrelated track (must be excluded).
+    let track_overlay = repo
         .overlay_upsert(NewOverlay {
             plugin_id: "p".into(),
-            entity_kind: "wave".into(),
+            entity_kind: "track".into(),
             entity_id: w.id.to_string(),
             kind: "status".into(),
             payload: json!({"state": "ok"}),
@@ -887,11 +887,11 @@ async fn wave_detail_includes_sorted_cards_and_scoped_overlays() {
         .unwrap();
 
     let detail = repo
-        .wave_detail(w.id.as_str())
+        .track_detail(w.id.as_str())
         .await
         .unwrap()
-        .expect("wave detail");
-    assert_eq!(detail.wave.id, w.id);
+        .expect("track detail");
+    assert_eq!(detail.track.id, w.id);
     let card_ids: Vec<&str> = detail.cards.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(
         card_ids,
@@ -900,15 +900,15 @@ async fn wave_detail_includes_sorted_cards_and_scoped_overlays() {
 
     let overlay_ids: std::collections::HashSet<&str> =
         detail.overlays.iter().map(|o| o.id.as_str()).collect();
-    assert!(overlay_ids.contains(wave_overlay.id.as_str()));
+    assert!(overlay_ids.contains(track_overlay.id.as_str()));
     assert!(overlay_ids.contains(card_overlay.id.as_str()));
     assert_eq!(detail.overlays.len(), 2);
 }
 
 #[tokio::test]
-async fn wave_detail_returns_none_for_missing_wave() {
+async fn track_detail_returns_none_for_missing_track() {
     let repo = fresh_repo().await;
-    assert!(repo.wave_detail("nonexistent").await.unwrap().is_none());
+    assert!(repo.track_detail("nonexistent").await.unwrap().is_none());
 }
 
 // --------------------------------------------------------- overlays ----
@@ -917,11 +917,11 @@ async fn wave_detail_returns_none_for_missing_wave() {
 async fn overlay_upsert_is_idempotent_on_unique_key() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let p = NewOverlay {
         plugin_id: "p".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: w.id.to_string(),
         kind: "status".into(),
         payload: json!({"v": 1}),
@@ -936,33 +936,33 @@ async fn overlay_upsert_is_idempotent_on_unique_key() {
     assert_eq!(first.id, second.id);
     assert_eq!(second.payload, json!({"v": 2}));
 
-    let all = repo.overlays_for("wave", w.id.as_str()).await.unwrap();
+    let all = repo.overlays_for("track", w.id.as_str()).await.unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].payload, json!({"v": 2}));
 
-    repo.overlay_delete("p", "wave", w.id.as_str(), "status")
+    repo.overlay_delete("p", "track", w.id.as_str(), "status")
         .await
         .unwrap();
     let err = repo
-        .overlay_delete("p", "wave", w.id.as_str(), "status")
+        .overlay_delete("p", "track", w.id.as_str(), "status")
         .await
         .unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
 #[tokio::test]
-async fn overlays_by_kind_returns_all_wave_overlays_across_areas() {
+async fn overlays_by_kind_returns_all_track_overlays_across_areas() {
     let repo = fresh_repo().await;
     let c1 = make_area(&repo, "C1").await;
     let c2 = make_area(&repo, "C2").await;
-    let w1 = make_wave(&repo, c1.id.as_str(), "W1").await;
-    let w2 = make_wave(&repo, c2.id.as_str(), "W2").await;
+    let w1 = make_track(&repo, c1.id.as_str(), "W1").await;
+    let w2 = make_track(&repo, c2.id.as_str(), "W2").await;
     let card = make_card(&repo, w1.id.as_str(), "terminal").await;
 
-    // Two wave overlays in different areas + one card overlay.
+    // Two track overlays in different areas + one card overlay.
     repo.overlay_upsert(NewOverlay {
         plugin_id: "p".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: w1.id.to_string(),
         kind: "status".into(),
         payload: json!({"state": "running"}),
@@ -971,7 +971,7 @@ async fn overlays_by_kind_returns_all_wave_overlays_across_areas() {
     .unwrap();
     repo.overlay_upsert(NewOverlay {
         plugin_id: "p".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: w2.id.to_string(),
         kind: "status".into(),
         payload: json!({"state": "waiting"}),
@@ -988,12 +988,13 @@ async fn overlays_by_kind_returns_all_wave_overlays_across_areas() {
     .await
     .unwrap();
 
-    let waves = repo.overlays_by_kind("wave").await.unwrap();
-    assert_eq!(waves.len(), 2);
-    let ids: std::collections::HashSet<&str> = waves.iter().map(|o| o.entity_id.as_str()).collect();
+    let tracks = repo.overlays_by_kind("track").await.unwrap();
+    assert_eq!(tracks.len(), 2);
+    let ids: std::collections::HashSet<&str> =
+        tracks.iter().map(|o| o.entity_id.as_str()).collect();
     assert!(ids.contains(w1.id.as_str()));
     assert!(ids.contains(w2.id.as_str()));
-    assert!(waves.iter().all(|o| o.entity_kind == "wave"));
+    assert!(tracks.iter().all(|o| o.entity_kind == "track"));
 
     let cards = repo.overlays_by_kind("card").await.unwrap();
     assert_eq!(cards.len(), 1);
@@ -1006,7 +1007,7 @@ async fn overlays_by_kind_returns_all_wave_overlays_across_areas() {
 async fn terminal_create_rejects_duplicate_card_id() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
 
     let t = repo
@@ -1062,7 +1063,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
 async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term) = calm_server::db::sqlite::card_with_terminal_create_tx(
@@ -1124,13 +1125,13 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
 }
 
 #[tokio::test]
-async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
+async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    // Sanity: wave has no cards yet, and no orphan terminals exist.
-    assert!(repo.cards_by_wave(w.id.as_str()).await.unwrap().is_empty());
+    // Sanity: track has no cards yet, and no orphan terminals exist.
+    assert!(repo.cards_by_track(w.id.as_str()).await.unwrap().is_empty());
 
     let mut tx = repo.pool().begin().await.unwrap();
     let err = calm_server::db::sqlite::card_with_terminal_create_tx(
@@ -1138,7 +1139,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         calm_server::model::new_id(),
         &calm_server::model::new_id(),
         None,
-        "wave-that-does-not-exist".into(),
+        "track-that-does-not-exist".into(),
         None,
         None,
         "bash".into(),
@@ -1150,16 +1151,16 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect_err("unknown wave must error");
+    .expect_err("unknown track must error");
     // Explicit rollback so the txn doesn't linger; would be implicit on drop
     // but we make the intent visible.
     tx.rollback().await.unwrap();
 
     assert!(matches!(err, CalmError::NotFound(_)));
 
-    // No card was left behind in the valid wave (it never had any), and no
+    // No card was left behind in the valid track (it never had any), and no
     // terminal row exists at all — direct sqlx count against the table.
-    let cards_in_w = repo.cards_by_wave(w.id.as_str()).await.unwrap();
+    let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
     assert!(
         cards_in_w.is_empty(),
         "no card rows should have leaked from the rolled-back txn"
@@ -1175,7 +1176,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
 async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
@@ -1207,10 +1208,10 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
 async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
     // Pre-seed two cards so the next sort default lands at 3.0 — same
-    // assertion shape as `sort_defaulting_is_scoped_per_wave_for_cards`.
+    // assertion shape as `sort_defaulting_is_scoped_per_track_for_cards`.
     let _c1 = make_card(&repo, w.id.as_str(), "terminal").await;
     let _c2 = make_card(&repo, w.id.as_str(), "terminal").await;
 
@@ -1242,7 +1243,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
 async fn terminal_create_tx_enforces_unique_card_id() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let _seeded = make_terminal(&repo, card.id.as_str()).await;
 
@@ -1299,7 +1300,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
 async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1373,12 +1374,12 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
 }
 
 #[tokio::test]
-async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
+async fn card_with_codex_create_tx_rolls_back_on_invalid_track() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    assert!(repo.cards_by_wave(w.id.as_str()).await.unwrap().is_empty());
+    assert!(repo.cards_by_track(w.id.as_str()).await.unwrap().is_empty());
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1387,7 +1388,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         card_id,
         &calm_server::model::new_id(),
         None,
-        "wave-that-does-not-exist".into(),
+        "track-that-does-not-exist".into(),
         None,
         None,
         "/workspace".into(),
@@ -1401,12 +1402,12 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect_err("unknown wave must error");
+    .expect_err("unknown track must error");
     tx.rollback().await.unwrap();
 
     assert!(matches!(err, CalmError::NotFound(_)));
 
-    let cards_in_w = repo.cards_by_wave(w.id.as_str()).await.unwrap();
+    let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
     assert!(
         cards_in_w.is_empty(),
         "no card rows should have leaked from the rolled-back txn"
@@ -1422,7 +1423,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
 async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1777,7 +1778,7 @@ async fn open_succeeds_on_fresh_and_current_db() {
 async fn terminal_set_exit_round_trip_all_branches() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let w = make_track(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let t = repo
         .terminal_create(NewTerminal {
@@ -1835,9 +1836,9 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
 
     let repo = fresh_repo().await;
     let c = make_area(&repo, "shared-boot-exclusion").await;
-    let mapped_wave = make_wave(&repo, c.id.as_str(), "mapped").await;
-    let pending_wave = make_wave(&repo, c.id.as_str(), "").await;
-    let phantom_wave = make_wave(&repo, c.id.as_str(), "phantom").await;
+    let mapped_track = make_track(&repo, c.id.as_str(), "mapped").await;
+    let pending_track = make_track(&repo, c.id.as_str(), "").await;
+    let phantom_track = make_track(&repo, c.id.as_str(), "phantom").await;
     let cache = CardRoleCache::new();
 
     let pending_card_id = calm_server::model::new_id();
@@ -1846,7 +1847,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         &mut tx,
         calm_server::model::new_id(),
         NewCard {
-            wave_id: mapped_wave.id.clone(),
+            track_id: mapped_track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1866,7 +1867,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         &mut tx,
         pending_card_id.clone(),
         NewCard {
-            wave_id: pending_wave.id.clone(),
+            track_id: pending_track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1884,7 +1885,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         &mut tx,
         calm_server::model::new_id(),
         NewCard {
-            wave_id: phantom_wave.id.clone(),
+            track_id: phantom_track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1905,7 +1906,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         &mut tx,
         calm_server::model::new_id(),
         NewCard {
-            wave_id: pending_wave.id.clone(),
+            track_id: pending_track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -2022,7 +2023,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             .expect("shared pending takeover query"),
         vec![(
             pending.id.to_string(),
-            pending_wave.id.to_string(),
+            pending_track.id.to_string(),
             term.id.to_string(),
             0,
         )]

@@ -4,8 +4,8 @@
 
 ## S1 — 三条与实现不符的 statement
 
-`web/src/WaveList.tsx:234-240` 只处理 `Delete`，注释明写 Backspace 是编辑键、刻意不做破坏性快捷键；
-`web/src/WaveList.test.tsx:638` 有一条测试断言 Backspace 不删除。实现是对的，oracle 文案是错的。
+`web/src/TrackList.tsx:234-240` 只处理 `Delete`，注释明写 Backspace 是编辑键、刻意不做破坏性快捷键；
+`web/src/TrackList.test.tsx:638` 有一条测试断言 Backspace 不删除。实现是对的，oracle 文案是错的。
 
 | id | 动作 |
 | --- | --- |
@@ -75,7 +75,7 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 - 实际失败 204 条 = baseline 174 + pending 30，无未记账项，无双重记账。
 
 [^exposed]: 原文写作「13 条新暴露」，不准确，实测复核（在 `636ddc46` 的工作区上跑 main 版
-    `extractStatementIdentifiers`）：`CAP-SPECCONVO-021` 与 `CAP-AREA-NEWWAVE-017` 在 main 上抽出的
+    `extractStatementIdentifiers`）：`CAP-SPECCONVO-021` 与 `CAP-AREA-NEWTRACK-017` 在 main 上抽出的
     identifier 都是 `[]` —— 它们既不在 main 的 baseline 也不在 pending，是**无判据静默通过**，不是红条。
     新规则给了它们 anchor 且当场命中，所以这两条属于上面「重新获得判据」那 35 条，把它们再算进「新暴露」
     是重复记账。真正因判据加强而首次变红的是 **11** 条。
@@ -91,11 +91,11 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 | `E2E-CAP-SHELL-010` | `Open user menu` | `/calm/settings` 在 spec 里写成转义正则 `/\/calm\/settings…/`，字面不存在；真正可锚的是 accessible name | statement 把 `` `Open user menu` `` 改成 `"Open user menu"`（展示文案），命中 `a11y-keyboard.spec.ts:855` |
 | `E2E-INV-CWD-004` | `siblingPrefix`、`claim` | statement 与实现不符：`/work/repository` / `/work/repo` 是示意写法，代码用的是 `/work-${ts}/…` | statement 改成引用真实变量名 `siblingPrefix` / `claim`，示意路径去掉反引号 |
 | `E2E-CAP-TERMINAL-006` | `signal_killed` | statement 与实现不符：`signal` 在被引 spec 里只出现在注释；承载 signal 语义的是 `XtermView` 的 `signal_killed` 字段 | statement `` `signal` `` → `` `signal_killed` ``；source → `XtermView.tsx:60-90 terminal-clean-exit.spec.ts:120-127` |
-| `E2E-INV-ENV-002` | `echo`（`/etc/services` 天然锚不住） | 锚点漂移：`92-96` 全是注释，真正的 POSIX echo 循环在 99 行 | source → `wheel-wave-switch.spec.ts:92-100`。这条的否定半句（「没有 `/etc/services`」）原理上锚不住，但肯定半句锚住了，无需 pending |
-| `CAP-REPORT-SHELL-014` | `Multiple report cards found. Showing the earliest.` | 锚点漂移：没引渲染横幅的 `DuplicateReportBanner` | source 增补 `WaveReportPage.tsx:197-202` |
-| `INV-REPORT-BACKLINK-010` | `cites block` | 锚点漂移：没引渲染 `· cites block {id}` 的那段 JSX | source 增补 `WaveReportPage.tsx:704-708` |
+| `E2E-INV-ENV-002` | `echo`（`/etc/services` 天然锚不住） | 锚点漂移：`92-96` 全是注释，真正的 POSIX echo 循环在 99 行 | source → `wheel-track-switch.spec.ts:92-100`。这条的否定半句（「没有 `/etc/services`」）原理上锚不住，但肯定半句锚住了，无需 pending |
+| `CAP-REPORT-SHELL-014` | `Multiple report cards found. Showing the earliest.` | 锚点漂移：没引渲染横幅的 `DuplicateReportBanner` | source 增补 `TrackReportPage.tsx:197-202` |
+| `INV-REPORT-BACKLINK-010` | `cites block` | 锚点漂移：没引渲染 `· cites block {id}` 的那段 JSX | source 增补 `TrackReportPage.tsx:704-708` |
 | `CAP-SPECCONVO-021` | `No messages yet` / `ask the Spec Agent below.` | 源码把破折号写成 `&mdash;`，整串永远匹配不上 | 由「非 ASCII 段切分 + 每段各自成 anchor」规则解决，条目本身不改，命中 `SpecConversation.tsx:598` |
-| `CAP-AREA-NEWWAVE-017` | `PR autoflow` | 同上：`issue → PR autoflow` 里的 `→` 不可匹配，且文案被拆成两个 span | 同上，命中 `Area.tsx:545` |
+| `CAP-AREA-NEWTRACK-017` | `PR autoflow` | 同上：`issue → PR autoflow` 里的 `→` 不可匹配，且文案被拆成两个 span | 同上，命中 `Area.tsx:545` |
 | `INV-NEWTASK-ISSUEDEV-020` | `derivedWorkflowInput` | 原理上锚不住：`notes` 是「刻意不存在」的东西，只在注释里出现 | 采用简报的 (a) 路线的等价做法：statement 改成指名**存在**的载体 `` `derivedWorkflowInput` 刻意不带 `notes` 字段 ``，source 从 `369-373` 扩到 `369-374`（`derivedWorkflowInput` 的定义行）。这样同一条不变量由一个正向 anchor 支撑，不需要进 pending |
 
 **没有任何一条进 `anchor-baseline.json` 或 `anchor-pending.json`。** 两个账本本次只减不增。
@@ -160,7 +160,7 @@ subagent 的逐词消融证明停用表就是这套判据的实际护栏，而�
 | --- | --- | --- |
 | `E2E-INV-INFRA-019` | 绿 → 红（`range-miss`）；唯一 anchor 是 `theme` | A1，见下 |
 | `E2E-CAP-ADDPANEL-007` | 红 `range-miss` → 红 `not-in-file`；`terminal`/`codex` 出表后只剩 `aria-hidden`，而它在该文件里只出现在注释 (`a11y-keyboard.spec.ts:465`) | pending 行 subtype 与 note 同步改写（仍在 #1170 名下，账本不增行） |
-| `E2E-CAP-ADDPANEL-010` | 绿 → **无判据静默通过**（唯一 anchor 是 `terminal`） | statement 改写成指名轮询的两个真载体 `` `/api/waves` ``（:406）与 `` `containsTerminalCard` ``（:410），重新拿回判据 |
+| `E2E-CAP-ADDPANEL-010` | 绿 → **无判据静默通过**（唯一 anchor 是 `terminal`） | statement 改写成指名轮询的两个真载体 `` `/api/tracks` ``（:406）与 `` `containsTerminalCard` ``（:410），重新拿回判据 |
 
 其余 1085 条无变化。「抽不出 identifier」的条数经 ADDPANEL-010 处置后仍是 172（与 S2 轮相同）。
 
@@ -168,9 +168,9 @@ subagent 的逐词消融证明停用表就是这套判据的实际护栏，而�
 
 | id | 判定 | 处置 |
 | --- | --- | --- |
-| `E2E-INV-INFRA-019` | **确认假绿**。`reset.ts:105-114` 是一个**合法**请求体（110 行带着 `theme`），区间里没有任何东西证明「缺字段被拒」 | 走简报的优先路线：statement 改成这段 helper 真正保证的东西（每个建 wave 的 fixture 走同一个 body 形状），source 收到 `106-112` 的对象字面量，anchor 落在 `area_id`(107)/`attach_folder`(110)。**全库没有任何 oracle 条目覆盖服务端「缺 theme → 422」契约**；已在 `why` 里点名它由 `crates/calm-server/tests/cases/theme_required.rs` 证明、本条不再声称，等你另开 issue |
-| `INV-A11Y-010` | **文案错，不是代码缺陷**。行按钮（`Sidebar.tsx:653-660`）不带 aria-label／aria-labelledby，name 由内容计算，必然包含 `side-wave-area` 的 area 名；且 `docs/` 下已无 §2.2 那份 a11y 契约原文可援引。area 名是同一按钮里可见的 span，藏起来反而让屏幕阅读器听不到跨 area 的消歧信息 | statement 改成「name = wave 标题 + area 名，`title` 属性纯属信息性」；source 从只框住分区标题的 `271-290` 重指到 `278-283,653-660` |
-| `CAP-REPORT-SHELL-014` | 三段陈旧区间证实：`84-87` 是类型成员、`163-169` 是 localStorage helper、`955-957` 是 Files rail | source 改为 `118-120`（`selectReportCards` 按 sort 升序）、`197-202`（横幅文案）、`779-781`（取第一张）、`1035-1037`（`>1` 才渲染）；statement 点名两个载体。查过全库 30 处 `WaveReportPage.tsx:` 引用，**没有第二条**携带这三段区间 |
+| `E2E-INV-INFRA-019` | **确认假绿**。`reset.ts:105-114` 是一个**合法**请求体（110 行带着 `theme`），区间里没有任何东西证明「缺字段被拒」 | 走简报的优先路线：statement 改成这段 helper 真正保证的东西（每个建 track 的 fixture 走同一个 body 形状），source 收到 `106-112` 的对象字面量，anchor 落在 `area_id`(107)/`attach_folder`(110)。**全库没有任何 oracle 条目覆盖服务端「缺 theme → 422」契约**；已在 `why` 里点名它由 `crates/calm-server/tests/cases/theme_required.rs` 证明、本条不再声称，等你另开 issue |
+| `INV-A11Y-010` | **文案错，不是代码缺陷**。行按钮（`Sidebar.tsx:653-660`）不带 aria-label／aria-labelledby，name 由内容计算，必然包含 `side-track-area` 的 area 名；且 `docs/` 下已无 §2.2 那份 a11y 契约原文可援引。area 名是同一按钮里可见的 span，藏起来反而让屏幕阅读器听不到跨 area 的消歧信息 | statement 改成「name = track 标题 + area 名，`title` 属性纯属信息性」；source 从只框住分区标题的 `271-290` 重指到 `278-283,653-660` |
+| `CAP-REPORT-SHELL-014` | 三段陈旧区间证实：`84-87` 是类型成员、`163-169` 是 localStorage helper、`955-957` 是 Files rail | source 改为 `118-120`（`selectReportCards` 按 sort 升序）、`197-202`（横幅文案）、`779-781`（取第一张）、`1035-1037`（`>1` 才渲染）；statement 点名两个载体。查过全库 30 处 `TrackReportPage.tsx:` 引用，**没有第二条**携带这三段区间 |
 | `E2E-CAP-TERMINAL-006` | **真缺口**。全仓搜索确认：断言 exit badge 的测试只有 `terminal-clean-exit.spec.ts:121,127`（`exit 0` + success 配色），`signal_killed` 只在 `XtermView.test.tsx`/`codex.test.tsx` 里当**输入**出现、无人断言 badge 的 signal/非零分支 | 不找区间凑绿：source 重指真正的 badge 逻辑 `CardExitBadge.tsx:22-25,46-72`（anchor 是 `signal_killed`，那里是它的真实现），`authoritative_test` 改 `NONE` 并在 `why` 里写明「拿 exit 0 的用例当权威测试是循环论证」。缺的是**测试**，不是锚点 —— 等你另开 issue |
 | `E2E-INV-INFRA-017` | `reset.ts:31-33` 只是**调用**端点，见证不了「谁挂载」 | source 重指 `crates/calm-server/src/bin/replay.rs:226-245`（`/dev/*` 子路由在此构建、只并入 `--serve`），登记进 `anchor-unsupported.yaml`；`authoritative_test` 改 `NONE`（无人断言这个否定命题，它是「路由在哪构建」的架构事实） |
 | `INV-NEWTASK-ISSUEDEV-020` | 原区间 `369-373` 全是 JSDoc、`626-632` 全是 JSX 注释，两段都被 trivia 剥离；statement 与 `authoritative_test:77` 说的确实不是一件事 | statement 合并两层（控件层「表单不提供 notes 输入控件」+ payload 层「对象字面量只有四个键」），与 `:77`/`:277` 两个用例一一对应；source 扩到 `374-382` 的对象字面量与 `386-387` 的 raw JSON 逃生口 |
@@ -199,7 +199,7 @@ subagent 实跑证明：放宽大小写、`DISPLAY_COPY_MINIMUM` 6→3、`BACKTI
   - `E2E-INV-SPECCHAT-008`：anchor `working` 命中的是 `a11y-spec-chat-interrupt.spec.ts:61` 的可访问名
     字符串 `'Spec Agent is working'`，而 statement 指的是 FSM 门控变量；点明这层关系的注释（:58）反而被
     trivia 剥离。锚是真的，但它锚住的不是 statement 说的那个东西。
-  - `E2E-CAP-WAVECREATE-015`：statement 里的 `role="option"` 让 `option` 走**展示文案**通道成为
+  - `E2E-CAP-TRACKCREATE-015`：statement 里的 `role="option"` 让 `option` 走**展示文案**通道成为
     anchor（6 字符恰好过下限、不在停用表），于是任何用 `getByRole('option')` 的区间都会绿。
     候选处置是把 `option` 收进停用表或要求它带 `role=` 前缀，属于下一轮判据强度问题。
 
@@ -229,8 +229,8 @@ cd fe && npm run typecheck     → exit 0
 
 | # | 条目 | 改法 |
 | --- | --- | --- |
-| C1 | `E2E-INV-INFRA-019` | statement/why 从「整个 e2e 套件」收窄到 `createWaveInArea` 这个 shared seed helper；source 从 `106-112` 扩到 `88-93,101-112`（补上函数声明与 theme sentinel 注释） |
-| C2 | `INV-A11Y-010` | 把 `side-wave-area` 写成条件渲染（上游查不到 area 时传 null），name 是「标题」或「标题+area 名」二选一；source `278-283` → `271-283` 并回分区标题（`WaveRow` 是所有分区共用的） |
+| C1 | `E2E-INV-INFRA-019` | statement/why 从「整个 e2e 套件」收窄到 `createTrackInArea` 这个 shared seed helper；source 从 `106-112` 扩到 `88-93,101-112`（补上函数声明与 theme sentinel 注释） |
+| C2 | `INV-A11Y-010` | 把 `side-track-area` 写成条件渲染（上游查不到 area 时传 null），name 是「标题」或「标题+area 名」二选一；source `278-283` → `271-283` 并回分区标题（`TrackRow` 是所有分区共用的） |
 | C3 | `CAP-REPORT-SHELL-014` | `authoritative_test` 从 `:864`（unsupported-block 用例，无关）改指 `:1040,1051,1054-1055`（duplicate banner + Earliest/Later 断言） |
 | C4 | `E2E-INV-INFRA-017` | source 由单段构造扩为四段：`replay.rs:130-159`（`--assert` 提前 return 的门控）、`226-245`（`/dev/*` 构造）、`277-284`（`.merge(dev_routes)` 唯一一处）、`main.rs:185-192`（生产 router 的全部 merge 面）；`anchor-unsupported.yaml` 同步登记四段 |
 | C5 | `INV-NEWTASK-ISSUEDEV-020` | source 补 `456-470`（提交分支：`workflow_input` 只有 `JSON.parse(rawJson)` 与 `derivedWorkflowInput` 两个来源）与 `757-781`（raw JSON textarea）；「表单不提供 notes 控件」是证明不存在类，仍由 `authoritative_test:77` 钉住 |
@@ -300,9 +300,9 @@ codex 这轮把标准提到「statement 的每个分句、连同传递性数据�
 
 | # | 条目 | 改法 |
 | --- | --- | --- |
-| D1 | `INV-REPORT-BACKLINK-010` | source 第三段 `846`（`pending: taskActionMutation.isPending`，与本条无关）→ `949-952`（`hasRenderedBlocks={reportCard?.blocks != null}`，「只在当前报告确有结构化 blocks 时」的真载体）。最终 `WaveReportPage.tsx:637-642,704-708,949-952` |
-| D2 | `E2E-INV-INFRA-019` | (a) `authoritative_test: reset.ts:105` → `NONE` —— 该行是 helper 自己的 `request.post`，无 `it`、无断言，按 `SCHEMA.md:15`「无测试写 NONE」。(b) statement 枚举补 `title`（`reset.ts:108` 实际有传、服务端必填），并把「no caller … omits a field the kernel requires」改成「every caller of this helper sends exactly that key set, and no caller can vary it」——不再声称 kernel 的必填集；why 里「#250 PR2 made cwd required」同步改为「put cwd into this body（自 #1131 起服务端取 `Option<String>`，见 `crates/calm-server/src/routes/waves.rs:195-214`）」。source 不变（`88-93,101-112` 已含 `108`） |
-| D3 | `INV-A11Y-010` | 被引的 `Sidebar.tsx:271-283` 里的 `displayTitle` 是父作用域 map 中的同名变量；喂给 `:658` 那个 span 的是 `WaveRow` 自己在 `:633` 算出的同名变量。source `271-283,653-660` → `271-283,633-660` |
+| D1 | `INV-REPORT-BACKLINK-010` | source 第三段 `846`（`pending: taskActionMutation.isPending`，与本条无关）→ `949-952`（`hasRenderedBlocks={reportCard?.blocks != null}`，「只在当前报告确有结构化 blocks 时」的真载体）。最终 `TrackReportPage.tsx:637-642,704-708,949-952` |
+| D2 | `E2E-INV-INFRA-019` | (a) `authoritative_test: reset.ts:105` → `NONE` —— 该行是 helper 自己的 `request.post`，无 `it`、无断言，按 `SCHEMA.md:15`「无测试写 NONE」。(b) statement 枚举补 `title`（`reset.ts:108` 实际有传、服务端必填），并把「no caller … omits a field the kernel requires」改成「every caller of this helper sends exactly that key set, and no caller can vary it」——不再声称 kernel 的必填集；why 里「#250 PR2 made cwd required」同步改为「put cwd into this body（自 #1131 起服务端取 `Option<String>`，见 `crates/calm-server/src/routes/tracks.rs:195-214`）」。source 不变（`88-93,101-112` 已含 `108`） |
+| D3 | `INV-A11Y-010` | 被引的 `Sidebar.tsx:271-283` 里的 `displayTitle` 是父作用域 map 中的同名变量；喂给 `:658` 那个 span 的是 `TrackRow` 自己在 `:633` 算出的同名变量。source `271-283,653-660` → `271-283,633-660` |
 | D4 | `INV-NEWTASK-ISSUEDEV-020` | `authoritative_test` 并入 `NewTaskForm.issueDev.test.tsx:174-203`（用 `toEqual` 钉死整个 create body 含 `workflow_input` 恰四键、无 notes），原 `:277` 只证明 raw JSON 能带 notes。最终 `:77,174-203,277` |
 | D5 | `E2E-INV-INFRA-017` | source 补 `replay.rs:112-115`（`--serve`/`--assert` 二选一的前置门控，缺任一 exit 2），最终四段 → 五段：`replay.rs:112-115,130-159,226-245,277-284` + `main.rs:185-192`；`anchor-unsupported.yaml` 的 `locations` 同步补同一段（该表要求登记集与实际集**严格相等**，改完实跑校验通过） |
 

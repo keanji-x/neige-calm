@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use calm_exec::{
     AgentReactor, DecisionIntent, DecisionSink, ObservationSink, SpawnCtx, WorkerProvider,
 };
-use calm_truth::db::sqlite::{SqlxRepo, session_insert_tx, wave_update_tx};
+use calm_truth::db::sqlite::{SqlxRepo, session_insert_tx, track_update_tx};
 use calm_truth::db::{RepoEventWrite, RepoRead, write_in_tx_typed};
 use calm_truth::decision_gate::{
     DecisionGate, GateDecision, PermissiveGate, WriteTx, commit_decision,
@@ -16,13 +16,13 @@ use calm_truth::decision_gate::{
 use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::{ActorId, CardId};
-use calm_truth::model::{WavePatch, now_ms};
+use calm_truth::model::{TrackPatch, now_ms};
 use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
-use calm_truth::{test_helpers, wave_lifecycle};
+use calm_truth::{test_helpers, track_lifecycle};
 use calm_types::error::CoreError;
-use calm_types::ids::{AreaId, WaveId};
-use calm_types::model::WaveLifecycle;
+use calm_types::ids::{AreaId, TrackId};
+use calm_types::model::TrackLifecycle;
 use calm_types::observation::Observation;
 use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
@@ -196,16 +196,16 @@ impl ObsMatcher {
 #[derive(Debug)]
 pub struct FakeRoot {
     session_id: WorkerSessionId,
-    wave_id: WaveId,
+    track_id: TrackId,
     area_id: AreaId,
     script: Vec<(ObsMatcher, Vec<DecisionIntent>)>,
 }
 
 impl FakeRoot {
-    pub fn for_wave(session_id: WorkerSessionId, wave_id: WaveId, area_id: AreaId) -> Self {
+    pub fn for_track(session_id: WorkerSessionId, track_id: TrackId, area_id: AreaId) -> Self {
         Self {
             session_id,
-            wave_id,
+            track_id,
             area_id,
             script: Vec::new(),
         }
@@ -225,7 +225,7 @@ impl AgentReactor for FakeRoot {
     fn principal(&self) -> Principal {
         Principal::Agent {
             session_id: self.session_id.clone(),
-            wave_id: self.wave_id.clone(),
+            track_id: self.track_id.clone(),
             area_id: self.area_id.clone(),
         }
     }
@@ -293,7 +293,7 @@ where
 {
     async fn commit(&self, principal: &Principal, intent: DecisionIntent) -> Result<(), CoreError> {
         let DecisionIntent::LifecycleTransition {
-            wave_id,
+            track_id,
             to,
             agent_message,
         } = intent
@@ -303,27 +303,27 @@ where
             ));
         };
 
-        let wave = self
+        let track = self
             .repo
-            .wave_get(wave_id.as_str())
+            .track_get(track_id.as_str())
             .await
             .map_err(truth_to_core)?
-            .ok_or_else(|| CoreError::NotFound(format!("wave {wave_id}")))?;
-        let from = wave.lifecycle;
-        let event = Event::WaveLifecycleChanged {
-            id: wave_id.clone(),
-            area_id: wave.area_id.clone(),
+            .ok_or_else(|| CoreError::NotFound(format!("track {track_id}")))?;
+        let from = track.lifecycle;
+        let event = Event::TrackLifecycleChanged {
+            id: track_id.clone(),
+            area_id: track.area_id.clone(),
             from,
             to,
             agent_message: agent_message.clone(),
         };
         let actor = actor_for_principal(principal);
         let transition_actor = actor.clone();
-        let scope = EventScope::Wave {
-            wave: wave_id.clone(),
-            area: wave.area_id,
+        let scope = EventScope::Track {
+            track: track_id.clone(),
+            area: track.area_id,
         };
-        let wave_id_for_tx = wave_id.clone();
+        let track_id_for_tx = track_id.clone();
 
         commit_decision(
             self.repo.as_ref(),
@@ -336,12 +336,12 @@ where
             event,
             move |tx| {
                 Box::pin(async move {
-                    wave_lifecycle::validate_transition(from, to, &transition_actor)
+                    track_lifecycle::validate_transition(from, to, &transition_actor)
                         .map_err(|e| TruthError::Forbidden(e.to_string()))?;
-                    wave_update_tx(
+                    track_update_tx(
                         tx,
-                        wave_id_for_tx.as_str(),
-                        WavePatch {
+                        track_id_for_tx.as_str(),
+                        TrackPatch {
                             lifecycle: Some(to),
                             ..Default::default()
                         },
@@ -442,9 +442,9 @@ impl DecisionGate for RootOnlyGate {
     where
         T: WriteTx + ?Sized + Send,
     {
-        let EventScope::Wave { wave, .. } = scope else {
+        let EventScope::Track { track, .. } = scope else {
             return Ok(GateDecision::Deny(
-                "root-only gate requires wave scope".into(),
+                "root-only gate requires track scope".into(),
             ));
         };
         // PR5 fake-only: actor_for_principal stores the session id in AiSpec's CardId slot.
@@ -456,12 +456,12 @@ impl DecisionGate for RootOnlyGate {
                 )));
             }
         };
-        let root = tx.read_wave_root_session_id(wave).await?;
+        let root = tx.read_track_root_session_id(track).await?;
         if root.as_ref() == Some(&caller_session_id) {
             Ok(GateDecision::Allow)
         } else {
             Ok(GateDecision::Deny(format!(
-                "session {} is not wave root",
+                "session {} is not track root",
                 caller_session_id
             )))
         }
@@ -469,33 +469,33 @@ impl DecisionGate for RootOnlyGate {
 }
 
 pub async fn full_loop_dispatch_to_lifecycle_done() {
-    let (repo, wave_id) = crate::seeded_repo().await;
+    let (repo, track_id) = crate::seeded_repo().await;
     let repo = Arc::new(repo);
-    let wave = repo
-        .wave_get(wave_id.as_str())
+    let track = repo
+        .track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists");
-    let area_id = wave.area_id;
+        .expect("track get")
+        .expect("track exists");
+    let area_id = track.area_id;
     let root_sid = WorkerSessionId::from("ws-full-loop-root");
-    let root_session = crate::session(root_sid.as_str(), wave_id.clone());
+    let root_session = crate::session(root_sid.as_str(), track_id.clone());
 
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move { session_insert_tx(tx, root_session).await })
     })
     .await
     .expect("seed root session");
-    test_helpers::set_wave_root_session_for_test(repo.as_ref(), &wave_id, Some(&root_sid))
+    test_helpers::set_track_root_session_for_test(repo.as_ref(), &track_id, Some(&root_sid))
         .await
-        .expect("set wave root session");
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Planning).await;
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Dispatching).await;
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Working).await;
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Reviewing).await;
+        .expect("set track root session");
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Planning).await;
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Dispatching).await;
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Working).await;
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Reviewing).await;
 
     assert_eq!(
-        wave_lifecycle(repo.as_ref(), &wave_id).await,
-        WaveLifecycle::Reviewing
+        track_lifecycle(repo.as_ref(), &track_id).await,
+        TrackLifecycle::Reviewing
     );
 
     let exit_evidence = ExitEvidence {
@@ -510,11 +510,11 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
             evidence: exit_evidence.clone(),
         },
     ]);
-    let root = FakeRoot::for_wave(root_sid.clone(), wave_id.clone(), area_id.clone()).on(
+    let root = FakeRoot::for_track(root_sid.clone(), track_id.clone(), area_id.clone()).on(
         ObsMatcher::TaskCompleted,
         [DecisionIntent::LifecycleTransition {
-            wave_id: wave_id.clone(),
-            to: WaveLifecycle::Done,
+            track_id: track_id.clone(),
+            to: TrackLifecycle::Done,
             agent_message: Some("converged".into()),
         }],
     );
@@ -548,8 +548,8 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
     assert_eq!(
         intents,
         vec![DecisionIntent::LifecycleTransition {
-            wave_id: wave_id.clone(),
-            to: WaveLifecycle::Done,
+            track_id: track_id.clone(),
+            to: TrackLifecycle::Done,
             agent_message: Some("converged".into()),
         }]
     );
@@ -561,8 +561,8 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
     }
 
     assert_eq!(
-        wave_lifecycle(repo.as_ref(), &wave_id).await,
-        WaveLifecycle::Done
+        track_lifecycle(repo.as_ref(), &track_id).await,
+        TrackLifecycle::Done
     );
     let events = repo
         .events_since(0, i64::MAX)
@@ -575,29 +575,29 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
     assert!(
         matches!(
             &events[0],
-            Event::WaveLifecycleChanged {
+            Event::TrackLifecycleChanged {
                 id,
-                to: WaveLifecycle::Done,
+                to: TrackLifecycle::Done,
                 ..
-            } if id == &wave_id
+            } if id == &track_id
         ),
         "expected exactly one Done lifecycle event, got {events:?}"
     );
 }
 
 pub async fn full_loop_cross_principal_denied() {
-    let (repo, wave_id) = crate::seeded_repo().await;
+    let (repo, track_id) = crate::seeded_repo().await;
     let repo = Arc::new(repo);
-    let wave = repo
-        .wave_get(wave_id.as_str())
+    let track = repo
+        .track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists");
-    let area_id = wave.area_id;
+        .expect("track get")
+        .expect("track exists");
+    let area_id = track.area_id;
     let root_sid = WorkerSessionId::from("ws-cross-principal-root");
     let non_root_sid = WorkerSessionId::from("ws-cross-principal-not-root");
-    let root_session = crate::session(root_sid.as_str(), wave_id.clone());
-    let non_root_session = crate::session(non_root_sid.as_str(), wave_id.clone());
+    let root_session = crate::session(root_sid.as_str(), track_id.clone());
+    let non_root_session = crate::session(non_root_sid.as_str(), track_id.clone());
 
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
@@ -607,13 +607,13 @@ pub async fn full_loop_cross_principal_denied() {
     })
     .await
     .expect("seed sessions");
-    test_helpers::set_wave_root_session_for_test(repo.as_ref(), &wave_id, Some(&root_sid))
+    test_helpers::set_track_root_session_for_test(repo.as_ref(), &track_id, Some(&root_sid))
         .await
-        .expect("set wave root session");
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Planning).await;
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Dispatching).await;
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Working).await;
-    set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Reviewing).await;
+        .expect("set track root session");
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Planning).await;
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Dispatching).await;
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Working).await;
+    set_lifecycle(repo.as_ref(), track_id.clone(), TrackLifecycle::Reviewing).await;
 
     let before_events = repo.events_since(0, i64::MAX).await.expect("events").len();
     let sink = GatedDecisionSink::new(
@@ -624,7 +624,7 @@ pub async fn full_loop_cross_principal_denied() {
     );
     let non_root = Principal::Agent {
         session_id: non_root_sid,
-        wave_id: wave_id.clone(),
+        track_id: track_id.clone(),
         area_id,
     };
 
@@ -632,19 +632,19 @@ pub async fn full_loop_cross_principal_denied() {
         .commit(
             &non_root,
             DecisionIntent::LifecycleTransition {
-                wave_id: wave_id.clone(),
-                to: WaveLifecycle::Done,
+                track_id: track_id.clone(),
+                to: TrackLifecycle::Done,
                 agent_message: Some("converged".into()),
             },
         )
         .await;
     assert!(
-        matches!(denied, Err(CoreError::Forbidden(ref reason)) if reason == "session ws-cross-principal-not-root is not wave root"),
+        matches!(denied, Err(CoreError::Forbidden(ref reason)) if reason == "session ws-cross-principal-not-root is not track root"),
         "expected forbidden root gate denial, got {denied:?}"
     );
     assert_eq!(
-        wave_lifecycle(repo.as_ref(), &wave_id).await,
-        WaveLifecycle::Reviewing
+        track_lifecycle(repo.as_ref(), &track_id).await,
+        TrackLifecycle::Reviewing
     );
     assert_eq!(
         repo.events_since(0, i64::MAX).await.expect("events").len(),
@@ -653,8 +653,8 @@ pub async fn full_loop_cross_principal_denied() {
 }
 
 pub async fn fake_provider_contract() {
-    let wave_id = WaveId::from("fake-provider-wave");
-    let session = crate::session("fake-provider-session", wave_id);
+    let track_id = TrackId::from("fake-provider-track");
+    let session = crate::session("fake-provider-session", track_id);
     let exit_evidence = ExitEvidence {
         exit_code: Some(0),
         signal_killed: false,
@@ -738,20 +738,20 @@ pub async fn fake_provider_contract() {
 }
 
 pub async fn fake_root_contract() {
-    let wave_id = WaveId::from("fake-root-wave");
+    let track_id = TrackId::from("fake-root-track");
     let area_id = AreaId::from("fake-root-area");
     let session_id = WorkerSessionId::from("fake-root-session");
     let done = DecisionIntent::LifecycleTransition {
-        wave_id: wave_id.clone(),
-        to: WaveLifecycle::Done,
+        track_id: track_id.clone(),
+        to: TrackLifecycle::Done,
         agent_message: Some("first".into()),
     };
     let fallback = DecisionIntent::LifecycleTransition {
-        wave_id: wave_id.clone(),
-        to: WaveLifecycle::Failed,
+        track_id: track_id.clone(),
+        to: TrackLifecycle::Failed,
         agent_message: Some("fallback".into()),
     };
-    let root = FakeRoot::for_wave(session_id.clone(), wave_id.clone(), area_id.clone())
+    let root = FakeRoot::for_track(session_id.clone(), track_id.clone(), area_id.clone())
         .on(ObsMatcher::TaskCompleted, [done.clone()])
         .on(ObsMatcher::Any, [fallback]);
 
@@ -759,7 +759,7 @@ pub async fn fake_root_contract() {
         root.principal(),
         Principal::Agent {
             session_id,
-            wave_id,
+            track_id,
             area_id,
         }
     );
@@ -774,14 +774,14 @@ pub async fn fake_root_contract() {
         "first matching script entry must win"
     );
 
-    let empty = FakeRoot::for_wave(
+    let empty = FakeRoot::for_track(
         WorkerSessionId::from("empty-root-session"),
-        WaveId::from("empty-wave"),
+        TrackId::from("empty-track"),
         AreaId::from("empty-area"),
     );
     assert!(
         empty
-            .react(&Observation::WaveGoal { text: "go".into() })
+            .react(&Observation::TrackGoal { text: "go".into() })
             .await
             .expect("no match reaction")
             .is_empty()
@@ -816,13 +816,13 @@ pub async fn fake_observation_sink_contract() {
     assert_eq!(delivered[2].envelope_id, None);
 }
 
-async fn set_lifecycle(repo: &SqlxRepo, wave_id: WaveId, lifecycle: WaveLifecycle) {
+async fn set_lifecycle(repo: &SqlxRepo, track_id: TrackId, lifecycle: TrackLifecycle) {
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            wave_update_tx(
+            track_update_tx(
                 tx,
-                wave_id.as_str(),
-                WavePatch {
+                track_id.as_str(),
+                TrackPatch {
                     lifecycle: Some(lifecycle),
                     ..Default::default()
                 },
@@ -831,14 +831,14 @@ async fn set_lifecycle(repo: &SqlxRepo, wave_id: WaveId, lifecycle: WaveLifecycl
         })
     })
     .await
-    .expect("set wave lifecycle");
+    .expect("set track lifecycle");
 }
 
-async fn wave_lifecycle(repo: &SqlxRepo, wave_id: &WaveId) -> WaveLifecycle {
-    repo.wave_get(wave_id.as_str())
+async fn track_lifecycle(repo: &SqlxRepo, track_id: &TrackId) -> TrackLifecycle {
+    repo.track_get(track_id.as_str())
         .await
-        .expect("wave get")
-        .expect("wave exists")
+        .expect("track get")
+        .expect("track exists")
         .lifecycle
 }
 
@@ -848,16 +848,16 @@ mod tests {
 
     #[test]
     fn actor_for_principal_maps_principal_identity() {
-        let wave_id = WaveId::from("actor-map-wave");
+        let track_id = TrackId::from("actor-map-track");
         let area_id = AreaId::from("actor-map-area");
         let root = Principal::Agent {
             session_id: WorkerSessionId::from("actor-map-root"),
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             area_id: area_id.clone(),
         };
         let non_root = Principal::Agent {
             session_id: WorkerSessionId::from("actor-map-non-root"),
-            wave_id,
+            track_id,
             area_id,
         };
 

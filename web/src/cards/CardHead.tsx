@@ -28,7 +28,7 @@ import { useUpdateCardMutation } from '../api/queries';
 import { CloseIcon } from '../shared/components/CloseIcon';
 import { LetterAvatar } from './LetterAvatar';
 import { Icon } from '../Icon';
-import type { WaveCardData } from '../types';
+import type { TrackCardData } from '../types';
 import {
   getEntry,
   useOptionalCardInstanceCtx,
@@ -37,7 +37,7 @@ import {
 
 export type CardHeadProps = {
   /** Registered card whose entry may contribute title and head actions. */
-  card?: WaveCardData;
+  card?: TrackCardData;
   /** Title content. Rendered inside `<span className="card-head-title">`. */
   title?: ReactNode;
   /** Right-aligned status content. Rendered inside `<span className="card-head-status">`. */
@@ -55,7 +55,7 @@ export type CardHeadProps = {
    * When defined, render a hover-revealed `×` close button absolutely
    * positioned at the head's top-right. Omitted entirely when undefined,
    * so cards that aren't user-deletable (or contexts that own the close
-   * affordance elsewhere — e.g. WaveList's row-level button) render no
+   * affordance elsewhere — e.g. TrackList's row-level button) render no
    * head button. The button stops `mousedown` propagation so a click on
    * it inside an RGL drag handle never initiates a card drag.
    */
@@ -137,7 +137,7 @@ export function CardHead({
   const cardTitle = card && 'title' in card ? card.title : undefined;
   const defaultTitle = title ?? (card ? entry?.title(card) : undefined);
   const titleNode = cardTitle || defaultTitle;
-  const canRename = !!card?.id && card.type !== 'spec' && card.type !== 'wave-report';
+  const canRename = !!card?.id && card.type !== 'spec' && card.type !== 'track-report';
   const [editingTitle, setEditingTitle] = useState(false);
   const beginRename = () => {
     if (!canRename) return;

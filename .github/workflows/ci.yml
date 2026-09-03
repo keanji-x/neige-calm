@@ -89,22 +89,13 @@ jobs:
   lint:
     name: lint (fmt + ratchets + clippy)
     if: github.event_name == 'pull_request' || github.event_name == 'push'
-    # This repository is public: fork PRs stay on isolated GitHub-hosted
-    # runners. Only trusted pushes to the canonical repository use the local
-    # machine. The repository check also keeps pushes in forks on hosted CI.
-    runs-on: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && 'neige-calm-main' || 'ubuntu-latest' }}
-    env:
-      CARGO_TARGET_DIR: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && '/home/runner/target-neige-calm-main' || format('{0}/target', github.workspace) }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           # The frozen-vector rationale check below audits every commit in the event range.
           fetch-depth: 0
           persist-credentials: false
-
-      - name: expose self-hosted Rust tools
-        if: runner.environment == 'self-hosted'
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
       # source of truth shared with local gates); rustup honors it as a
@@ -115,7 +106,6 @@ jobs:
         run: rustup toolchain install --no-self-update
 
       - uses: Swatinem/rust-cache@v2
-        if: runner.environment == 'github-hosted'
         with:
           # Deliberately NOT the shared `workspace` key: clippy (check-mode)
           # produces mostly rmeta artifacts, disjoint from the test job's
@@ -496,6 +486,9 @@ jobs:
     name: rust (test)
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
+    # This repository is public: fork PRs stay on isolated GitHub-hosted
+    # runners. Only trusted pushes to the canonical repository use the local
+    # machine. The repository check also keeps pushes in forks on hosted CI.
     runs-on: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && 'neige-calm-main' || 'ubuntu-latest' }}
     env:
       CARGO_TARGET_DIR: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && '/home/runner/target-neige-calm-main' || format('{0}/target', github.workspace) }}
@@ -504,9 +497,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: expose self-hosted Rust tools
+      - name: prepare self-hosted Rust environment
         if: runner.environment == 'self-hosted'
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # Persistent hosts can have /tmp fixtures owned by another user.
+          # Keep this path short: several tests create Unix sockets below it,
+          # and RUNNER_TEMP is long enough to exceed sockaddr_un.sun_path.
+          tmpdir=$(mktemp -d /tmp/ncr.XXXXXX)
+          echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
 
       # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
       # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
@@ -572,7 +571,16 @@ jobs:
         #   has 0 doctests — every doc fence carries a non-rust language tag
         #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
         #   are ever introduced, add a `cargo test --doc` step alongside.
-        run: cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci
+        run: |
+          set -euo pipefail
+          extra_args=()
+          # This is a shared 48-thread production host. Unbounded nextest
+          # concurrency starves the real PTY/supervisor liveness test and the
+          # repository's nextest config explicitly requires a local cap.
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            extra_args+=(--test-threads 4)
+          fi
+          cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci "${extra_args[@]}"
 
       # #679 PR0-D — migration-replay gate, made explicit so a failure is
       # attributable at a glance. Re-runs the snapshot replay harness: every
@@ -617,6 +625,14 @@ jobs:
           path: ${{ env.CARGO_TARGET_DIR }}/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: clean self-hosted Rust temp directory
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          case "${TMPDIR:-}" in
+            /tmp/ncr.??????) rm -rf -- "$TMPDIR" ;;
+            *) echo "::error::refusing to clean unexpected TMPDIR: ${TMPDIR:-<unset>}"; exit 1 ;;
+          esac
 
   # #903 — the `web (build + test + a11y)` job split into a parallel pair
   # (this `web-unit` + `a11y` below) to kill the serial bottleneck: vitest
@@ -931,7 +947,7 @@ jobs:
   # #1297 — the `a11y (replay + playwright)` and `chromium e2e` jobs were
   # removed here. Both drove the unmaintained `web/` app, and both broke on
   # a change that is correct: their shared fixture
-  # (`web/e2e/helpers/reset.ts` `seedWaveViewMode`) seeds view state by
+  # (`web/e2e/helpers/reset.ts` `seedTrackViewMode`) seeds view state by
   # POSTing a `plugin_id: kernel` overlay through `/api/overlays`, which is
   # exactly the forge #1297 closes. `web/` is no longer maintained and is not
   # a compatibility target, so the gates were dropped rather than the fix
@@ -967,7 +983,7 @@ jobs:
       # in as `codex`, it is the app-server stand-in the Rust suites already
       # trust (tests/fixtures/osc-probe-child/appserver.rs). It is a `[[bin]]`
       # of calm-server, so it builds from the same invocation and shares the
-      # cache. Without it `POST /api/waves/{id}/conversations` fails in the
+      # cache. Without it `POST /api/tracks/{id}/conversations` fails in the
       # daemon preflight, *before* the card/session/token mint — and an e2e
       # that only ever sees that 500 cannot tell a correct mint from a broken
       # one.
@@ -1114,17 +1130,11 @@ jobs:
     name: openapi drift (cargo emit-openapi == checked-in spec)
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
-    runs-on: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && 'neige-calm-main' || 'ubuntu-latest' }}
-    env:
-      CARGO_TARGET_DIR: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && '/home/runner/target-neige-calm-main' || format('{0}/target', github.workspace) }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: expose self-hosted Rust tools
-        if: runner.environment == 'self-hosted'
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
       # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
@@ -1136,16 +1146,12 @@ jobs:
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
-      # #903 — mold via ld takeover on GitHub-hosted runners; see the rust
-      # job's step for the self-hosted exception and rationale.
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
       - uses: rui314/setup-mold@v1
-        if: runner.environment == 'github-hosted'
 
       - uses: Swatinem/rust-cache@v2
-        if: runner.environment == 'github-hosted'
         with:
-          # Hosted OpenAPI runs retain the workspace cache. Self-hosted jobs
-          # skip the cache action and share CARGO_TARGET_DIR directly.
+          # Share the cache with the release jobs — same workspace and lockfile.
           shared-key: workspace
 
       - uses: actions/setup-node@v4

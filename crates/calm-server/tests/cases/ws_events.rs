@@ -47,7 +47,7 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
             events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -235,7 +235,7 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
     let future = Overlay {
         id: "o-future".into(),
         plugin_id: "p1".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-1".into(),
         kind: "status".into(),
         payload: json!({ "schemaVersion": 999, "state": "from-future" }),
@@ -244,7 +244,7 @@ async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
     let supported = Overlay {
         id: "o-supported".into(),
         plugin_id: "p1".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-1".into(),
         kind: "status".into(),
         payload: json!({ "schemaVersion": 1, "state": "running" }),
@@ -303,7 +303,7 @@ async fn plugin_owned_overlay_passes_through_live_broadcast() {
     let opaque = Overlay {
         id: "o-plugin".into(),
         plugin_id: "p1".into(),
-        entity_kind: "wave".into(),
+        entity_kind: "track".into(),
         entity_id: "w-1".into(),
         kind: "custom-badge".into(),
         payload: json!({ "schemaVersion": 999, "anything": true }),

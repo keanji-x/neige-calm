@@ -17,11 +17,11 @@ use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
-use crate::wave_area_cache::WaveAreaCache;
-use crate::wave_vcs;
+use crate::track_area_cache::TrackAreaCache;
+use crate::track_vcs;
 
 const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
@@ -44,13 +44,13 @@ pub struct SpecHarness {
 
 pub struct SpecHarnessParams {
     pub runtime_id: RuntimeId,
-    pub wave_id: WaveId,
+    pub track_id: TrackId,
     pub card_id: CardId,
     pub thread_id: Option<String>,
     pub repo: Arc<dyn Repo>,
     pub events: EventBus,
     pub card_role_cache: CardRoleCache,
-    pub wave_area_cache: WaveAreaCache,
+    pub track_area_cache: TrackAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
     pub config: HarnessConfig,
     pub snapshot: HarnessSnapshot,
@@ -58,13 +58,13 @@ pub struct SpecHarnessParams {
 
 pub(super) struct Inner {
     runtime_id: RuntimeId,
-    wave_id: WaveId,
+    track_id: TrackId,
     card_id: CardId,
     thread_id: RwLock<Option<String>>,
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     observations: mpsc::Sender<HarnessObservationDelivery>,
     state: Mutex<HarnessState>,
@@ -76,9 +76,9 @@ pub(super) struct Inner {
     push_watermark: Mutex<i64>,
     last_turn_id: Mutex<Option<String>>,
     issued_turn_id: Mutex<Option<String>>,
-    issued_turn_head: Mutex<Option<wave_vcs::CommitHash>>,
+    issued_turn_head: Mutex<Option<track_vcs::CommitHash>>,
     last_report_body_sha256: Mutex<Option<String>>,
-    last_seen_head: Mutex<Option<wave_vcs::CommitHash>>,
+    last_seen_head: Mutex<Option<track_vcs::CommitHash>>,
     /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
     /// Latest-wins: every frame replaces this whole value (modulo the sticky
     /// window in [`TokenUsage::sticky_merge`]), and it rides the runtime
@@ -427,13 +427,13 @@ fn inner_from_params(
         recent_hook_keys_from_pending_queue(&pending_queue);
     Arc::new(Inner {
         runtime_id: params.runtime_id,
-        wave_id: params.wave_id,
+        track_id: params.track_id,
         card_id: params.card_id,
         thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
         repo: params.repo,
         events: params.events,
         card_role_cache: params.card_role_cache,
-        wave_area_cache: params.wave_area_cache,
+        track_area_cache: params.track_area_cache,
         daemon: params.daemon,
         observations,
         state: Mutex::new(state),
@@ -467,16 +467,16 @@ fn inner_from_params(
 
 fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
     let card = inner.card_id.clone();
-    let wave = inner.wave_id.clone();
-    match inner.wave_area_cache.area_of(&wave) {
-        Some(area) => EventScope::Card { card, wave, area },
+    let track = inner.track_id.clone();
+    match inner.track_area_cache.area_of(&track) {
+        Some(area) => EventScope::Card { card, track, area },
         None => {
             tracing::warn!(
                 runtime_id = %inner.runtime_id,
                 card_id = %card,
-                wave_id = %wave,
+                track_id = %track,
                 event_name,
-                "spec harness event missing wave area cache entry; using system scope"
+                "spec harness event missing track area cache entry; using system scope"
             );
             EventScope::System
         }
@@ -651,24 +651,24 @@ fn try_fold_pending_tail(
         return false;
     };
     let folded = match (last, obs) {
-        (Observation::WaveGoal { text }, Observation::WaveGoal { text: new_text }) => {
+        (Observation::TrackGoal { text }, Observation::TrackGoal { text: new_text }) => {
             *text = new_text.clone();
             true
         }
         (
             Observation::ReportEdited {
-                wave_id,
+                track_id,
                 body_sha256,
                 body,
                 author,
             },
             Observation::ReportEdited {
-                wave_id: new_wave_id,
+                track_id: new_track_id,
                 body_sha256: new_body_sha256,
                 body: new_body,
                 author: new_author,
             },
-        ) if wave_id == new_wave_id => {
+        ) if track_id == new_track_id => {
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
             // The fold keeps the NEWEST edit's state, attribution included:
@@ -949,7 +949,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .harness_item_insert(
                     &inner.runtime_id,
                     inner.card_id.as_str(),
-                    inner.wave_id.as_str(),
+                    inner.track_id.as_str(),
                     &thread_id,
                     turn_id.as_deref(),
                     item_uuid.as_deref(),
@@ -967,11 +967,11 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     None,
                     &inner.events,
                     &inner.card_role_cache,
-                    &inner.wave_area_cache,
+                    &inner.track_area_cache,
                     Event::HarnessItemAdded {
                         runtime_id: inner.runtime_id.clone(),
                         card_id: inner.card_id.clone(),
-                        wave_id: inner.wave_id.clone(),
+                        track_id: inner.track_id.clone(),
                         item_db_id,
                         item_uuid,
                         item_type,
@@ -1027,7 +1027,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .harness_item_insert(
                     &inner.runtime_id,
                     inner.card_id.as_str(),
-                    inner.wave_id.as_str(),
+                    inner.track_id.as_str(),
                     &thread_id,
                     turn_id.as_deref(),
                     // No `item_uuid`, and no `item_type`: a plan is not an item.
@@ -1051,9 +1051,9 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             //   which refetches a 300-row page — per plan frame, for data nobody
             //   renders.
             // - It is not free on the truth side either: `HarnessItemAdded` is
-            //   *not* in the skip list in `calm-truth/src/wave_vcs/commit.rs`,
-            //   and `wave_vcs/delta.rs` maps it to `add_card_runtime_paths`, so
-            //   every plan frame would append a wave-vcs commit re-rendering
+            //   *not* in the skip list in `calm-truth/src/track_vcs/commit.rs`,
+            //   and `track_vcs/delta.rs` maps it to `add_card_runtime_paths`, so
+            //   every plan frame would append a track-vcs commit re-rendering
             //   `cards/<id>/.payload.json` + `runtime.json`.
             // - Skipping it is not a truth-spine violation: `harness_items` is
             //   out-of-domain storage written directly, not event-sourced, so a
@@ -1084,9 +1084,9 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         // Storage is the runtime snapshot, not `harness_items`. The reading is
         // latest-wins — one value per runtime, superseded on every response —
         // which is exactly what `worker_sessions.handle_state` already is:
-        // rewritten in place by `persist_snapshot_inner`, no event, no wave-vcs
+        // rewritten in place by `persist_snapshot_inner`, no event, no track-vcs
         // commit. Appending a row per response instead would need either its
-        // own `Event` (a wave-vcs commit plus a 300-row transcript refetch, per
+        // own `Event` (a track-vcs commit plus a 300-row transcript refetch, per
         // model response) or no event at all, in which case nothing would ever
         // invalidate and no reader would see it. S2 appended to `harness_items`
         // because it was gathering evidence for a UI it could not yet design;
@@ -1190,7 +1190,7 @@ fn should_persist_item_method(method: &str) -> bool {
     matches!(method, "item/started" | "item/completed")
 }
 
-/// 5s defensive cap on the wave-vcs diff-block fetch inside `maybe_issue_turn`.
+/// 5s defensive cap on the track-vcs diff-block fetch inside `maybe_issue_turn`.
 /// The diff block is a context augmentation prepended to spec turn
 /// observations (#595 PR2); it is never a correctness requirement. If the
 /// underlying sqlite SELECT chain stalls (issue #639 — silent stuck-turn
@@ -1227,7 +1227,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
-        wave_id = %inner.wave_id,
+        track_id = %inner.track_id,
         queue_len,
         hard_fire,
         "maybe_issue_turn entry (queue non-empty)"
@@ -1242,7 +1242,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 hard_fire,
                 "debounce gating turn issuance (no first_pending_at)"
             );
@@ -1253,7 +1253,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 hard_fire,
                 "debounce gating turn issuance (no last_pending_at)"
             );
@@ -1267,7 +1267,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             target: "calm_server::spec_harness_issue",
             runtime_id = %inner.runtime_id,
             card_id = %inner.card_id,
-            wave_id = %inner.wave_id,
+            track_id = %inner.track_id,
             hard_fire,
             first_pending_ms = first_pending_at
                 .map(|t| now.duration_since(t).as_millis() as u64),
@@ -1285,7 +1285,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 state = ?*state,
                 "state gating turn issuance"
             );
@@ -1295,18 +1295,18 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Two independent per-turn decisions that used to ride on one boolean
     // (#1189 review A6). Splitting them is the whole point:
     //
-    // * `skip_transcript_refresh` — skip the wave-level
-    //   `snapshot_transcripts_for_cards_in_wave` WRITE transaction below.
-    // * `skip_wave_diff` — issue the turn with no "wave state changes since
+    // * `skip_transcript_refresh` — skip the track-level
+    //   `snapshot_transcripts_for_cards_in_track` WRITE transaction below.
+    // * `skip_track_diff` — issue the turn with no "track state changes since
     //   your last turn" block at all.
     //
-    // An area chat skips both: it lives alone on a hidden scaffolding wave, so
+    // An area chat skips both: it lives alone on a hidden scaffolding track, so
     // there is nothing to snapshot and nothing to diff.
     //
-    // A wave assistant skips only the first, and the asymmetry is deliberate.
-    //   - Skipping the WRITE: the refresh commits a wave-scoped wave-vcs
+    // A track assistant skips only the first, and the asymmetry is deliberate.
+    //   - Skipping the WRITE: the refresh commits a track-scoped track-vcs
     //     commit before every turn, and #1189's premise is N conversations on
-    //     one wave, so keeping it would multiply that write by N and make every
+    //     one track, so keeping it would multiply that write by N and make every
     //     assistant turn contend for the same sqlite write lock as the spec
     //     harness's own per-turn refresh.
     //
@@ -1315,19 +1315,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //     inside it:
     //       * `cards/<id>/events.json` and `cards/<id>/conversation.md` are
     //         dirtied by exactly two places in the tree, both via
-    //         `wave_vcs::delta::add_card_event_paths`: `add_card_paths`
+    //         `track_vcs::delta::add_card_event_paths`: `add_card_paths`
     //         (reachable only from `CardAdded` / `CardUpdated`, i.e. card
-    //         creation) and `snapshot_transcripts_for_cards_in_wave` — this
+    //         creation) and `snapshot_transcripts_for_cards_in_track` — this
     //         very refresh. The ordinary event-driven commit path does NOT keep
     //         them current: `HarnessItemAdded` / `HarnessPhaseChanged` /
     //         `HarnessTranscriptCleared` / `HarnessUserMessageEnqueued` dirty
     //         only `.payload.json` + `runtime.json`, and `CodexHook` /
-    //         `ClaudeHook` produce an EMPTY delta (`wave_vcs/delta.rs`).
-    //         `spec_harness_wave_vcs.rs::
+    //         `ClaudeHook` produce an EMPTY delta (`track_vcs/delta.rs`).
+    //         `spec_harness_track_vcs.rs::
     //         since_last_turn_override_fences_post_refresh_hook_commit` pins
     //         that fact directly: a post-refresh hook commit advances HEAD and
     //         still does not contain its own transcript.
-    //       * So on this wave the freshness of BOTH transcript paths is
+    //       * So on this track the freshness of BOTH transcript paths is
     //         maintained solely by the spec harness's own per-turn refresh. The
     //         event-driven path still keeps `report.md`, `runs/*`,
     //         `cards/<id>/.payload.json`, `cards/<id>/runtime.json` and newly
@@ -1335,36 +1335,36 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //         else.
     //
     //     Why that degradation is acceptable for THIS role and only this role:
-    //     an assistant cannot read those paths at all. `wave_file` (ls/cat) and
-    //     `wave_history` are `require_role_any([Spec, Worker])`, so an
-    //     Assistant card is rejected by role; its wave-fs surface is
-    //     `wave_report*` (`[Spec, Assistant]`), and `report.md` IS kept fresh by
+    //     an assistant cannot read those paths at all. `track_file` (ls/cat) and
+    //     `track_history` are `require_role_any([Spec, Worker])`, so an
+    //     Assistant card is rejected by role; its track-fs surface is
+    //     `track_report*` (`[Spec, Assistant]`), and `report.md` IS kept fresh by
     //     the event-driven path. The collaboration channel this design gives the
     //     assistant is the report block, not the transcript.
     //
     //     Consequences for whoever touches this next: (a) do NOT extend the skip
-    //     to Spec or Worker cards — they can `wave_file cat`
+    //     to Spec or Worker cards — they can `track_file cat`
     //     `conversation.md`/`events.json` and would read a stale HEAD; (b) if
-    //     the spec harness of this wave ever stops refreshing per turn, these
+    //     the spec harness of this track ever stops refreshing per turn, these
     //     two paths have no writer left and go stale for everyone. The root fix
     //     is to make the hook / harness-item event transactions dirty the
-    //     transcript paths too; that changes `wave_vcs` delta semantics for all
+    //     transcript paths too; that changes `track_vcs` delta semantics for all
     //     cards and is deliberately out of scope here.
     //   - Keeping the DIFF: this is what the assistant must not lose. It is the
-    //     wave's report patch plus the paths that changed since this
+    //     track's report patch plus the paths that changed since this
     //     conversation's last turn — for a card whose entire job is answering
-    //     questions about the wave and editing its report, that block is the
+    //     questions about the track and editing its report, that block is the
     //     context, not decoration. `since_last_turn_block` with no
-    //     `current_override` simply reads the wave's current head, so dropping
+    //     `current_override` simply reads the track's current head, so dropping
     //     the refresh costs at most the freshness a concurrent refresh would
     //     have added, never the block itself.
-    let (skip_transcript_refresh, skip_wave_diff) =
+    let (skip_transcript_refresh, skip_track_diff) =
         match inner.repo.card_get(inner.card_id.as_str()).await? {
             Some(card) => {
                 let role = inner.repo.card_role_get(card.id.as_str()).await?;
                 if crate::plain_chat::card_is_plain_chat(&card, role, true) {
                     (true, true)
-                } else if crate::plain_chat::card_is_wave_assistant(&card, role, true) {
+                } else if crate::plain_chat::card_is_track_assistant(&card, role, true) {
                     (true, false)
                 } else {
                     (false, false)
@@ -1377,15 +1377,15 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         None
     } else {
         let refresh_repo = Arc::clone(&inner.repo);
-        let refresh_wave_id = inner.wave_id.clone();
+        let refresh_track_id = inner.track_id.clone();
         transcript_refresh_with_timeout(
-            write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
+            write_in_tx_typed::<track_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
                 Box::pin(async move {
-                    wave_vcs::snapshot_transcripts_for_cards_in_wave(
+                    track_vcs::snapshot_transcripts_for_cards_in_track(
                         tx,
-                        &refresh_wave_id,
+                        &refresh_track_id,
                         None,
-                        wave_vcs::MANIFEST_SCHEMA_VERSION,
+                        track_vcs::MANIFEST_SCHEMA_VERSION,
                     )
                     .await
                     .map_err(CalmError::from)
@@ -1394,7 +1394,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             TRANSCRIPT_REFRESH_TIMEOUT,
             &inner.runtime_id,
             inner.card_id.as_str(),
-            inner.wave_id.as_str(),
+            inner.track_id.as_str(),
         )
         .await
     };
@@ -1402,13 +1402,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
-        wave_id = %inner.wave_id,
+        track_id = %inner.track_id,
         last_seen_head = ?last_seen_head_snapshot,
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    let diff = if skip_wave_diff {
-        wave_vcs::SinceLastTurnBlock::empty()
+    let diff = if skip_track_diff {
+        track_vcs::SinceLastTurnBlock::empty()
     } else {
         diff_with_timeout(inner, refresh_head.as_ref()).await
     };
@@ -1416,7 +1416,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
-        wave_id = %inner.wave_id,
+        track_id = %inner.track_id,
         block_some = diff.block.is_some(),
         current_head = ?diff.current_head.as_deref(),
         "since-last-turn diff resolved"
@@ -1429,7 +1429,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 state = ?*state,
                 "state gating turn issuance post-diff"
             );
@@ -1484,7 +1484,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
-        wave_id = %inner.wave_id,
+        track_id = %inner.track_id,
         thread_id = %thread_id,
         drained_count,
         "calling daemon.turn_start"
@@ -1499,7 +1499,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 thread_id = %thread_id,
                 turn_id = %turn_id,
                 "daemon.turn_start ok"
@@ -1530,10 +1530,10 @@ async fn transcript_refresh_with_timeout<F>(
     timeout: Duration,
     runtime_id: &RuntimeId,
     card_id: &str,
-    wave_id: &str,
-) -> Option<wave_vcs::CommitHash>
+    track_id: &str,
+) -> Option<track_vcs::CommitHash>
 where
-    F: std::future::Future<Output = Result<wave_vcs::CommitHash>>,
+    F: std::future::Future<Output = Result<track_vcs::CommitHash>>,
 {
     match tokio::time::timeout(timeout, fut).await {
         Ok(Ok(head)) => Some(head),
@@ -1542,7 +1542,7 @@ where
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
-                wave_id,
+                track_id,
                 error = %e,
                 "pre-diff transcript refresh failed; issuing turn without refreshed transcripts"
             );
@@ -1553,7 +1553,7 @@ where
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
-                wave_id,
+                track_id,
                 timeout_secs = timeout.as_secs(),
                 "pre-diff transcript refresh timed out; issuing turn without refreshed transcripts"
             );
@@ -1567,16 +1567,16 @@ where
 /// block is contextual augmentation, never a correctness requirement (#639).
 async fn diff_with_timeout(
     inner: &Arc<Inner>,
-    current_override: Option<&wave_vcs::CommitHash>,
-) -> wave_vcs::SinceLastTurnBlock {
+    current_override: Option<&track_vcs::CommitHash>,
+) -> track_vcs::SinceLastTurnBlock {
     diff_or_fallback_on_timeout(
         since_last_turn_diff_block(inner, current_override),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
         &inner.runtime_id,
         inner.card_id.as_str(),
-        inner.wave_id.as_str(),
+        inner.track_id.as_str(),
         || async {
-            wave_vcs::SinceLastTurnBlock {
+            track_vcs::SinceLastTurnBlock {
                 current_head: current_head_after_diff_timeout(inner, current_override).await,
                 block: None,
             }
@@ -1590,12 +1590,12 @@ async fn diff_or_fallback_on_timeout<F, G, H>(
     timeout: Duration,
     runtime_id: &RuntimeId,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     fallback: H,
-) -> wave_vcs::SinceLastTurnBlock
+) -> track_vcs::SinceLastTurnBlock
 where
-    F: std::future::Future<Output = wave_vcs::SinceLastTurnBlock>,
-    G: std::future::Future<Output = wave_vcs::SinceLastTurnBlock>,
+    F: std::future::Future<Output = track_vcs::SinceLastTurnBlock>,
+    G: std::future::Future<Output = track_vcs::SinceLastTurnBlock>,
     H: FnOnce() -> G,
 {
     match tokio::time::timeout(timeout, fut).await {
@@ -1605,7 +1605,7 @@ where
                 target: "calm_server::spec_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
-                wave_id,
+                track_id,
                 timeout_secs = timeout.as_secs(),
                 "since-last-turn diff timed out; issuing turn without diff block"
             );
@@ -1616,8 +1616,8 @@ where
 
 async fn current_head_after_diff_timeout(
     inner: &Arc<Inner>,
-    current_override: Option<&wave_vcs::CommitHash>,
-) -> Option<wave_vcs::CommitHash> {
+    current_override: Option<&track_vcs::CommitHash>,
+) -> Option<track_vcs::CommitHash> {
     if let Some(current) = current_override {
         return Some(current.clone());
     }
@@ -1626,7 +1626,7 @@ async fn current_head_after_diff_timeout(
 
     match tokio::time::timeout(
         SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT,
-        wave_vcs::head(&pool, &inner.wave_id),
+        track_vcs::head(&pool, &inner.track_id),
     )
     .await
     {
@@ -1634,18 +1634,18 @@ async fn current_head_after_diff_timeout(
         Ok(Err(head_err)) => {
             tracing::warn!(
                 target: "calm_server::spec_harness_issue",
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 error = %head_err,
-                "spec harness could not read wave-vcs head after diff timeout"
+                "spec harness could not read track-vcs head after diff timeout"
             );
             None
         }
         Err(_) => {
             tracing::warn!(
                 target: "calm_server::spec_harness_issue",
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 timeout_secs = SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT.as_secs(),
-                "spec harness wave-vcs head read timed out after diff timeout"
+                "spec harness track-vcs head read timed out after diff timeout"
             );
             None
         }
@@ -1654,15 +1654,15 @@ async fn current_head_after_diff_timeout(
 
 async fn since_last_turn_diff_block(
     inner: &Arc<Inner>,
-    current_override: Option<&wave_vcs::CommitHash>,
-) -> wave_vcs::SinceLastTurnBlock {
+    current_override: Option<&track_vcs::CommitHash>,
+) -> track_vcs::SinceLastTurnBlock {
     let Some(pool) = inner.repo.sqlite_pool() else {
-        return wave_vcs::SinceLastTurnBlock::empty();
+        return track_vcs::SinceLastTurnBlock::empty();
     };
     let last_seen_head = inner.last_seen_head.lock().await.clone();
-    match wave_vcs::since_last_turn_block(
+    match track_vcs::since_last_turn_block(
         &pool,
-        &inner.wave_id,
+        &inner.track_id,
         last_seen_head.as_deref(),
         current_override,
         Some(&inner.card_id),
@@ -1673,27 +1673,27 @@ async fn since_last_turn_diff_block(
         Err(e) => {
             let current_head = match current_override {
                 Some(current) => Some(current.clone()),
-                None => match wave_vcs::head(&pool, &inner.wave_id).await {
+                None => match track_vcs::head(&pool, &inner.track_id).await {
                     Ok(head) => head,
                     Err(head_err) => {
                         tracing::warn!(
-                            wave_id = %inner.wave_id,
+                            track_id = %inner.track_id,
                             error = %head_err,
-                            "spec harness could not read wave-vcs head after diff failure"
+                            "spec harness could not read track-vcs head after diff failure"
                         );
                         None
                     }
                 },
             };
             tracing::warn!(
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 card_id = %inner.card_id,
                 last_seen_head = ?last_seen_head,
                 current_head = ?current_head,
                 error = %e,
-                "spec harness wave-vcs diff failed; issuing turn without diff block"
+                "spec harness track-vcs diff failed; issuing turn without diff block"
             );
-            wave_vcs::SinceLastTurnBlock {
+            track_vcs::SinceLastTurnBlock {
                 current_head,
                 block: None,
             }
@@ -1913,7 +1913,7 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
 
 async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
-    last_seen_head_override: Option<wave_vcs::CommitHash>,
+    last_seen_head_override: Option<track_vcs::CommitHash>,
 ) -> Result<()> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
@@ -1937,7 +1937,7 @@ async fn persist_snapshot_inner(
     let new_phase = snapshot.phase;
     let event_runtime_id = runtime_id.clone();
     let event_card_id = inner.card_id.clone();
-    let event_wave_id = inner.wave_id.clone();
+    let event_track_id = inner.track_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
 
@@ -1970,11 +1970,11 @@ async fn persist_snapshot_inner(
                 None,
                 &inner.events,
                 &inner.card_role_cache,
-                &inner.wave_area_cache,
+                &inner.track_area_cache,
                 Event::HarnessPhaseChanged {
                     runtime_id: event_runtime_id,
                     card_id: event_card_id,
-                    wave_id: event_wave_id,
+                    track_id: event_track_id,
                     old_phase,
                     new_phase,
                 },
@@ -1984,7 +1984,7 @@ async fn persist_snapshot_inner(
             tracing::warn!(
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
-                wave_id = %inner.wave_id,
+                track_id = %inner.track_id,
                 ?old_phase,
                 ?new_phase,
                 error = %e,
@@ -2043,7 +2043,7 @@ mod tests {
 
     fn delivery(text: &str) -> HarnessObservationDelivery {
         HarnessObservationDelivery {
-            observation: Observation::WaveGoal { text: text.into() },
+            observation: Observation::TrackGoal { text: text.into() },
             envelope_id: None,
         }
     }
@@ -2136,7 +2136,7 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
-        queue.push_back(Observation::WaveGoal {
+        queue.push_back(Observation::TrackGoal {
             text: "goal".into(),
         });
         env_ids.push_back(None);
@@ -2150,7 +2150,7 @@ mod tests {
             None,
         );
 
-        assert!(!folded, "UserMessage must not fold into WaveGoal");
+        assert!(!folded, "UserMessage must not fold into TrackGoal");
         assert_eq!(
             queue.len(),
             1,
@@ -2161,7 +2161,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn diff_or_fallback_on_timeout_returns_fallback_when_underlying_future_hangs() {
         use super::diff_or_fallback_on_timeout;
-        use crate::wave_vcs::SinceLastTurnBlock;
+        use crate::track_vcs::SinceLastTurnBlock;
         use std::future::pending;
         use std::time::Duration;
 
@@ -2196,13 +2196,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn transcript_refresh_with_timeout_collapses_success_error_and_timeout() {
         use super::transcript_refresh_with_timeout;
-        use crate::wave_vcs::CommitHash;
+        use crate::track_vcs::CommitHash;
         use std::future::pending;
         use std::time::Duration;
 
         let runtime_id: String = "c501ea4e-test".into();
         let card_id = "47e6ce46-test";
-        let wave_id = "w-test";
+        let track_id = "w-test";
         let timeout = Duration::from_secs(5);
 
         let success = transcript_refresh_with_timeout(
@@ -2210,7 +2210,7 @@ mod tests {
             timeout,
             &runtime_id,
             card_id,
-            wave_id,
+            track_id,
         )
         .await;
         assert_eq!(success.as_deref(), Some("head-before-diff"));
@@ -2220,7 +2220,7 @@ mod tests {
             timeout,
             &runtime_id,
             card_id,
-            wave_id,
+            track_id,
         )
         .await;
         assert!(
@@ -2233,7 +2233,7 @@ mod tests {
             timeout,
             &runtime_id,
             card_id,
-            wave_id,
+            track_id,
         )
         .await;
         assert!(

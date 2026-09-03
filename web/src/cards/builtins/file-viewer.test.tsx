@@ -277,7 +277,7 @@ import { overlayStateQueryKey } from '../../hooks/useOverlayState';
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
     id: 'file_1',
-    wave_id: 'wave_1',
+    track_id: 'track_1',
     kind: 'file-viewer',
     sort: 0,
     payload: { path: '/repo/src/main.ts' },

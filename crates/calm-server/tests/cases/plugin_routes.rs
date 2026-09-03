@@ -72,7 +72,7 @@ fn write_stub_plugin(plugins_dir: &Path, id: &str) -> PathBuf {
             }
         ],
         "permissions": {
-            "overlays_write": ["wave", "card"],
+            "overlays_write": ["track", "card"],
             "cards_create": true,
             "kv_quota_bytes": 65536
         }
@@ -96,7 +96,7 @@ fn write_bad_scope_plugin(plugins_dir: &Path, id: &str) -> PathBuf {
         "display_name": "Bad Scope",
         "entrypoint": { "command": "bin/stub" },
         "views": [
-            { "view_id": "wide", "title": "Wide", "scope": "wave" }
+            { "view_id": "wide", "title": "Wide", "scope": "track" }
         ]
     });
     std::fs::write(
@@ -139,7 +139,7 @@ async fn boot_state_with_repo() -> (AppState, TempDir, PathBuf, Arc<dyn Repo>) {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
     let state = AppState::from_parts(
@@ -149,7 +149,7 @@ async fn boot_state_with_repo() -> (AppState, TempDir, PathBuf, Arc<dyn Repo>) {
         plugin,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_area_cache — same rationale
+        None, // #234: track_area_cache — same rationale
     );
     (state, tmp, plugins_dir, repo)
 }
@@ -425,7 +425,7 @@ async fn uninstall_cascades_satellites() {
         .raw_repo()
         .overlay_upsert(NewOverlay {
             plugin_id: "test.uninstall".into(),
-            entity_kind: "wave".into(),
+            entity_kind: "track".into(),
             entity_id: "w1".into(),
             kind: "status".into(),
             payload: json!({"x": 1}),
@@ -455,7 +455,7 @@ async fn uninstall_cascades_satellites() {
         .await
         .unwrap();
     assert!(kv.is_empty(), "kv should be empty after uninstall");
-    let overlays = state.repo.overlays_for("wave", "w1").await.unwrap();
+    let overlays = state.repo.overlays_for("track", "w1").await.unwrap();
     assert!(
         overlays.is_empty(),
         "overlays should be cleared on uninstall"
@@ -522,11 +522,11 @@ async fn views_catalog_lists_enabled_plugin_views() {
 }
 
 // ===========================================================================
-// 7. install rejects manifest with disallowed `scope: "wave"`
+// 7. install rejects manifest with disallowed `scope: "track"`
 // ===========================================================================
 
 #[tokio::test]
-async fn install_rejects_wave_scope_manifest() {
+async fn install_rejects_track_scope_manifest() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_bad_scope_plugin(src_root.path(), "test.badscope");
@@ -540,8 +540,8 @@ async fn install_rejects_wave_scope_manifest() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = body_to_text(resp).await;
     assert!(
-        body.contains("scope") || body.contains("wave"),
-        "error should mention scope/wave, got {body}"
+        body.contains("scope") || body.contains("track"),
+        "error should mention scope/track, got {body}"
     );
 }
 
@@ -896,7 +896,7 @@ async fn patch_config_rejects_values_that_violate_the_schema() {
             text.contains(expected_path),
             "{label}: expected `{expected_path}` in the error, got: {text}"
         );
-        // Errors must name the CONFIG field, never the wave-input one whose
+        // Errors must name the CONFIG field, never the track-input one whose
         // validator this reuses (#1284 §2.1 / F8).
         assert!(
             !text.contains("template_input") && !text.contains("input_schema"),

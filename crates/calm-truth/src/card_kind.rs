@@ -13,7 +13,7 @@ use crate::error::CalmError;
 
 pub use builtins::{
     ClaudeCardHandler, CodexCardHandler, PluginUiCardHandler, SpecCardHandler, TerminalCardHandler,
-    WaveReportCardHandler,
+    TrackReportCardHandler,
 };
 
 pub type CardKindResult<T> = std::result::Result<T, CardKindError>;
@@ -34,14 +34,14 @@ pub enum CardCreateMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CardPersistenceInvariants {
     pub deletable_after_create: bool,
-    pub unique_per_wave: bool,
+    pub unique_per_track: bool,
 }
 
 impl Default for CardPersistenceInvariants {
     fn default() -> Self {
         Self {
             deletable_after_create: true,
-            unique_per_wave: false,
+            unique_per_track: false,
         }
     }
 }
@@ -106,7 +106,7 @@ impl CardKindRegistry {
             Box::new(TerminalCardHandler),
             Box::new(CodexCardHandler),
             Box::new(ClaudeCardHandler),
-            Box::new(WaveReportCardHandler),
+            Box::new(TrackReportCardHandler),
             Box::new(SpecCardHandler),
             Box::new(PluginUiCardHandler),
         ])
@@ -331,24 +331,24 @@ mod tests {
     }
 
     #[test]
-    fn wave_report_validates_required_shape() {
+    fn track_report_validates_required_shape() {
         let registry = CardKindRegistry::builtins();
         assert!(
             registry
-                .validate_payload("wave-report", &json!({ "schemaVersion": 3, "body": "x" }))
+                .validate_payload("track-report", &json!({ "schemaVersion": 3, "body": "x" }))
                 .is_err()
         );
         assert!(
             registry
                 .validate_payload(
-                    "wave-report",
+                    "track-report",
                     &json!({ "schemaVersion": 3, "docRev": "x", "summary": "s", "body": "x" }),
                 )
                 .is_err()
         );
         registry
             .validate_payload(
-                "wave-report",
+                "track-report",
                 &json!({ "schemaVersion": 3, "docRev": 0, "summary": "s", "body": "x" }),
             )
             .unwrap();
@@ -372,10 +372,10 @@ mod tests {
         );
         assert_eq!(
             registry
-                .handler_for("wave-report")
+                .handler_for("track-report")
                 .unwrap()
                 .schema_version(),
-            Some(crate::validation::WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)
+            Some(crate::validation::TRACK_REPORT_PAYLOAD_SCHEMA_VERSION)
         );
     }
 }

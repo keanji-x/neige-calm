@@ -454,9 +454,9 @@ describe('sending, with the disabled prop the router actually passes', () => {
 /*
  * ── `focusOnMount`, in an engine that renders Astryx for real (#1211 S2) ───
  *
- * The landing a just-created wave gets: the drawer opens on the spec
+ * The landing a just-created track gets: the drawer opens on the spec
  * conversation and the caret has to be *in the message field*, because the
- * reader's first sentence is the wave's intent.
+ * reader's first sentence is the track's intent.
  *
  * This is the same machinery the send-restore above uses, and it is here for
  * the same reason that one is: the effect finds the field with
@@ -480,7 +480,7 @@ describe('sending, with the disabled prop the router actually passes', () => {
  * nothing about the app reaching this component with the flag raised — drop
  * `focusOnMount` in `app/router/public.tsx`, or move the composer out of the
  * drawer's `footer`, and every case here stays green. The wiring half is
- * `app/router/wave-untitled.test.tsx` ("opens the spec conversation with the
+ * `app/router/track-untitled.test.tsx` ("opens the spec conversation with the
  * caret in the composer"), which drives the real router and the real create
  * and cannot see the engine question. **Neither tier alone proves the
  * landing**; that is why both exist and why each names the other.
@@ -492,7 +492,7 @@ describe('sending, with the disabled prop the router actually passes', () => {
  * timing the restore fixture reproduces has not started. A case that needed the
  * flag to survive a disabled window would have to use `Sending`.
  */
-describe('the caret a just-created wave lands with', () => {
+describe('the caret a just-created track lands with', () => {
   it('lands in the message field itself, not on the composer’s perch', async () => {
     await page.viewport(1400, 900);
     render(
@@ -511,7 +511,7 @@ describe('the caret a just-created wave lands with', () => {
    * path. So raising it again on a composer that is already standing does
    * nothing, and a caller that wants a second landing has to produce a second
    * mount. Production satisfies that by construction — the intent is stated by
-   * a create, so the wave, the drawer and this composer are all new — and the
+   * a create, so the track, the drawer and this composer are all new — and the
    * `focusOnMount` note in `thread/public.tsx` says so; this is the assertion
    * behind that sentence.
    *
@@ -581,7 +581,7 @@ describe('the caret a just-created wave lands with', () => {
 
 function railConversation(): Conversation {
   return {
-    id: 'c1', waveId: 'w1', waveTitle: 'Ship the rewrite', title: null, kind: 'codex',
+    id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: 0, turns: 0,
   };
 }
