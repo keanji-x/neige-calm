@@ -1,10 +1,191 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use syn::visit::Visit;
 use syn::{Item, ItemMod, UseTree, Visibility};
 
 const EXPORTED_ENTRY: &str = "guard_forked_blocks";
 const PRIVATE_IMPL: &str = "guard_forked_blocks_impl";
+
+/// #1252 S2 — the structural door of the report write boundary, and the struct
+/// carrying its whole argument set.
+const STRUCTURAL_DOOR: &str = "structural_init_report_tx";
+const STRUCTURAL_TARGET: &str = "InitialReportTarget";
+
+/// Every name that must not appear anywhere in the structural door's signature
+/// or in the struct that carries its arguments.
+///
+/// Both spellings of each concept, because the mutation this list exists to
+/// catch can arrive as either: the type (`EditAuthor`) or the parameter /
+/// field name it would land under (`author`). A future rename that keeps the
+/// concept has to be added here, which is the point — the list is the
+/// statement of what this door may not be able to say.
+const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
+    // #1115 — attribution in any shape. `Option<EditAuthor>` is the same hole
+    // with a nullable type, and both halves of it are named here.
+    "EditAuthor",
+    "author",
+    "WriteAttribution",
+    "attribution",
+    // The runtime enum this door was explicitly ruled not to take, plus the
+    // value it would be matched out of.
+    "WritePolicy",
+    "WriteOrigin",
+    "policy",
+    "origin",
+    // Q12 — this door cannot emit, and cannot attribute.
+    "EventBus",
+    "Event",
+    "events",
+    "ActorId",
+    "actor",
+    // No CAS input: the row was INSERTed by this same transaction.
+    "if_doc_rev",
+    "expected_rev",
+    "if_rev",
+    // No lifecycle leg and no draft promotion: the track is being created.
+    "TrackLifecycle",
+    "lifecycle",
+    "auto_promote_draft",
+    // No recorder gate: there is no agent principal on a create request.
+    "RecorderShadowProbe",
+    "RecorderShadowDecisionKind",
+    "recorder_shadow",
+    "probe",
+];
+
+/// Every identifier appearing anywhere under a piece of syntax.
+///
+/// `syn`'s `printing` feature would let this be a string compare over rendered
+/// tokens; walking idents instead is both narrower and harder to fool with
+/// whitespace, and the `visit` feature is already enabled for this crate's dev
+/// build.
+#[derive(Default)]
+struct Idents(BTreeSet<String>);
+
+impl<'ast> Visit<'ast> for Idents {
+    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+        self.0.insert(ident.to_string());
+    }
+}
+
+/// #1252 S2 — the six absences on `track_report::write::structural_init_report_tx`
+/// are the whole content of that door, so they are a gate rather than a comment.
+///
+/// The door writes a forked or templated report onto the report card inside the
+/// track-creation transaction. What makes it safe is not something it does; it
+/// is the set of things it has **no way to say**: it cannot name an author
+/// (#1115 — so `guard_task_declarations` is unreachable from it, because there
+/// is nothing to pass), it cannot emit (Q12 — no `EventBus`, no event in the
+/// return type, so no `track.report_edited` and no `card.updated`), it cannot
+/// compare-and-swap (the row was INSERTed by the same transaction), and it has
+/// no lifecycle, auto-promote or recorder-probe leg.
+///
+/// Prose says that; this test is what makes it fail to build a green run.
+/// Add any one of `author: EditAuthor`, `attribution: WriteAttribution`,
+/// `events: &EventBus` or `if_doc_rev: u64` to the signature — or smuggle the
+/// same field into `InitialReportTarget` — and this goes red on the exact name.
+///
+/// It reads the file rather than the compiled crate on purpose: the door is
+/// `pub(crate)`, so no integration test can name it, and the property under
+/// test is the *shape of the signature*, which is a syntactic fact.
+#[test]
+fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/track_report/write.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let syntax = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+
+    let door = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == STRUCTURAL_DOOR => Some(function),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{STRUCTURAL_DOOR}` vanished from {}", path.display()));
+
+    // The parameter list itself, by name. This is the assertion that bites on
+    // an added argument even if its type is spelled in a way the name list
+    // below has never heard of.
+    let parameters: Vec<String> = door
+        .sig
+        .inputs
+        .iter()
+        .map(|input| match input {
+            syn::FnArg::Receiver(_) => panic!("{STRUCTURAL_DOOR} must be a free function"),
+            syn::FnArg::Typed(typed) => match &*typed.pat {
+                syn::Pat::Ident(ident) => ident.ident.to_string(),
+                _ => panic!("{STRUCTURAL_DOOR}: every parameter must be a plain `name: Type` binding"),
+            },
+        })
+        .collect();
+    assert_eq!(
+        parameters,
+        vec!["tx".to_string(), "target".to_string()],
+        "the structural door takes the transaction and its target, and nothing else"
+    );
+
+    let target = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item_struct) if item_struct.ident == STRUCTURAL_TARGET => {
+                Some(item_struct)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{STRUCTURAL_TARGET}` vanished from {}", path.display()));
+
+    // Field names, pinned as a set for the same reason: an added field is how
+    // an argument arrives once the parameter list is pinned.
+    let fields: BTreeSet<String> = target
+        .fields
+        .iter()
+        .map(|field| {
+            field
+                .ident
+                .as_ref()
+                .unwrap_or_else(|| panic!("{STRUCTURAL_TARGET} must be a named struct"))
+                .to_string()
+        })
+        .collect();
+    let expected_fields: BTreeSet<String> = [
+        "report_card_id",
+        "track_id",
+        "payload",
+        "doc",
+        "declarations",
+        "diagnostics",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        fields, expected_fields,
+        "the structural door's argument struct carries report content and two ids — nothing that \
+         names a writer, an authority or a prior revision"
+    );
+
+    // And the name check over both, which is what catches the same concept
+    // arriving under a field this test already expects (a `payload` typed
+    // `WritePolicy`, say) or inside the return type.
+    let mut names = Idents::default();
+    names.visit_signature(&door.sig);
+    names.visit_item_struct(target);
+    let smuggled: Vec<&str> = FORBIDDEN_IN_THE_DOOR
+        .iter()
+        .copied()
+        .filter(|forbidden| names.0.contains(*forbidden))
+        .collect();
+    assert!(
+        smuggled.is_empty(),
+        "the structural door must not be able to name {smuggled:?}. Each of these is absent for a \
+         stated reason (see the door's own doc comment); reintroducing one is a design decision, \
+         not a signature tweak."
+    );
+}
 
 #[test]
 fn fork_rule_one_exemption_has_one_structural_entry() {
