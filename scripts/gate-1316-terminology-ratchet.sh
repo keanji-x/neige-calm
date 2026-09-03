@@ -41,31 +41,64 @@
 # WHAT EACH PATTERN COVERS, STATED HONESTLY
 #
 # `cove`
-#   This project's coinage. No ordinary-English use in scope.
+#   `cove` IS A SUBSTRING OF `recover`, `discover`, `cover`, `coverage`.
 #
-# `wave` — OVER-BROAD, and the first version of this header said otherwise
-#   The claim shipped in the first draft was "no ordinary-English use — no
-#   `wavelength`, no `microwave`, no `waveform`", produced by filtering
-#   `[a-z]*wave[a-z]*` through an exclusion regex ending `wave[a-z_]*$`. That
-#   trailing clause swallows `waved`, so the filter excluded exactly the English
-#   forms it was supposed to surface: the "zero hits" was an artefact of a
-#   broken filter, not a fact about the tree. The real hits, found by the review
-#   channel and re-verified independently:
+#   The first version of this header said "this project's coinage, no
+#   ordinary-English use in scope" and paired it with the bare substring
+#   `(?i)cove`. That was wrong, and it shipped: 1871 of the 10672 baselined
+#   `cove/crates` occurrences — 17.5% — were `recovery` (568), `recover` (240),
+#   `recovered` (196), `covers` (140), `coverage` (61), `discover`, and friends.
 #
-#     crates/calm-server/src/wave_report_guard.rs:417      "would wave through"
-#     crates/calm-server/src/workspace_materialize.rs:356  "would have waved through"
-#     crates/calm-server/src/routes/plugin_routes.rs:966   "would wave through"
-#     crates/calm-server/tests/cases/wave_workspace_recycle.rs:345  "be waved through"
-#     crates/calm-server/tests/cases/deferred_read_tx_deadlock_repro.rs:256  "hand-wave"
+#   Three consequences, all real, none hypothetical:
+#     * the ratchet blocked ordinary English — writing "recovery" in a new
+#       comment under `crates/` raised the cell and failed CI;
+#     * the baseline was inflated by ~17.5%, so the numbers did not mean what
+#       the header said they meant;
+#     * S6's "drive it to zero" acceptance was unreachable by construction,
+#       because `recover` can never leave this codebase.
 #
-#   `wave through` / `waved through` (= to let something pass unchecked) and
-#   `hand-wave` are ordinary English about gates and proofs, and this codebase's
-#   comments reach for them often. They are counted, exactly like the bare
-#   `spec` case below. Consequence to accept knowingly: writing "would wave
-#   through" in a new comment raises that cell and fails this gate. The honest
-#   resolution is a different word ("would let through", "would pass") — not a
-#   pattern exemption, because `(?<!hand-)` -style carve-outs would also exempt
-#   real occurrences of our noun that happen to sit next to those letters.
+#   This is the SAME error as the `wave` one below, made twice: a universal
+#   negative about English collisions asserted without executing anything.
+#   The pattern is now boundary-anchored per case, and every branch below was
+#   checked in both directions against the real tree.
+#
+# `wave` — same class, caught earlier by the review channel
+#   The original claim ("no `wavelength`, no `microwave`, no `waveform`") came
+#   from filtering `[a-z]*wave[a-z]*` through an exclusion regex ending
+#   `wave[a-z_]*$`. That trailing clause swallows `waved`, so the filter
+#   excluded exactly the English forms it existed to surface.
+#
+# HOW THE TWO PATTERNS ARE ANCHORED, AND WHY THEY DIFFER
+#
+#   Lowercase, both words: `(?<![a-zA-Z])(cove|wave)s?(?![a-z])`
+#     A LETTER BEFORE means English (`recover`, `discover`, `handwave`).
+#     A LOWERCASE LETTER AFTER means English (`cover`, `covered`, `waved`,
+#     `wavering`). A following UPPERCASE letter is ours — camelCase
+#     (`coveConversations`, `onWaveRoute`) — so the lookahead is `(?![a-z])`,
+#     not `(?![a-zA-Z])`. Getting that wrong drops real call sites silently.
+#
+#   Capitalised, both words: `(Cove|Wave)s?(?![a-z])`
+#     `CoveId`, `NewCove`, `WaveCoveCache`, `WaveId` match; `Coverage`,
+#     `Covered` do not.
+#
+#   Upper case — AND HERE THE TWO WORDS GENUINELY DIFFER, measured:
+#     `COVE[A-Z]+` in scope is `COVERY`, `COVERABLE`, `COVERED`, `COVER`
+#       (all fragments of RECOVERY/RECOVERABLE) plus `COVES`, which is ours.
+#       So cove needs `COVES?(?![A-Z])`.
+#     `WAVE[A-Z]+` in scope is `WAVECREATE`, `WAVEWORKSPACE`, `WAVEROW`,
+#       `WAVENAME`, `WAVEGLYPH`, `WAVES` — every one of them ours (oracle
+#       capability/invariant ids). So wave takes a bare `WAVE`; applying
+#       cove's `(?![A-Z])` here would have silently dropped 88 oracle ids.
+#     Symmetry would have been wrong in both directions. The branches were
+#     measured, not reasoned about.
+#
+#   What is still over-broad, knowingly: the bare word followed by a space.
+#   `wave through` / `hand-wave` (= to let something pass unchecked) is
+#   ordinary English this codebase's comments reach for, and no regex separates
+#   it from our noun. It is counted, like the bare `spec` case below. Writing
+#   "would wave through" in a new comment fails this gate; the honest response
+#   is a different word ("would let through"), not a `(?<!hand-)` carve-out
+#   that would also exempt real occurrences sitting next to those letters.
 #
 # `spec` — the PLANNER-AGENT sense (#1316 B class)
 #   Narrowed three ways and STILL over-broad, deliberately:
@@ -129,8 +162,8 @@ BASELINE='scripts/gate-1316-terminology-ratchet.baseline.tsv'
 
 # term<TAB>pattern. Reasons for each are in the header above.
 read -r -d '' TERMS <<'EOF' || true
-cove	(?i)cove
-wave	(?i)wave
+cove	(?<![a-zA-Z])coves?(?![a-z])|Coves?(?![a-z])|COVES?(?![A-Z])
+wave	(?<![a-zA-Z])waves?(?![a-z])|Waves?(?![a-z])|WAVE
 spec	(?i)(?<![a-z])spec(?![a-z.])|(?i)spec(?!\.tsx?)_[a-z]|(?i)[a-z]_spec(?![a-z])|AiSpec|SpecHarness|SpecAgent|SPEC_
 runtime_id	(?i)runtime[_-]?id|RuntimeId
 harness_item	(?i)harness_item|HarnessItem
@@ -194,6 +227,31 @@ if [ "${1:-}" = '--selftest' ]; then
     echo "selftest ok: 'specification' / 'at runtime' / 'foo.spec.ts' do not trip it"
   else
     echo "SELFTEST FAIL: ordinary English tripped the gate"; "./$SELF"; fails=1
+  fi
+
+  # The English-substring case that the first shipped pattern got wrong. `cove`
+  # lives inside recover/discover/cover/coverage and `wave` inside waved; the
+  # bare `(?i)cove` this gate launched with counted 1871 such occurrences in
+  # `crates` alone and failed CI on anyone who wrote "recovery" in a comment.
+  printf 'Recovery is recoverable: the reaper recovered every uncovered branch it discovers.\nCoverage covers what the audit covered; the reviewer waved it through while wavering.\n' >"$probe"
+  if "./$SELF" >/dev/null 2>&1; then
+    echo "selftest ok: recover/discover/cover/coverage/waved/wavering are not counted"
+  else
+    echo "SELFTEST FAIL: ordinary English containing 'cove'/'wave' as a substring tripped the gate"
+    "./$SELF"; fails=1
+  fi
+
+  # The other direction of the same fix. Anchoring the pattern must not drop
+  # real call sites: camelCase (a following UPPERCASE letter is ours, not
+  # English) and the SCREAMING_CASE oracle ids, of which `WAVE[A-Z]+` has 88 in
+  # scope and `COVE[A-Z]+` has none — which is why the two words' uppercase
+  # branches are deliberately asymmetric.
+  printf 'const x = coveConversations; const y = onWaveRoute;\n// E-CAP-WAVECREATE INV-WAVEROW COVES\n' >"$probe"
+  if "./$SELF" >/dev/null 2>&1; then
+    echo "SELFTEST FAIL: camelCase / oracle-id forms of our own vocabulary went uncounted — the anchoring is too tight"
+    fails=1
+  else
+    echo "selftest ok: coveConversations / onWaveRoute / CAP-WAVEROW / COVES are still counted"
   fi
 
   # The unit is OCCURRENCES, not matching lines. Three `cove` on ONE line must
