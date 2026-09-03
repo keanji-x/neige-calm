@@ -3,7 +3,88 @@ import {
 } from 'react';
 
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { useState } from '../../ui/state/public.ts';
+import { useReducer, useState } from '../../ui/state/public.ts';
+
+/**
+ * A conversation being written: one value, not five pieces of state.
+ *
+ * The key belongs to this draft for its whole lifetime. In particular, a
+ * failed create keeps both `key` and `sentText` while its route is unmounted:
+ * the server may have committed an ambiguous request, and retrying it with a
+ * new key would mint a second conversation.
+ */
+export type ConversationDraft = Readonly<{
+  /** The Track this draft belongs to. */
+  scopeId: string;
+  /** Identifies the draft to the server; minted once, never once per send. */
+  key: string;
+  /** The words the drawer is holding after its composer clears on send. */
+  text: string | null;
+  /** The words actually posted under `key`, or null before any POST. */
+  sentText: string | null;
+  error: string | null;
+  remedy: 'retry' | 'new-conversation' | null;
+}>;
+
+export type ConversationDraftId = Readonly<Pick<ConversationDraft, 'scopeId' | 'key'>>;
+
+/**
+ * The provider owns one independent slot per Track. A slot is either unfinished
+ * draft work or the row that work became; making it a union keeps those two
+ * outcomes mutually exclusive in the same reducer transition.
+ */
+type DraftSlot = Readonly<
+  | { kind: 'held'; draft: ConversationDraft }
+  | { kind: 'adopted'; conversationId: string }
+>;
+
+type DraftSlots = Readonly<Record<string, DraftSlot>>;
+
+type DraftMove = Readonly<
+  | { kind: 'start'; draft: ConversationDraft }
+  | { kind: 'edit'; from: ConversationDraftId; next: (current: ConversationDraft) => ConversationDraft }
+  | { kind: 'adopt'; from: ConversationDraftId; conversationId: string }
+  | { kind: 'discard'; from: ConversationDraftId }
+  | { kind: 'finish-adoption'; scopeId: string; conversationId: string }
+>;
+
+const slotHolds = (slot: DraftSlot | undefined, id: ConversationDraftId): slot is Extract<DraftSlot, { kind: 'held' }> =>
+  slot?.kind === 'held' && slot.draft.scopeId === id.scopeId && slot.draft.key === id.key;
+
+function withoutSlot(slots: DraftSlots, scopeId: string): DraftSlots {
+  const next = { ...slots };
+  delete next[scopeId];
+  return next;
+}
+
+function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
+  switch (move.kind) {
+    case 'start':
+      return { ...slots, [move.draft.scopeId]: { kind: 'held', draft: move.draft } };
+    case 'edit': {
+      const slot = slots[move.from.scopeId];
+      return slotHolds(slot, move.from)
+        ? { ...slots, [move.from.scopeId]: { kind: 'held', draft: move.next(slot.draft) } }
+        : slots;
+    }
+    case 'adopt': {
+      const slot = slots[move.from.scopeId];
+      return slotHolds(slot, move.from)
+        ? { ...slots, [move.from.scopeId]: { kind: 'adopted', conversationId: move.conversationId } }
+        : slots;
+    }
+    case 'discard':
+      return slotHolds(slots[move.from.scopeId], move.from)
+        ? withoutSlot(slots, move.from.scopeId)
+        : slots;
+    case 'finish-adoption': {
+      const slot = slots[move.scopeId];
+      return slot?.kind === 'adopted' && slot.conversationId === move.conversationId
+        ? withoutSlot(slots, move.scopeId)
+        : slots;
+    }
+  }
+}
 
 export type RememberedConversation = Readonly<{
   conversation: Conversation;
@@ -57,6 +138,17 @@ export type ConversationRegistry = Readonly<{
   requestedOpenFocusesComposer: boolean;
   requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
+  /** Failed first-message attempts live here, above every route remount. */
+  draftOf: (scopeId: string) => ConversationDraft | null;
+  startDraft: (draft: ConversationDraft) => void;
+  editDraft: (
+    from: ConversationDraftId, next: (current: ConversationDraft) => ConversationDraft,
+  ) => void;
+  /** Atomically retire `from` and leave its resulting row for that route to open. */
+  adoptDraft: (from: ConversationDraftId, conversationId: string) => void;
+  discardDraft: (from: ConversationDraftId) => void;
+  adoptedDraftIdOf: (scopeId: string) => string | null;
+  finishDraftAdoption: (scopeId: string, conversationId: string) => void;
   /* There is deliberately no "open the planner conversation of track W" slot here
      (#1211 S2). It was one, and a global slot cannot own that intent: the track
      the reader is leaving is still mounted when a create states it, and every
@@ -84,6 +176,10 @@ function equalEntry(left: RememberedConversation | undefined, conversation: Conv
 
 export function ConversationProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Readonly<Record<string, RememberedConversation>>>({});
+  /* Drafts are keyed by Track because leaving one Track may legitimately start
+     another draft before the first failure is retried. This provider is above
+     the route outlet, so both slots survive those route component lifetimes. */
+  const [draftSlots, moveDraftTo] = useReducer(moveDraft, {} as DraftSlots);
   const [openRequest, setOpenRequest] = useState<
     { id: string; focusComposer: boolean } | null
   >(null);
@@ -110,6 +206,31 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     [],
   );
   const clearOpenRequest = useCallback(() => setOpenRequest(null), []);
+  const draftOf = useCallback((scopeId: string) => {
+    const slot = draftSlots[scopeId];
+    return slot?.kind === 'held' ? slot.draft : null;
+  }, [draftSlots]);
+  const startDraft = useCallback((draft: ConversationDraft) => {
+    moveDraftTo({ kind: 'start', draft });
+  }, []);
+  const editDraft = useCallback((
+    from: ConversationDraftId, next: (current: ConversationDraft) => ConversationDraft,
+  ) => {
+    moveDraftTo({ kind: 'edit', from, next });
+  }, []);
+  const adoptDraft = useCallback((from: ConversationDraftId, conversationId: string) => {
+    moveDraftTo({ kind: 'adopt', from, conversationId });
+  }, []);
+  const discardDraft = useCallback((from: ConversationDraftId) => {
+    moveDraftTo({ kind: 'discard', from });
+  }, []);
+  const adoptedDraftIdOf = useCallback((scopeId: string) => {
+    const slot = draftSlots[scopeId];
+    return slot?.kind === 'adopted' ? slot.conversationId : null;
+  }, [draftSlots]);
+  const finishDraftAdoption = useCallback((scopeId: string, conversationId: string) => {
+    moveDraftTo({ kind: 'finish-adoption', scopeId, conversationId });
+  }, []);
   const requestedOpenId = openRequest?.id ?? null;
   const requestedOpenFocusesComposer = openRequest?.focusComposer ?? false;
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
@@ -118,9 +239,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     () => ({
       conversations, turnsOf, remember, updateExisting,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
+      draftOf, startDraft, editDraft, adoptDraft, discardDraft,
+      adoptedDraftIdOf, finishDraftAdoption,
     }),
-    [clearOpenRequest, conversations, remember, requestOpen,
-      requestedOpenFocusesComposer, requestedOpenId, turnsOf, updateExisting],
+    [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft, draftOf,
+      editDraft, finishDraftAdoption, remember, requestOpen, requestedOpenFocusesComposer,
+      requestedOpenId, startDraft, turnsOf, updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

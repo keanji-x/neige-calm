@@ -86,6 +86,10 @@ function created(body: unknown): ApiTransportResponse {
   return { status: 201, statusText: 'Created', body };
 }
 
+function failure(status: number, code: string, error: string): ApiTransportResponse {
+  return { status, statusText: 'Error', body: { code, error } };
+}
+
 type Reply = (request: ApiRequest) => ApiTransportResponse | undefined
   | Promise<ApiTransportResponse | undefined>;
 
@@ -261,6 +265,67 @@ describe('track conversations', () => {
       && request.path.endsWith('/conversations') && request.path !== CONVERSATIONS)).toEqual([]);
     /* The message travelled with the POST, so nothing re-sends it afterwards. */
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toEqual([]);
+  });
+
+  /*
+   * A failed create is unfinished work, and its key has to outlive the route
+   * that rendered it. The server may have committed the first POST before its
+   * 500 reached us; retrying under a freshly-minted key would then create a
+   * second conversation beside it.
+   *
+   * Two tracks matter here. Keeping one draft in a root-level slot merely
+   * trades the remount bug for a scope-switch bug: starting track two would
+   * overwrite track one's failed attempt. Returning to track one must recover
+   * its own words and, decisively, send them under its own original key.
+   */
+  it('keeps each failed draft key across track route remounts', async () => {
+    const attempts = new Map<string, number>();
+    const { requests, router } = setup((request) => {
+      if (request.method !== 'POST'
+        || (request.path !== CONVERSATIONS && request.path !== BARE_CONVERSATIONS)) return undefined;
+      const attempt = (attempts.get(request.path) ?? 0) + 1;
+      attempts.set(request.path, attempt);
+      if (attempt === 1) return failure(500, 'internal', 'boom');
+      return created(derivedRow(request.path === CONVERSATIONS ? 'w1' : 'w2', request));
+    });
+
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('words for track one');
+    await screen.findByRole('button', { name: 'Try again' });
+
+    await act(async () => { await router.navigate({ to: '/track/w2' }); });
+    await screen.findByText('No conversations yet.');
+    await openDraft();
+    await write('words for track two');
+    await screen.findByRole('button', { name: 'Try again' });
+
+    await act(async () => { await router.navigate({ to: '/track/w1' }); });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    expect(screen.getByText('words for track one')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(2));
+    const [first, retry] = creates(requests, CONVERSATIONS);
+    expect(first?.headers?.['Idempotency-Key']).toBeDefined();
+    expect(retry?.headers?.['Idempotency-Key']).toBe(first?.headers?.['Idempotency-Key']);
+    expect([first?.body, retry?.body]).toEqual([
+      { text: 'words for track one' },
+      { text: 'words for track one' },
+    ]);
+
+    await act(async () => { await router.navigate({ to: '/track/w2' }); });
+    await screen.findByText('No conversations yet.');
+    await openDraft();
+    expect(screen.getByText('words for track two')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(creates(requests, BARE_CONVERSATIONS)).toHaveLength(2));
+    const [bareFirst, bareRetry] = creates(requests, BARE_CONVERSATIONS);
+    expect(bareFirst?.headers?.['Idempotency-Key']).toBeDefined();
+    expect(bareRetry?.headers?.['Idempotency-Key'])
+      .toBe(bareFirst?.headers?.['Idempotency-Key']);
   });
 
   /*
