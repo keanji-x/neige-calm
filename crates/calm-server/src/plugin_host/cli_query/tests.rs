@@ -12,6 +12,9 @@ use crate::operation::forge_action_adapter::{
 use crate::plugin_host::manifest::CliQueryBlock;
 use serde_json::{Map, json};
 
+#[cfg(unix)]
+use super::super::child_process::{TEST_DRAIN_STARTED, TEST_REAP_STARTED, TestPhaseObserver};
+
 fn tool(args: &[&str]) -> CliQueryTool {
     serde_json::from_value(json!({
         "name": "quote",
@@ -938,6 +941,84 @@ fn runtime_for(program: PathBuf, args: &[&str], timeout_ms: u64, cap: usize) -> 
     }
 }
 
+/// Make a FIFO whose parent-held read/write descriptor keeps both opens
+/// non-blocking. A fixture can then block in `read` until the test writes one
+/// line, giving process tests an event gate instead of a guessed `sleep`.
+#[cfg(unix)]
+fn fifo_gate(path: &Path) -> std::fs::File {
+    let raw = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: plain libc call on a path inside a fresh temp directory.
+    let rc = unsafe { libc::mkfifo(raw.as_ptr(), 0o600) };
+    assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap()
+}
+
+/// Poll `future` until the selected real-child phase starts. The production
+/// helper freezes Tokio's clock at that event; advancing to its absolute
+/// deadline therefore tests budget identity without measuring host time.
+#[cfg(unix)]
+async fn complete_at_observed_deadline<T>(
+    observer: &'static tokio::task::LocalKey<TestPhaseObserver>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    observer
+        .scope(TestPhaseObserver::new(tx, true), async move {
+            tokio::pin!(future);
+            let deadline = tokio::select! {
+                deadline = rx.recv() => deadline.expect("the phase observer stays alive"),
+                _output = &mut future => panic!("the operation finished before the observed phase started"),
+            };
+            let frozen_at = tokio::time::Instant::now();
+            assert!(
+                frozen_at < deadline,
+                "the fixture must reach its observed phase before the budget expires"
+            );
+            tokio::time::advance(deadline.duration_since(frozen_at)).await;
+            let output = future.await;
+            let finished_at = tokio::time::Instant::now();
+            assert!(
+                finished_at >= deadline
+                    && finished_at <= deadline + Duration::from_millis(1),
+                "the observed phase finished at {finished_at:?}, outside Tokio's 1 ms timer \
+                 precision around its original deadline {deadline:?}"
+            );
+            output
+        })
+        .await
+}
+
+/// Release a child only after the runtime has drained its closed output and
+/// started waiting for its real exit status.
+#[cfg(unix)]
+async fn call_released_after_reap_starts(
+    rt: &CliQueryRuntime,
+    arguments: Value,
+    mut gate: std::fs::File,
+) -> Result<CallToolResult, RpcError> {
+    use std::io::Write as _;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    TEST_REAP_STARTED
+        .scope(TestPhaseObserver::new(tx, false), async {
+            let call = rt.tools_call("quote", arguments);
+            tokio::pin!(call);
+            let deadline = tokio::select! {
+                deadline = rx.recv() => deadline.expect("the reap observer stays alive"),
+                _result = &mut call => panic!("the call finished before its reap began"),
+            };
+            assert!(tokio::time::Instant::now() < deadline);
+            gate.write_all(b"continue\n").unwrap();
+            gate.flush().unwrap();
+            call.await
+        })
+        .await
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_zero_exit_returns_stdout_and_is_error_false() {
@@ -1114,11 +1195,12 @@ async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
 /// #1164 P3 r3 H2 — exit-status fidelity for a tool that closes its output and
 /// then keeps working.
 ///
-/// `…; exec 1>&- 2>&-; sleep 1; exit 0` reaches EOF on both pipes while it is
-/// still alive. Round 2 swept the process group at that moment, which SIGKILLed
-/// the leader and reported `signal: 9` / `is_error: true` for what was a
-/// perfectly successful call. Reaping before sweeping is what makes the
-/// reported status the child's own.
+/// A child closes both pipes, then blocks on a FIFO. The test releases that
+/// gate only after observing the reap phase, so EOF is guaranteed to precede
+/// exit without relying on a wall-clock sleep. Round 2 swept the process group
+/// at EOF, which SIGKILLed the leader and reported `signal: 9` /
+/// `is_error: true` for what was a perfectly successful call. Reaping before
+/// sweeping is what makes the reported status the child's own.
 ///
 /// Mutation witness: move the phase-4 sweep back above the `wait`, i.e. sweep
 /// the group before `wait_and_release_group`, and this goes red with
@@ -1127,16 +1209,21 @@ async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
 #[tokio::test]
 async fn a_tool_that_closes_its_output_then_exits_reports_its_real_status() {
     let tmp = tempfile::tempdir().unwrap();
-    // Answer first, then detach the pipes and keep running for a beat. The
-    // sleep must comfortably outlast the drain returning, or the race the test
-    // exists for never happens.
+    let gate_path = tmp.path().join("reap.gate");
+    let gate = fifo_gate(&gate_path);
     let p = script(
         tmp.path(),
         "linger.sh",
-        "#!/bin/sh\necho answer\nexec 1>&- 2>&-\nsleep 1\nexit 0\n",
+        "#!/bin/sh\necho answer\nexec 1>&- 2>&-\nread _gate < \"$1\"\nexit 0\n",
     );
-    let rt = runtime_for(p, &[], 20_000, 4096);
-    let res = rt.tools_call("quote", json!({})).await.unwrap();
+    let rt = runtime_for(p, &["{{symbol}}"], 20_000, 4096);
+    let res = call_released_after_reap_starts(
+        &rt,
+        json!({ "symbol": gate_path.display().to_string() }),
+        gate,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         res.is_error,
@@ -1160,13 +1247,21 @@ async fn a_tool_that_closes_its_output_then_exits_reports_its_real_status() {
 #[tokio::test]
 async fn a_tool_that_closes_its_output_then_fails_reports_its_real_code() {
     let tmp = tempfile::tempdir().unwrap();
+    let gate_path = tmp.path().join("reap.gate");
+    let gate = fifo_gate(&gate_path);
     let p = script(
         tmp.path(),
         "linger_fail.sh",
-        "#!/bin/sh\necho partial\nexec 1>&- 2>&-\nsleep 1\nexit 7\n",
+        "#!/bin/sh\necho partial\nexec 1>&- 2>&-\nread _gate < \"$1\"\nexit 7\n",
     );
-    let rt = runtime_for(p, &[], 20_000, 4096);
-    let res = rt.tools_call("quote", json!({})).await.unwrap();
+    let rt = runtime_for(p, &["{{symbol}}"], 20_000, 4096);
+    let res = call_released_after_reap_starts(
+        &rt,
+        json!({ "symbol": gate_path.display().to_string() }),
+        gate,
+    )
+    .await
+    .unwrap();
     assert_eq!(res.is_error, Some(true));
     let detail = res.content[1].text.clone().unwrap();
     assert!(
@@ -1317,23 +1412,20 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
 #[tokio::test]
 async fn a_child_that_outlives_its_budget_is_killed_and_named() {
     let tmp = tempfile::tempdir().unwrap();
-    let p = script(tmp.path(), "slow.sh", "#!/bin/sh\nsleep 30\n");
-    let rt = runtime_for(p, &[], 200, 4096);
-    let started = std::time::Instant::now();
-    let err = rt.tools_call("quote", json!({})).await.unwrap_err();
-    let elapsed = started.elapsed();
-    // Tight on purpose (r3 H3). The old bound was 10 s for a 200 ms budget,
-    // which could not see a whole extra reap grace being spent after expiry —
-    // worst-case latency was `timeout_ms + CHILD_REAP_GRACE` while the error
-    // text promised `timeout_ms`. Every phase now shares the one deadline, and
-    // teardown after expiry is asynchronous, so the overshoot is scheduling
-    // noise rather than another constant.
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "the call took {elapsed:?} against a 200 ms budget; some phase is \
-         spending time outside cli_query.timeout_ms"
-    );
-    assert!(err.message.contains("200 ms"), "{}", err.message);
+    let gate_path = tmp.path().join("drain.gate");
+    let _gate = fifo_gate(&gate_path);
+    let p = script(tmp.path(), "slow.sh", "#!/bin/sh\nread _gate < \"$1\"\n");
+    let rt = runtime_for(p, &["{{symbol}}"], 20_000, 4096);
+    let err = complete_at_observed_deadline(
+        &TEST_DRAIN_STARTED,
+        rt.tools_call(
+            "quote",
+            json!({ "symbol": gate_path.display().to_string() }),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.message.contains("20000 ms"), "{}", err.message);
     assert!(err.message.contains("budget"), "{}", err.message);
 }
 
@@ -1432,51 +1524,42 @@ async fn a_failing_version_probe_falls_back_instead_of_failing_bring_up() {
 /// have masked entirely.
 ///
 /// Mutation witness: raise `VERSION_PROBE_BUDGET` above
-/// [`CLI_QUERY_BRINGUP_BUDGET`] and this goes red on the elapsed assertion
-/// — nothing else in the suite distinguishes the two budgets.
+/// [`CLI_QUERY_BRINGUP_BUDGET`] and the relationship assertion goes red.
+/// Reset either phase to a fresh allowance and the virtual clock finishes past
+/// the absolute deadline observed from the real probe.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
     // The relationship that matters is the TOTAL the probe can cost, not one
-    // term of it (r3 H3). Round 2 asserted only this comparison while the probe
-    // ALSO spent a 5 s reap grace afterwards: 2 + 5 > 5, so a probe wedged in
-    // uninterruptible I/O took 7 s, the outer budget fired first, and the
-    // connector went `Unavailable` — precisely what the sub-budget exists to
-    // prevent. The measured assertion at the end is the real guard.
+    // term of it (r3 H3). `complete_at_observed_deadline` below separately
+    // proves the drain uses this exact absolute deadline.
     assert!(
         VERSION_PROBE_BUDGET < CLI_QUERY_BRINGUP_BUDGET,
         "the sub-budget must be strictly smaller, or a hung probe takes the enable down"
     );
     let tmp = tempfile::tempdir().unwrap();
-    let p = script(tmp.path(), "hang.sh", "#!/bin/sh\nsleep 60\n");
+    let gate_path = tmp.path().join("probe-drain.gate");
+    let _gate = fifo_gate(&gate_path);
+    let p = script(
+        tmp.path(),
+        "hang.sh",
+        &format!("#!/bin/sh\nread _gate < \"{}\"\n", gate_path.display()),
+    );
     let b = block(json!({
         "command": p.display().to_string(),
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    let started = std::time::Instant::now();
-    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
-        .await
-        .unwrap();
-    let elapsed = started.elapsed();
+    let rt = complete_at_observed_deadline(
+        &TEST_DRAIN_STARTED,
+        bring_up("cli-test", &b, tmp.path(), &Map::new()),
+    )
+    .await
+    .unwrap();
 
     assert!(
         rt.fingerprint().starts_with("size="),
         "a hung probe must fall back, got {}",
         rt.fingerprint()
-    );
-    // The TOTAL, measured. Every probe phase shares one deadline, so a hung
-    // `--version` costs the sub-budget plus scheduling noise — not the
-    // sub-budget plus a per-phase grace. A term added anywhere in the probe
-    // lifecycle shows up here.
-    assert!(
-        elapsed < VERSION_PROBE_BUDGET + Duration::from_secs(1),
-        "bring-up took {elapsed:?}; the WHOLE probe must fit inside its \
-         {VERSION_PROBE_BUDGET:?} sub-budget, and some phase is spending time \
-         outside it"
-    );
-    assert!(
-        elapsed < CLI_QUERY_BRINGUP_BUDGET,
-        "bring-up took {elapsed:?}; a hung probe must never reach the outer budget"
     );
 }
 
@@ -1489,36 +1572,32 @@ async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
 /// after EOF cost 7 s, the 5 s outer bring-up budget fired first, and the
 /// connector went `Unavailable`.
 ///
-/// Mutation witness: bound the probe's `wait_and_release_group` with
-/// `timeout(Duration::from_secs(5), …)` instead of `timeout_at(deadline, …)`.
+/// Mutation witness: give `finish_within`'s reap phase a fresh five-second
+/// relative timeout instead of its supplied absolute deadline.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_version_probe_that_lingers_after_closing_stdout_stays_in_the_sub_budget() {
     let tmp = tempfile::tempdir().unwrap();
+    let gate_path = tmp.path().join("probe-reap.gate");
+    let _gate = fifo_gate(&gate_path);
     let p = script(
         tmp.path(),
         "linger_version.sh",
-        "#!/bin/sh\necho 'mytool 9.9'\nexec 1>&-\nsleep 60\n",
+        &format!(
+            "#!/bin/sh\necho 'mytool 9.9'\nexec 1>&-\nread _gate < \"{}\"\n",
+            gate_path.display()
+        ),
     );
     let b = block(json!({
         "command": p.display().to_string(),
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    let started = std::time::Instant::now();
-    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
-        .await
-        .unwrap();
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed < VERSION_PROBE_BUDGET + Duration::from_secs(1),
-        "bring-up took {elapsed:?}: the reap phase is spending time outside the \
-         {VERSION_PROBE_BUDGET:?} sub-budget"
-    );
-    assert!(
-        elapsed < CLI_QUERY_BRINGUP_BUDGET,
-        "a lingering probe must never reach the outer budget: {elapsed:?}"
-    );
+    let rt = complete_at_observed_deadline(
+        &TEST_REAP_STARTED,
+        bring_up("cli-test", &b, tmp.path(), &Map::new()),
+    )
+    .await
+    .unwrap();
     // It never exited, so there is no usable version line — the fallback.
     assert!(
         rt.fingerprint().starts_with("size="),
@@ -1535,28 +1614,31 @@ async fn a_version_probe_that_lingers_after_closing_stdout_stays_in_the_sub_budg
 /// either — its child holds stdout open, so the drain expires first and the
 /// reap is never reached.
 ///
-/// Mutation witness: bound `tools_call`'s `wait_and_release_group` with
-/// `timeout(Duration::from_secs(5), …)` instead of `timeout_at(deadline, …)`.
+/// Mutation witness: give `finish_within`'s reap phase a fresh five-second
+/// relative timeout instead of its supplied absolute deadline.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_call_that_lingers_after_closing_its_output_still_honours_its_budget() {
     let tmp = tempfile::tempdir().unwrap();
+    let gate_path = tmp.path().join("call-reap.gate");
+    let _gate = fifo_gate(&gate_path);
     let p = script(
         tmp.path(),
         "linger_forever.sh",
-        "#!/bin/sh\necho partial\nexec 1>&- 2>&-\nsleep 30\n",
+        "#!/bin/sh\necho partial\nexec 1>&- 2>&-\nread _gate < \"$1\"\n",
     );
-    let rt = runtime_for(p, &[], 300, 4096);
-    let started = std::time::Instant::now();
-    let err = rt.tools_call("quote", json!({})).await.unwrap_err();
-    let elapsed = started.elapsed();
+    let rt = runtime_for(p, &["{{symbol}}"], 20_000, 4096);
+    let err = complete_at_observed_deadline(
+        &TEST_REAP_STARTED,
+        rt.tools_call(
+            "quote",
+            json!({ "symbol": gate_path.display().to_string() }),
+        ),
+    )
+    .await
+    .unwrap_err();
 
     assert!(err.message.contains("budget"), "{}", err.message);
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "the call took {elapsed:?} against a 300 ms budget; the reap phase is \
-         spending time outside cli_query.timeout_ms"
-    );
 }
 
 /// #1164 P3 r2 G5 — resolution only checks that SOME execute bit is set, so
