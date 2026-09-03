@@ -179,8 +179,8 @@ describe('deriveReportTasks', () => {
       { id: 'b-3', kind: 'table', rev: 1, payload: { caption: 'c', columns: [], rows: [] } },
       task('b-4', live('beta', false)),
     ])).toEqual([
-      { blockId: 'b-2', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
-      { blockId: 'b-4', key: 'beta', state: 'not-ready', declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      { blockId: 'b-2', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null },
+      { blockId: 'b-4', key: 'beta', state: 'not-ready', declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null },
     ]);
   });
 
@@ -190,7 +190,7 @@ describe('deriveReportTasks', () => {
      running. */
   it('reads a task carrying an explicit null tombstone as live, not withdrawn', () => {
     expect(tasksOf([task('b-1', { ...live('alpha', true), tombstone: null })]))
-      .toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+      .toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null }]);
   });
 
   /* Kept for the same reason the block keeps it: the task existed, other
@@ -201,7 +201,7 @@ describe('deriveReportTasks', () => {
       key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: { reason: 'r' },
     })])).toEqual([{
       blockId: 'b-1', key: 'gone', state: 'withdrawn',
-      declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null,
+      declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -219,7 +219,7 @@ describe('deriveReportTasks', () => {
   it('keeps a task block whose payload does not parse, named by its id', () => {
     expect(tasksOf([task('b-1', { key: 'broken' })])).toEqual([{
       blockId: 'b-1', key: 'b-1', state: 'unreadable',
-      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null,
+      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -251,7 +251,7 @@ describe('deriveReportTasks', () => {
      unreadable task. */
   it('falls back to the block id when the task declared an empty key', () => {
     expect(tasksOf([task('b-1', live('', true))]))
-      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null }]);
   });
 
   /* And only a block that declared itself a task: an `unsupported` block of
@@ -277,7 +277,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-1', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
     )).toEqual([{
       blockId: 'b-1', key: 'alpha', state: 'ready',
-      declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9',
+      declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9', pendingReason: null,
     }]);
   });
 
@@ -315,7 +315,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-1', key: 'alpha', status: 'failed', workerCardId: 'card-9' })],
     )).toEqual([{
       blockId: 'b-1', key: 'alpha', state: 'ready',
-      declaration: null, status: 'failed', statusDetail: null, kind: 'codex', workerCardId: 'card-9',
+      declaration: null, status: 'failed', statusDetail: null, kind: 'codex', workerCardId: 'card-9', pendingReason: null,
     }]);
   });
 
@@ -332,7 +332,7 @@ describe('deriveReportTasks', () => {
       })],
     )).toEqual([{
       blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: 'failed',
-      statusDetail: 'track 9a4c is not a git repository', kind: 'codex', workerCardId: 'card-9',
+      statusDetail: 'track 9a4c is not a git repository', kind: 'codex', workerCardId: 'card-9', pendingReason: null,
     }]);
   });
 
@@ -460,8 +460,8 @@ describe('deriveReportTasks', () => {
    * ceiling or the track-tree budget (`task_projection.rs`, the
    * `verdicts[index].schedulable = false` after the `planner_task_ceiling`
    * diagnostic), so an ordinary queue behind capacity rendered as `blocked` and
-   * a healthy track looked stuck. Task-budget reasoning is out of this slice, so
-   * both rows get the one word the kernel actually gave them.
+   * a healthy track looked stuck. #1260 adds a separate server-owned
+   * `pendingReason`; when that field is absent, this join still invents none.
    */
   it('prints pending for an unassigned pending task whether or not it is schedulable', () => {
     const rows = tasksOf(
@@ -473,6 +473,7 @@ describe('deriveReportTasks', () => {
     );
     expect(rows.map((row) => row.status)).toEqual(['pending', 'pending']);
     expect(rows.every((row) => row.workerCardId === null)).toBe(true);
+    expect(rows.every((row) => row.pendingReason === null)).toBe(true);
   });
 
   /* An unassigned non-pending status is printed as it stands rather than being
@@ -497,7 +498,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-1', key: 'alpha', schedulable: false })],
     )).toEqual([{
       blockId: 'b-1', key: 'alpha', state: 'not-ready',
-      declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+      declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -539,7 +540,7 @@ describe('deriveReportTasks', () => {
     expect(tasksOf(
       [task('b-1', live('alpha', true))],
       [verdict({ blockId: 'b-99', key: 'ghost', status: 'running', workerCardId: 'card-9' })],
-    )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+    )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null }]);
   });
 
   /* The other direction: a declared task with no verdict keeps its declaration
@@ -576,7 +577,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-other', key: 'b-1', status: 'running', workerCardId: 'card-9' })],
     )).toEqual([{
       blockId: 'b-1', key: 'b-1', state: 'unreadable',
-      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null,
+      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -589,7 +590,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-1', key: 'broken', status: 'running', workerCardId: 'card-9' })],
     )).toEqual([{
       blockId: 'b-1', key: 'b-1', state: 'unreadable',
-      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null,
+      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -617,7 +618,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-1', key: 'gone', status: 'done', workerCardId: 'card-9', schedulable: false })],
     )).toEqual([{
       blockId: 'b-1', key: 'gone', state: 'withdrawn',
-      declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null,
+      declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -642,8 +643,8 @@ describe('deriveReportTasks', () => {
         verdict({ blockId: 'b-new', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
       ],
     )).toEqual([
-      { blockId: 'b-old', key: 'alpha', state: 'withdrawn', declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null },
-      { blockId: 'b-new', key: 'alpha', state: 'ready', declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9' },
+      { blockId: 'b-old', key: 'alpha', state: 'withdrawn', declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null },
+      { blockId: 'b-new', key: 'alpha', state: 'ready', declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9', pendingReason: null },
     ]);
   });
 
@@ -675,10 +676,10 @@ describe('deriveReportTasks', () => {
         verdict({ blockId: 'b-two', key: 'alpha', status: null, workerCardId: null }),
       ],
     )).toEqual([
-      { blockId: 'b-one', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      { blockId: 'b-one', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null },
       {
         blockId: 'b-two', key: 'alpha', state: 'not-ready',
-        declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+        declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
       },
     ]);
   });
@@ -919,7 +920,7 @@ describe('deriveReportTasks', () => {
       [verdict({ blockId: 'b-1', key: 'alpha', status: '', statusDetail: 'boom', workerCardId: 'card-9' })],
     )).toEqual([{
       blockId: 'b-1', key: 'alpha', state: 'not-ready', declaration: 'Not ready',
-      status: null, statusDetail: null, kind: 'codex', workerCardId: 'card-9',
+      status: null, statusDetail: null, kind: 'codex', workerCardId: 'card-9', pendingReason: null,
     }]);
   });
 
@@ -949,8 +950,8 @@ describe('deriveReportTasks', () => {
       [task('b-alpha', live('alpha', true)), task('b-beta', live('beta', true))],
       [verdict({ blockId: 'b-beta', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
     )).toEqual([
-      { blockId: 'b-alpha', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
-      { blockId: 'b-beta', key: 'beta', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      { blockId: 'b-alpha', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null },
+      { blockId: 'b-beta', key: 'beta', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null },
     ]);
   });
 
@@ -963,8 +964,8 @@ describe('deriveReportTasks', () => {
       [task('b-alpha', live('alpha', true)), task('b-beta', live('beta', true))],
       [verdict({ blockId: 'b-stale', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
     )).toEqual([
-      { blockId: 'b-alpha', key: 'alpha', state: 'ready', declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9' },
-      { blockId: 'b-beta', key: 'beta', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      { blockId: 'b-alpha', key: 'alpha', state: 'ready', declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9', pendingReason: null },
+      { blockId: 'b-beta', key: 'beta', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null },
     ]);
   });
 
@@ -972,7 +973,7 @@ describe('deriveReportTasks', () => {
     expect(tasksOf(
       [task('b-1', live('alpha', true))],
       [verdict({ blockId: 'b-1', key: 'beta', status: 'running', workerCardId: 'card-9' })],
-    )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+    )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null }]);
   });
 
   /*
@@ -1011,7 +1012,7 @@ describe('deriveReportTasks', () => {
       // Neither `done`/`card-8` (the contradicting hit) nor `running`/`card-9`
       // (the fallback this must not reach).
       blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null,
-      status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+      status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
     }]);
   });
 
@@ -1212,6 +1213,21 @@ describe('trackTaskVerdictsOperation', () => {
       blockId: 'b-1', key: 'alpha', schedulable: true, status: 'failed',
       statusDetail: 'track 9a4c is not a git repository',
     }]);
+  });
+
+  it('reads the server-owned pending diagnosis without re-deriving it', () => {
+    const reason = {
+      kind: 'budgetQueued' as const,
+      message: 'Queued 1/1 — wait for a slot or raise task_budget',
+      occupiedTaskBudget: 1,
+      effectiveTaskBudget: 1,
+    };
+    expect(trackTaskVerdictsOperation('w1').responseSchema.parse({
+      taskDiagnostics: [{
+        blockId: 'b-1', key: 'alpha', schedulable: true, status: 'pending',
+        pendingReason: reason, diagnostics: [],
+      }],
+    })[0]?.pendingReason).toEqual(reason);
   });
 
   /* Fail-soft, exactly as one malformed block costs only that block: one

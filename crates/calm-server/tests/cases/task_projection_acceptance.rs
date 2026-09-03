@@ -279,6 +279,154 @@ fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
     })
 }
 
+fn task_verdict<'a>(read: &'a Value, key: &str) -> &'a Value {
+    read["taskDiagnostics"]
+        .as_array()
+        .expect("taskDiagnostics array")
+        .iter()
+        .find(|verdict| verdict["key"] == key)
+        .unwrap_or_else(|| panic!("task verdict for {key}"))
+}
+
+/// #1260 — one read must distinguish the three states that used to collapse
+/// into a bare `pending`/blank row. The fixture is one real projection:
+///
+/// * `dependency-blocked` has a row but waits for running `occupier`;
+/// * `budget-queued` has a row and ready dependencies, but the explicit 1-slot
+///   task budget is occupied;
+/// * `not-admitted` is the fourth ready declaration under a planner ceiling of
+///   three, so it deliberately has no `tasks` row.
+///
+/// Both public reads are asserted because the FE consumes REST while planners
+/// consume MCP; they must not tell two stories about the same track.
+#[tokio::test]
+async fn pending_reasons_distinguish_dependency_budget_and_admission() {
+    let boot = new_boot().await;
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=3,task_budget=1 WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    upsert(&boot, None, task("occupier")).await;
+    let mut dependency_blocked = task("dependency-blocked");
+    dependency_blocked["depends_on"] = json!(["occupier"]);
+    upsert(&boot, None, dependency_blocked).await;
+    upsert(&boot, None, task("budget-queued")).await;
+    upsert(&boot, None, task("not-admitted")).await;
+
+    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='occupier'")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let dependency = &task_verdict(&response, "dependency-blocked")["pendingReason"];
+        assert_eq!(dependency["kind"], "dependencyBlocked", "{surface}");
+        assert_eq!(dependency["dependencies"], json!(["occupier"]), "{surface}");
+        assert!(
+            dependency["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("occupier")),
+            "{surface}: {dependency}"
+        );
+
+        let queued = &task_verdict(&response, "budget-queued")["pendingReason"];
+        assert_eq!(queued["kind"], "budgetQueued", "{surface}");
+        assert_eq!(queued["occupiedTaskBudget"], 1, "{surface}");
+        assert_eq!(queued["effectiveTaskBudget"], 1, "{surface}");
+        assert_eq!(
+            queued["message"],
+            "Queued 1/1 — wait for a slot or raise task_budget"
+        );
+
+        let rejected = &task_verdict(&response, "not-admitted")["pendingReason"];
+        assert_eq!(rejected["kind"], "notAdmitted", "{surface}");
+        assert!(
+            rejected["diagnosticCodes"]
+                .as_array()
+                .is_some_and(|codes| codes.iter().any(|code| code == "planner_task_ceiling")),
+            "{surface}: {rejected}"
+        );
+        assert!(
+            rejected["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Not admitted")),
+            "{surface}: {rejected}"
+        );
+    }
+
+    sqlx::query("UPDATE tracks SET task_budget=NULL WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let with_default =
+        calm_server::track_report_read::load_report_read_snapshot_with_task_budget_default(
+            boot.repo.as_ref(),
+            boot.report_card_id.as_str(),
+            1,
+        )
+        .await
+        .unwrap();
+    let default_reason = with_default
+        .task_diagnostics
+        .iter()
+        .find(|verdict| verdict.key == "budget-queued")
+        .and_then(|verdict| verdict.pending_reason.as_ref())
+        .expect("server default produces a budget reason");
+    assert!(matches!(
+        default_reason,
+        calm_server::db::sqlite::TaskPendingReason::BudgetQueued {
+            occupied_task_budget: 1,
+            effective_task_budget: 1,
+            ..
+        }
+    ));
+
+    let with_room =
+        calm_server::track_report_read::load_report_read_snapshot_with_task_budget_default(
+            boot.repo.as_ref(),
+            boot.report_card_id.as_str(),
+            2,
+        )
+        .await
+        .unwrap();
+    assert!(
+        with_room
+            .task_diagnostics
+            .iter()
+            .find(|verdict| verdict.key == "budget-queued")
+            .is_some_and(|verdict| verdict.pending_reason.is_none()),
+        "an environment default with a free slot must not diagnose budget queueing"
+    );
+
+    sqlx::query("UPDATE tracks SET task_budget=1 WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let override_wins =
+        calm_server::track_report_read::load_report_read_snapshot_with_task_budget_default(
+            boot.repo.as_ref(),
+            boot.report_card_id.as_str(),
+            9,
+        )
+        .await
+        .unwrap();
+    assert!(override_wins.task_diagnostics.iter().any(|verdict| {
+        verdict.key == "budget-queued"
+            && matches!(
+                verdict.pending_reason.as_ref(),
+                Some(calm_server::db::sqlite::TaskPendingReason::BudgetQueued {
+                    effective_task_budget: 1,
+                    ..
+                })
+            )
+    }));
+}
+
 #[tokio::test]
 async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
     for require_gates in [false, true] {

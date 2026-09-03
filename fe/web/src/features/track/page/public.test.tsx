@@ -79,6 +79,7 @@ describe('TrackPage task inventory', () => {
     kind: state === 'withdrawn' || state === 'unreadable' ? null : 'codex',
     declaration: state === 'ready' ? null
       : state === 'withdrawn' ? 'Withdrawn' : state === 'unreadable' ? 'Unreadable' : 'Not ready',
+    pendingReason: null,
   });
 
   /** A task the kernel has a `tasks` row for: a status, and maybe a card. The
@@ -92,6 +93,7 @@ describe('TrackPage task inventory', () => {
     statusDetail: string | null = null,
   ): ReportTaskRow => ({
     blockId: `b-${key}`, key, state: 'ready', workerCardId, status, statusDetail, kind, declaration: null,
+    pendingReason: null,
   });
 
   /* FOLDER used to hold this slot and was removed, not moved: `area/new-track`
@@ -357,7 +359,7 @@ describe('TrackPage card inventory', () => {
     renderPage({
       tasks: [{
         blockId: 'task-1', key: 'mobile-layout', state: 'ready', declaration: null,
-        status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+        status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
       }],
       onOpenTask,
     });
@@ -390,7 +392,7 @@ describe('TrackPage card inventory', () => {
     const { container } = renderPage({
       tasks: [{
         blockId: 'task-1', key: 'mobile-layout', state: 'ready', declaration: null,
-        status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+        status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
       }],
       panel: 'tasks',
       onOpenTask,
@@ -427,7 +429,7 @@ describe('TrackPage card inventory', () => {
   const MENU_CARDS = [card({ id: 'card-1', kind: 'terminal', title: 'Build log' })];
   const MENU_TASKS: readonly ReportTaskRow[] = [{
     blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
-    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
   }];
 
   it('offers exactly the derived row modules, in the derivation’s order', async () => {

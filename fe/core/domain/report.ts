@@ -404,6 +404,28 @@ export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn' | 'unreadable'
    a row that already exists. A verdict for a key no block declares is dropped
    — it would be a row nothing in the document backs. */
 
+const taskPendingReasonSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('dependencyBlocked'),
+    message: z.string().min(1),
+    dependencies: z.array(z.string()),
+  }),
+  z.object({
+    kind: z.literal('budgetQueued'),
+    message: z.string().min(1),
+    occupiedTaskBudget: z.number().int().nonnegative(),
+    effectiveTaskBudget: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal('notAdmitted'),
+    message: z.string().min(1),
+    diagnosticCodes: z.array(z.string()),
+    actions: z.array(z.string()),
+  }),
+]);
+
+export type TaskPendingReason = z.infer<typeof taskPendingReasonSchema>;
+
 export const taskVerdictSchema = z.object({
   /** The declaring block. The strongest join there is: it is the same literal
    *  the report card's own `blocks[]` carries. */
@@ -434,6 +456,12 @@ export const taskVerdictSchema = z.object({
   statusDetail: z.string().nullish(),
   /** The worker card the task was dispatched onto; absent until claim. */
   workerCardId: z.string().nullish(),
+  /**
+   * The server's finished answer to "why has this task not started?". The
+   * frontend displays `message` verbatim and never combines `schedulable`,
+   * dependency rows, budget defaults, or diagnostics into a second scheduler.
+   */
+  pendingReason: taskPendingReasonSchema.nullish(),
 });
 
 export type TaskVerdict = z.infer<typeof taskVerdictSchema>;
@@ -633,6 +661,8 @@ export type ReportTaskRow = Readonly<{
    *  this" is the question a running task raises and the document cannot
    *  answer. */
   workerCardId: string | null;
+  /** A server-rendered, actionable pending/admission explanation. */
+  pendingReason: TaskPendingReason | null;
 }>;
 
 /**
@@ -710,15 +740,12 @@ function declarationWord(state: ReportTaskState): string | null {
  * row's edge, which is louder than any word ever was.
  *
  * **What survives is not typography and is still here**, in `deriveReportTasks`
- * below: an unadmitted task gets no second word invented for it. An earlier cut
- * split `pending` on `verdict.schedulable`, printing `blocked` when it was
- * false and reserving that word for "waiting on a dependency". `schedulable`
- * does not mean that — `evaluate_schedulability_with_tree_term` clears the flag
- * for *every* candidate past the planner ceiling or the track-tree budget
- * (`task_projection.rs`, the `verdicts[index].schedulable = false` that follows
- * the `planner_task_ceiling` diagnostic) — so an ordinary queue behind capacity
- * rendered as `blocked` and made a healthy track look stuck. The status the
- * kernel gave is the status the row carries, unedited.
+ * below: the frontend never invents a reason from `schedulable`. An earlier cut
+ * split `pending` on that boolean and called the false half `blocked`, even
+ * though false also covers ceiling/tree admission. The server now returns the
+ * tagged `pendingReason` after evaluating dependencies, effective task budget,
+ * and admission diagnostics. This join carries its message verbatim; absence
+ * stays silent instead of becoming a fourth client-side scheduler rule.
  */
 
 /**
@@ -1024,6 +1051,9 @@ export function deriveReportTasks(
     const status = verdict?.status === undefined || verdict.status === null || verdict.status === ''
       ? null
       : verdict.status;
+    const pendingReason = decorated && verdict?.pendingReason !== undefined
+      ? verdict.pendingReason ?? null
+      : null;
     rows.push({
       blockId: block.id,
       key,
@@ -1047,6 +1077,7 @@ export function deriveReportTasks(
          empty one would route a click at a card that cannot exist. */
       workerCardId: verdict?.workerCardId === undefined || verdict.workerCardId === null
         || verdict.workerCardId === '' ? null : verdict.workerCardId,
+      pendingReason,
     });
   }
   return rows;

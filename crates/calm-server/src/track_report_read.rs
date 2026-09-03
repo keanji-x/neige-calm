@@ -43,6 +43,23 @@ pub async fn load_report_read_snapshot(
     repo: &dyn RouteRepo,
     report_card_id: &str,
 ) -> Result<ReportReadSnapshot, CalmError> {
+    load_report_read_snapshot_with_task_budget_default(
+        repo,
+        report_card_id,
+        crate::scheduler::Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
+    )
+    .await
+}
+
+/// Explicit-default seam used by tests to prove that the server-resolved
+/// environment default reaches the wire and that a persisted track override
+/// wins over it. Production callers use [`load_report_read_snapshot`].
+#[doc(hidden)]
+pub async fn load_report_read_snapshot_with_task_budget_default(
+    repo: &dyn RouteRepo,
+    report_card_id: &str,
+    task_budget_default: i64,
+) -> Result<ReportReadSnapshot, CalmError> {
     let (card, bytes) = repo
         .card_get_with_body_crdt(report_card_id)
         .await?
@@ -65,7 +82,7 @@ pub async fn load_report_read_snapshot(
     let Some(bytes) = bytes else {
         let blocks = derive(&payload.body);
         let task_diagnostics = repo
-            .task_diagnostics(card.track_id.as_str(), &blocks)
+            .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
             .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
@@ -91,7 +108,7 @@ pub async fn load_report_read_snapshot(
     // the CRDT root rather than the JSON mirror.
     if let Some(blocks) = payload.blocks {
         let task_diagnostics = repo
-            .task_diagnostics(card.track_id.as_str(), &blocks)
+            .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
             .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
@@ -117,7 +134,7 @@ pub async fn load_report_read_snapshot(
         derive(&body)
     };
     let task_diagnostics = repo
-        .task_diagnostics(card.track_id.as_str(), &blocks)
+        .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
         .await?;
     Ok(ReportReadSnapshot {
         updated_at: card.updated_at,

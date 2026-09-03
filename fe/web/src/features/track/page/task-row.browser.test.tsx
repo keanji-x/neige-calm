@@ -73,7 +73,7 @@ const track: Track = {
 
 const assigned: ReportTaskRow = {
   blockId: 'b-bench', key: 'bench-harness', state: 'ready',
-  declaration: null, status: 'running', statusDetail: null, kind: 'terminal', workerCardId: 'c-4',
+  declaration: null, status: 'running', statusDetail: null, kind: 'terminal', workerCardId: 'c-4', pendingReason: null,
 };
 
 function renderRow(onOpenCard: () => void, onOpenTask: () => void) {
@@ -121,6 +121,48 @@ describe('a TASKS row, laid out', () => {
     /* Vertically centred on the row, within a pixel of rounding. */
     expect(Math.abs((dotBox.top + dotBox.height / 2) - (rowBox.top + rowBox.height / 2)))
       .toBeLessThanOrEqual(1);
+  });
+
+  it('puts a pending reason below the key without crossing the kind column', async () => {
+    await browserPage.viewport(1200, 800);
+    const message = 'Queued 1/1 — wait for a slot or raise task_budget';
+    render(
+      <div style={{ inlineSize: 1200, blockSize: 800 }}>
+        <TrackPage
+          track={track}
+          cards={[]}
+          tasks={[{
+            ...assigned,
+            status: 'pending',
+            kind: 'codex',
+            workerCardId: null,
+            pendingReason: {
+              kind: 'budgetQueued', message, occupiedTaskBudget: 1, effectiveTaskBudget: 1,
+            },
+          }]}
+          onOpenCard={vi.fn()}
+          onOpenTask={vi.fn()}
+          onRenameTrack={vi.fn()}
+          onDeleteTrack={vi.fn()}
+        />
+      </div>,
+    );
+    const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
+    const key = row.querySelector<HTMLElement>('[data-nc-field="title"]')!;
+    const reason = row.querySelector<HTMLElement>('[data-nc-badge="pending-reason:budgetQueued"]')!;
+    const kind = [...row.querySelectorAll<HTMLElement>('[data-nc-field="kind"]')]
+      .find((candidate) => candidate.textContent === 'codex')!;
+    const rowBox = row.getBoundingClientRect();
+    const keyBox = key.getBoundingClientRect();
+    const reasonBox = reason.getBoundingClientRect();
+    const kindBox = kind.getBoundingClientRect();
+
+    expect(reasonBox.top).toBeGreaterThanOrEqual(keyBox.bottom);
+    expect(reasonBox.right).toBeLessThanOrEqual(kindBox.left);
+    expect(reasonBox.bottom).toBeLessThanOrEqual(rowBox.bottom);
+    expect(getComputedStyle(reason).overflow).toBe('hidden');
+    expect(getComputedStyle(reason).textOverflow).toBe('ellipsis');
+    expect(reason.title).toBe(message);
   });
 
   it('gives the row, its open middle and its dot to the reveal control, and only the kind to the card', async () => {
@@ -317,6 +359,7 @@ function renderMarks(): Map<string, HTMLElement> {
           statusDetail: null,
           kind: 'terminal',
           workerCardId: `c-${index}`,
+          pendingReason: null,
         }))}
         onOpenCard={vi.fn()}
         onOpenTask={vi.fn()}
@@ -797,7 +840,7 @@ describe('the TASKS status mark', () => {
 const failedWithReason: ReportTaskRow = {
   blockId: 'b-bench', key: 'bench-harness', state: 'ready', declaration: null,
   status: 'failed', statusDetail: 'track 9a4c is not a git repository',
-  kind: 'terminal', workerCardId: 'c-4',
+  kind: 'terminal', workerCardId: 'c-4', pendingReason: null,
 };
 
 /** What a native tooltip would show at this point, and where it came from. */

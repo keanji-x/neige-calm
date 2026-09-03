@@ -29,6 +29,7 @@ function task(overrides: Partial<ReportTaskRow> = {}): ReportTaskRow {
     statusDetail: null,
     kind: null,
     workerCardId: null,
+    pendingReason: null,
     ...overrides,
   };
 }
@@ -265,6 +266,22 @@ describe('deriveTrackPageView tasks', () => {
 
     expect(withdrawn.badges).toEqual([{ id: 'declaration', text: 'Withdrawn', struck: true }]);
     expect(unreadable.badges).toEqual([{ id: 'declaration', text: 'Unreadable', struck: false }]);
+  });
+
+  it('carries the server-provided pending reason as a visible badge', () => {
+    const [row] = tasksModule([task({
+      pendingReason: {
+        kind: 'budgetQueued',
+        message: 'Queued 1/1 — wait for a slot or raise task_budget',
+        occupiedTaskBudget: 1,
+        effectiveTaskBudget: 1,
+      },
+    })]).rows;
+    expect(row.badges).toEqual([{
+      id: 'pending-reason:budgetQueued',
+      text: 'Queued 1/1 — wait for a slot or raise task_budget',
+      struck: false,
+    }]);
   });
 
   /*

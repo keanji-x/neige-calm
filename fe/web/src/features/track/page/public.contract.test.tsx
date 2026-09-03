@@ -85,10 +85,10 @@ describe('TrackPage delete confirm contract', () => {
    * the second one from being expressed the one way HTML forbids.
    */
   const taskRows = () => ([
-    { blockId: 'b-1', key: 'assigned', state: 'ready', workerCardId: 'card-9', status: 'running', statusDetail: null, kind: 'terminal', declaration: null },
-    { blockId: 'b-2', key: 'queued', state: 'ready', workerCardId: null, status: 'pending', statusDetail: null, kind: 'codex', declaration: null },
-    { blockId: 'b-3', key: 'gone', state: 'withdrawn', workerCardId: null, status: null, statusDetail: null, kind: null, declaration: 'Withdrawn' },
-    { blockId: 'b-4', key: 'plain', state: 'ready', workerCardId: null, status: null, statusDetail: null, kind: 'claude', declaration: null },
+    { blockId: 'b-1', key: 'assigned', state: 'ready', workerCardId: 'card-9', status: 'running', statusDetail: null, kind: 'terminal', declaration: null, pendingReason: null },
+    { blockId: 'b-2', key: 'queued', state: 'ready', workerCardId: null, status: 'pending', statusDetail: null, kind: 'codex', declaration: null, pendingReason: null },
+    { blockId: 'b-3', key: 'gone', state: 'withdrawn', workerCardId: null, status: null, statusDetail: null, kind: null, declaration: 'Withdrawn', pendingReason: null },
+    { blockId: 'b-4', key: 'plain', state: 'ready', workerCardId: null, status: null, statusDetail: null, kind: 'claude', declaration: null, pendingReason: null },
   ] as const);
 
   it('renders no <a> element anywhere on the page (INV-A11Y-061)', () => {

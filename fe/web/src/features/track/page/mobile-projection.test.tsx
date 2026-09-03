@@ -105,7 +105,7 @@ const TASKS: readonly ReportTaskRow[] = [
      with no worker card, so the derivation offers `reveal-block` alone. */
   {
     blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
-    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
   },
   /* Dispatched, with a reason and a worker card: the status swallowed the
      readiness word (D8 — `Not ready` no longer appears once there is a run),
@@ -114,19 +114,19 @@ const TASKS: readonly ReportTaskRow[] = [
   {
     blockId: 'block-2', key: 'beta-gate', state: 'not-ready', declaration: null,
     status: 'failed', statusDetail: 'track /tmp/alpha is not a git repository',
-    kind: 'terminal', workerCardId: 'card-9',
+    kind: 'terminal', workerCardId: 'card-9', pendingReason: null,
   },
   /* Withdrawn: a struck declaration, and `kind === null` — upstream makes the
      kind and the card id null together for exactly these rows. */
   {
     blockId: 'block-3', key: 'gamma-planner', state: 'withdrawn', declaration: 'Withdrawn',
-    status: null, statusDetail: null, kind: null, workerCardId: null,
+    status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
   },
   /* Unreadable: an ordinary, unstruck declaration beside the withdrawn one, so
      the struck assertion below has both directions. */
   {
     blockId: 'block-4', key: 'delta-doc', state: 'unreadable', declaration: 'Unreadable',
-    status: null, statusDetail: null, kind: null, workerCardId: null,
+    status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
   },
   /* Declared, not ready, never dispatched: **the one row carrying a declaration
      badge and a kind at once**. Without it "each field is its own leaf carrier"
@@ -136,7 +136,7 @@ const TASKS: readonly ReportTaskRow[] = [
      none. */
   {
     blockId: 'block-5', key: 'epsilon-fix', state: 'not-ready', declaration: 'Not ready',
-    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
   },
 ];
 

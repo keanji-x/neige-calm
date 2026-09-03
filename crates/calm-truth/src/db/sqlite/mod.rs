@@ -128,8 +128,8 @@ pub use task::{
     track_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
-    BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
-    evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
+    BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,
+    WithdrawalEdge, evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
 pub use track::{

@@ -58,9 +58,12 @@ describe('invalidation plan behavior', () => {
     });
   });
 
-  it('invalidates all four track projections for track updates', () => {
+  it('invalidates track projections and pending diagnostics for track updates', () => {
     expect(invalidationPlanFor(event({ ev: 'track.updated', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
-      invalidate: [['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range']],
+      invalidate: [
+        ['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range'],
+        ['track-report'],
+      ],
       remove: [],
       writeThrough: [],
     });

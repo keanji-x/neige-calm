@@ -507,6 +507,13 @@
     background: var(--overlay-hover);
   }
 
+  /* A scheduler/admission reason is a second line, not another trailing
+     column. Keeping it in the reveal button preserves the whole-row landing;
+     bounding it to that button keeps it out of the kind and status lanes. */
+  .taskRow:has([data-nc-badge^='pending-reason:']) {
+    padding-block: var(--space-1);
+  }
+
   /*
    * The reveal control takes the whole row minus the kind, so "click the row"
    * is true in the only sense a pointer knows: everything that is not the other
@@ -525,6 +532,23 @@
     color: inherit;
     cursor: pointer;
     text-align: start;
+  }
+
+  .taskReveal:has([data-nc-badge^='pending-reason:']) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: min-content min-content;
+    align-content: center;
+    row-gap: var(--space-1);
+  }
+
+  .taskReveal > [data-nc-badge^='pending-reason:'] {
+    display: block;
+    grid-row: 2;
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   /*

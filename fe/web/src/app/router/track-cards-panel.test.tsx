@@ -383,6 +383,37 @@ describe('track route TASKS panel', () => {
     expect(await taskRow(/^has-adapter.?Status: running$/)).toBeTruthy();
     expect(await taskRow(/^no-adapter.?Status: running$/)).toBeTruthy();
   });
+
+  it('shows the server-provided dependency, budget, and admission reasons without deriving them', async () => {
+    setup(TASK_CARDS, { taskDiagnostics: [
+      {
+        blockId: 'b-term', key: 'has-adapter', schedulable: true, status: 'pending', diagnostics: [],
+        pendingReason: {
+          kind: 'dependencyBlocked', dependencies: ['foundation'],
+          message: 'Waiting for `foundation` — finish it or adjust the plan',
+        },
+      },
+      {
+        blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: 'pending', diagnostics: [],
+        pendingReason: {
+          kind: 'budgetQueued', occupiedTaskBudget: 1, effectiveTaskBudget: 1,
+          message: 'Queued 1/1 — wait for a slot or raise task_budget',
+        },
+      },
+      {
+        blockId: 'b-unknown', key: 'no-adapter', schedulable: false, diagnostics: [],
+        pendingReason: {
+          kind: 'notAdmitted', diagnosticCodes: ['planner_task_ceiling'],
+          actions: ['raise_planner_task_ceiling'],
+          message: 'Not admitted — raise planner_task_ceiling',
+        },
+      },
+    ] });
+    const list = within(await tasks());
+    expect(list.getByText('Waiting for `foundation` — finish it or adjust the plan')).toBeTruthy();
+    expect(list.getByText('Queued 1/1 — wait for a slot or raise task_budget')).toBeTruthy();
+    expect(list.getByText('Not admitted — raise planner_task_ceiling')).toBeTruthy();
+  });
 });
 
 /*

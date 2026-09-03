@@ -188,6 +188,7 @@ const TASKS: readonly ReportTaskRow[] = [
     statusDetail: 'step 2 of 3',
     kind: 'codex',
     workerCardId: 'card-1',
+    pendingReason: null,
   },
   {
     blockId: 'block-2',
@@ -198,6 +199,7 @@ const TASKS: readonly ReportTaskRow[] = [
     statusDetail: null,
     kind: null,
     workerCardId: null,
+    pendingReason: null,
   },
 ];
 

@@ -138,6 +138,11 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
  * scheduler moving a task. It does change the workspace, so it keeps its
  * `track-files` key.
  *
+ * `track.updated` is the other deliberate addition. Task budget, planner
+ * ceiling, and root tree budget all arrive on that event; the last can change
+ * a child track's admission reason, so its policy invalidates the broad report
+ * prefix rather than only the updated track's key.
+ *
  * Invalidation is not free here. `['track-report', …]` resolves to a live query
  * on `GET /api/tracks/{id}/report`, which loads the track's CRDT, projects the
  * whole document and runs `task_diagnostics` — a predicate that issues a
@@ -153,7 +158,7 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
 export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   return [
     ...TRACK_FILES_DERIVED_KINDS.filter((kind) => kind !== 'codex.hook' && kind !== 'claude.hook'),
-    'track.report_edited',
+    'track.report_edited', 'track.updated',
   ];
 }
 
@@ -185,9 +190,13 @@ function policies(): PolicyMap {
     [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
   )),
   'area.deleted': plan(() => result([['areas'], ['overlays', 'track']])),
+  /* `track.updated` carries the task-budget / planner-ceiling PATCH event.
+     The report key is deliberately broad: a root track's tree budget changes
+     the admission diagnosis of its child tracks, but the event carries only
+     the updated root id. React Query refetches only active observers. */
   'track.updated': plan((event) => result([
     ['tracks', 'area', event.data.area_id], ['track', event.data.id],
-    ['track-files', event.data.id], ['tracks-range'],
+    ['track-files', event.data.id], ['tracks-range'], ['track-report'],
   ])),
   'track.deleted': plan((event) => result(
     [['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range']],

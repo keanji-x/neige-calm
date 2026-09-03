@@ -209,9 +209,14 @@ function cardRow(card: CardWire): PanelRow {
  */
 function taskRow(task: ReportTaskRow): PanelRow {
   const workerCardId = task.workerCardId;
-  const badges: RowBadge[] = task.declaration !== null
-    ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
-    : [];
+  const badges: RowBadge[] = [
+    ...(task.declaration !== null
+      ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
+      : []),
+    ...(task.pendingReason !== null
+      ? [{ id: `pending-reason:${task.pendingReason.kind}`, text: task.pendingReason.message, struck: false }]
+      : []),
+  ];
   const actions: RowAction[] = [{
     kind: 'reveal-block',
     blockId: task.blockId,

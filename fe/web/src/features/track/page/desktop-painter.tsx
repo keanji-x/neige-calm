@@ -268,6 +268,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
             key={badge.id}
             className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
             {...mark(MARKER.badge, badge.id)}
+            title={badge.id.startsWith('pending-reason:') ? badge.text : undefined}
           >{badge.text}</span>
         ))}
         {row.status !== null && statusDot(row.status)}

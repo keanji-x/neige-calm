@@ -114,11 +114,11 @@ const CARDS: readonly CardWire[] = [
 const TASKS: readonly ReportTaskRow[] = [
   {
     blockId: 'block-1', key: 'alpha-gate', state: 'ready', declaration: null,
-    status: 'running', statusDetail: 'step 2 of 3', kind: 'codex', workerCardId: 'card-1',
+    status: 'running', statusDetail: 'step 2 of 3', kind: 'codex', workerCardId: 'card-1', pendingReason: null,
   },
   {
     blockId: 'block-2', key: 'beta-gate', state: 'withdrawn', declaration: 'Withdrawn',
-    status: null, statusDetail: null, kind: null, workerCardId: null,
+    status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
   },
 ];
 

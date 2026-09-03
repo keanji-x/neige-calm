@@ -5011,6 +5011,17 @@
           "key": {
             "type": "string"
           },
+          "pendingReason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskPendingReason",
+                "description": "Server-owned explanation for a task that has not started. The tagged\nvariants keep dependency readiness, scheduler budget, and projection\nadmission distinct so clients never need to reconstruct scheduler\npolicy from `schedulable`, diagnostics, or environment defaults."
+              }
+            ]
+          },
           "schedulable": {
             "type": "boolean"
           },
@@ -6755,6 +6766,95 @@
             }
           }
         }
+      },
+      "TaskPendingReason": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "dependencies",
+              "kind"
+            ],
+            "properties": {
+              "dependencies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "dependencyBlocked"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "occupiedTaskBudget",
+              "effectiveTaskBudget",
+              "kind"
+            ],
+            "properties": {
+              "effectiveTaskBudget": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "budgetQueued"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "occupiedTaskBudget": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "diagnosticCodes",
+              "actions",
+              "kind"
+            ],
+            "properties": {
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "diagnosticCodes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "notAdmitted"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "Terminal": {
         "type": "object",

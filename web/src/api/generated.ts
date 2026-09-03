@@ -1320,6 +1320,7 @@ export interface components {
             diagnostics: components["schemas"]["Diagnostic"][];
             gateResult?: unknown;
             key: string;
+            pendingReason?: null | components["schemas"]["TaskPendingReason"];
             schedulable: boolean;
             status?: string | null;
             /**
@@ -2330,6 +2331,26 @@ export interface components {
             settings?: {
                 [key: string]: string | null;
             };
+        };
+        TaskPendingReason: {
+            dependencies: string[];
+            /** @enum {string} */
+            kind: "dependencyBlocked";
+            message: string;
+        } | {
+            /** Format: int64 */
+            effectiveTaskBudget: number;
+            /** @enum {string} */
+            kind: "budgetQueued";
+            message: string;
+            /** Format: int64 */
+            occupiedTaskBudget: number;
+        } | {
+            actions: string[];
+            diagnosticCodes: string[];
+            /** @enum {string} */
+            kind: "notAdmitted";
+            message: string;
         };
         Terminal: {
             card_id: string;

@@ -57,6 +57,14 @@ describe('invalidation plan contract', () => {
     expect(keys).toContainEqual(['track', 'lp']);
   });
 
+  it('refreshes active task diagnostics when a budget or admission setting changes', () => {
+    const event = { ev: 'track.updated', data: { id: 'track-7', area_id: 'area-1' } } as Extract<
+      WireEvent,
+      { ev: 'track.updated' }
+    >;
+    expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+  });
+
   it('pins track-report invalidation to exactly the derived kinds plus report edits', () => {
     const allEventKinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(

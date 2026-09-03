@@ -47,11 +47,11 @@ const track: Track = {
 const TASKS: readonly ReportTaskRow[] = [
   {
     blockId: 'b-gone', key: 'gamma-planner', state: 'withdrawn', declaration: 'Withdrawn',
-    status: null, statusDetail: null, kind: null, workerCardId: null,
+    status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
   },
   {
     blockId: 'b-doc', key: 'delta-doc', state: 'unreadable', declaration: 'Unreadable',
-    status: null, statusDetail: null, kind: null, workerCardId: null,
+    status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
   },
 ];
 

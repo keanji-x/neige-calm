@@ -110,6 +110,7 @@ function taskBadge(badge: RowBadge): ReactNode {
       key={badge.id}
       className={badge.struck ? styles.mobileRowStruck : undefined}
       {...mark(MARKER.badge, badge.id)}
+      title={badge.id.startsWith('pending-reason:') ? badge.text : undefined}
     >{badge.text}</span>
   );
 }
