@@ -108,7 +108,28 @@ type ConversationStore = Readonly<{
   loadEarlier: () => void;
 }>;
 
-/** Today reads the tab-wide registry; a Track route reads server rows. */
+/**
+ * Where a route's conversation list comes from.
+ *
+ * `'all'` reads the session registry — conversations this tab has opened.
+ * `'rows'` is the opposite: the server sends the list, so the registry is not
+ * consulted for it.
+ *
+ * **`'all'` has no construction site left since #1341.** It lost its one caller when Today
+ * stopped listing this tab's cross-track visiting history and started listing
+ * the launchpad track's own conversations, from the server, like every other
+ * surface — so no route reads the registry as a list any more.
+ *
+ * It is left standing rather than deleted because deleting it is not one line.
+ * The same sweep takes `ConversationPanelSource`'s `'elsewhere'` arm,
+ * `store.start`, and the navigate-on-open branch with it. It is also a sweep that may want undoing:
+ * owner's plan for the cross-track index is a card of its own, on its own
+ * issue, and that card is a list reader.
+ *
+ * What the sweep would **not** change is behaviour. Read every arm named here
+ * as unreachable today, and do not read a live decision into one (#1189 review,
+ * #1341).
+ */
 type ConversationListIntent = Readonly<{ kind: 'all' }>;
 
 type ConversationRouteIntent =
@@ -351,8 +372,21 @@ export function useConversationStore(
    * only.
    *
    * The registry is not a view, it is a **memory** — nothing refreshes it, it
-   * has no `forget`, and Today reads it for the life of the tab. So the one
-   * thing that may never enter it is a fact that is not yet a fact.
+   * has no `forget`, and it is kept for the life of the tab. So the one thing
+   * that may never enter it is a fact that is not yet a fact.
+   *
+   * Who still reads it, stated plainly because #1341 changed the answer and a
+   * stale version of this note would be a lie about coverage. Today used to
+   * render this memory as its conversation list, and no route renders it as a
+   * list any more (`ConversationListIntent`). What is left are two live readers,
+   * and they both read the **turns**: `turnsBefore` in `send`, which is how a
+   * message the reader genuinely sent twice is counted twice, and the drawer's
+   * transcript fallback in `turnsOf`. The remembered `title` and `updatedAt`
+   * currently have no reader at all — they are kept because the cross-track
+   * conversation card (#1341, separate issue) is a list reader coming back, and
+   * because the rule below is about what may be *written*, which is cheaper to
+   * keep true than to re-derive. `track-conversation.test.tsx`'s
+   * `registry write-through` block asks all of this of the registry directly.
    *
    * The shape that got in: an assistant card is minted `title: null` and the
    * only name it ever has is the one derived from its first message, and an
@@ -633,7 +667,24 @@ type PlannerConversationScope = Readonly<{
   state?: ConversationState | null;
 }>;
 
-/** Today navigates elsewhere; a Track route owns its rows and drawer. */
+/**
+ * What the panel is looking at — two different things that were
+ * previously told apart by whether `scope` was null.
+ *
+ * That conflated "there is a card open" with two facts that have nothing to do
+ * with a card: whether this route can *hold* a drawer at all, and where a new
+ * conversation would go. `'elsewhere'` is the route that cannot hold one, so
+ * opening a row there navigates to wherever the row lives; a `'rows'` route can
+ * hold one for every row it lists, so opening one must not navigate.
+ *
+ * **Every current route is `'rows'` now.** Today became one in #1341: it lists the
+ * launchpad track's own conversations, so it has a single track in scope, it can
+ * hold the drawer, and there is nowhere for it to navigate to — the launchpad's
+ * own page is the page you are on. `'elsewhere'` is therefore selected by
+ * nothing and is left standing for the reason given on
+ * `ConversationListIntent`. Read every `source.kind === 'elsewhere'` branch
+ * below as unreachable today.
+ */
 type ConversationPanelSource =
   | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
   | Readonly<{
@@ -989,8 +1040,18 @@ function useConversationPanel(
     setOpenTarget({ kind: 'draft' });
   };
 
-  /* `/new` inside a Track conversation runs the same draft start as the panel
-     action. Today has no Track scope, so it offers neither. */
+  /*
+   * `/new` in the composer runs `start` — the very callback the `+` runs — and
+   * every current panel source is a server-backed Track row list, so both entry
+   * points create or reopen the same scoped draft.
+   *
+   * `'elsewhere'` would offer neither entry point: a route that cannot say what a conversation
+   * would attach to does not offer to start one. Strict parity, and it is what
+   * `action:` below already decides. Nothing selects this arm since #1341;
+   * Today, which was its one caller, is a `'rows'` route with the launchpad in
+   * scope, and it withholds the `+` in the one state that still has nothing to
+   * attach to — no launchpad at all — from outside this hook, at the slot.
+   */
   const startAnother = source.kind === 'rows' ? start : undefined;
 
   /*
@@ -1236,8 +1297,10 @@ function useConversationPanel(
         showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {
           /* Only a route that cannot hold the drawer sends the reader
-             somewhere else. A `'rows'` route holds one for every row it lists,
-             and the track it would navigate to is hidden. */
+             somewhere else. A `'rows'` route holds one for every row it lists —
+             all three routes are `'rows'` since #1341, so the branch below is
+             the unreachable one and the open request it leaves has no producer
+             left (`ConversationPanelSource`). */
           if (source.kind !== 'elsewhere') {
             setOpenTarget({ kind: 'row', id: conversation.id });
             return;
@@ -1389,13 +1452,6 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     if (track === undefined) throw new Error('This track is no longer available.');
     return trackMutations.remove(track.id, track.areaId, signal);
   });
-  /* No `+`: a conversation attaches to a track (the kernel's sessions hang off
-     a card, and cards belong to tracks), and this route has no single track in
-     scope. The module still lists and still opens — it is the starting that
-     needs somewhere to attach. */
-  const chat = useConversationPanel(transport, unauthorized, {
-    kind: 'elsewhere', intent: { kind: 'all' },
-  });
   /*
    * #1253 §5.1 — the launchpad resolve, and it is a READ.
    *
@@ -1439,6 +1495,87 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   }, [summary.failure]);
   const launchpad = launchpadQuery.data;
   const launchpadTrackId = launchpad?.track_id ?? '';
+  /*
+   * ── The Conversations module (#1341) ─────────────────────────────────────
+   *
+   * **The launchpad track's own conversations**, read from the server by the
+   * same rule the track route uses, and it is worth saying what it replaced
+   * because the two rules have nothing in common.
+   *
+   * It used to be `'elsewhere'` with `intent: 'all'`, which reads the session
+   * registry: every conversation *this browser tab* had opened, on any track,
+   * each row carrying a `, on <track>` suffix. That is a cross-track visiting
+   * history, not a list of anything, and it made Today the one surface whose
+   * Conversations module answered a different question from every other
+   * surface's. Owner's call (#1341): Today and a track page say the same
+   * sentence — "the conversations of the track you are looking at" — and Today
+   * is looking at the launchpad, whose report is the document above.
+   *
+   * The concrete thing that was broken by the old rule, and is fixed by this
+   * one: `POST /api/today/summary` creates exactly one conversation on the
+   * launchpad and that conversation *is* what the reader asked for — it is what
+   * writes the report. Nothing in the tab had ever opened it, so the registry
+   * had never heard of it, so it appeared nowhere: the endpoint's own module
+   * doc promised it was "openable in Today's Conversations module" and the
+   * frontend did not deliver that. Verified failing before this change, in
+   * `today-conversation.test.tsx`.
+   *
+   * A cross-track index is not lost, it is *moved*: it becomes its own card
+   * holding everything about one track, on its own issue. It is deliberately
+   * not squeezed back in here.
+   */
+  const launchpadConversationsQuery = useQuery({
+    ...trackConversationsQueryOptions(transport, launchpadTrackId, unauthorized),
+    /* No launchpad, no list — and above all no request. A fresh workspace
+       resolves to `null`, and an ungated read would ask the server about a
+       track named `''` on every first-run page load. */
+    enabled: launchpadTrackId !== '',
+  });
+  const launchpadConversationMutations = useTrackConversationMutations(
+    transport, launchpadTrackId, unauthorized,
+  );
+  const launchpadRows = useMemo(
+    () => launchpadConversationsQuery.data ?? [],
+    [launchpadConversationsQuery.data],
+  );
+  const chat = useConversationPanel(
+    transport,
+    unauthorized,
+    {
+      kind: 'rows',
+      scopeId: launchpadTrackId,
+      rows: launchpadRows,
+      /*
+       * The launchpad is a real track and these rows are its own, so this route
+       * says so — the same statement `TrackRouteBody` makes about itself, and
+       * the store checks every row against it rather than trusting the claim.
+       *
+       * It is not decoration here: it is what lets the *open* conversation be
+       * remembered, and that entry has live readers — the transcript the drawer
+       * falls back to while a reopen is settling, and `turnsBefore` in `send`,
+       * which is how a message the reader really did send twice is counted
+       * twice. An area route passes null and gets neither, deliberately.
+       */
+      rememberOn: launchpadTrackId,
+      derivedCardId: (idempotencyKey) => trackConversationCardId(launchpadTrackId, idempotencyKey),
+      scopeOf: (conversationId) => {
+        const row = launchpadRows.find((candidate) => candidate.id === conversationId);
+        /* `id: row.trackId`, never `launchpadTrackId` — see the same line on the
+           track route. Written the other way the `rememberOn` comparison
+           compares a value with itself and stops being a comparison. */
+        return row === undefined ? null : {
+          id: row.trackId, title: row.trackTitle, cardId: row.id, cardTitle: row.title,
+          updatedAt: row.updatedAt, kind: row.kind, state: row.state,
+        };
+      },
+      create: launchpadConversationMutations.create,
+      refresh: launchpadConversationMutations.refresh,
+    },
+    /* Every row on this list is on the launchpad, and the launchpad is what
+       this page is. Naming it on each row spends the column saying one thing N
+       times — the same reason the track route hides it. */
+    { showTrack: false },
+  );
   /* The document itself comes from the ordinary track detail — the resolve
      carries no `report_card_id` because `readTrackReport` locates the card by
      `kind === 'track-report'` and that field would have no consumer (§5.1).
@@ -1539,7 +1676,25 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         />
       )}
       conversationList={chat.list}
-      conversationAction={chat.action}
+      /*
+       * The `+`, which Today did not have and now does (#1341).
+       *
+       * It was withheld for one reason and the reason has gone: a conversation
+       * attaches to a track, and this route had no single track in scope. It
+       * has one — the launchpad, the track whose report is the document above,
+       * and the very track `POST /api/today/summary` starts its conversation
+       * on. Starting another one here is "ask about my day", and it lands
+       * exactly where the day already lives.
+       *
+       * Withheld in one state, and only one: there is no launchpad yet. Then
+       * there is no track to post to, and materializing one is
+       * `POST /api/today/launchpad/ensure` — a write that waits on codex, which
+       * INV-TODAYDOC-001 keeps off this page's load and which nothing here is
+       * entitled to run behind a `+`. An action that cannot act is not offered
+       * (the same rule the empty state's trigger followed in PR1). The list
+       * below it still renders its empty sentence.
+       */
+      conversationAction={launchpadTrackId === '' ? undefined : chat.action}
       /* Undefined while the resolve is in flight, `null` when the server says
          there is no launchpad yet. The page
          decides the empty state from `report_has_noninitial_content` and from
@@ -1911,6 +2066,17 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
    * Reading the markers off the track detail is also what makes the consuming
    * effect's "wait for the rows" honest: the card and the row are two views of
    * one thing, and the card arrives with the route.
+   *
+   * Since #1341 this is a **fail-safe with no producer**, and that is stated
+   * rather than left to be discovered. Today was the only surface that left a
+   * request for a card the arriving track might not have; it lists the
+   * launchpad's own conversations now and opens them in place, so it leaves
+   * none. The one live producer left is #1211's planner-open intent below, which
+   * names a card of this very route and returns early when there is no planner
+   * card — it cannot produce the case this clears. Kept because a stale request
+   * springing the drawer open on a later visit is the failure it prevents, and
+   * because the cross-track conversation card (its own issue) is a producer
+   * coming back.
    */
   const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
     && card.kind === 'codex'
@@ -2136,6 +2302,11 @@ function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: 
    * So: the read is over, it failed, and the id is not among whatever rows did
    * arrive. Not "the read failed", which would also throw away a perfectly
    * openable planner row.
+   *
+   * A fail-safe with no producer since #1341, for the same reason and on the
+   * same terms as the clear in `TrackRoute`: the only request this route can
+   * receive today names its planner card, which is in `rows` whatever the
+   * conversation list did.
    */
   useEffect(() => {
     const requestedOpenId = registry.requestedOpenId;

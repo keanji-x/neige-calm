@@ -2,7 +2,7 @@
 
 The landing route: a status bar and **the day's document**, beside a panel
 holding the week calendar's activity agenda, the Running list, and the
-cross-track conversation index.
+launchpad track's conversations.
 
 Two things were removed on 2026-09-03 (owner call) and must not drift back in
 without one:
@@ -27,18 +27,27 @@ without one:
   trying to write that relation down precisely. The criterion belongs to the
   code.
 
-**The conversation module was proposed for removal in the same pass and kept.**
-It looks like a duplicate of the track pages' module and is not one: on Today it
-is the **cross-track index** (#1189 S5). It is the only place a track's
-conversations stay reachable once you have navigated away from that track, and
-G6 opens one *from here* — the row navigates to the track and opens its
-assistant drawer in one act. Removing it turned 18 assertions red across the
-three `*-conversation.test.tsx` suites in `app/router/`, all of them behavioural
-(`[G5] lists every conversation of a track on Today after merely visiting it`,
-`[G6] opens an assistant conversation asked for from Today`, and the two that
-pin what must *not* reach Today). Judge the duplication complaint against those
-before touching it: the fix, if there is one, is about how the module is
-*labelled* on this route, not whether it exists.
+**The Conversations module was proposed for removal in that same pass and kept
+(#1340); #1341 then changed what it lists.** Those are two decisions, and
+reading either one alone gets the module wrong.
+
+#1340 kept it on the ground that it was not a duplicate of the track pages'
+module: on Today it read the session registry, which made it a cross-track index
+(#1189 S5), and a trial deletion turned 18 assertions red across the three
+`*-conversation.test.tsx` suites in `app/router/`.
+
+#1341 is owner withdrawing that ground, not a re-run of the argument. Today now
+lists the launchpad track's own conversations, so the module says on this route
+the sentence a track page says on its own: *the conversations of the track you
+are looking at*. The cross-track index does not stay here — it becomes a card of
+its own, on its own issue. The 18 assertions were adjudicated one by one in the
+#1341 PR description (9 withdrawn together with the #1189 S5 delivery they
+belonged to, 5 rewritten to question the registry directly, 2 narrowed, 2
+carried unchanged), so a later reader who finds this paragraph before that table
+should read the table.
+
+What the module is today, and which parts of it are load-bearing, is written up
+under **The Conversations module (#1341)** below.
 
 ## Visual contract
 
@@ -201,6 +210,48 @@ two assertions and nothing else: the literal key list in
 `core/events/invalidation-plan.contract.test.ts`, and the end-to-end one in
 `app/events/query-invalidation-adapter.test.ts`, which also covers the second
 link — a planned key with no adapter arm is silently dropped.
+
+## The Conversations module (#1341)
+
+It lists **the launchpad track's own conversations** — the same rule a track
+page follows for itself, said about the track whose report is the document
+above. The list and the module head's `+` are injected by `app/router`
+(`conversationList` / `conversationAction`), because `features/**` may not
+import a sibling domain; what changed in #1341 is what the router feeds those
+two slots, not their shape.
+
+Its previous source was the session registry — the conversations this browser
+tab had opened, on any track, each row suffixed `, on <track>`. Two things were
+wrong with that, and only the first is cosmetic. It made Today's Conversations
+module answer a different question from the one the same-named module answers on
+a track page. And it could not reach the conversation this page itself creates:
+`POST /api/today/summary` starts one conversation on the launchpad and that
+conversation *is* the thing the reader asked for — it is what writes the report
+— but the registry only learns of a conversation from a tab that has it on
+screen (the open row, or the rows of a `'rows'` route that named its track), and
+no route rendered the launchpad's list, because the launchpad sits in the system
+area that `GET /api/areas` filters out. So this module never listed it. The
+endpoint's own doc comment said it would be
+"openable in Today's Conversations module"; it was not, and that gap was
+observed as a failing test before the inversion, not reasoned about.
+
+Consequences worth knowing before "fixing" one of them:
+
+- **A row opens in place**, in Today's own drawer, instead of navigating. The
+  row is on the launchpad and the launchpad's page is this one; the launchpad
+  lives in the system area, which `GET /api/areas` filters out (#175), so a
+  navigation would land the reader on a track that no list of theirs contains.
+- **The `+` is offered**, because there is now a single track to attach a
+  conversation to. `TodayRoute` withholds it on one condition, `launchpadTrackId
+  === ''`: with no launchpad the way to get a track is
+  `POST /api/today/launchpad/ensure`, a write that waits on codex and that
+  INV-TODAYDOC-001 keeps off this page.
+- **A cross-track index is gone from here, and is not lost.** Owner's plan is a
+  card of its own holding everything about one track; it has its own issue. Do
+  not squeeze it back into this module.
+- Rows carry no track name (`showTrack: false`) — this page is about the one
+  track they are on — and no turn count, because `toTrackConversation` leaves
+  `turns` absent: the endpoint does not count them.
 
 ## Deliberate gaps (do not "fix" these by accident)
 
