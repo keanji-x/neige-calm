@@ -199,8 +199,15 @@ const THEME_OPTIONS = Object.freeze([
 
 const SAVED_NOTICE_MS = 4000;
 
-/** Every right-hand control is this wide, so the pane has one trailing edge. */
-const CONTROL_WIDTH = 260;
+/**
+ * Every right-hand control is this wide, so the pane has one trailing edge.
+ *
+ * Exported for the plugin configuration pane, which renders controls this
+ * module does not know the shape of (they come from a manifest's
+ * `config_schema`) and must still land on the same edge. A second constant
+ * there would be a second trailing edge as soon as either moved.
+ */
+export const CONTROL_WIDTH = 260;
 
 // ---------------------------------------------------------------------------
 // Network

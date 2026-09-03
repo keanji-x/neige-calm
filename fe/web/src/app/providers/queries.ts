@@ -25,7 +25,10 @@ import {
   type ReportBlock, type TaskVerdict, type TrackBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
-  pluginsOperation, setPluginEnabledOperation, type PluginListItem,
+  patchPluginConfigOperation, pluginDetailOperation, pluginsOperation, reloadPluginOperation,
+  setPluginEnabledOperation,
+  type PluginApiFailure, type PluginConfigApplyResult, type PluginConfigSaveResult,
+  type PluginConfigValue, type PluginDetail, type PluginListItem,
 } from '../../../../core/domain/plugins.ts';
 import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
@@ -124,6 +127,11 @@ export const queryKeys = Object.freeze({
   /* Settings › Plugins. Not reached by any event policy — see
      `pluginsQueryOptions` for why, and for what stands in for one. */
   plugins: () => ['plugins'] as const,
+  /* #1284 S4 — one plugin's detail, read only by its configuration pane. Keyed
+     by id and not folded into the list: the list carries no manifest by design,
+     and a `config_schema` per row would make opening Settings fetch every
+     plugin's schema to render nothing with them. */
+  pluginDetail: (id: string) => ['plugin-detail', id] as const,
   /* #1209 — the New track picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
      can move under them is a plugin starting or stopping, which changes an
@@ -931,6 +939,162 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
     pendingIds: new Set(pending.keys()),
     errors,
     setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
+  };
+}
+
+/**
+ * Settings › Plugins › one plugin's configuration — the detail read.
+ *
+ * `retry: false` for the reason the list has it: this is a screen the reader is
+ * looking at, and a failed read has to say so and offer Retry rather than sit
+ * spinning through three silent attempts.
+ *
+ * It does not poll and it is not refetched on focus. The pane holds a draft of
+ * the operator's edits, and a background refetch that re-seeded it mid-typing
+ * would be indistinguishable from the app throwing their work away. Every write
+ * from that pane invalidates this key explicitly, which is the only moment the
+ * stored document can change under it.
+ */
+export function pluginDetailQueryOptions(
+  transport: ApiTransportPort,
+  id: string,
+  unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.pluginDetail(id),
+    queryFn: (): Promise<PluginDetail> => runOperation(transport, pluginDetailOperation(id), unauthorized),
+    retry: false,
+    refetchOnWindowFocus: false,
+  };
+}
+
+/**
+ * The kernel's refusal, reduced to what #1284's tables are keyed on.
+ *
+ * Transport and decode failures carry no `code` — there is no HTTP body to read
+ * one from — so they get one here rather than being handed to the domain as a
+ * third shape it would have to special-case. `transport_failure` is not a
+ * kernel code and no branch matches it, which is correct: it falls through to
+ * "the plugin did not come back and here is what we know", which is exactly
+ * what a request that never arrived leaves behind.
+ */
+function pluginFailureOf(error: unknown): PluginApiFailure {
+  if (error instanceof ApiError) {
+    const { failure } = error;
+    return failure.kind === 'transport' || failure.kind === 'decode'
+      ? { code: 'transport_failure', message: failure.message }
+      : { code: failure.code, message: failure.message };
+  }
+  return { code: 'transport_failure', message: 'The request could not be completed.' };
+}
+
+export type PluginConfigMutations = Readonly<{
+  save: (
+    id: string,
+    patch: Readonly<Record<string, PluginConfigValue | null>>,
+    options: Readonly<{ reset: boolean }>,
+  ) => Promise<PluginConfigSaveResult>;
+  applyRestart: (
+    id: string,
+    patch: Readonly<Record<string, PluginConfigValue | null>>,
+    options: Readonly<{ reset: boolean }>,
+  ) => Promise<PluginConfigApplyResult>;
+}>;
+
+/**
+ * The two writes the configuration pane offers, and the read #1284 §2.4
+ * requires **after** the second one.
+ *
+ * Both resolve rather than reject. A rejected promise carries a message and
+ * nothing else, and every branch of §2.2 and §2.4 turns on the kernel's `code`
+ * or on the plugin's state afterwards — so a thrown `Error` would arrive at the
+ * pane with the one field that cannot distinguish "nothing was saved, retry"
+ * from "saved, and the plugin is now down".
+ *
+ * This hook classifies nothing. It returns facts — the refusal, and the state
+ * and `last_error` read back after a restart — and `core/domain/plugins` owns
+ * the tables that read them. That is what keeps the wording in one place
+ * instead of one place per caller.
+ */
+export function usePluginConfigMutations(
+  transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
+): PluginConfigMutations {
+  const client = useQueryClient();
+  const refresh = (id: string) => Promise.all([
+    client.invalidateQueries({ queryKey: queryKeys.plugins() }),
+    client.invalidateQueries({ queryKey: queryKeys.pluginDetail(id) }),
+  ]);
+
+  const write = async (
+    id: string,
+    patch: Readonly<Record<string, PluginConfigValue | null>>,
+    options: Readonly<{ reset: boolean }>,
+  ): Promise<PluginConfigSaveResult> => {
+    try {
+      await runOperation(transport, patchPluginConfigOperation(id, patch, options), unauthorized);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, failure: pluginFailureOf(error) };
+    }
+  };
+
+  return {
+    save: async (id, patch, options) => {
+      const result = await write(id, patch, options);
+      await refresh(id);
+      return result;
+    },
+    applyRestart: async (id, patch, options) => {
+      /* An empty patch with no reset asked for is not a write: Apply & restart
+         is also how an operator makes an *earlier* Save take effect, and
+         PATCHing `{}` to do it would take the lifecycle lock for nothing and
+         could 409 the restart it exists to perform. */
+      if (Object.keys(patch).length > 0 || options.reset) {
+        const saved = await write(id, patch, options);
+        if (!saved.ok) {
+          await refresh(id);
+          return { saved: false, failure: saved.failure };
+        }
+      }
+      try {
+        const detail = await runOperation(transport, reloadPluginOperation(id), unauthorized);
+        /* Still a read of `state` + `last_error`, not of the status code: a
+           reload can answer 200 having left the plugin `unavailable`, and this
+           response is the kernel's post-attempt detail. */
+        await refresh(id);
+        return {
+          saved: true,
+          restart: { failure: null, state: detail.state, lastError: detail.last_error },
+        };
+      } catch (error) {
+        const failure = pluginFailureOf(error);
+        /*
+         * §2.4 — the refusal is not the verdict, so read the plugin back.
+         *
+         * A reload stops the plugin before it re-reads anything, so a non-200
+         * covers three different endings: the lock was held and nothing
+         * happened at all; a connector's bring-up failed and it is sitting in
+         * its normal `unavailable` terminal state with the reason in
+         * `last_error`; or an `app` was stopped and did not start. Only the
+         * plugin's own state tells them apart. A detail read that itself fails
+         * leaves `state` unknown, and the outcome table falls back to the
+         * refusal's own message — which is worse than the truth, and better
+         * than a guess.
+         */
+        let state: PluginDetail['state'] = 'unknown';
+        let lastError: string | undefined;
+        try {
+          const after = await runOperation(transport, pluginDetailOperation(id), unauthorized);
+          state = after.state;
+          lastError = after.last_error;
+        } catch {
+          // Nothing to add: the refusal below is then all that is known.
+        }
+        await refresh(id);
+        return { saved: true, restart: { failure, state, lastError } };
+      }
+    },
   };
 }
 

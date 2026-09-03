@@ -181,6 +181,37 @@
     color: var(--text-3);
   }
 
+  /* A plugin row's trailing edge holds two controls — walk into the
+     configuration, and turn the plugin on — so they need a gap between them
+     and the row's own edge stays where every other pane's is. */
+  .pluginControls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
+  /*
+   * Saved, but not in force — and not broken either.
+   *
+   * The three restart outcomes of #1284 §2.4 are mostly *this*: the restart was
+   * refused because the plugin was busy, or the plugin did not come back up. A
+   * connector that cannot reach its upstream is in its normal terminal state,
+   * so `.error`'s tone would say the kernel is broken when the truth is that
+   * something did not answer. Warn tones, and the same box shape as `.error` so
+   * the two read as one family of message rather than two designs.
+   */
+  .notice {
+    padding-block: var(--space-3);
+    padding-inline: var(--space-4);
+    border: 1px solid var(--warn-border);
+    border-radius: var(--radius-md);
+    background: var(--warn-soft);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--warn-text);
+  }
+
   /* Set apart from the tasks above it: this row creates, the ones above edit. */
   .newTask {
     display: flex;

@@ -72,6 +72,7 @@ deliberately does not draw one-off glyphs for this.
 | `/settings` | Network | `NetworkPane` (`public.tsx`) |
 | `/settings/appearance` | Appearance | `AppearancePane` (`public.tsx`) |
 | `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
+| `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |
 | `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
 Real routes rather than pane-local state: every pane can be linked to, and Back
@@ -91,11 +92,59 @@ action *on* the thing, not as the way back out of it.
 an `OWNERSHIP-CHANGE` trailer against an issue. The pane's `min-block-size`
 floor is the mitigation available from this layer, and it is not centring.
 
+## Plugin configuration is the one two-level section (#1284 S4)
+
+A plugin row whose kernel-supplied `has_config` is true carries a `Configure`
+button beside its switch; a row without it carries **no entry point at all**.
+That absence is the contract: "this plugin has nothing to configure" and "the
+configuration screen is not built" have to be two different things on screen,
+and a Configure button that opens an empty pane is how they became one thing.
+The bit is on the list row because the list carries no manifest and never will,
+so nothing else on that screen can decide the question.
+
+The row therefore ends in two controls rather than a chevron. The row grammar
+forbids a *clickable row* that also holds a control — two targets for one
+intent — and offering the drill-in as the row would have taken the switch away.
+Two adjacent, separately named controls are two intents with one target each.
+
+Which plugin is open is **visit state, not a route**, and it is the one place
+this domain departs from "the URL is the state". The level holds an operator's
+unsaved edits against a schema version the kernel may have replaced since, so a
+shareable link to it would arrive either with somebody else's draft or empty on
+a plugin that no longer declares the field the link was made for.
+
+The form is rendered from `detail.config_schema` — the **top-level** field, and
+never `detail.manifest.config_schema`. The manifest blob is published verbatim
+as the row it is, so on a kernel that predates #1284 it simply has no such key;
+the top-level copy comes off the registry, which is what the write path
+validates against.
+
+### Its Save button, and why it is not an exception to the rule below
+
+`configPatchFrom` may only send the keys the operator edited (#1284 §2.2.5): the
+kernel applies manifest defaults on read and never stores them, so a
+self-committing row would write a default into the row the moment the reader
+tabbed through a field — and a manifest that later changed that default could
+never reach the plugin again. Nothing takes effect until the plugin restarts
+either, so a per-row commit would confirm a save that changes nothing
+observable. Hence one explicit **Save**, and one explicit **Apply & restart**
+that is the only control on the screen which makes a configuration live.
+
+The three ways a restart ends are `core/domain/plugins`'s `reloadOutcome`, and
+the pane renders its verdict rather than classifying anything: a reload stops
+the plugin before re-reading anything, so the status code cannot tell "the lock
+was held and nothing happened" from "it is down with a reason in `last_error`".
+`unavailable` is a connector's normal terminal state and is painted in warn
+tones, never error tones.
+
 ## A setting has no Save button (INV-SETTINGS-003)
 
 A row commits itself. There is no Save and no Reset on a settings pane: a proxy
 is one value, and asking the reader to press Save for one value is asking them
-to do the app's bookkeeping.
+to do the app's bookkeeping. (This is a rule about **a setting**. A plugin's
+configuration is a multi-key document with a restart between storing it and
+using it — see the section above for why that makes a Save structural rather
+than a matter of taste.)
 
 **Commit on blur and Enter, never per keystroke.** A half-typed URL is not a
 value — saving on change would `PUT` `h`, `ht`, `htt`… and leave whatever the

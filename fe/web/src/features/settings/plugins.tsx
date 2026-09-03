@@ -23,6 +23,7 @@
 // position unexplainable.
 
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
+import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Switch as AstryxSwitch } from '@astryxdesign/core/Switch';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 
@@ -43,6 +44,17 @@ export type PluginsPaneProps = Readonly<{
    *  under another plugin's name as soon as two writes overlapped. */
   errors: ReadonlyMap<string, string>;
   onSetEnabled: (id: string, enabled: boolean) => void;
+  /**
+   * Walk into a plugin's configuration.
+   *
+   * Offered **only** where `has_config` is true (#1284 §2.5). "This plugin has
+   * nothing to configure" and "the configuration screen is not built" have to
+   * be two different things on screen, and a Configure button that opens an
+   * empty pane is how they became one thing in the first place. The bit is on
+   * the list row precisely so this is decidable without a per-row detail
+   * fetch — the list carries no manifest, and it never will.
+   */
+  onOpenConfig: (id: string) => void;
 }>;
 
 /**
@@ -64,7 +76,7 @@ function stateVariant(state: PluginState): 'success' | 'warning' | 'error' | 'in
 }
 
 export function PluginsPane({
-  plugins, loadError, onRetryLoad, pendingIds, errors, onSetEnabled,
+  plugins, loadError, onRetryLoad, pendingIds, errors, onSetEnabled, onOpenConfig,
 }: PluginsPaneProps) {
   return (
     <SettingsPane
@@ -107,15 +119,45 @@ export function PluginsPane({
                      — enabled-and-crashed is the case this screen exists for. */
                   startContent={<AstryxBadge variant={stateVariant(plugin.state)} label={plugin.state} />}
                   control={(
-                    <AstryxSwitch
-                      // Named after the plugin: a list of switches all called
-                      // "Enabled" is one a screen reader cannot navigate.
-                      label={`Enable ${plugin.manifest_name}`}
-                      isLabelHidden
-                      value={plugin.enabled}
-                      isLoading={pendingIds.has(plugin.id)}
-                      onChange={(next) => onSetEnabled(plugin.id, next)}
-                    />
+                    /*
+                     * Two controls on the trailing edge, and the row itself is
+                     * not a click target. The row grammar's rule is that a row
+                     * is either something you set or somewhere you go — never
+                     * both — because a clickable row wrapping a control is two
+                     * targets for one intent. Two adjacent, separately named
+                     * controls are two intents with one target each, which is
+                     * the shape that rule permits; a drill-in *row* here would
+                     * have had to take the switch away.
+                     */
+                    <span className={styles.pluginControls}>
+                      {/* Only when the kernel says there is something to
+                          configure — see `onOpenConfig`. */}
+                      {plugin.has_config && (
+                        <AstryxButton
+                          /* Visible "Configure", announced "Configure Todo".
+                             astryx's own arrangement for this: `children` is
+                             what is painted and `label` becomes the accessible
+                             name, so a column of buttons all reading the same
+                             word is still navigable by name — and the visible
+                             word is contained in the spoken one, which is what
+                             keeps speech input working. */
+                          label={`Configure ${plugin.manifest_name}`}
+                          variant="ghost"
+                          onClick={() => onOpenConfig(plugin.id)}
+                        >
+                          Configure
+                        </AstryxButton>
+                      )}
+                      <AstryxSwitch
+                        // Named after the plugin: a list of switches all called
+                        // "Enabled" is one a screen reader cannot navigate.
+                        label={`Enable ${plugin.manifest_name}`}
+                        isLabelHidden
+                        value={plugin.enabled}
+                        isLoading={pendingIds.has(plugin.id)}
+                        onChange={(next) => onSetEnabled(plugin.id, next)}
+                      />
+                    </span>
                   )}
                 />
               ))}

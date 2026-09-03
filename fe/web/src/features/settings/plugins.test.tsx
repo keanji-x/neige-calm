@@ -29,6 +29,10 @@ function plugin(overrides: Partial<PluginListItem> = {}): PluginListItem {
     enabled: true,
     state: 'running',
     manifest_name: 'Todo',
+    /* Defaulted to the *absent* case on purpose: a fixture that offered
+       configuration everywhere would make "no entry point without it" a claim
+       no test could reach by accident. */
+    has_config: false,
     ...overrides,
   };
 }
@@ -41,6 +45,7 @@ function props(overrides: Partial<PluginsPaneProps> = {}): PluginsPaneProps {
     pendingIds: new Set<string>(),
     errors: new Map<string, string>(),
     onSetEnabled: vi.fn(),
+    onOpenConfig: vi.fn(),
     ...overrides,
   };
 }
@@ -80,6 +85,42 @@ describe('Plugins pane', () => {
   it('says the list is empty rather than looking like it is still loading', () => {
     render(<PluginsPane {...props({ plugins: [] })} />);
     expect(screen.getByText('No plugins installed.')).toBeTruthy();
+  });
+
+  /*
+   * #1284 §2.5 — "this plugin has nothing to configure" and "the configuration
+   * screen is not built" must be two different things on screen. The first is
+   * *no entry point at all*; the second was the empty pane behind a Configure
+   * button that this work exists to remove. So the absence is asserted on the
+   * row that says so, beside a row that offers it, in one render — a
+   * single-plugin assertion would still pass if the button were rendered
+   * unconditionally and the list happened to hold one plugin.
+   */
+  it('offers a configuration entry point only where the kernel says there is one', async () => {
+    const onOpenConfig = vi.fn();
+    render(<PluginsPane {...props({
+      plugins: [
+        plugin({ has_config: false }),
+        plugin({ id: 'git-forge', manifest_name: 'Git forge', has_config: true }),
+      ],
+      onOpenConfig,
+    })} />);
+
+    expect(screen.queryByRole('button', { name: 'Configure Todo' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Configure Git forge' }));
+    expect(onOpenConfig.mock.calls).toEqual([['git-forge']]);
+  });
+
+  it('keeps the switch usable on a row that also offers configuration', async () => {
+    // Two controls on one trailing edge, and both have to work: the drill-in
+    // must not have taken the row's switch away or swallowed its clicks.
+    const onSetEnabled = vi.fn();
+    render(<PluginsPane {...props({
+      plugins: [plugin({ has_config: true, enabled: false })],
+      onSetEnabled,
+    })} />);
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable Todo' }));
+    expect(onSetEnabled.mock.calls).toEqual([['todo', true]]);
   });
 
   it('offers Retry on a failed read', async () => {
