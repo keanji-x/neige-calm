@@ -53,8 +53,7 @@ use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, status_detail_with_reason,
     task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
     task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_has_template_overlay_tx,
-    track_lifecycle_and_budget_tx,
+    task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -76,7 +75,6 @@ use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
 use crate::track_lifecycle::auto_transition_if_current_in_tx;
-use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
 
 /// Kernel default per-track task budget when `tracks.task_budget` is NULL
 /// and `NEIGE_TRACK_TASK_BUDGET` is unset/invalid. **1 is deliberate**
@@ -1008,19 +1006,6 @@ impl Scheduler {
             );
             return Ok(());
         }
-        let is_template = self
-            .repo
-            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, track_id.as_str())
-            .await?
-            .iter()
-            .any(is_template_overlay);
-        if is_template {
-            tracing::debug!(
-                track_id = %track_id,
-                "scheduler: template overlay holds dispatch; skipping ready set"
-            );
-            return Ok(());
-        }
         let budget = self.track_budget(track_id).await?;
         let capacity = track_capacity(&tasks, budget);
         let ready = compute_ready(&tasks, budget);
@@ -1189,13 +1174,6 @@ impl Scheduler {
                                 .await?
                                 .ok_or_else(race_lost_err)?;
                         if !lifecycle_allows_scheduling(lifecycle) {
-                            return Err(race_lost_err());
-                        }
-                        // INV-1110-001: template overlay is the claim backstop.
-                        // Ready-set skip can race a POST /api/overlays after the
-                        // pass snapshot; refuse the flip here so no TaskDispatched
-                        // is persisted.
-                        if track_has_template_overlay_tx(tx, track_id.as_str()).await? {
                             return Err(race_lost_err());
                         }
                         // §5.2 claim fence: missing track/report, a changed root, or any

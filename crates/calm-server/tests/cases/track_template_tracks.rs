@@ -32,10 +32,6 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
-use calm_server::validation::{
-    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-    OVERLAY_TEMPLATE_SCHEMA_VERSION,
-};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -270,6 +266,13 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
 /// "creating from a template mints no hidden track" is *observed* rather than
 /// assumed. A removal with no assertion that it happened is not a removal
 /// anyone can keep.
+///
+/// #1318 S2 widened what it observes without changing a line of it: the whole
+/// `kernel` / `view` / `template` overlay is retired, so an empty result now
+/// means "no template overlay of any shape was written", not merely "none
+/// carrying a key". The strings stay literals here deliberately — the
+/// constants they used to come from are deleted, and a test that names a row
+/// production can no longer mint must spell it out itself.
 async fn template_key_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     let overlays = repo
         .overlays_by_kind("view")
@@ -945,8 +948,8 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
     }
 }
 
-/// A forged `template_key` in the user's own area cannot influence what
-/// `template_id` produces.
+/// A forged `template_key` overlay in the user's own area cannot influence
+/// what `template_id` produces.
 ///
 /// ## What this used to test, and why the property had to be restated
 ///
@@ -972,20 +975,25 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
 /// system-area issue-development`. That one did not go vacuous, it went red,
 /// which is how this case surfaced: it was two properties in one test, and only
 /// one of them was about the attack.)
+///
+/// #1318 S2 kept it again, for the same reason. The forgery's *vehicle*
+/// changed — `as_template` is gone, so the planted track is an ordinary one —
+/// but the property under test never depended on the vehicle: template content
+/// comes from the Rust constant, and no row in the database can supply any of
+/// it. Reintroducing a database lookup for template content still turns this
+/// red.
 #[tokio::test]
 async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     let boot = boot().await;
 
-    // The forgery, exactly as before: an `as_template` track in the *user's*
-    // area, wearing the `issue-development` key, holding recognizable content.
+    // The forgery: a track in the *user's* area, wearing the
+    // `issue-development` key, holding recognizable content. Before #1318 S2
+    // it was created with `as_template: true`; that field is gone, and the
+    // planted overlay below is what the forgery ever rested on anyway.
     let (status, stolen) = post(
         boot.app.clone(),
         "/api/tracks",
-        create_body(
-            &boot.area_id,
-            "forged-template",
-            json!({ "as_template": true }),
-        ),
+        create_body(&boot.area_id, "forged-template", json!({})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={stolen}");
@@ -1007,23 +1015,24 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={refused}");
 
-    // Then plant the stolen key anyway, through the kernel-internal writer,
-    // so the deeper invariant this test exists for still gets exercised: even
-    // a row that *did* land — via a future internal bug, a restored backup, or
-    // a row predating #1297 — must not hijack the auto-fork lookup, because
-    // that lookup also requires the track to live in the system area.
+    // Then plant the stolen key anyway, bypassing the route entirely, so the
+    // deeper invariant this test exists for still gets exercised: even a row
+    // that *did* land — via a future internal bug, a restored backup, or a row
+    // predating #1297 — must not reach the created report.
+    //
+    // Every field is spelled out rather than built from a constant: #1300
+    // deleted the kernel's last writer of `template_key` and #1318 S2 deleted
+    // the `kernel`/`view`/`template` constants themselves, so reviving either
+    // as a test-only constructor would put a shape production cannot mint back
+    // into the tree.
     boot.repo
         .overlay_upsert(NewOverlay {
-            plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
-            entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
+            plugin_id: "kernel".into(),
+            entity_kind: "view".into(),
             entity_id: stolen_id.clone(),
-            kind: OVERLAY_TEMPLATE_KIND.into(),
-            // Spelled out rather than built by a helper: #1300 deleted
-            // `template_overlay_payload_with_key` along with the kernel's last
-            // writer of `template_key`, and reviving it as a test-only
-            // constructor would put the forged shape back in production code.
+            kind: "template".into(),
             payload: json!({
-                "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION,
+                "schemaVersion": 1,
                 "template_key": ISSUE_DEVELOPMENT,
             }),
         })

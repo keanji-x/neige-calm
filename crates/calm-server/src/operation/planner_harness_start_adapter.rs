@@ -39,7 +39,6 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
-use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -58,14 +57,6 @@ const START_PHASES: &[PhaseTag] = &[
 
 const REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR: &str =
     "no per-card MCP token row; refusing to start an unauthenticated shell";
-
-/// 4xx used by `validate` and `/planner/reset` when the track carries the kernel
-/// view/template overlay (#1110 S1).
-pub fn template_track_planner_harness_error(track_id: &str) -> CalmError {
-    CalmError::BadRequest(format!(
-        "track {track_id} is a template (kernel view/template overlay); planner harness is not started on template tracks"
-    ))
-}
 
 #[cfg(feature = "fixtures")]
 pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
@@ -436,17 +427,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             .track_get(&payload.track_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("track {}", payload.track_id)))?;
-        if self
-            .repo
-            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, payload.track_id.as_str())
-            .await?
-            .iter()
-            .any(is_template_overlay)
-        {
-            return Err(template_track_planner_harness_error(
-                payload.track_id.as_str(),
-            ));
-        }
         // #1098 §5.6 — the lazy-mint branch. `validate` runs BEFORE the
         // operation row is inserted, so the usual "card must exist + its role
         // cache entry must match" assertions are not merely wrong here, they

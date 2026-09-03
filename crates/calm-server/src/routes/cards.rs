@@ -25,7 +25,7 @@ use crate::model::{
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
 use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOperationPayload;
 use crate::operation::planner_harness_start_adapter::{
-    HarnessProfile, PlannerHarnessStartOperationPayload, template_track_planner_harness_error,
+    HarnessProfile, PlannerHarnessStartOperationPayload,
 };
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
@@ -40,7 +40,6 @@ use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_lifecycle::apply_requested_transition_in_tx;
-use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
 
 use axum::{
     Json, Router,
@@ -1438,14 +1437,6 @@ pub(crate) async fn reset_planner_card(
                 "planner harness is disabled for area chat track {}",
                 track.id
             )));
-        }
-        if s.repo
-            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, track.id.as_str())
-            .await?
-            .iter()
-            .any(is_template_overlay)
-        {
-            return Err(template_track_planner_harness_error(track.id.as_str()));
         }
     }
     let response = reset_planner_card_shared(s, actor, card).await?;

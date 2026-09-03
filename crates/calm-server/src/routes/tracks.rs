@@ -72,11 +72,7 @@ use crate::track_report::{
 };
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
-use crate::validation::{
-    CODEX_PAYLOAD_SCHEMA_VERSION, OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND,
-    OVERLAY_TEMPLATE_PLUGIN_ID, is_template_overlay, template_overlay_payload,
-    validate_overlay_payload,
-};
+use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::workspace_recycle;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
@@ -87,7 +83,6 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 
 #[cfg(feature = "fixtures")]
@@ -199,17 +194,13 @@ pub struct CreateTrackRequest {
     /// the new report inside the track-create transaction.
     #[serde(default)]
     pub fork_report_from: Option<String>,
-    /// When true, upsert the kernel view/template overlay in the same create
-    /// transaction as the layout overlay and do not start the planner harness.
-    #[serde(default)]
-    pub as_template: bool,
 }
 
 impl CreateTrackRequest {
-    /// `(body, fork_report_from, recipe_id, cwd_omitted, as_template)`. `cwd_omitted` is
+    /// `(body, fork_report_from, recipe_id, cwd_omitted)`. `cwd_omitted` is
     /// true when the client sent no `cwd` / `null`; that is a different branch
     /// from an explicit empty string, which still 400s.
-    fn into_parts(self) -> (NewTrack, Option<String>, Option<String>, bool, bool) {
+    fn into_parts(self) -> (NewTrack, Option<String>, Option<String>, bool) {
         let cwd_omitted = self.cwd.is_none();
         (
             NewTrack {
@@ -230,7 +221,6 @@ impl CreateTrackRequest {
             self.fork_report_from,
             self.recipe_id,
             cwd_omitted,
-            self.as_template,
         )
     }
 }
@@ -371,9 +361,13 @@ pub(crate) async fn list_tracks_by_area(
     Ok(Json(tracks))
 }
 
-/// Public track lists hide retired Area-conversation containers and template tracks
-/// (#1110 S1). Keep this at the route boundary: repository readers such as
-/// area deletion and backlink resolution require the complete set.
+/// Public track lists hide retired Area-conversation containers. Keep this at
+/// the route boundary: repository readers such as area deletion and backlink
+/// resolution require the complete set.
+///
+/// #1318 S2 retired the template-overlay half of this filter along with the
+/// mechanism that produced it: there is no longer any way to mark a track as a
+/// template, so there is nothing left to hide on that account.
 ///
 /// The `match` is spelled out rather than written `!= Some(AREA_CHAT_PURPOSE)`
 /// purely for readability — both forms already keep NULL-purpose tracks
@@ -388,20 +382,9 @@ fn user_visible_track(track: &Track) -> bool {
     }
 }
 
-async fn retain_user_visible_tracks(repo: &dyn RepoRead, tracks: &mut Vec<Track>) -> Result<()> {
-    let templates = template_track_ids(repo).await?;
-    tracks.retain(|track| user_visible_track(track) && !templates.contains(track.id.as_str()));
+async fn retain_user_visible_tracks(_repo: &dyn RepoRead, tracks: &mut Vec<Track>) -> Result<()> {
+    tracks.retain(user_visible_track);
     Ok(())
-}
-
-async fn template_track_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
-    Ok(repo
-        .overlays_by_kind(OVERLAY_TEMPLATE_ENTITY_KIND)
-        .await?
-        .into_iter()
-        .filter(is_template_overlay)
-        .map(|overlay| overlay.entity_id)
-        .collect())
 }
 
 /// Build the initial report a template instantiates to.
@@ -605,7 +588,7 @@ pub(crate) async fn create_track(
     actor: Actor,
     Json(request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
-    let (mut p, fork_report_from, recipe_id, cwd_omitted, as_template) = request.into_parts();
+    let (mut p, fork_report_from, recipe_id, cwd_omitted) = request.into_parts();
 
     // #1292 — two starting points is not a preference to resolve, it is a
     // request that does not name one thing. Refused here, before any other
@@ -825,7 +808,6 @@ pub(crate) async fn create_track(
             body_area_id,
             normalized_cwd,
             init,
-            as_template,
             // #1147 S2 — omitting `cwd` (the #1131 title-only create, i.e. what
             // the new FE sends) is the managed-default branch: the server picks
             // the directory. An explicit `cwd` is the attached branch and keeps
@@ -1164,7 +1146,6 @@ struct CreateTrackOptions {
     body_area_id: String,
     normalized_cwd: String,
     init: TrackInit,
-    as_template: bool,
     /// #1147 S2 — managed (server allocates under the workspace root) vs
     /// attached (the caller pointed at an existing directory). Decided by
     /// each create entry point; `create_track_structure` materializes the
@@ -1179,12 +1160,9 @@ async fn create_track_with_planner_harness(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<Response> {
-    let as_template = options.as_template;
     let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
-    if !as_template {
-        start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
-    }
+    start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
@@ -1200,7 +1178,6 @@ async fn create_track_structure(
         body_area_id,
         normalized_cwd,
         init,
-        as_template,
         workspace_plan,
     } = options;
     // #1147 — captured before `s` is moved into the write closure. Only the
@@ -1492,61 +1469,6 @@ async fn create_track_structure(
                     },
                 )
                 .await?;
-                let template_overlay = if as_template {
-                    // #1300 — the `template_key` variant of this payload was
-                    // written only by the deleted seeding path. Two separate
-                    // layers, worth not conflating:
-                    //
-                    //   * **Schema.** `template_key` is still part of the
-                    //     `template` overlay payload schema and is still
-                    //     pinned by `payload_validation.rs`; `validate_overlay_payload`
-                    //     would accept a payload carrying it.
-                    //   * **Route.** The narrow fact, and no wider one: a row
-                    //     that `is_template_overlay` would recognise is by
-                    //     definition `plugin_id = "kernel"` /
-                    //     `entity_kind = "view"`, and since #1297
-                    //     `overlays::ensure_overlay_write_allowed` rejects both
-                    //     of those reserved namespaces with 403 *before*
-                    //     `validate_overlay_payload` runs. So `POST /api/overlays`
-                    //     answers 403 Forbidden for *that* row, not 201 — pinned
-                    //     by `track_template_overlay::
-                    //     overlay_post_cannot_mark_an_existing_track_as_template`.
-                    //
-                    //     It is NOT true that a `template_key` payload cannot
-                    //     be stored at all. `entity_kind = "track"` is
-                    //     externally writable (`OVERLAY_ENTITY_SCOPE_REGISTRY`
-                    //     in `calm-truth::validation`), and payload validation
-                    //     is keyed on `kind`, not on the plugin, so
-                    //     `{plugin_id: "p1", entity_kind: "track", kind:
-                    //     "template", payload: {schemaVersion: 1, template_key:
-                    //     ".."}}` passes both the 403 guard and
-                    //     `validate_overlay_payload` and lands in the table.
-                    //     That row is a plugin-owned overlay: `is_template_overlay`
-                    //     is false for it, so no kernel reader treats it as a
-                    //     template marker.
-                    //
-                    // Kernel-internal writers like this one call
-                    // `overlay_upsert_tx` directly and never traverse that
-                    // router — but none of them mints a `template_key`, and no
-                    // kernel reader consults one.
-                    let payload = template_overlay_payload();
-                    validate_overlay_payload(OVERLAY_TEMPLATE_KIND, &payload)?;
-                    Some(
-                        overlay_upsert_tx(
-                            tx,
-                            NewOverlay {
-                                plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
-                                entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
-                                entity_id: track_id.as_str().to_string(),
-                                kind: OVERLAY_TEMPLATE_KIND.into(),
-                                payload,
-                            },
-                        )
-                        .await?,
-                    )
-                } else {
-                    None
-                };
                 let mut events = vec![
                     (
                         actor_id_for_tx.clone(),
@@ -1572,16 +1494,6 @@ async fn create_track_structure(
                         Event::OverlaySet(layout_overlay),
                     ),
                 ];
-                if let Some(template_overlay) = template_overlay {
-                    events.push((
-                        actor_id_for_tx.clone(),
-                        EventScope::Track {
-                            track: track_id.clone(),
-                            area: area_id.clone(),
-                        },
-                        Event::OverlaySet(template_overlay),
-                    ));
-                }
                 if let Some(projection) = init_projection {
                     if !projection.changed_keys.is_empty() {
                         events.push((
@@ -2527,8 +2439,7 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         (s.write.verify_role(&card.id) == Some(CardRole::Planner)).then(|| card.id.to_string())
     });
     let Some(planner_card_id) = planner_card_id else {
-        // Template tracks (`as_template`) never start a harness. Nothing to
-        // re-anchor.
+        // No planner card on this track, so no harness to re-anchor.
         return;
     };
     let request = PlannerHarnessStartOperationPayload {

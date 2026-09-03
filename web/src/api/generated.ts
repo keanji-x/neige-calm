@@ -1436,11 +1436,6 @@ export interface components {
         };
         CreateTrackRequest: {
             area_id: string;
-            /**
-             * @description When true, upsert the kernel view/template overlay in the same create
-             *     transaction as the layout overlay and do not start the planner harness.
-             */
-            as_template?: boolean;
             attach_folder?: boolean;
             /**
              * @description Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else

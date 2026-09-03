@@ -5209,10 +5209,6 @@
           "area_id": {
             "type": "string"
           },
-          "as_template": {
-            "type": "boolean",
-            "description": "When true, upsert the kernel view/template overlay in the same create\ntransaction as the layout overlay and do not start the planner harness."
-          },
           "attach_folder": {
             "type": "boolean"
           },

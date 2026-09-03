@@ -27,8 +27,6 @@ mod track_recipes;
 mod track_report_fork;
 #[path = "cases/track_report_write_origin.rs"]
 mod track_report_write_origin;
-#[path = "cases/track_template_overlay.rs"]
-mod track_template_overlay;
 #[path = "cases/track_template_tracks.rs"]
 mod track_template_tracks;
 
