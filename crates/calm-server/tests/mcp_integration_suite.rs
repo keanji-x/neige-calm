@@ -18,5 +18,7 @@ mod mcp_wave_report;
 mod mcp_wave_report_blocks;
 #[path = "cases/mcp_wave_state.rs"]
 mod mcp_wave_state;
+#[path = "cases/report_write_characterization.rs"]
+mod report_write_characterization;
 #[path = "cases/task_projection_acceptance.rs"]
 mod task_projection_acceptance;
