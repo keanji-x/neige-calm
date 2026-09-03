@@ -22,8 +22,8 @@
 
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::{
-    Area, AreaFolder, AreaKind, Card, HarnessItem, Overlay, Track, TrackLifecycle, TrackWorkspace,
-    TrackWorkspaceKind,
+    Area, AreaFolder, AreaKind, Card, HarnessInputSegment, HarnessItem, Overlay, Track,
+    TrackLifecycle, TrackWorkspace, TrackWorkspaceKind,
 };
 
 /// Row mirror of [`Area`].
@@ -219,7 +219,7 @@ impl From<CardRow> for Card {
     }
 }
 
-/// Row mirror of [`HarnessItem`].
+/// SQL row mirror of the public transcript record.
 #[derive(Debug, sqlx::FromRow)]
 pub struct HarnessItemRow {
     pub id: i64,
@@ -234,12 +234,22 @@ pub struct HarnessItemRow {
     pub item_type: Option<String>,
     pub method: String,
     pub params: String,
+    pub input_segments: Option<String>,
     pub created_at_ms: i64,
 }
 
-impl From<HarnessItemRow> for HarnessItem {
-    fn from(r: HarnessItemRow) -> Self {
-        HarnessItem {
+impl TryFrom<HarnessItemRow> for HarnessItem {
+    type Error = String;
+
+    fn try_from(r: HarnessItemRow) -> Result<Self, Self::Error> {
+        let input_segments = r
+            .input_segments
+            .map(|value| {
+                serde_json::from_str::<Vec<HarnessInputSegment>>(&value)
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        Ok(HarnessItem {
             id: r.id,
             runtime_id: r.runtime_id,
             card_id: r.card_id,
@@ -250,14 +260,15 @@ impl From<HarnessItemRow> for HarnessItem {
             item_type: r.item_type,
             method: r.method,
             params: r.params,
+            input_segments,
             created_at_ms: r.created_at_ms,
-        }
+        })
     }
 }
 
 /// Row of the `worker_flow_items` table (#695 PR2).
 ///
-/// Sibling of [`HarnessItemRow`], but deliberately *not* a mirror of a
+/// Sibling of the planner transcript row, but deliberately *not* a mirror of a
 /// calm-types model entity: it is the raw persistence shape for the
 /// worker message-flow capture table, returned straight to callers
 /// (no `From<…>` projection — PR3's sink/projection owns that).

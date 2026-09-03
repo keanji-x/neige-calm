@@ -10,7 +10,8 @@ import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createTrackConversationOperation,
-  harnessItemToActivity, harnessItemToTurn, isLiveConversation, mergeTranscript, readableCommand,
+  harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
+  mergeTranscript, readableCommand,
   reconcileUserEchoes, toTrackConversation, trackConversationCardId,
   trackConversationsOperation,
   type Conversation, type ConversationKind, type ConversationTurn,
@@ -188,22 +189,92 @@ function item(overrides: Partial<HarnessItem> = {}): HarnessItem {
   };
 }
 
-describe('harnessItemToTurn', () => {
+describe('transcriptRowToMessages', () => {
   it('maps completed agent messages', () => {
-    expect(harnessItemToTurn(item())).toEqual({ id: '7', author: 'agent', text: 'answer', atMs: 99 });
+    expect(transcriptRowToMessages(item())).toEqual([
+      { id: '7', author: 'agent', text: 'answer', atMs: 99 },
+    ]);
   });
 
   it('strips the injected track diff and user marker', () => {
     const text = '## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\nhello';
-    expect(harnessItemToTurn(item({
+    expect(transcriptRowToMessages(item({
       item_type: 'userMessage', params: JSON.stringify({ item: { content: [{ type: 'text', text }] } }),
-    }))).toMatchObject({ author: 'you', text: 'hello' });
+    }))).toMatchObject([{ author: 'you', text: 'hello' }]);
+  });
+
+  it.each([
+    ['system_worker_turn_finished', 'Worker turn finished'],
+    ['system_report_edited', 'Report edited'],
+    ['system_task_completed', 'Task completed'],
+    ['system_task_failed', 'Task failed'],
+    ['system', 'System update'],
+  ] as const)('uses structured %s metadata for the system label', (inputPresentation, label) => {
+    const text = 'wording may change without changing who authored this';
+    expect(transcriptRowToMessages(item({
+      item_type: 'userMessage', input_segments: [{ presentation: inputPresentation, text }],
+      params: '{broken upstream frame',
+    }))).toEqual([{ id: '7', author: 'system', label, text, atMs: 50 }]);
+  });
+
+  it('uses ordered segments instead of the diff-prefixed flattened echo', () => {
+    const flattened = '## Track state changes since your last turn\nchanged\n\n---\n\nnew wording';
+    expect(transcriptRowToMessages(item({
+      item_type: 'userMessage',
+      input_segments: [{ presentation: 'system_report_edited', text: 'new wording' }],
+      params: JSON.stringify({
+        completedAtMs: 99, item: { content: [{ type: 'text', text: flattened }] },
+      }),
+    }))).toEqual([{
+      id: '7', author: 'system', label: 'Report edited', text: 'new wording', atMs: 99,
+    }]);
+  });
+
+  it('never infers system authorship from English text', () => {
+    const text = 'A dispatched task completed, according to the user';
+    for (const inputSegments of [[{ presentation: 'user' as const, text }], undefined]) {
+      expect(transcriptRowToMessages(item({
+        item_type: 'userMessage', input_segments: inputSegments,
+        params: JSON.stringify({ item: { content: [{ type: 'text', text }] } }),
+      }))).toMatchObject([{ author: 'you', text }]);
+    }
+  });
+
+  it.each([
+    [
+      [
+        { presentation: 'system_report_edited' as const, text: 'report changed' },
+        { presentation: 'user' as const, text: 'User says:\nhello' },
+      ],
+      ['system', 'you'],
+      ['report changed', 'hello'],
+    ],
+    [
+      [
+        { presentation: 'user' as const, text: 'User says:\nhello' },
+        { presentation: 'system_task_completed' as const, text: 'task completed' },
+      ],
+      ['you', 'system'],
+      ['hello', 'task completed'],
+    ],
+  ])('keeps mixed segment order without attributing system text to the user', (
+    inputSegments, authors, texts,
+  ) => {
+    const turns = transcriptRowToMessages(item({
+      item_type: 'userMessage', input_segments: inputSegments,
+      params: JSON.stringify({ item: { content: [{ type: 'text', text: 'flattened' }] } }),
+    }));
+    expect(turns.map((turn) => turn.author)).toEqual(authors);
+    expect(turns.map((turn) => turn.text)).toEqual(texts);
+    expect(reconcileUserEchoes(turns, [
+      { id: 'echo', author: 'you', text: 'hello', atMs: 100 },
+    ])).toEqual([]);
   });
 
   it('drops incomplete and unsupported entries', () => {
-    expect(harnessItemToTurn(item({ method: 'item/started' }))).toBeNull();
-    expect(harnessItemToTurn(item({ item_type: 'commandExecution' }))).toBeNull();
-    expect(harnessItemToTurn(item({ params: '{broken' }))).toBeNull();
+    expect(transcriptRowToMessages(item({ method: 'item/started' }))).toEqual([]);
+    expect(transcriptRowToMessages(item({ item_type: 'commandExecution' }))).toEqual([]);
+    expect(transcriptRowToMessages(item({ params: '{broken' }))).toEqual([]);
   });
 
   /*
@@ -218,9 +289,9 @@ describe('harnessItemToTurn', () => {
 
     it('reads a real agent message', () => {
       const row = captured(6, 'agentMessage', '{"completedAtMs":1786763298838,"item":{"id":"msg_0276","memoryCitation":null,"phase":"commentary","text":"我先确认这个 Track 的当前状态。","type":"agentMessage"},"threadId":"01a0","turnId":"01a0"}');
-      expect(harnessItemToTurn(row)).toEqual({
+      expect(transcriptRowToMessages(row)).toEqual([{
         id: '6', author: 'agent', text: '我先确认这个 Track 的当前状态。', atMs: 1786763298838,
-      });
+      }]);
     });
 
     it('reads a real user message and keeps only what the human typed', () => {
@@ -235,9 +306,9 @@ describe('harnessItemToTurn', () => {
           id: '01a0', type: 'userMessage',
         },
       }));
-      expect(harnessItemToTurn(row)).toEqual({
+      expect(transcriptRowToMessages(row)).toEqual([{
         id: '28', author: 'you', text: 'hello', atMs: 1786763341752,
-      });
+      }]);
     });
   });
 });
@@ -570,6 +641,22 @@ describe('buildTranscript', () => {
       .toEqual(['first', 'second']);
   });
 
+  it('expands one mixed user-message row into ordered transcript entries', () => {
+    const mixed = {
+      ...row(4, 'userMessage', 'item/completed', { content: [{ text: 'flattened' }] }, 'u4'),
+      input_segments: [
+        { presentation: 'system_report_edited' as const, text: 'report changed' },
+        { presentation: 'user' as const, text: 'User says:\nhello' },
+        { presentation: 'system_task_completed' as const, text: 'task completed' },
+      ],
+    };
+    expect(buildTranscript([mixed])).toMatchObject([
+      { id: '4:0', author: 'system', label: 'Report edited', text: 'report changed' },
+      { id: '4:1', author: 'you', text: 'hello' },
+      { id: '4:2', author: 'system', label: 'Task completed', text: 'task completed' },
+    ]);
+  });
+
   it('renders snake_case messages as turns, not generic activities', () => {
     const entries = buildTranscript([
       row(1, 'user_message', 'item/completed', { content: [{ text: 'question' }] }),
@@ -598,7 +685,7 @@ describe('buildTranscript', () => {
      Note for anyone mutation-testing this — and this replaces an earlier note
      here that claimed the opposite: NO mutation of either filter turns this
      red, in either direction. `isTranscriptMethod` and the two converters
-     (`harnessItemToTurn`, `harnessItemToActivity`) are independent method
+     (`transcriptRowToMessages`, `harnessItemToActivity`) are independent method
      filters that currently agree, and `buildTranscript` runs them in series.
      Delete the `isTranscriptMethod` gate and the converters still reject these
      rows; widen a converter to accept `item/updated` and the gate rejects the
@@ -606,7 +693,7 @@ describe('buildTranscript', () => {
      the allowlist — an unknown method renders nothing — but it cannot tell
      which filter did the work, and no test can while both filters stand. The
      converters must keep their own checks (they are exported and called
-     directly, e.g. `harnessItemToTurn` from `web/src/app/router/public.tsx`),
+     directly, e.g. the message converter from `web/src/app/router/public.tsx`),
      so making one of them load-bearing here would mean weakening the other. */
   it('renders nothing for a method the transcript does not understand', () => {
     const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({

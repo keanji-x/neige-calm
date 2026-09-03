@@ -488,6 +488,27 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
           if (turn.author === 'activity') {
             return <ActivityLine key={turn.id} activity={turn} live={live && last} />;
           }
+          if (turn.author === 'system') {
+            return (
+              <div key={turn.id}>
+                {opensAfterGap(turns, index) && index > 0 && (
+                  <p className={styles.gap}>{clockTime(turn.atMs)}</p>
+                )}
+                <details
+                  className={styles.system}
+                  data-nc-turn="system"
+                >
+                  <summary className={styles.systemSummary} title={turn.text}>
+                    <span className={styles.systemDisclosure} aria-hidden="true">›</span>
+                    <span className={styles.systemLabel} data-nc-system-label="">
+                      · {turn.label} ·
+                    </span>
+                  </summary>
+                  <p className={styles.systemDetail}>{turn.text}</p>
+                </details>
+              </div>
+            );
+          }
           const opens = opensExchange(turns, index);
           return (
             <div
@@ -1393,7 +1414,7 @@ function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {
   turns.forEach((turn, index) => {
     /* `opensExchange` already implies `author === 'you'`; the narrowing below is
        for the type checker, which cannot read that from the domain function. */
-    if (!opensExchange(turns, index) || turn.author === 'activity') return;
+    if (!opensExchange(turns, index) || turn.author !== 'you') return;
     found.push({ id: turn.id, text: turn.text });
   });
   return found;

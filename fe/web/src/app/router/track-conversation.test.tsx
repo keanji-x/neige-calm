@@ -61,7 +61,7 @@ function assistantRow(overrides: Partial<Row> = {}): Row {
  * One persisted transcript row, in the shape the harness serves.
  *
  * The two item types do not carry their text the same way — an agent message
- * has `text`, a user message has `content` parts (`harnessItemToTurn`) — so the
+ * has `text`, a user message has `content` parts (`harnessItemToTurns`) — so the
  * payload is the caller's to spell, and a row spelled the other way silently
  * yields no turn at all.
  */

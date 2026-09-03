@@ -1083,6 +1083,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
             Some("agent_message"),
             "item/completed",
             "{}",
+            None,
         )
         .await
         .unwrap();

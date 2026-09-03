@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CONVERSATION_GAP_MS,
-  type Conversation, type ConversationActivity, type ConversationTurn,
+  type Conversation, type ConversationActivity, type ConversationSystemEntry,
+  type ConversationTurn,
 } from '../../../../../core/domain/conversation.ts';
 import { ChatComposer, ChatThread, EXCHANGE_RAIL_MIN } from './public.tsx';
 
@@ -29,6 +30,16 @@ function activity(overrides: Partial<ConversationActivity> = {}): ConversationAc
   return {
     id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done',
     durationMs: null, detail: null, atMs: NOW,
+    ...overrides,
+  };
+}
+
+function systemEntry(
+  overrides: Partial<ConversationSystemEntry> = {},
+): ConversationSystemEntry {
+  return {
+    id: 's1', author: 'system', label: 'Report edited',
+    text: 'The report changed in the kernel.', atMs: NOW,
     ...overrides,
   };
 }
@@ -74,6 +85,42 @@ describe('ChatThread', () => {
   it('shows the live mark in an empty pending conversation', () => {
     render(<ChatThread conversation={conversation()} turns={[]} pending />);
     expect(screen.getByLabelText('Working')).toBeTruthy();
+  });
+
+  it('renders an operable system disclosure, not either speaker', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[systemEntry()]} />,
+    );
+    const system = container.querySelector('[data-nc-turn="system"]');
+    expect(system?.tagName).toBe('DETAILS');
+    const summary = system?.querySelector('summary') as HTMLElement;
+    expect(summary.getAttribute('title'))
+      .toBe('The report changed in the kernel.');
+    expect(summary.querySelector('[aria-hidden="true"]')?.textContent).toBe('›');
+    expect(summary.querySelector('[data-nc-system-label]')?.textContent?.trim())
+      .toBe('· Report edited ·');
+    expect(system?.querySelector('p')?.textContent).toBe('The report changed in the kernel.');
+    await user.click(summary);
+    expect((system as HTMLDetailsElement).open).toBe(true);
+    expect(container.querySelector('[data-nc-turn="you"]')).toBeNull();
+    expect(container.querySelector('[data-nc-turn="agent"]')).toBeNull();
+  });
+
+  it('does not let a system entry open or merge user exchanges', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[
+          turn({ id: 'you-1', text: 'First' }),
+          systemEntry(),
+          turn({ id: 'you-2', text: 'Second' }),
+        ]}
+      />,
+    );
+    expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(2);
+    expect([...container.querySelectorAll('[data-nc-exchange]')].map((row) => row.textContent))
+      .toEqual(['First', 'Second']);
   });
 
   /* A conversation with no live session reads exactly like an idle one, because

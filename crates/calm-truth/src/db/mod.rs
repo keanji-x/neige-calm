@@ -983,6 +983,7 @@ pub trait RepoOutOfDomain: RepoRead {
         item_type: Option<&str>,
         method: &str,
         params: &str,
+        input_segments: Option<&str>,
     ) -> Result<i64>;
 
     // ---- worker message-flow capture (#695 PR2) ------------------------

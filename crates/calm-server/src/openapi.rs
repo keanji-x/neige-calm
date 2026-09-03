@@ -14,9 +14,9 @@ use crate::error::ErrorBody;
 use crate::harness::HarnessPhaseTag;
 use crate::model::{
     Area, AreaFolder, AreaKind, AreaPatch, AreaResolve, Card, CardPatch, CardRuntimeView,
-    FolderConflict, FolderConflictKind, HarnessItem, NewArea, NewAreaFolder, NewCard, NewOverlay,
-    NewTrack, Overlay, Plugin, Terminal, Track, TrackConversationSummary, TrackDetail, TrackPatch,
-    TrackWorkspacePatch,
+    FolderConflict, FolderConflictKind, HarnessInputPresentation, HarnessInputSegment, HarnessItem,
+    NewArea, NewAreaFolder, NewCard, NewOverlay, NewTrack, Overlay, Plugin, Terminal, Track,
+    TrackConversationSummary, TrackDetail, TrackPatch, TrackWorkspacePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
@@ -208,6 +208,8 @@ use utoipa::OpenApi;
         CardRuntimeView,
         NewCard,
         CardPatch,
+        HarnessInputPresentation,
+        HarnessInputSegment,
         HarnessItem,
         HarnessItemsQuery,
         SendPlannerInputRequest,

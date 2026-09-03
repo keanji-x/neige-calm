@@ -47,10 +47,10 @@ import {
 } from '../../../../core/domain/report.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
-  conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
+  conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, mergeTranscript, reconcileUserEchoes,
   trackConversationCardId,
-  type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
-  type TranscriptEntry,
+  type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
+  type ConversationTurn, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
@@ -151,7 +151,7 @@ type ConversationFacts = Readonly<{
  * same claim (`useConversationStore`).
  */
 function describeConversation(
-  facts: ConversationFacts, turns: readonly ConversationTurn[],
+  facts: ConversationFacts, turns: readonly ConversationMessage[],
 ): Conversation {
   return {
     id: facts.cardId, trackId: facts.trackId,
@@ -268,10 +268,8 @@ export function useConversationStore(
   const [echoNonce] = useState(mintIdempotencyKey);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   const serverTurns = useMemo(() => [...items]
-    .sort((left, right) => left.id - right.id).flatMap((item) => {
-      const turn = harnessItemToTurn(item);
-      return turn === null ? [] : [turn];
-    }), [items]);
+    .sort((left, right) => left.id - right.id)
+    .flatMap(harnessItemToTurns), [items]);
   /* Actions are read from the same rows, so they cannot disagree with the
      messages about what happened or when (`buildTranscript`). */
   const serverEntries = useMemo(() => buildTranscript(items), [items]);

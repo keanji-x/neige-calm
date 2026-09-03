@@ -5510,6 +5510,34 @@
           }
         }
       },
+      "HarnessInputPresentation": {
+        "type": "string",
+        "description": "How one segment of a harness `userMessage` should be presented to a human.\n\nCodex calls every turn input a `userMessage`, including observations the\nkernel injected on the user's behalf. The rendered English in that item is\nnot a protocol: wording changes must not turn a system update into something\nthe UI attributes to the user. The harness derives one value per structured\n[`crate::observation::Observation`] before the batch is flattened for\n`turn/start`.",
+        "enum": [
+          "user",
+          "system",
+          "system_worker_turn_finished",
+          "system_report_edited",
+          "system_task_completed",
+          "system_task_failed"
+        ]
+      },
+      "HarnessInputSegment": {
+        "type": "object",
+        "description": "One observation in the exact order and wording sent to `turn/start`.\nKeeping the rendered text beside its typed presentation makes a mixed batch\nreversible without teaching a reader how Rust joined or phrased it.",
+        "required": [
+          "presentation",
+          "text"
+        ],
+        "properties": {
+          "presentation": {
+            "$ref": "#/components/schemas/HarnessInputPresentation"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
       "HarnessItem": {
         "type": "object",
         "required": [
@@ -5533,6 +5561,15 @@
           "id": {
             "type": "integer",
             "format": "int64"
+          },
+          "input_segments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/HarnessInputSegment"
+            }
           },
           "item_type": {
             "type": [

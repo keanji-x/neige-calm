@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-import type { HarnessItem, TrackConversationSummary } from '../api/generated/wire.js';
+import type {
+  HarnessInputPresentation, HarnessInputSegment, HarnessItem, TrackConversationSummary,
+} from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
@@ -176,10 +178,39 @@ export type ConversationTurn = Readonly<{
   atMs: number;
 }>;
 
+/** A kernel observation delivered through Codex's user-message transport.
+ * It is transcript content, but nobody in the conversation authored it. */
+export type ConversationSystemEntry = Readonly<{
+  id: string;
+  author: 'system';
+  /** Stable short label selected from structured kernel metadata. */
+  label: string;
+  /** Full rendered observation, retained as disclosure/title context. */
+  text: string;
+  atMs: number;
+}>;
+
+export type ConversationMessage = ConversationTurn | ConversationSystemEntry;
+
+const harnessInputPresentationSchema: z.ZodType<HarnessInputPresentation> = z.enum([
+  'user',
+  'system',
+  'system_worker_turn_finished',
+  'system_report_edited',
+  'system_task_completed',
+  'system_task_failed',
+]);
+
+const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
+  presentation: harnessInputPresentationSchema,
+  text: z.string(),
+});
+
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
   id: z.number(), runtime_id: z.string(), card_id: z.string(), track_id: z.string(),
   thread_id: z.string(), turn_id: z.string().nullable(), item_uuid: z.string().nullable(),
   item_type: z.string().nullable(), method: z.string(), params: z.string(), created_at_ms: z.number(),
+  input_segments: z.array(harnessInputSegmentSchema).optional(),
 });
 
 const harnessPhaseSchema = z.enum([
@@ -436,6 +467,16 @@ const DIFF_PREFIX = '## Track state changes since your last turn';
 const DIFF_END = '\n\n---\n\n';
 const USER_SAYS = 'User says:\n';
 
+const SYSTEM_PRESENTATION_LABELS: Readonly<
+Record<Exclude<HarnessInputPresentation, 'user'>, string>
+> = Object.freeze({
+  system: 'System update',
+  system_worker_turn_finished: 'Worker turn finished',
+  system_report_edited: 'Report edited',
+  system_task_completed: 'Task completed',
+  system_task_failed: 'Task failed',
+});
+
 /*
  * Live data uses the camelCase spellings: all 162 rows checked on a real card
  * were `agentMessage` / `userMessage`. The kernel stores `item.type` verbatim,
@@ -457,14 +498,48 @@ function isUserMessage(itemType: string | null): boolean {
   return itemType === USER_MESSAGE || itemType === USER_MESSAGE_SNAKE_CASE;
 }
 
-export function harnessItemToTurn(item: HarnessItem): ConversationTurn | null {
+export function harnessItemToTurns(item: HarnessItem): readonly ConversationMessage[] {
   if (item.method !== 'item/completed' ||
-      (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return null;
+      (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return [];
+
+  if (isUserMessage(item.item_type) && item.input_segments !== undefined) {
+    const segments = item.input_segments;
+    let completedAtMs: unknown;
+    try {
+      const parsed = JSON.parse(item.params) as unknown;
+      if (typeof parsed === 'object' && parsed !== null) {
+        completedAtMs = (parsed as { completedAtMs?: unknown }).completedAtMs;
+      }
+    } catch {
+      // The structured segments are first-party persisted data and remain
+      // usable even when the opaque upstream notification cannot be decoded.
+    }
+    const atMs = typeof completedAtMs === 'number' && Number.isFinite(completedAtMs)
+      ? completedAtMs : item.created_at_ms;
+    return segments.flatMap<ConversationMessage>((segment, index) => {
+      let text = segment.text;
+      if (segment.presentation === 'user' && text.startsWith(USER_SAYS)) {
+        text = text.slice(USER_SAYS.length);
+      }
+      text = text.trim();
+      if (text === '') return [];
+      const id = segments.length === 1
+        ? String(item.id) : `${item.id}:${index}`;
+      if (segment.presentation === 'user') {
+        return [{ id, author: 'you' as const, text, atMs }];
+      }
+      return [{
+        id, author: 'system' as const,
+        label: SYSTEM_PRESENTATION_LABELS[segment.presentation], text, atMs,
+      }];
+    });
+  }
+
   let parsed: unknown;
-  try { parsed = JSON.parse(item.params); } catch { return null; }
-  if (typeof parsed !== 'object' || parsed === null) return null;
+  try { parsed = JSON.parse(item.params); } catch { return []; }
+  if (typeof parsed !== 'object' || parsed === null) return [];
   const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
-  if (typeof envelope.item !== 'object' || envelope.item === null) return null;
+  if (typeof envelope.item !== 'object' || envelope.item === null) return [];
   const payload = envelope.item as { text?: unknown; content?: unknown };
   let text = isAgentMessage(item.item_type)
     ? (typeof payload.text === 'string' ? payload.text : '')
@@ -476,14 +551,16 @@ export function harnessItemToTurn(item: HarnessItem): ConversationTurn | null {
     const end = text.indexOf(DIFF_END);
     if (end >= 0) text = text.slice(end + DIFF_END.length);
   }
-  if (isUserMessage(item.item_type) && text.startsWith(USER_SAYS)) text = text.slice(USER_SAYS.length);
+  if (isUserMessage(item.item_type) && text.startsWith(USER_SAYS)) {
+    text = text.slice(USER_SAYS.length);
+  }
   text = text.trim();
-  if (text === '') return null;
-  return {
+  if (text === '') return [];
+  return [{
     id: String(item.id), author: isUserMessage(item.item_type) ? 'you' : 'agent', text,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
-  };
+  }];
 }
 
 /* ── What the agent did between two things it said ──────────────────────────
@@ -528,7 +605,7 @@ export type ConversationActivity = Readonly<{
   atMs: number;
 }>;
 
-export type TranscriptEntry = ConversationTurn | ConversationActivity;
+export type TranscriptEntry = ConversationMessage | ConversationActivity;
 
 /** `bash -lc 'neige state'` is how codex spells every command; the wrapper is
  *  noise on every single line, so the line shows what was actually run. */
@@ -824,9 +901,9 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
  * instead of by two unrelated converters each independently happening to
  * reject it.
  *
- * Honest about what this does and does not buy: `harnessItemToTurn` and
+ * Honest about what this does and does not buy: `harnessItemToTurns` and
  * `harnessItemToActivity` check the method themselves, and must keep doing so
- * (they are exported and called directly — `harnessItemToTurn` from
+ * (they are exported and called directly — `harnessItemToTurns` from
  * `web/src/app/router/public.tsx`). So this gate cannot change the output of
  * `buildTranscript` today and no test can make it load-bearing; deleting it
  * leaves the suite green. It is a fail-closed backstop, and stating the
@@ -863,11 +940,13 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     // Only methods the transcript understands get past here — see
     // `isTranscriptMethod` for what this backstop is and is not worth.
     if (!isTranscriptMethod(item.method)) continue;
-    const turn = harnessItemToTurn(item);
-    if (turn !== null) {
-      const key = `turn-${item.id}`;
-      if (!byKey.has(key)) order.push(key);
-      byKey.set(key, turn);
+    const turns = harnessItemToTurns(item);
+    if (turns.length > 0) {
+      for (const turn of turns) {
+        const key = `turn-${turn.id}`;
+        if (!byKey.has(key)) order.push(key);
+        byKey.set(key, turn);
+      }
       continue;
     }
     const activity = harnessItemToActivity(item);
@@ -914,7 +993,7 @@ function userTextMatchesEcho(userText: string, echoText: string): boolean {
 
 /** Reconcile recent persisted user rows with optimistic echoes one-to-one. */
 export function reconcileUserEchoes(
-  serverTurns: readonly ConversationTurn[],
+  serverTurns: readonly ConversationMessage[],
   echoes: readonly ConversationTurn[],
 ): readonly ConversationTurn[] {
   const userTexts = serverTurns.filter((turn) => turn.author === 'you')

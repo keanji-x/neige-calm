@@ -1096,6 +1096,57 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Kernel observations are context for the exchange, not a third speaker.
+   * Their stable label stays in the reading flow and the native disclosure
+   * keeps the full observation reachable without turning it into a bubble. */
+  .system {
+    margin: 0;
+    color: var(--text-4);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+  }
+
+  .systemSummary {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    min-block-size: var(--control-h);
+    min-inline-size: 0;
+    cursor: pointer;
+    list-style: none;
+    text-align: start;
+  }
+
+  .systemSummary::-webkit-details-marker {
+    display: none;
+  }
+
+  .systemDisclosure {
+    flex: none;
+    inline-size: var(--space-5);
+    transform-origin: center;
+  }
+
+  .system[open] > .systemSummary .systemDisclosure {
+    transform: rotate(90deg);
+  }
+
+  .systemLabel {
+    overflow: hidden;
+    min-inline-size: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .systemDetail {
+    margin: var(--space-3) 0 0;
+    overflow-wrap: anywhere;
+    color: var(--text-3);
+    text-align: start;
+    white-space: pre-wrap;
+  }
+
 
 
 

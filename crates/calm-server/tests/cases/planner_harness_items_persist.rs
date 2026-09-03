@@ -1,16 +1,16 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use calm_server::codex_appserver::Notification;
+use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, PlannerHarness,
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, PlannerHarness,
     PlannerHarnessParams,
 };
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
+use calm_server::model::{HarnessInputPresentation, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -27,6 +27,14 @@ const SEED_THREAD_ID: &str = "thread-items-persist";
 async fn seed_harness(
     repo: Arc<SqlxRepo>,
     events: EventBus,
+) -> (PlannerHarness, Arc<SharedCodexAppServer>, String, String) {
+    seed_harness_with_pending(repo, events, vec![]).await
+}
+
+async fn seed_harness_with_pending(
+    repo: Arc<SqlxRepo>,
+    events: EventBus,
+    pending: Vec<Observation>,
 ) -> (PlannerHarness, Arc<SharedCodexAppServer>, String, String) {
     let area = repo
         .area_create(NewArea {
@@ -62,7 +70,7 @@ async fn seed_harness(
         .unwrap();
     let runtime_id = new_id();
     let thread_id = SEED_THREAD_ID.to_string();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    let mut snapshot = HarnessSnapshot::initial(0, pending);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
 
@@ -278,6 +286,126 @@ async fn item_notification_persists_row_and_emits_event() {
         .expect("HarnessItemAdded row must exist in events_since");
     assert_ne!(durable_item_event_id, 0);
     assert_eq!(durable_item_event_id, event_id);
+
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn issued_mixed_observation_segments_are_persisted_on_the_echoed_user_message() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let pending = vec![
+        Observation::TaskCompleted {
+            idempotency_key: "task-completed".into(),
+            result: json!({"status": "ok"}),
+        },
+        Observation::UserMessage {
+            text: "what changed?".into(),
+        },
+        Observation::TaskFailed {
+            idempotency_key: "task-failed".into(),
+            error: "boom".into(),
+        },
+    ];
+    let (harness, daemon, card_id, _track_id) =
+        seed_harness_with_pending(repo.clone(), events, pending).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let issued_text = loop {
+        let turns = daemon.started_turns_for_test();
+        if let Some((_thread_id, input)) = turns.first()
+            && let Some(InputItem::Text { text }) = input.first()
+        {
+            break text.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the observation batch to issue"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    let issued = harness
+        .snapshot()
+        .await
+        .issued_input_segments
+        .expect("issued segments must survive in the harness snapshot");
+    assert_eq!(
+        issued
+            .segments
+            .iter()
+            .map(|segment| segment.presentation)
+            .collect::<Vec<_>>(),
+        vec![
+            HarnessInputPresentation::SystemTaskCompleted,
+            HarnessInputPresentation::User,
+            HarnessInputPresentation::SystemTaskFailed,
+        ]
+    );
+    assert_eq!(
+        issued_text,
+        issued
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "the structured segments must be the exact strings flattened for Codex"
+    );
+    let issued_turn_id = issued.turn_id;
+    let issued_segments = issued.segments;
+
+    daemon.emit_notification_for_test(Notification::Item {
+        method: "item/completed".into(),
+        params: json!({
+            "threadId": SEED_THREAD_ID,
+            "turn": { "id": "foreign-turn" },
+            "item": {
+                "id": "item-user-foreign-turn",
+                "type": "userMessage",
+                "content": [{ "type": "text", "text": issued_text.clone() }]
+            }
+        }),
+    });
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(
+        rows[0].input_segments, None,
+        "a late or foreign user-message must not inherit the active turn's provenance"
+    );
+
+    daemon.emit_notification_for_test(Notification::Item {
+        method: "item/completed".into(),
+        params: json!({
+            "threadId": SEED_THREAD_ID,
+            "turn": { "id": issued_turn_id },
+            "item": {
+                "id": "item-user-structured-source",
+                "type": "userMessage",
+                "content": [{ "type": "text", "text": issued_text }]
+            }
+        }),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 2).await;
+    assert_eq!(rows[1].input_segments, Some(issued_segments));
+    let params: Value = serde_json::from_str(&rows[1].params).unwrap();
+    assert_eq!(
+        params["item"]["content"][0]["text"], issued_text,
+        "provenance belongs in its own column; the upstream frame stays verbatim"
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if harness.snapshot().await.issued_input_segments.is_none() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "once the completed user-message owns the segments, later item notifications must not \
+             keep rewriting the full batch through the runtime snapshot"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     harness.shutdown().await.unwrap();
 }

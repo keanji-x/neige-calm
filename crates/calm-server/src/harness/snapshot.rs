@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::harness::Observation;
 use crate::harness::state::{HarnessState, IssuingKind};
 use crate::harness::token_usage::TokenUsage;
+use crate::model::HarnessInputSegment;
 
 // #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
 // referenced by `Event::HarnessPhaseChanged`). Re-exported so the
@@ -21,6 +22,17 @@ pub use calm_types::harness::HarnessPhaseTag;
 
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
+
+/// Presentation metadata retained until the echoed input completes (or the
+/// next input batch supersedes it).
+/// Keeping the turn id with it prevents a late notification from inheriting a
+/// newer turn's classification, and persisting it lets a harness recovered
+/// mid-turn classify the remaining item notifications without reading English.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IssuedInputSegments {
+    pub turn_id: String,
+    pub segments: Vec<HarnessInputSegment>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HarnessSnapshot {
@@ -43,6 +55,8 @@ pub struct HarnessSnapshot {
     pub last_seen_head: Option<String>,
     #[serde(default)]
     pub issued_turn_head: Option<String>,
+    #[serde(default)]
+    pub issued_input_segments: Option<IssuedInputSegments>,
     #[serde(default)]
     pub wedged_reason: Option<String>,
     /// #1255 S3 — latest `thread/tokenUsage/updated` reading for this thread.
@@ -104,6 +118,7 @@ impl HarnessSnapshot {
             last_report_body_sha256: None,
             last_seen_head: None,
             issued_turn_head: None,
+            issued_input_segments: None,
             wedged_reason: None,
             token_usage: None,
         }
@@ -135,6 +150,7 @@ impl HarnessSnapshot {
             last_report_body_sha256,
             last_seen_head: None,
             issued_turn_head: None,
+            issued_input_segments: None,
             // Set by `snapshot_for` from `Inner`, exactly like
             // `last_seen_head` / `issued_turn_head` above: `from_state` sees
             // only `HarnessState`, and token usage does not live there.
@@ -205,6 +221,7 @@ impl From<&HarnessState> for HarnessPhaseTag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{HarnessInputPresentation, HarnessInputSegment};
     use serde_json::json;
 
     /// Forward compatibility as an executed test rather than an asserted
@@ -258,5 +275,32 @@ mod tests {
         );
         assert_eq!(snapshot.push_watermark, 42, "the rest still round-trips");
         assert_eq!(snapshot.last_thread_id.as_deref(), Some("thread-pre-1255"));
+        assert_eq!(
+            snapshot.issued_input_segments, None,
+            "pre-#1270 snapshots have no structured input classification"
+        );
+    }
+
+    #[test]
+    fn issued_input_segments_round_trip_without_a_schema_bump() {
+        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+        let segments = vec![HarnessInputSegment {
+            presentation: HarnessInputPresentation::SystemReportEdited,
+            text: "report changed".into(),
+        }];
+        snapshot.issued_input_segments = Some(IssuedInputSegments {
+            turn_id: "turn-structured".into(),
+            segments: segments.clone(),
+        });
+
+        let value = serde_json::to_value(snapshot).expect("serialize snapshot");
+        let recovered = HarnessSnapshot::from_value_strict(value);
+        assert_eq!(
+            recovered.issued_input_segments,
+            Some(IssuedInputSegments {
+                turn_id: "turn-structured".into(),
+                segments,
+            })
+        );
     }
 }
