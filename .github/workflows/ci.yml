@@ -536,15 +536,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
-          # Test artifacts are profile/feature-specific. Sharing this key with the faster OpenAPI
-          # and release jobs made the first finisher persist a partial cache that could never be
-          # augmented (GitHub cache keys are immutable), so every exact "hit" still rebuilt all 105
-          # test binaries. Include workspace crates and rotate on Rust source changes; non-Rust PRs
-          # then restore the complete test graph, while Rust PRs fall back and rebuild what changed.
-          # Self-hosted jobs skip this action and reuse their dedicated CARGO_TARGET_DIR directly.
-          shared-key: rust-test
-          key: ${{ hashFiles('**/*.rs') }}
-          cache-workspace-crates: true
+          # Keep test-profile dependency artifacts separate from the faster OpenAPI/release jobs.
+          # Do not cache workspace crates on hosted runners: a 547 MB exact restore still rebuilt
+          # them for ~3 minutes because checkout mtimes are newer than the cached outputs. Trusted
+          # main pushes skip this action and reuse their persistent CARGO_TARGET_DIR instead.
+          shared-key: rust-test-deps
+          cache-workspace-crates: false
 
       # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
       # .config/nextest.toml; CI uses --profile ci below.
@@ -571,6 +568,10 @@ jobs:
         #   has 0 doctests — every doc fence carries a non-rust language tag
         #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
         #   are ever introduced, add a `cargo test --doc` step alongside.
+        # - The migration replay harness runs here with every other test and is
+        #   named individually in nextest/JUnit output. Do not add a second
+        #   filtered invocation after this one: it duplicated the same two
+        #   tests for 19–22s on every run without adding coverage.
         run: |
           set -euo pipefail
           extra_args=()
@@ -581,39 +582,6 @@ jobs:
             extra_args+=(--test-threads 4)
           fi
           cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci "${extra_args[@]}"
-
-      # #679 PR0-D — migration-replay gate, made explicit so a failure is
-      # attributable at a glance. Re-runs the snapshot replay harness: every
-      # per-version stage→seed→replay stop must converge on the fresh-DB
-      # schema. This step MUST be invoked at workspace level, exactly like the
-      # main nextest step above, so it stays fully Fresh (no recompile) —
-      # nextest's build phase is the same `cargo test --no-run` fingerprint,
-      # so the artifacts are shared verbatim. Two ingredients, both
-      # load-bearing:
-      #   1. Features aligned with the main test step: codex-e2e is an empty
-      #      feature (calm-provider's side is `[]`; it only gates `#![cfg]` in
-      #      tests/*.rs), so passing it here is purely build-fingerprint
-      #      alignment — without it, the feature flip re-compiled the
-      #      calm-provider→calm-server chain (~63s) on every run.
-      #   2. `--workspace` (NOT `-p calm-server`): any -p narrowing shrinks
-      #      cargo's feature-unification domain from the workspace to a single
-      #      package, so features that other workspace members enable on shared
-      #      deps (sqlx, rustls, …) disappear, flipping dependency fingerprints
-      #      and re-compiling ~53s of rustls→sqlx→calm-truth→calm-server. Do
-      #      not "simplify" this back to -p. The `-E` filterset (binary
-      #      migration_suite ∩ the migration_replay_harness:: module) selects
-      #      only the replay harness.
-      # Deliberately NOT --profile ci: the ci profile writes its junit report
-      # to a fixed path (target/nextest/ci/junit.xml), so this small re-run
-      # would overwrite the full-suite timing report uploaded below. The
-      # default profile emits no junit; its default-filter only excludes
-      # export_bindings_* tests, which don't live in this binary.
-      # The external-snapshot half self-skips while NEIGE_SNAPSHOT_DB is unset
-      # in CI; point it at a sanitized prod snapshot to extend the gate to
-      # real data.
-      - name: migration replay gate (#679 PR0-D)
-        run: |
-          cargo nextest run --workspace --locked --features calm-server/codex-e2e -E 'binary(migration_suite) & test(/^migration_replay_harness::/)'
 
       # #903 — per-test timing (junit.xml, written by the ci nextest profile),
       # the input for the Slice C timing analysis.
