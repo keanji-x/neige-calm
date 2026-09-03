@@ -31,9 +31,9 @@ Worker 自报、terminal exit hook、runtime reaper 等路径可以推进 task�
 
 这类路径写 `TaskCompleted` 或 `TaskFailed`，并通过 CAS 决定 winner。
 
-### Spec verdict 类
+### Planner verdict 类
 
-Spec verdict 是对结果的裁决，不是 worker 自报。它使用独立 guard 和事件语义，不能伪装成 worker ownership。
+Planner verdict 是对结果的裁决，不是 worker 自报。它使用独立 guard 和事件语义，不能伪装成 worker ownership。
 
 Gate result 同样是独立类别：它推进 `verifying`，但不借用 worker report 的权限。
 
@@ -79,14 +79,14 @@ Reaper 处理“worker 已经死了，无法自己报告”的情况。它可以
 
 需要 gate 的任务，worker 成功只推进到 `verifying`。只有 gate outcome 可以从 `verifying` 进入 `done | failed`。
 
-Spec verdict 不能跳过 gate；迟到 worker success 也不能把 gate failure 改回 done。Track lifecycle 的完成推进发生在最终 gate 事务，而不是 worker 自报事务。
+Planner verdict 不能跳过 gate；迟到 worker success 也不能把 gate failure 改回 done。Track lifecycle 的完成推进发生在最终 gate 事务，而不是 worker 自报事务。
 
 ## 不变量
 
 1. Task 终态不可逆。
 2. 一个 task 最多产生一个有效终结事实。
 3. Worker actor 只能终结自己拥有的 task。
-4. Spec verdict、gate 和 reaper 各自保留独立权限。
+4. Planner verdict、gate 和 reaper 各自保留独立权限。
 5. Live 与 sweep 结果通过同一 CAS 收敛。
 6. 终结 row flip、投影、event 和 lifecycle 同事务。
 7. Broadcast 丢失不影响最终状态。
@@ -100,7 +100,7 @@ Spec verdict 不能跳过 gate；迟到 worker success 也不能把 gate failure
 - Terminal live exit 与 boot sweep 同时发生。
 - Worker report 与用户 cancel 同时发生。
 - Worker success 与 gate failure 乱序到达。
-- Spec verdict 与 worker report 竞争。
+- Planner verdict 与 worker report 竞争。
 - 同一 report/outcome 重放多次。
 - Worker card、session 或 operation identity 被替换后旧 callback 到达。
 - Event subscriber lag/重启时数据库 sweep 仍收敛。

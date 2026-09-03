@@ -545,7 +545,7 @@ mod tests {
             "acceptance": "Done", "ready": false, "declared_by": "spec"
         });
         let fence = calm_types::report_blocks::render_data_block("task", &task).unwrap();
-        report_as(&repo, source.id.as_str(), v1(fence), EditAuthor::Spec).await;
+        report_as(&repo, source.id.as_str(), v1(fence), EditAuthor::Planner).await;
 
         let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await

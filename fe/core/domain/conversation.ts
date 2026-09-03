@@ -88,7 +88,7 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   terminal: 'Terminal',
   codex: 'Codex',
   claude: 'Claude',
-  'shared-spec': 'Spec',
+  'shared-spec': 'Planner',
   /* Every area conversation reads "Chat" until one is named: the server mints
      the card with no title and nothing writes one yet (#1098 §7). */
   'shared-chat': 'Chat',
@@ -203,7 +203,7 @@ const harnessPhaseSchema = z.enum([
   'turn_running', 'turn_completed', 'resumed', 'wedged',
 ]);
 
-export type SpecRun = Readonly<{
+export type PlannerRun = Readonly<{
   card_id: string;
   runtime_id?: string | null;
   phase?: z.infer<typeof harnessPhaseSchema> | null;
@@ -220,33 +220,33 @@ ApiOperation<HarnessItem[]> {
   };
 }
 
-export function specRunOperation(cardId: string): ApiOperation<SpecRun> {
+export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
   return {
-    method: 'GET', path: `/api/cards/${encodeURIComponent(cardId)}/spec/run`,
+    method: 'GET', path: `/api/cards/${encodeURIComponent(cardId)}/planner/run`,
     responseSchema: z.object({
       card_id: z.string(), runtime_id: z.string().nullable().optional(), phase: harnessPhaseSchema.nullable().optional(),
     }),
   };
 }
 
-export function sendSpecInputOperation(cardId: string, text: string): ApiOperation<unknown> {
+export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<unknown> {
   return {
-    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/spec/input`, body: { text },
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`, body: { text },
     responseSchema: z.object({ card_id: z.string(), runtime_id: z.string() }),
   };
 }
 
-export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: boolean }> {
+export function interruptPlannerOperation(cardId: string): ApiOperation<{ stopped: boolean }> {
   return {
-    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/spec/interrupt`,
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/interrupt`,
     responseSchema: z.object({ card_id: z.string(), runtime_id: z.string(), stopped: z.boolean() }),
   };
 }
 
 /*
- * There is no `resetSpecOperation`, and that is deliberate (#1139).
+ * There is no `resetPlannerOperation`, and that is deliberate (#1139).
  *
- * `POST /api/cards/:id/spec/reset` still exists on the server and is not going
+ * `POST /api/cards/:id/planner/reset` still exists on the server and is not going
  * anywhere; what was removed is every *front-end* way to reach it. Clearing one
  * conversation in place has no value here, because conversations are not
  * singular: an area's chat track carries as many `harness_profile: plain_chat`
@@ -259,7 +259,7 @@ export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: 
 /* ── Area conversations (#1098) ─────────────────────────────────────────────
  *
  * An area's conversations are ordinary plain-chat harness cards on a hidden chat
- * track. Everything *inside* one is the spec-harness surface unchanged — items,
+ * track. Everything *inside* one is the planner-harness surface unchanged — items,
  * phase, input, interrupt all take a card id and do not care how the
  * card was made. Only two things are new: where the list comes from, and how
  * the first message creates the card it is sent to.
@@ -505,7 +505,7 @@ export type AreaConversationFailure = Readonly<
      *
      * `create_area_conversation` mints the card through the operation runtime
      * first and only then delivers the first message; every 503 the route can
-     * raise comes from that second half (`send_spec_input` → "spec harness is
+     * raise comes from that second half (`send_planner_input` → "planner harness is
      * starting", "app-server not running", "observation queue full"), by which
      * point the card exists. Operation failures never map to 503 at all
      * (`calm_error_from_operation_failure` yields 400/404/409/500 only), and a
@@ -568,7 +568,7 @@ const USER_SAYS = 'User says:\n';
 /*
  * Live data uses the camelCase spellings: all 162 rows checked on a real card
  * were `agentMessage` / `userMessage`. The kernel stores `item.type` verbatim,
- * though: `spec_harness_items_persist.rs` proves that with a synthetic
+ * though: `planner_harness_items_persist.rs` proves that with a synthetic
  * `agent_message` notification. That does not prove codex emits snake_case; we
  * accept it as a precaution so such a stored message remains a turn instead of
  * falling through to a generic `Worked agent_message` activity.
@@ -617,7 +617,7 @@ export function harnessItemToTurn(item: HarnessItem): ConversationTurn | null {
 
 /* ── What the agent did between two things it said ──────────────────────────
  *
- * A spec turn is mostly not messages. In a captured four-minute session the 36
+ * A planner turn is mostly not messages. In a captured four-minute session the 36
  * persisted rows were: 4 agent messages, 2 user messages, and **11 actions** —
  * 7 reasoning, 3 shell runs, 1 `calm.report.write`. Rendering only the messages
  * is what made the agent look like it answered by silently editing the report:

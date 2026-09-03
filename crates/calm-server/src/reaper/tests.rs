@@ -66,23 +66,23 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, TrackId) {
     )
     .await
     .expect("seed track");
-    let spec_card = RepoSyncDomainRaw::card_create(
+    let planner_card = RepoSyncDomainRaw::card_create(
         repo.as_ref(),
         NewCard {
             track_id: track.id.clone(),
-            title: Some("spec".into()),
+            title: Some("planner".into()),
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
         },
     )
     .await
-    .expect("seed spec card");
-    sqlx::query("UPDATE cards SET role = 'spec', deletable = 0 WHERE id = ?1")
-        .bind(spec_card.id.as_str())
+    .expect("seed planner card");
+    sqlx::query("UPDATE cards SET role = 'planner', deletable = 0 WHERE id = ?1")
+        .bind(planner_card.id.as_str())
         .execute(repo.pool())
         .await
-        .expect("mark seeded card as spec");
+        .expect("mark seeded card as planner");
     (repo, track.id)
 }
 
@@ -392,19 +392,19 @@ async fn lifecycle_changes(repo: &SqlxRepo, track_id: &TrackId) -> Vec<Event> {
 
 // ----- #741-4 dead-root convergence test helpers -----------------------
 
-/// Insert a `spec-harness-start` operation for `track_id` and stamp its
+/// Insert a `planner-harness-start` operation for `track_id` and stamp its
 /// terminal `phase` (DR-4's positive dead signal keys on `phase='failed'`).
 /// The payload carries `track_id` at top level — the immutable op→track link
 /// `dead_root_candidates` queries via `json_extract(payload_json,
 /// '$.track_id')`.
-async fn insert_spec_harness_start_op(repo: &SqlxRepo, track_id: &TrackId, phase: &str) {
-    let spec_card_id: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'spec'")
+async fn insert_planner_harness_start_op(repo: &SqlxRepo, track_id: &TrackId, phase: &str) {
+    let planner_card_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
             .bind(track_id.as_str())
             .fetch_one(repo.pool())
             .await
-            .expect("track has a real spec card");
-    insert_harness_start_op_for_card(repo, track_id, &spec_card_id, phase).await;
+            .expect("track has a real planner card");
+    insert_harness_start_op_for_card(repo, track_id, &planner_card_id, phase).await;
 }
 
 async fn insert_harness_start_op_for_card(
@@ -416,7 +416,7 @@ async fn insert_harness_start_op_for_card(
     let op_repo = SqlxOperationRepo::new(repo.pool().clone());
     let op_id = op_repo
         .insert_operation(
-            "spec-harness-start",
+            "planner-harness-start",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: None,
@@ -425,12 +425,12 @@ async fn insert_harness_start_op_for_card(
             json!({
                 "actor": ActorId::KernelDispatcher,
                 "track_id": track_id.as_str(),
-                "spec_card_id": card_id,
+                "planner_card_id": card_id,
                 "cwd": "/tmp",
             }),
         )
         .await
-        .expect("insert spec-harness-start operation");
+        .expect("insert planner-harness-start operation");
     // `insert_operation` always lands `phase='pending'`; advance to the
     // requested terminal phase (mirrors `mark_failed`, which sets `phase`
     // and a completed timestamp without touching target columns).
@@ -455,7 +455,7 @@ async fn insert_harness_start_op_with_payload(
     let op_repo = SqlxOperationRepo::new(repo.pool().clone());
     let op_id = op_repo
         .insert_operation(
-            "spec-harness-start",
+            "planner-harness-start",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: None,
@@ -464,7 +464,7 @@ async fn insert_harness_start_op_with_payload(
             payload,
         )
         .await
-        .expect("insert malformed spec-harness-start operation");
+        .expect("insert malformed planner-harness-start operation");
     sqlx::query("UPDATE operations SET phase = ?1, completed_at_ms = ?2 WHERE id = ?3")
         .bind(phase)
         .bind(if matches!(phase, "failed" | "succeeded") {
@@ -525,7 +525,7 @@ async fn track_lifecycle_now(repo: &SqlxRepo, track_id: &TrackId) -> TrackLifecy
         .lifecycle
 }
 
-/// DR-4 failed-start: a `Draft` track whose `spec-harness-start` op resolved
+/// DR-4 failed-start: a `Draft` track whose `planner-harness-start` op resolved
 /// to `phase='failed'`, with NO active planner session, converges
 /// `Draft → Failed` — exactly one `TrackLifecycleChanged` (KernelDispatcher),
 /// and NO `TaskFailed` (a dead root has no task row).
@@ -540,7 +540,7 @@ async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
         track_lifecycle_now(&repo, &track_id).await,
         TrackLifecycle::Draft
     );
-    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
+    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -621,16 +621,16 @@ async fn sweep_dead_roots_failed_worker_start_stays_draft() {
 }
 
 /// INV-CHAT-017(a,c): the purpose fence independently protects a chat track
-/// whose failed start points at its own real spec card. The production ensure
+/// whose failed start points at its own real planner card. The production ensure
 /// endpoint must then return that same usable Draft track.
 #[tokio::test]
-async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_same_track() {
+async fn sweep_dead_roots_chat_failed_true_planner_stays_draft_and_ensure_returns_same_track() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
     set_track_purpose(&repo, &track_id, crate::AREA_CHAT_PURPOSE).await;
-    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
+    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -711,14 +711,14 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
 }
 
 /// A newer Worker/chat start must not mask an older failed true-root start:
-/// the MAX(rowid) subquery considers only start ops for this track's spec card.
+/// the MAX(rowid) subquery considers only start ops for this track's planner card.
 #[tokio::test]
 async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
+    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
     let worker = RepoSyncDomainRaw::card_create(
         repo.as_ref(),
         NewCard {
@@ -750,22 +750,22 @@ async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// Non-string `spec_card_id` payloads are not true-root evidence. This pins
+/// Non-string `planner_card_id` payloads are not true-root evidence. This pins
 /// the fail-closed type guard in the inner latest-true-root-op filter.
 #[tokio::test]
-async fn sweep_dead_roots_non_text_spec_card_id_fails_closed() {
+async fn sweep_dead_roots_non_text_planner_card_id_fails_closed() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    sqlx::query("UPDATE cards SET id = '7' WHERE track_id = ?1 AND role = 'spec'")
+    sqlx::query("UPDATE cards SET id = '7' WHERE track_id = ?1 AND role = 'planner'")
         .bind(track_id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
     insert_harness_start_op_with_payload(
         &repo,
-        json!({"track_id": track_id.as_str(), "spec_card_id": 7}),
+        json!({"track_id": track_id.as_str(), "planner_card_id": 7}),
         "failed",
     )
     .await;
@@ -797,11 +797,11 @@ async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_conv
 
     // (a) pending start-op
     let (repo_pending, track_pending) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_pending, &track_pending, "pending").await;
+    insert_planner_harness_start_op(&repo_pending, &track_pending, "pending").await;
     // (b) succeeded start-op (the track hasn't advanced past Draft yet, but
     //     the start succeeded — definitely not dead).
     let (repo_succeeded, track_succeeded) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
+    insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
     // (c) NO start-op row at all (just-created / in-flight — absence is
     //     ambiguous, must NOT converge).
     let (repo_absent, track_absent) = seeded_repo().await;
@@ -839,7 +839,7 @@ async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_conv
 }
 
 /// DR-4 latest-start-op guard (the stale-failed-plus-newer-retry hole):
-/// start/reset re-submit `spec-harness-start` with a FRESH op id, so a
+/// start/reset re-submit `planner-harness-start` with a FRESH op id, so a
 /// Draft track can carry a STALE `failed` start-op AND a NEWER retry
 /// (`pending` or `succeeded`) start-op simultaneously. During the retry's
 /// setup window the planner session is not yet created, so the
@@ -854,13 +854,13 @@ async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged()
     // (a) STALE failed start-op, then a NEWER pending retry start-op
     //     (retry in flight, planner session not yet created).
     let (repo_pending, track_pending) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_pending, &track_pending, "failed").await;
-    insert_spec_harness_start_op(&repo_pending, &track_pending, "pending").await;
+    insert_planner_harness_start_op(&repo_pending, &track_pending, "failed").await;
+    insert_planner_harness_start_op(&repo_pending, &track_pending, "pending").await;
     // (b) STALE failed start-op, then a NEWER succeeded retry start-op
     //     (start ultimately succeeded — definitely not dead).
     let (repo_succeeded, track_succeeded) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_succeeded, &track_succeeded, "failed").await;
-    insert_spec_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
+    insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "failed").await;
+    insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
 
     for (repo, track_id, label) in [
         (repo_pending, track_pending, "newer-pending"),
@@ -908,7 +908,7 @@ async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
 
     // Draft + failed start-op, but a fresh planner session is `running`.
     let (repo_draft, track_draft) = seeded_repo().await;
-    insert_spec_harness_start_op(&repo_draft, &track_draft, "failed").await;
+    insert_planner_harness_start_op(&repo_draft, &track_draft, "failed").await;
     insert_planner_session(
         &repo_draft,
         "planner-respawn-draft",
@@ -1048,7 +1048,7 @@ async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
 
     let (repo, track_id) = seeded_repo().await;
     // A genuinely-dead failed-start root that WOULD converge post-boot.
-    insert_spec_harness_start_op(&repo, &track_id, "failed").await;
+    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();

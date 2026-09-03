@@ -134,7 +134,7 @@ fn forge_payload_from_env() -> serde_json::Value {
     let argv = env_json("STUB_FORGE_ARGV_JSON").unwrap_or_else(|| serde_json::json!(["/bin/true"]));
     let idem_key =
         std::env::var("STUB_FORGE_IDEM_KEY").unwrap_or_else(|_| "stub-forge-action".to_string());
-    let event_spec = env_json("STUB_FORGE_EVENT_SPEC_JSON");
+    let event_spec = env_json("STUB_FORGE_EVENT_PLANNER_JSON");
     let subject = env_json("STUB_FORGE_SUBJECT_JSON");
     let context = env_json("STUB_FORGE_CONTEXT_JSON").unwrap_or_else(|| serde_json::json!({}));
     let probe = env_json("STUB_FORGE_PROBE_JSON");

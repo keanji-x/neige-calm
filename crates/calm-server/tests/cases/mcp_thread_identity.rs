@@ -47,7 +47,7 @@ struct Boot {
     socket_path: PathBuf,
     raw_token: String,
     track_id: String,
-    spec_card_id: String,
+    planner_card_id: String,
     worker_card_id: String,
     _tmp: TempDir,
 }
@@ -88,11 +88,11 @@ async fn boot_with_registry_and_daemon_hash(
         .unwrap();
 
     let card_role_cache = CardRoleCache::new();
-    let spec_card_id = calm_server::model::new_id();
+    let planner_card_id = calm_server::model::new_id();
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_spec_card, _term, mcp_token) = card_with_codex_create_tx(
+    let (_planner_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
-        spec_card_id.clone(),
+        planner_card_id.clone(),
         &calm_server::model::new_id(),
         None,
         track.id.clone(),
@@ -103,7 +103,7 @@ async fn boot_with_registry_and_daemon_hash(
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -148,7 +148,7 @@ async fn boot_with_registry_and_daemon_hash(
         socket_path,
         raw_token: mcp_token.unwrap(),
         track_id: track.id.as_str().to_string(),
-        spec_card_id: spec_card_id.as_str().to_string(),
+        planner_card_id: planner_card_id.as_str().to_string(),
         worker_card_id: worker.id.as_str().to_string(),
         _tmp: tmp,
     }
@@ -177,11 +177,11 @@ fn role_gate_registry() -> Arc<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     let handler: ToolHandler = Arc::new(move |_ctx, identity, _args| -> ToolHandlerFuture {
         Box::pin(async move {
-            require_role(&identity, CardRole::Spec)?;
-            Ok(json!({ "role": "spec" }))
+            require_role(&identity, CardRole::Planner)?;
+            Ok(json!({ "role": "planner" }))
         })
     });
-    registry.register(test_descriptor("test.spec_only"), handler);
+    registry.register(test_descriptor("test.planner_only"), handler);
     Arc::new(registry)
 }
 
@@ -191,7 +191,7 @@ fn test_descriptor(name: &str) -> ToolDescriptor {
         description: "test tool".into(),
         input_schema: json!({ "type": "object", "properties": {} }),
         annotations: None,
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -276,7 +276,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
             sort: None,
             payload: Value::Null,
         },
-        CardRole::Spec,
+        CardRole::Planner,
         true,
         &role_cache,
     )
@@ -588,7 +588,7 @@ async fn raw_call_with_token(boot: &Boot, token: &str, frame: Value) -> Value {
 async fn cardbound_with_matching_thread_id_uses_resolved_thread() {
     let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
-    seed_thread(&boot, &boot.spec_card_id, "T1", CardRole::Spec).await;
+    seed_thread(&boot, &boot.planner_card_id, "T1", CardRole::Planner).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
@@ -599,8 +599,8 @@ async fn cardbound_with_matching_thread_id_uses_resolved_thread() {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
     let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.spec_card_id);
-    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.card_id, boot.planner_card_id);
+    assert_eq!(identity.role, CardRole::Planner);
     assert_eq!(identity.track_id.as_deref(), Some(boot.track_id.as_str()));
     assert_eq!(identity.thread_id, "T1");
     let _ = &boot.server;
@@ -648,7 +648,7 @@ async fn daemontrust_with_known_thread_id_uses_mapped_card_identity() {
     let (registry, mut rx) = capture_identity_registry();
     let boot =
         boot_with_registry_and_daemon_hash(registry, Some(auth::hash_token(daemon_token))).await;
-    seed_thread(&boot, &boot.spec_card_id, "T-daemon", CardRole::Spec).await;
+    seed_thread(&boot, &boot.planner_card_id, "T-daemon", CardRole::Planner).await;
     let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
 
     send_frame(
@@ -659,8 +659,8 @@ async fn daemontrust_with_known_thread_id_uses_mapped_card_identity() {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
     let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.spec_card_id);
-    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.card_id, boot.planner_card_id);
+    assert_eq!(identity.role, CardRole::Planner);
     assert_eq!(identity.thread_id, "T-daemon");
     let _ = &boot.server;
 }
@@ -669,7 +669,7 @@ async fn daemontrust_with_known_thread_id_uses_mapped_card_identity() {
 async fn tools_call_meta_threadid_in_params_meta_resolves_when_top_level_meta_has_no_thread_id() {
     let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
-    seed_thread(&boot, &boot.spec_card_id, "T-params", CardRole::Spec).await;
+    seed_thread(&boot, &boot.planner_card_id, "T-params", CardRole::Planner).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
@@ -695,7 +695,7 @@ async fn tools_call_meta_threadid_in_params_meta_resolves_when_top_level_meta_ha
     );
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.thread_id, "T-params");
-    assert_eq!(identity.card_id, boot.spec_card_id);
+    assert_eq!(identity.card_id, boot.planner_card_id);
     let _ = &boot.server;
 }
 
@@ -716,8 +716,8 @@ async fn cardbound_without_thread_id_uses_bound_card() {
         "CardBound no-thread call must use bound card: {resp:#?}"
     );
     let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.spec_card_id);
-    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.card_id, boot.planner_card_id);
+    assert_eq!(identity.role, CardRole::Planner);
     assert_eq!(identity.track_id.as_deref(), Some(boot.track_id.as_str()));
     assert_eq!(identity.thread_id, "card-bound");
     let _ = &boot.server;
@@ -740,10 +740,10 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
         "active CardBound no-thread call must succeed before supersede: {resp:#?}"
     );
     let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.spec_card_id);
+    assert_eq!(identity.card_id, boot.planner_card_id);
 
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.spec_card_id)
+    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
         .await
         .unwrap()
         .expect("active bound runtime");
@@ -787,10 +787,10 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
         "active CardBound no-thread call must succeed before fail: {resp:#?}"
     );
     let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.spec_card_id);
+    assert_eq!(identity.card_id, boot.planner_card_id);
 
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.spec_card_id)
+    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
         .await
         .unwrap()
         .expect("active bound runtime");
@@ -920,12 +920,18 @@ async fn tools_call_thread_id_drives_role_gate() {
         CardRole::Worker,
     )
     .await;
-    seed_thread(&boot, &boot.spec_card_id, "spec-thread", CardRole::Spec).await;
+    seed_thread(
+        &boot,
+        &boot.planner_card_id,
+        "planner-thread",
+        CardRole::Planner,
+    )
+    .await;
     let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "test.spec_only", Some("worker-thread"), json!({})),
+        tools_call_frame(2, "test.planner_only", Some("worker-thread"), json!({})),
     )
     .await;
     let worker_resp = recv_frame(&mut rd).await;
@@ -936,17 +942,17 @@ async fn tools_call_thread_id_drives_role_gate() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(3, "test.spec_only", Some("spec-thread"), json!({})),
+        tools_call_frame(3, "test.planner_only", Some("planner-thread"), json!({})),
     )
     .await;
-    let spec_resp = recv_frame(&mut rd).await;
+    let planner_resp = recv_frame(&mut rd).await;
     assert!(
-        spec_resp.get("error").is_none(),
-        "spec thread should pass role gate: {spec_resp:#?}"
+        planner_resp.get("error").is_none(),
+        "planner thread should pass role gate: {planner_resp:#?}"
     );
     assert_eq!(
-        spec_resp["result"]["structuredContent"]["role"],
-        json!("spec")
+        planner_resp["result"]["structuredContent"]["role"],
+        json!("planner")
     );
     let _ = &boot.server;
 }
@@ -996,7 +1002,7 @@ async fn daemontrust_with_unresolvable_thread_id_rejects() {
 }
 
 #[tokio::test]
-async fn default_track_state_tool_without_thread_id_uses_cardbound_spec_identity() {
+async fn default_track_state_tool_without_thread_id_uses_cardbound_planner_identity() {
     let boot = boot_with_registry(build_default_registry()).await;
     let resp = call_with_token(&boot, &boot.raw_token, "calm.track.state", None, json!({})).await;
     assert!(
@@ -1138,7 +1144,10 @@ async fn tools_list_cardbound_without_thread_id_uses_bound_role() {
     let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
         Box::pin(async move { Ok(json!({ "ok": true })) })
     });
-    registry.register(test_descriptor("test.spec_no_annotations"), handler.clone());
+    registry.register(
+        test_descriptor("test.planner_no_annotations"),
+        handler.clone(),
+    );
     registry.register(
         ToolDescriptor {
             name: "test.worker_only".into(),
@@ -1174,7 +1183,7 @@ async fn tools_list_cardbound_without_thread_id_uses_bound_role() {
     let result = &resp["result"];
     assert_eq!(result["tools"].as_array().unwrap().len(), 1);
     let entry = &result["tools"][0];
-    assert_eq!(entry["name"], json!("test.spec_no_annotations"));
+    assert_eq!(entry["name"], json!("test.planner_no_annotations"));
     assert!(
         entry.get("annotations").is_none(),
         "descriptor with annotations: None must omit the key from tools/list (got {entry:#?})"
@@ -1207,7 +1216,7 @@ async fn tools_list_daemontrust_without_thread_id_returns_role_union() {
     let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
         Box::pin(async move { Ok(json!({ "ok": true })) })
     });
-    registry.register(test_descriptor("test.spec_tool"), handler);
+    registry.register(test_descriptor("test.planner_tool"), handler);
     let boot = boot_with_registry_and_daemon_hash(
         Arc::new(registry),
         Some(auth::hash_token(daemon_token)),
@@ -1229,7 +1238,7 @@ async fn tools_list_daemontrust_without_thread_id_returns_role_union() {
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
     let tools = resp["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], json!("test.spec_tool"));
+    assert_eq!(tools[0]["name"], json!("test.planner_tool"));
     let _ = &boot.server;
 }
 

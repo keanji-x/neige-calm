@@ -10,12 +10,12 @@
 //
 // Field semantics (decided across #255 + #250 PR 2, updated by #409):
 //   * task description (optional) → posted as `track.title`. The kernel
-//     threads a non-empty title into the spec daemon as the initial
-//     prompt; an empty title boots the spec daemon without an
+//     threads a non-empty title into the planner daemon as the initial
+//     prompt; an empty title boots the planner daemon without an
 //     auto-submitted prompt. We deliberately do not surface a separate
 //     "prompt" field — title-as-prompt keeps the track-row label and the
 //     prompt in lock-step when a prompt exists.
-//   * cwd (required) → absolute path the spec daemon spawns under.
+//   * cwd (required) → absolute path the planner daemon spawns under.
 //     The form refuses to submit a non-`/`-prefixed value; the server
 //     would 400 anyway, but inline rejection is cheaper than a round
 //     trip + read of an error toast.
@@ -598,7 +598,7 @@ export function NewTaskForm({
             paste a multi-line ask without us truncating. Enter is
             *not* submit here — newlines in the description are
             valid; submit is the explicit "Create task" button.
-            Empty is also valid: the spec daemon boots with no
+            Empty is also valid: the planner daemon boots with no
             auto-submitted prompt. In the issue-dev variant it's
             prefilled `dev #<n>` from the parsed URL; a manual edit
             latches it (titleEditedRef). */}

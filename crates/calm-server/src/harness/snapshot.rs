@@ -1,10 +1,10 @@
-//! Persisted `SpecHarness` state.
+//! Persisted `PlannerHarness` state.
 //!
 //! `schema_version = 1` is the first live harness schema. Future schema bumps
 //! must migrate rows in the boot recovery path before tasks are respawned. The
 //! recovery contract is deliberately strict: the kernel must know every live
 //! schema it may encounter, so an unknown `schema_version` panics with
-//! `unknown SpecHarness snapshot schema_version {n}; boot recovery must migrate live schemas`.
+//! `unknown PlannerHarness snapshot schema_version {n}; boot recovery must migrate live schemas`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -145,7 +145,7 @@ impl HarnessSnapshot {
 
     pub fn from_value_strict(value: Value) -> Self {
         let mut snapshot: Self =
-            serde_json::from_value(value).expect("deserialize SpecHarness snapshot");
+            serde_json::from_value(value).expect("deserialize PlannerHarness snapshot");
         snapshot.assert_known_schema();
         snapshot.align_pending_envelope_ids();
         snapshot
@@ -154,12 +154,12 @@ impl HarnessSnapshot {
     pub fn assert_known_schema(&self) {
         assert!(
             self.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION,
-            "unknown SpecHarness snapshot schema_version {}; boot recovery must migrate live schemas",
+            "unknown PlannerHarness snapshot schema_version {}; boot recovery must migrate live schemas",
             self.schema_version
         );
         assert!(
             self.mode == HARNESS_MODE,
-            "invalid SpecHarness snapshot mode {}; expected harness",
+            "invalid PlannerHarness snapshot mode {}; expected harness",
             self.mode
         );
     }
@@ -248,7 +248,7 @@ mod tests {
         assert!(
             is_harness_snapshot_value(&pre_1255),
             "a pre-#1255 row must still be recognised as a harness snapshot — \
-             `routes::cards::get_spec_run` uses this to decide dormant-vs-live"
+             `routes::cards::get_planner_run` uses this to decide dormant-vs-live"
         );
 
         let snapshot = HarnessSnapshot::from_value_strict(pre_1255);

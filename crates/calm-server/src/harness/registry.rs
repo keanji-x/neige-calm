@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 
-use crate::harness::SpecHarness;
+use crate::harness::PlannerHarness;
 use crate::session_projection_repo::RuntimeId;
 
 /// #953 §5 — registry-local monotonic reservation identity. Minted by a
@@ -21,7 +21,7 @@ pub struct ReservationId(u64);
 /// id may install into or release the slot.
 pub enum Slot {
     Reserved(ReservationId),
-    Live(SpecHarness),
+    Live(PlannerHarness),
 }
 
 struct RegistryInner {
@@ -67,7 +67,7 @@ impl HarnessReservation {
     /// occupied entry's own `insert` — never `DashMap::remove` while holding
     /// the entry guard.
     #[must_use = "a false install means the caller must shut down the handle it built"]
-    pub fn install(mut self, handle: SpecHarness) -> bool {
+    pub fn install(mut self, handle: PlannerHarness) -> bool {
         self.done = true;
         match self.registry.0.map.entry(self.runtime_id.clone()) {
             Entry::Occupied(mut occupied) => {
@@ -128,7 +128,7 @@ impl HarnessRegistry {
     /// (a superseded reservation's guard becomes inert — same posture as
     /// [`Self::reserve_replacing`]); returns the previous Live handle.
     /// Production registration paths go through reserve → install.
-    pub fn insert(&self, runtime_id: RuntimeId, handle: SpecHarness) -> Option<SpecHarness> {
+    pub fn insert(&self, runtime_id: RuntimeId, handle: PlannerHarness) -> Option<PlannerHarness> {
         match self.0.map.insert(runtime_id, Slot::Live(handle)) {
             Some(Slot::Live(previous)) => Some(previous),
             _ => None,
@@ -162,7 +162,7 @@ impl HarnessRegistry {
     pub fn reserve_replacing(
         &self,
         runtime_id: RuntimeId,
-    ) -> (HarnessReservation, Option<SpecHarness>) {
+    ) -> (HarnessReservation, Option<PlannerHarness>) {
         let id = self.next_reservation_id();
         let previous_live = match self.0.map.entry(runtime_id.clone()) {
             Entry::Occupied(mut occupied) => match occupied.insert(Slot::Reserved(id)) {
@@ -185,7 +185,7 @@ impl HarnessRegistry {
         )
     }
 
-    pub fn get(&self, runtime_id: &RuntimeId) -> Option<SpecHarness> {
+    pub fn get(&self, runtime_id: &RuntimeId) -> Option<PlannerHarness> {
         self.0
             .map
             .get(runtime_id)
@@ -200,7 +200,7 @@ impl HarnessRegistry {
     /// cancel, id-checked). All four Live-targeting production call sites
     /// (user shutdown, track shutdown, old-runtime supersede, start
     /// compensation) keep these semantics.
-    pub fn remove(&self, runtime_id: &RuntimeId) -> Option<SpecHarness> {
+    pub fn remove(&self, runtime_id: &RuntimeId) -> Option<PlannerHarness> {
         match self.0.map.entry(runtime_id.clone()) {
             Entry::Occupied(occupied) => match occupied.get() {
                 Slot::Live(_) => match occupied.remove() {
@@ -222,7 +222,7 @@ impl HarnessRegistry {
     /// only ever removes harnesses one at a time via [`Self::remove`].
     /// Reserved slots stay untouched (their guards own them).
     #[cfg(feature = "fixtures")]
-    pub fn drain_all_for_dev(&self) -> Vec<SpecHarness> {
+    pub fn drain_all_for_dev(&self) -> Vec<PlannerHarness> {
         let runtime_ids: Vec<RuntimeId> =
             self.0.map.iter().map(|entry| entry.key().clone()).collect();
         runtime_ids
@@ -250,20 +250,20 @@ mod tests {
     use super::*;
 
     use crate::harness::snapshot::HarnessSnapshot;
-    use crate::harness::{HarnessConfig, SpecHarnessParams};
+    use crate::harness::{HarnessConfig, PlannerHarnessParams};
     use crate::ids::{CardId, TrackId};
     use crate::shared_codex_appserver::SharedCodexAppServer;
     use std::sync::Arc;
 
-    async fn unstarted_handle(runtime_id: &str) -> SpecHarness {
+    async fn unstarted_handle(runtime_id: &str) -> PlannerHarness {
         let repo = Arc::new(
             crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
                 .await
                 .unwrap(),
         );
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
-        let (handle, _obs_rx) = SpecHarness::run_unstarted_for_test(
-            SpecHarnessParams {
+        let (handle, _obs_rx) = PlannerHarness::run_unstarted_for_test(
+            PlannerHarnessParams {
                 runtime_id: runtime_id.to_string(),
                 track_id: TrackId::from("track-registry-test".to_string()),
                 card_id: CardId::from("card-registry-test".to_string()),

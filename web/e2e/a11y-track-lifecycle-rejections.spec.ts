@@ -2,7 +2,7 @@
 // follow-up to issue #269 P1 (PR #277 only exercised happy edges).
 //
 // PR #277's `a11y-track-lifecycle.spec.ts` pins the user-driven and
-// spec-driven *successful* transitions end-to-end. This sibling file
+// planner-driven *successful* transitions end-to-end. This sibling file
 // pins the **rejection** side of the contract: the validator must
 // refuse the illegal/unauthorized edges that would otherwise corrupt
 // the state machine.
@@ -10,11 +10,11 @@
 // Three sub-cases, all exercised against the same in-memory replay
 // kernel via the existing `a11y` Playwright project:
 //
-//   1. **User attempts a spec-only edge.** With the track parked in
+//   1. **User attempts a planner-only edge.** With the track parked in
 //      `planning` (a legal user-driven kickoff), a plain
 //      `PATCH /api/tracks/:id` (no `X-Calm-Actor` → `ActorId::User`)
 //      requesting `dispatching` must come back 403. The validator's
-//      per-edge `(allow_user, allow_spec) = (false, true)` table
+//      per-edge `(allow_user, allow_planner) = (false, true)` table
 //      entry for `planning → dispatching` collapses to
 //      `NotAuthorized` for a `User` actor — production behavior the
 //      happy-path suite cannot prove (it always sends `planning →
@@ -22,7 +22,7 @@
 //
 //   2. **Kernel attempts a forbidden skip.** Using the dev endpoint
 //      `POST /dev/force-track-lifecycle` (which stamps the transition
-//      as `ActorId::Kernel`, classified `SpecAgent` by `actor_kind`),
+//      as `ActorId::Kernel`, classified `PlannerAgent` by `actor_kind`),
 //      attempt `draft → done`. This isn't an authorization failure —
 //      it's a structurally illegal edge that falls through the match
 //      arm and surfaces as `TransitionError::IllegalEdge`. The dev
@@ -41,7 +41,7 @@
 //      "everyone-allowed" `draft → planning` kickoff comes back 403
 //      under a Worker actor.
 //
-// Rationale for a separate spec file (vs extending
+// Rationale for a separate planner file (vs extending
 // `a11y-track-lifecycle.spec.ts`):
 //   * The happy-path suite already pushes 360 lines and threads a
 //     shared `runTransition` helper that asserts on the WS event
@@ -83,7 +83,7 @@ test.describe('track lifecycle · rejections', () => {
   test.beforeEach(async ({ request }) => {
     // Hermetic state — see `helpers/reset.ts`. Without this the
     // rejection-status assertions below could be poisoned by tracks
-    // an earlier spec parked in some unexpected lifecycle state.
+    // an earlier planner parked in some unexpected lifecycle state.
     await resetReplayServer(request);
 
     // Mint a fresh area + track. The track starts in `draft`; each
@@ -94,20 +94,20 @@ test.describe('track lifecycle · rejections', () => {
     trackId = track.id;
   });
 
-  test('User PATCH for a spec-only edge (planning → dispatching) is rejected with 403', async ({
+  test('User PATCH for a planner-only edge (planning → dispatching) is rejected with 403', async ({
     request,
   }) => {
     // Park the track in `planning` via the legal user-driven kickoff.
     // The kickoff itself is allowed for User (`(true, true)` in the
     // validator's edge table), so this PATCH succeeds; it puts the
     // track in a state where `dispatching` is the next legal edge —
-    // but only for the SpecAgent, not the user.
+    // but only for the PlannerAgent, not the user.
     const kicked = await patchTrackLifecycle(request, trackId, 'planning');
     expect(kicked.lifecycle).toBe('planning');
 
     // The rejection itself: PATCH lifecycle: 'dispatching' with no
     // actor header → User. The validator's `(planning, dispatching)`
-    // entry is `(allow_user: false, allow_spec: true)`, so the
+    // entry is `(allow_user: false, allow_planner: true)`, so the
     // `match kind` block at the end of `validate_transition` returns
     // `NotAuthorized`. `update_track` wraps that in
     // `CalmError::Forbidden`, which `CalmError::status` maps to 403.
@@ -169,7 +169,7 @@ test.describe('track lifecycle · rejections', () => {
     request,
   }) => {
     // The track is in `draft`; `draft → planning` is the universal
-    // kickoff edge — `(allow_user, allow_spec) = (true, true)` —
+    // kickoff edge — `(allow_user, allow_planner) = (true, true)` —
     // i.e. the validator's only `(both-allowed)` row. If even THIS
     // edge rejects under a Worker actor, the Worker short-circuit
     // at the top of `validate_transition` is doing its job.

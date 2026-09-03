@@ -54,7 +54,7 @@ pub(super) fn runtime_read_cases() -> Vec<RuntimeReadCase> {
         RuntimeReadCase {
             label: "shared-spec",
             card_kind: "codex",
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
         },
@@ -294,7 +294,7 @@ pub(super) async fn seed_codex_terminal_card(
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         repo.card_role_cache(),
         RequestTheme::default_dark(),
@@ -352,7 +352,7 @@ pub(super) fn deferred_projectable_placeholder_init(
     WorkerSessionInit {
         id: placeholder_id.to_string(),
         card_id: card_id.to_string(),
-        kind: WorkerSessionKind::SharedSpec,
+        kind: WorkerSessionKind::SharedPlanner,
         agent_provider: Some(AgentProvider::Codex),
         status: WorkerSessionState::Starting,
         terminal_run_id: None,
@@ -436,7 +436,7 @@ pub(super) async fn seed_deferred_projectable_placeholder(
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
     let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
     )

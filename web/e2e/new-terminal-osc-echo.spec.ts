@@ -48,12 +48,12 @@
 // -----------------
 // Runs in the `chromium` Playwright project, which targets the
 // developer's `make dev` stack at http://localhost:4041/calm/. This
-// spec needs a REAL PTY-backed terminal running the host's `$SHELL` to
+// planner needs a REAL PTY-backed terminal running the host's `$SHELL` to
 // reproduce the echo, and the replay binary used by the `a11y` project
 // stubs the daemon out (`DaemonClient::new_stub()`), so the chromium /
 // `make dev` path is the only env that can exercise it.
 //
-// NOTE on the anchor's assumption: this spec drives the host's real
+// NOTE on the anchor's assumption: this planner drives the host's real
 // `$SHELL`, so its anchor only holds if that shell does NOT enable
 // DECSET 1004 at the prompt (true for zsh/bash, which enable only
 // bracketed paste 2004). The deterministic, hermetic CI anchor is
@@ -65,7 +65,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 /** Read and concatenate the rendered buffer text of EVERY xterm-backed
  *  card on the page via the test-only `__xtermDumps__` registry (keyed
- *  by terminalId). A track auto-mints a codex spec card alongside the
+ *  by terminalId). A track auto-mints a codex planner card alongside the
  *  AddPanel New-terminal card; reading all buffers means the assertion
  *  catches an echo in any of them. The codex card enables DECSET 1004
  *  and consumes the OSC reply silently, so only the shell terminal (ZLE
@@ -152,7 +152,7 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
       area_id: areaId,
       title: trackTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This spec is about OSC echo through the terminal card, not
+      // This planner is about OSC echo through the terminal card, not
       // working directories. See `helpers/reset.ts::createTrackInArea`
       // for why the invented `/tmp/playwright-area-<id>` attached path
       // was never valid.
@@ -173,8 +173,8 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
     page.getByText(trackTitle, { exact: false }).first(),
   ).toBeVisible();
 
-  // Step 3 — track-create auto-mints a spec card. Post-#510 PR-del the
-  // spec card is a chat panel (no XtermView), so we just record how many
+  // Step 3 — track-create auto-mints a planner card. Post-#510 PR-del the
+  // planner card is a chat panel (no XtermView), so we just record how many
   // xterm dump hooks exist now (likely 0) and Step 4's terminal card add
   // will be the "+1" we look for.
   const dumpsBeforeAdd = await terminalDumpCount(page);
@@ -185,7 +185,7 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
   // mapped to MenuItem.label in `web/src/shared/components/AddPanel.tsx`);
   // anchor the regex so it can't accidentally match a future "terminal …"
   // sibling entry. The `.term` wrapper class is specific to the terminal
-  // card (the codex spec card uses a different component), so its count
+  // card (the codex planner card uses a different component), so its count
   // tracks our new card.
   const termCardsBefore = await page.locator('.term').count();
   // Glyph-only AddPanel trigger since #594; accessible name is the

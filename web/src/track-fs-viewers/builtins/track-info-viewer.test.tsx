@@ -25,7 +25,7 @@ describe('TrackInfoViewer', () => {
         path="track.json"
         raw="{}"
         data={{
-          title: 'Spec track',
+          title: 'Planner track',
           id: 'track_1',
           area_id: 'area_1',
           lifecycle: 'working',
@@ -45,7 +45,7 @@ describe('TrackInfoViewer', () => {
       />,
     );
 
-    expect(screen.getByRole('heading', { name: 'Spec track' })).toHaveClass(
+    expect(screen.getByRole('heading', { name: 'Planner track' })).toHaveClass(
       'track-fs-viewer-primary',
     );
     expect(screen.getByText('track_1')).toHaveClass('track-fs-viewer-mono');

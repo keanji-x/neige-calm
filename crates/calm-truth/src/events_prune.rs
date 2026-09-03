@@ -48,7 +48,7 @@
 //! a positions-less `overlay.set` (`.or(current)`), so if the latest kept row
 //! lacked `positions` while a pruned older row carried them, the fold would
 //! change after pruning. Today's kernel writer always sends a full positions
-//! map (`spec_harness_layout_payload`, crates/calm-server/src/routes/tracks.rs
+//! map (`planner_harness_layout_payload`, crates/calm-server/src/routes/tracks.rs
 //! — pinned by a unit test there), and the frontend layout writer PUTs the
 //! complete map on every drag. Any future partial-write overlay producer must
 //! revisit this carve-out.
@@ -98,7 +98,7 @@ pub const EVENTS_PRUNE_WATERMARK_KEY: &str = "events_prune_watermark";
 ///
 ///   * `harness.user_message.enqueued` is the only evidence that an area
 ///     conversation's card has already had a user message ACCEPTED INTO THE
-///     HARNESS QUEUE — `send_spec_input` writes it right after
+///     HARNESS QUEUE — `send_planner_input` writes it right after
 ///     `harness.observe(UserMessage)` returns, so it proves the observation
 ///     was enqueued, not that the agent has consumed it
 ///     (`calm-server/src/routes/area_conversations.rs::user_message_already_enqueued`).

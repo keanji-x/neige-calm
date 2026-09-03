@@ -5,7 +5,7 @@
 //! pure-function unit tests in `crate::role_gate::tests`, which sit one
 //! layer below the SQL. We want to pin:
 //!
-//!   * a `spec`-roled card can update its track through the audited write
+//!   * a `planner`-roled card can update its track through the audited write
 //!     path, the events row lands, and the bus broadcast fires;
 //!   * an `AiCodex(other_card)` attempting the same write is refused
 //!     before the event row is appended — neither the events table
@@ -30,12 +30,12 @@ async fn boot() -> (Arc<SqlxRepo>, EventBus) {
     (repo, bus)
 }
 
-/// PR3 happy path: a card whose `cards.role = 'spec'` (we set this via
-/// direct SQL today — PR6 will mint spec cards from the track-create
+/// PR3 happy path: a card whose `cards.role = 'planner'` (we set this via
+/// direct SQL today — PR6 will mint planner cards from the track-create
 /// path) is permitted to emit `TrackUpdated` through the audited write
 /// surface. The events row lands and the bus broadcast fires.
 #[tokio::test]
-async fn spec_card_can_update_track() {
+async fn planner_card_can_update_track() {
     let (repo, bus) = boot().await;
     let mut sub = bus.subscribe();
 
@@ -65,26 +65,26 @@ async fn spec_card_can_update_track() {
         .card_create(calm_server::model::NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: serde_json::json!({}),
         })
         .await
         .unwrap();
-    // Promote to spec role at the SQL layer (PR6 territory — PR3 just
+    // Promote to planner role at the SQL layer (PR6 territory — PR3 just
     // wires the gate).
-    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
         .bind(card.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
 
-    // Re-seed the role cache so it sees the new spec role.
+    // Re-seed the role cache so it sees the new planner role.
     let cache = CardRoleCache::new();
     let wcc = TrackAreaCache::new();
     repo.seed_track_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    assert_eq!(cache.get(&card.id), Some(CardRole::Spec));
+    assert_eq!(cache.get(&card.id), Some(CardRole::Planner));
 
     let scope = EventScope::Track {
         track: track.id.clone(),
@@ -93,7 +93,7 @@ async fn spec_card_can_update_track() {
     let track_id_for_tx = track.id.clone();
     let res = write_with_event_typed(
         repo.as_ref(),
-        ActorId::AiSpec(card.id.clone()),
+        ActorId::AiPlanner(card.id.clone()),
         scope,
         None,
         &bus,
@@ -119,7 +119,7 @@ async fn spec_card_can_update_track() {
     .await;
     assert!(
         res.is_ok(),
-        "spec-card track update should succeed: {res:?}"
+        "planner-card track update should succeed: {res:?}"
     );
 
     // Confirm the event row landed.
@@ -222,7 +222,7 @@ async fn ai_codex_cannot_update_track() {
         matches!(
             res,
             Err(calm_server::error::CalmError::Forbidden(ref msg))
-                if msg.contains("only spec cards")
+                if msg.contains("only planner cards")
         ),
         "AiCodex should be refused with Forbidden: {res:?}"
     );
@@ -331,10 +331,10 @@ async fn public_card_create_writes_worker_role() {
 }
 
 /// Migration smoke test: the partial unique index that constrains "one
-/// spec card per track" actually rejects duplicates. PR6 will rely on
+/// planner card per track" actually rejects duplicates. PR6 will rely on
 /// this as a backstop in case the application-level mint races itself.
 #[tokio::test]
-async fn unique_spec_card_per_track_index_enforced() {
+async fn unique_planner_card_per_track_index_enforced() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
         .area_create(NewArea {
@@ -358,12 +358,12 @@ async fn unique_spec_card_per_track_index_enforced() {
         })
         .await
         .unwrap();
-    // Two cards, both role=spec.
+    // Two cards, both role=planner.
     let c1 = repo
         .card_create(calm_server::model::NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: serde_json::json!({}),
         })
@@ -373,29 +373,29 @@ async fn unique_spec_card_per_track_index_enforced() {
         .card_create(calm_server::model::NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: serde_json::json!({}),
         })
         .await
         .unwrap();
     // Promote c1 — fine.
-    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
         .bind(c1.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
     // Promote c2 — must violate the partial unique index.
-    let err = sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+    let err = sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
         .bind(c2.id.as_str())
         .execute(repo.pool())
         .await
-        .expect_err("second spec card must violate unique index");
+        .expect_err("second planner card must violate unique index");
     let msg = err.to_string();
     assert!(
         msg.contains("UNIQUE")
             || msg.contains("constraint")
-            || msg.contains("idx_cards_one_spec_per_track"),
+            || msg.contains("idx_cards_one_planner_per_track"),
         "expected unique-index violation, got: {msg}"
     );
 }

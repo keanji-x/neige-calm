@@ -14,7 +14,7 @@ use crate::model::{
     Card, CardPatch, CardRole, NewCard, RequestTheme, Terminal, Track, TrackWorkspace,
     TrackWorkspaceKind, new_id, now_ms,
 };
-use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::{AppState, RouteState};
@@ -44,7 +44,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TodayLaunchpad {
     pub track_id: String,
-    pub spec_card_id: String,
+    pub planner_card_id: String,
     pub terminal_card_id: String,
     pub terminal_id: String,
 }
@@ -104,7 +104,7 @@ struct EnsureTxResult {
     report_card_id: String,
     created: bool,
     adopted_legacy: bool,
-    /// #1147 — the spec harness has never successfully started at the
+    /// #1147 — the planner harness has never successfully started at the
     /// launchpad's *current* workspace path, so its thread must be re-opened.
     ///
     /// True on a fresh mint, on the one-time migration of a pre-S2 row, and on
@@ -245,7 +245,7 @@ fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
 /// #1253 §5.1 — the read-only resolve the Today page load uses.
 ///
 /// **This handler must never reach the harness.** `ensure_today_launchpad`
-/// materializes a workspace and then submits `spec-harness-start` and
+/// materializes a workspace and then submits `planner-harness-start` and
 /// `.wait()`s on it; putting that on the page-load path would make the whole
 /// Today route fail hard whenever codex is unavailable, which is strictly
 /// worse than the Today page this replaces (it needed nothing to render). So
@@ -360,7 +360,7 @@ fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> 
     }
 }
 
-fn spec_payload() -> serde_json::Value {
+fn planner_payload() -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": CODEX_PAYLOAD_SCHEMA_VERSION,
         "harness": { "snapshotVersion": 0, "pendingQueue": [] }
@@ -430,13 +430,13 @@ async fn today_launchpad_ensure_tx(
     let cards: Vec<Card> = sqlx::query_as::<_, crate::db::rows::CardRow>(
         "SELECT id,track_id,kind,title,sort,payload,deletable,created_at,updated_at FROM cards WHERE track_id=?1 ORDER BY created_at,id"
     ).bind(track.id.as_str()).fetch_all(&mut **tx).await?.into_iter().map(Card::from).collect();
-    let spec = if let Some(card) = cards
+    let planner = if let Some(card) = cards
         .iter()
-        .find(|c| c.kind == "codex" && s.write.role_cache().get(&c.id) == Some(CardRole::Spec))
+        .find(|c| c.kind == "codex" && s.write.role_cache().get(&c.id) == Some(CardRole::Planner))
         .cloned()
     {
         if adopted_legacy {
-            // Only repurposing a legacy Today track invalidates its old spec thread.
+            // Only repurposing a legacy Today track invalidates its old planner thread.
             sqlx::query("DELETE FROM harness_items WHERE card_id=?1")
                 .bind(card.id.as_str())
                 .execute(&mut **tx)
@@ -445,7 +445,7 @@ async fn today_launchpad_ensure_tx(
                 tx,
                 card.id.as_str(),
                 CardPatch {
-                    payload: Some(spec_payload()),
+                    payload: Some(planner_payload()),
                     ..Default::default()
                 },
             )
@@ -462,9 +462,9 @@ async fn today_launchpad_ensure_tx(
                 track_id: track.id.clone(),
                 kind: "codex".into(),
                 sort: None,
-                payload: spec_payload(),
+                payload: planner_payload(),
             },
-            CardRole::Spec,
+            CardRole::Planner,
             false,
             s.write.role_cache(),
         )
@@ -519,15 +519,15 @@ async fn today_launchpad_ensure_tx(
         )
         .await?
     };
-    // #1147 N3 — "does the spec harness need re-anchoring?" must be derived
+    // #1147 N3 — "does the planner harness need re-anchoring?" must be derived
     // from DURABLE state, not from the in-memory comparison above.
     //
     // That comparison is true for exactly one `ensure`: the one whose
     // transaction moves the path. Materialization runs after that transaction
     // commits, so if it fails (500), or the process dies before the
-    // `spec-harness-start` operation is recorded, the intent is gone. The next
+    // `planner-harness-start` operation is recorded, the intent is gone. The next
     // `ensure` sees `stored == desired`, concludes "steady state", and starts
-    // the harness with `force_new_thread: false` — leaving the spec agent's
+    // the harness with `force_new_thread: false` — leaving the planner agent's
     // codex thread pinned to the OLD cwd forever while every worker uses the
     // new one. Reproduced end to end by the reviewer.
     //
@@ -538,11 +538,11 @@ async fn today_launchpad_ensure_tx(
     // succeeded.
     let started_at_this_path: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM operations \
-         WHERE kind='spec-harness-start' AND phase='succeeded' AND idempotency_key LIKE ?1)",
+         WHERE kind='planner-harness-start' AND phase='succeeded' AND idempotency_key LIKE ?1)",
     )
     .bind(format!(
         "today-launchpad:{}:%:{}",
-        spec.id.as_str(),
+        planner.id.as_str(),
         workspace_key_digest(&track.workspace.path)
     ))
     .fetch_one(&mut **tx)
@@ -552,7 +552,7 @@ async fn today_launchpad_ensure_tx(
     Ok(EnsureTxResult {
         dto: TodayLaunchpad {
             track_id: track.id.to_string(),
-            spec_card_id: spec.id.to_string(),
+            planner_card_id: planner.id.to_string(),
             terminal_card_id: terminal_card.id.to_string(),
             terminal_id: terminal.id,
         },
@@ -724,10 +724,10 @@ pub(crate) async fn ensure_today_launchpad(
         error
     })?;
 
-    let req = SpecHarnessStartOperationPayload {
+    let req = PlannerHarnessStartOperationPayload {
         actor: ActorId::Kernel,
         track_id: out.dto.track_id.clone(),
-        spec_card_id: CardId::from(out.dto.spec_card_id.clone()),
+        planner_card_id: CardId::from(out.dto.planner_card_id.clone()),
         report_card_id: Some(out.report_card_id),
         sort: None,
         cwd: out.track.workspace.path.clone(),
@@ -735,7 +735,7 @@ pub(crate) async fn ensure_today_launchpad(
         reset_harness_items: out.created || out.adopted_legacy,
         // #1147 — a re-point also forces a new thread. The codex thread holds
         // the cwd it was minted with, so resuming it after the workspace moved
-        // would leave the spec agent working in the old directory while every
+        // would leave the planner agent working in the old directory while every
         // worker uses the new one. The transcript is NOT reset: harness items
         // are persisted per card, not per thread (`db/sqlite/read.rs`,
         // `WHERE card_id = ?1`), so re-opening the thread costs the agent its
@@ -758,7 +758,7 @@ pub(crate) async fn ensure_today_launchpad(
     let op = app
         .operation_runtime
         .submit(
-            "spec-harness-start",
+            "planner-harness-start",
             OperationKey {
                 operation_key: new_id(),
                 // #1147 S2 (red-team B1) — the workspace path is part of the
@@ -781,7 +781,7 @@ pub(crate) async fn ensure_today_launchpad(
                 // as strong within one workspace.
                 idempotency_key: Some(format!(
                     "today-launchpad:{}:{start_mode}:{}",
-                    out.dto.spec_card_id,
+                    out.dto.planner_card_id,
                     workspace_key_digest(&out.track.workspace.path)
                 )),
                 payload_hash: hash,

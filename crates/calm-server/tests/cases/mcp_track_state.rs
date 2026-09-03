@@ -7,10 +7,10 @@
 //!
 //! Coverage:
 //!
-//!   1. `calm.track.state` (spec card) returns the track row + the cards
+//!   1. `calm.track.state` (planner card) returns the track row + the cards
 //!      list with `role` populated.
 //!   2. `calm.task.verdict` with `status=accepted` emits
-//!      `task.completed` carrying the spec's `{status,reason}` verdict
+//!      `task.completed` carrying the planner's `{status,reason}` verdict
 //!      in `result`; `status=rejected` emits `task.failed` with the
 //!      reason verbatim.
 //!
@@ -43,10 +43,10 @@ use calm_types::worker::{
 };
 use serde_json::{Value, json};
 
-const SPEC_SESSION_ID: &str = "spec-session";
+const PLANNER_SESSION_ID: &str = "planner-session";
 
 /// One-shot boot: in-memory sqlite + bus + cache + one area with one
-/// track with one spec card and one worker card. Returns enough handles
+/// track with one planner card and one worker card. Returns enough handles
 /// to drive a tool through its registered closure.
 struct Boot {
     ctx: Arc<AppContext>,
@@ -54,7 +54,7 @@ struct Boot {
     repo: Arc<dyn Repo>,
     area_id: AreaId,
     track_id: TrackId,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     worker_card_id: CardId,
 }
 
@@ -140,11 +140,11 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: serde_json::Value::Null,
         })
@@ -160,24 +160,30 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, SPEC_SESSION_ID).await;
+    seed_track_root_session(
+        repo.as_ref(),
+        &track.id,
+        &planner_card.id,
+        PLANNER_SESSION_ID,
+    )
+    .await;
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     // Manually pin the roles. The tx-suffixed mint helpers do the cache
     // write-through in production; for this test, we mock the post-mint
     // state.
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
     // #1189 §3.6 — the persisted column is no longer optional. `enforce_role`
     // still only reads the cache, but the recorder gate resolves
     // session → card → {role, track} with a live `cards` read inside the write
-    // tx, so a cache-only pin would leave this "spec card" persisted as a
+    // tx, so a cache-only pin would leave this "planner card" persisted as a
     // worker and deny every write for a reason no test here is about.
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
-        spec_card.id.as_str(),
-        CardRole::Spec,
+        planner_card.id.as_str(),
+        CardRole::Planner,
     )
     .await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
@@ -206,7 +212,7 @@ async fn boot() -> Boot {
         repo,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         worker_card_id: worker_card.id,
     }
 }
@@ -228,15 +234,15 @@ async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: SPEC_SESSION_ID.to_string(),
+        session_id: PLANNER_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".to_string(),
+        thread_id: "planner-thread".to_string(),
     }
 }
 
@@ -270,17 +276,17 @@ async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn get_track_state_returns_track_and_cards_for_spec() {
+async fn get_track_state_returns_track_and_cards_for_planner() {
     let boot = boot().await;
-    let out = call_tool(&boot, TOOL_TRACK_STATE, spec_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
         .await
-        .expect("spec can read track state");
+        .expect("planner can read track state");
 
     let track = out.get("track").expect("response carries `track`");
     assert_eq!(
         track.get("id").and_then(Value::as_str),
         Some(boot.track_id.as_str()),
-        "track.id matches the bound spec card's track",
+        "track.id matches the bound planner card's track",
     );
     assert_eq!(
         track.get("title").and_then(Value::as_str),
@@ -294,16 +300,19 @@ async fn get_track_state_returns_track_and_cards_for_spec() {
         .expect("response carries `cards`");
     assert_eq!(cards.len(), 2, "boot fixture mints exactly two cards");
 
-    // Find the spec card in the list and assert its role.
-    let spec = cards
+    // Find the planner card in the list and assert its role.
+    let planner = cards
         .iter()
-        .find(|c| c.get("id").and_then(Value::as_str) == Some(boot.spec_card_id.as_str()))
-        .expect("spec card present");
-    assert_eq!(spec.get("role").and_then(Value::as_str), Some("spec"));
-    assert!(spec.get("runtime").is_some(), "spec card = {spec:?}");
-    let spec_runtime: Option<CardRuntimeView> =
-        serde_json::from_value(spec["runtime"].clone()).expect("runtime field is typed");
-    assert!(spec_runtime.is_none(), "spec card has no runtime row");
+        .find(|c| c.get("id").and_then(Value::as_str) == Some(boot.planner_card_id.as_str()))
+        .expect("planner card present");
+    assert_eq!(planner.get("role").and_then(Value::as_str), Some("planner"));
+    assert!(
+        planner.get("runtime").is_some(),
+        "planner card = {planner:?}"
+    );
+    let planner_runtime: Option<CardRuntimeView> =
+        serde_json::from_value(planner["runtime"].clone()).expect("runtime field is typed");
+    assert!(planner_runtime.is_none(), "planner card has no runtime row");
 
     let worker = cards
         .iter()
@@ -324,7 +333,7 @@ async fn get_track_state_returns_track_and_cards_for_spec() {
 
 #[tokio::test]
 async fn get_track_state_callable_by_worker() {
-    // Confirms the spec-only soft role gate doesn't fire on read.
+    // Confirms the planner-only soft role gate doesn't fire on read.
     let boot = boot().await;
     let out = call_tool(&boot, TOOL_TRACK_STATE, worker_identity(&boot), json!({}))
         .await
@@ -349,7 +358,7 @@ async fn task_verdict_accepted_emits_task_completed() {
     let out = call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "job-xyz",
             "status": "accepted",
@@ -358,7 +367,7 @@ async fn task_verdict_accepted_emits_task_completed() {
         }),
     )
     .await
-    .expect("spec accept verdict ok");
+    .expect("planner accept verdict ok");
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
     let auto_changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -373,7 +382,7 @@ async fn task_verdict_accepted_emits_task_completed() {
             to: TrackLifecycle::Planning,
             agent_message: Some(ref message),
             ..
-        } if message == "[auto] first spec write"
+        } if message == "[auto] first planner write"
     ));
     let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -383,7 +392,7 @@ async fn task_verdict_accepted_emits_task_completed() {
     assert!(matches!(
         auto_updated.event,
         Event::TrackUpdated(ref payload)
-            if payload.agent_message.as_deref() == Some("[auto] first spec write")
+            if payload.agent_message.as_deref() == Some("[auto] first planner write")
     ));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -405,7 +414,7 @@ async fn task_verdict_accepted_emits_task_completed() {
     assert_eq!(
         result.get("reason").and_then(Value::as_str),
         Some("looks great"),
-        "spec's rationale is folded into `result`",
+        "planner's rationale is folded into `result`",
     );
 }
 
@@ -418,7 +427,7 @@ async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
     let out = call_tool(
         &boot,
         "calm.update_task_meta",
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "legacy-job",
             "status": "accepted",
@@ -458,7 +467,7 @@ async fn task_verdict_rejected_emits_task_failed() {
     let out = call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "job-xyz",
             "status": "rejected",
@@ -467,7 +476,7 @@ async fn task_verdict_rejected_emits_task_failed() {
         }),
     )
     .await
-    .expect("spec reject verdict ok");
+    .expect("planner reject verdict ok");
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
     let auto_changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -482,7 +491,7 @@ async fn task_verdict_rejected_emits_task_failed() {
             to: TrackLifecycle::Planning,
             agent_message: Some(ref message),
             ..
-        } if message == "[auto] first spec write"
+        } if message == "[auto] first planner write"
     ));
     let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -492,7 +501,7 @@ async fn task_verdict_rejected_emits_task_failed() {
     assert!(matches!(
         auto_updated.event,
         Event::TrackUpdated(ref payload)
-            if payload.agent_message.as_deref() == Some("[auto] first spec write")
+            if payload.agent_message.as_deref() == Some("[auto] first planner write")
     ));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -517,7 +526,7 @@ async fn task_verdict_unknown_status_rejected() {
     let err = call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "k",
             "status": "maybe",
@@ -543,9 +552,9 @@ async fn task_verdict_worker_refused_at_mcp_entry() {
         }),
     )
     .await
-    .expect_err("worker can't record a spec verdict");
+    .expect_err("worker can't record a planner verdict");
     assert_eq!(err.code, -32602);
-    assert!(err.message.contains("Spec"));
+    assert!(err.message.contains("Planner"));
 }
 
 #[tokio::test]
@@ -555,7 +564,7 @@ async fn task_verdict_requires_non_empty_message() {
     let err = call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "missing-message",
             "status": "accepted"
@@ -572,7 +581,7 @@ async fn task_verdict_requires_non_empty_message() {
     let err = call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "empty-message",
             "status": "accepted",
@@ -597,7 +606,7 @@ async fn task_verdict_without_lifecycle_keeps_track_state_and_records_message() 
     call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "verdict-no-lifecycle",
             "status": "accepted",
@@ -643,7 +652,7 @@ async fn task_verdict_lifecycle_legal_emits_track_updated_and_verdict() {
     call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "verdict-legal-lifecycle",
             "status": "accepted",
@@ -723,7 +732,7 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
     let err = call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": "verdict-illegal-lifecycle",
             "status": "accepted",

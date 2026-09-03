@@ -2,14 +2,14 @@
 //!
 //! All three lower a JSON `arguments` object to a single eventized
 //! write. The kernel translates the per-call [`ToolCallIdentity`]
-//! into an [`ActorId`] (Spec → `AiSpec`, Worker → `AiCodex`) and emits
+//! into an [`ActorId`] (Planner → `AiPlanner`, Worker → `AiCodex`) and emits
 //! through `write_with_event_typed`, which runs the role gate, persists
 //! the event row, and broadcasts on the bus.
 //!
 //! ## Tool surface
 //!
 //! * `calm.task.dispatch` — retired #644 compatibility shim. Hidden
-//!   from tools/list; persisted pre-cutover spec threads can still call
+//!   from tools/list; persisted pre-cutover planner threads can still call
 //!   it and receive a structured migration payload. It performs no write.
 //!
 //! * `calm.task.complete` — Worker reports success with an opaque
@@ -22,7 +22,7 @@
 //!
 //! Every emitted event's `EventScope` is anchored on the *caller's*
 //! card — the kernel pulls `track_id` + `area_id` by looking up the
-//! card row + the track row, so the spec card's emissions land under
+//! card row + the track row, so the planner card's emissions land under
 //! `EventScope::Card { card, track, area }`. Worker cards emit under
 //! their own card scope; the role gate enforces that they can't
 //! escape it.
@@ -114,7 +114,7 @@ async fn task_dispatch(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     Ok(json!({
         "error": "calm.task.dispatch was retired (#644); no task was dispatched",
         "migration": {
@@ -134,7 +134,7 @@ fn task_complete_descriptor() -> ToolDescriptor {
         name: TOOL_TASK_COMPLETE.into(),
         description: "Report that a worker card has completed its task. \
              `idempotency_key` should echo the kernel-provided task id so \
-             the spec card can correlate."
+             the planner card can correlate."
             .into(),
         input_schema: json!({
             "type": "object",

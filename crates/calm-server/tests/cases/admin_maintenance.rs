@@ -15,7 +15,7 @@ use sqlx::SqlitePool;
 
 use crate::support;
 
-use support::track_file::{boot, call_tool, spec_identity};
+use support::track_file::{boot, call_tool, planner_identity};
 
 const SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
 
@@ -141,7 +141,7 @@ async fn track_gc_dry_run_reports_without_deleting() {
     let result = call_tool(
         &boot,
         TOOL_ADMIN_TRACK_GC,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": true }),
     )
     .await
@@ -165,7 +165,7 @@ async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
     let result = call_tool(
         &boot,
         TOOL_ADMIN_TRACK_GC,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": false }),
     )
     .await
@@ -180,7 +180,7 @@ async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
     let second = call_tool(
         &boot,
         TOOL_ADMIN_TRACK_GC,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": false }),
     )
     .await
@@ -201,7 +201,7 @@ async fn track_gc_rejects_wrong_track_without_deleting() {
     let err = call_tool(
         &boot,
         TOOL_ADMIN_TRACK_GC,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "track_id": "wrong-track", "keep": 2, "dry_run": false }),
     )
     .await
@@ -232,7 +232,7 @@ async fn track_gc_rejects_worker_identity() {
     .expect_err("worker rejected");
 
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("Spec"), "unexpected error: {err:?}");
+    assert!(err.message.contains("Planner"), "unexpected error: {err:?}");
     assert_eq!(commit_count(&pool, &boot.track_id).await, 5);
     assert_eq!(object_count(&pool).await, 10);
 }
@@ -243,7 +243,7 @@ async fn vacuum_runs_on_populated_db() {
     let pool = boot.repo.sqlite_pool().expect("track vcs pool");
     seed_linear_commits(&pool, &boot.track_id, 2).await;
 
-    let result = call_tool(&boot, TOOL_ADMIN_VACUUM, spec_identity(&boot), json!({}))
+    let result = call_tool(&boot, TOOL_ADMIN_VACUUM, planner_identity(&boot), json!({}))
         .await
         .expect("vacuum");
 

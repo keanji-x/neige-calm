@@ -238,13 +238,13 @@ function policies(): PolicyMap {
   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
   'harness.phase.changed': plan((event) => result([
-    ['spec-run', event.data.card_id], ...conversationLists(event.data.track_id),
+    ['planner-run', event.data.card_id], ...conversationLists(event.data.track_id),
   ])),
   'harness.transcript.cleared': plan((event) => result([
-    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+    ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
   ])),
   'harness.user_message.enqueued': plan((event) => result([
-    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+    ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
   /*

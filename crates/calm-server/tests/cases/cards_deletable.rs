@@ -5,12 +5,12 @@
 //!   1. **Repo round-trip** — `card_create_with_id_tx` stores and
 //!      `cards_by_track` / `card_get` hydrate the `deletable` bit
 //!      correctly for both `true` and `false`.
-//!   2. **Migration backfill** — existing spec cards (minted via
+//!   2. **Migration backfill** — existing planner cards (minted via
 //!      `POST /api/tracks`) come back from `card_get` with
 //!      `deletable = false` after migration 0013 runs, even though no
 //!      caller passed the bit explicitly through the wire.
 //!   3. **REST DELETE guard** — `DELETE /api/cards/:id` returns 403 on
-//!      an undeletable (spec) card; 204 on a deletable worker card.
+//!      an undeletable (planner) card; 204 on a deletable worker card.
 //!   4. **Track delete cascade** — `DELETE /api/tracks/:id` still
 //!      cascades through to undeletable cards; the guard is scoped to
 //!      `/api/cards/:id` only.
@@ -259,7 +259,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
 
     // Undeletable card. Note the role is Worker here — the test isolates
     // the `deletable` axis from the role axis. Production callers wire
-    // `false` only on kernel-owned cards (Spec / ReportCard).
+    // `false` only on kernel-owned cards (Planner / ReportCard).
     let undeletable_card = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         calm_server::model::new_id(),
@@ -308,14 +308,14 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
 }
 
 // ---------------------------------------------------------------------------
-// (2) Migration backfill — spec cards minted by `POST /api/tracks` come
+// (2) Migration backfill — planner cards minted by `POST /api/tracks` come
 // back with deletable=false. The migration's `UPDATE ... WHERE role =
-// 'spec'` covers legacy rows; the track-create route also passes
+// 'planner'` covers legacy rows; the track-create route also passes
 // `deletable: false` explicitly so fresh rows inherit the same shape.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn spec_card_minted_by_track_create_is_undeletable() {
+async fn planner_card_minted_by_track_create_is_undeletable() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -332,18 +332,18 @@ async fn spec_card_minted_by_track_create_is_undeletable() {
 
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     // Issue #229 PR B — track create now mints two cards in the same tx:
-    // the spec card (PR6) and the track-report card (PR B). Both are
+    // the planner card (PR6) and the track-report card (PR B). Both are
     // kernel-owned (`deletable = false`); the report card sorts ahead
     // (`sort = -1.0`) so the TrackGrid renders it at the top.
     assert_eq!(
         cards.len(),
         2,
-        "track create mints spec + track-report; got {} cards",
+        "track create mints planner + track-report; got {} cards",
         cards.len(),
     );
     assert!(
         cards.iter().all(|c| !c.deletable),
-        "both spec and track-report cards must be undeletable; got: {:?}",
+        "both planner and track-report cards must be undeletable; got: {:?}",
         cards
             .iter()
             .map(|c| (c.kind.clone(), c.deletable))
@@ -353,7 +353,7 @@ async fn spec_card_minted_by_track_create_is_undeletable() {
     let kinds: Vec<&str> = cards.iter().map(|c| c.kind.as_str()).collect();
     assert!(
         kinds.contains(&"codex"),
-        "spec card kind is codex; got {kinds:?}"
+        "planner card kind is codex; got {kinds:?}"
     );
     assert!(
         kinds.contains(&"track-report"),
@@ -366,9 +366,9 @@ async fn spec_card_minted_by_track_create_is_undeletable() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn delete_card_returns_403_for_undeletable_spec_card() {
+async fn delete_card_returns_403_for_undeletable_planner_card() {
     let boot = boot().await;
-    // Mint a track (and thus its spec card).
+    // Mint a track (and thus its planner card).
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -378,27 +378,27 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
     let track_id = body["id"].as_str().unwrap().to_string();
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
-    // Find the spec card by kind (PR B adds a track-report card alongside).
-    let spec_card = cards
+    // Find the planner card by kind (PR B adds a track-report card alongside).
+    let planner_card = cards
         .iter()
         .find(|c| c.kind == "codex")
-        .expect("spec card present");
-    let spec_card_id = spec_card.id.as_str().to_string();
-    assert!(!spec_card.deletable);
+        .expect("planner card present");
+    let planner_card_id = planner_card.id.as_str().to_string();
+    assert!(!planner_card.deletable);
 
-    // DELETE /api/cards/:id on the spec card → 403.
-    let status = delete(boot.app.clone(), &format!("/api/cards/{spec_card_id}")).await;
+    // DELETE /api/cards/:id on the planner card → 403.
+    let status = delete(boot.app.clone(), &format!("/api/cards/{planner_card_id}")).await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
-        "spec card delete must be refused with 403"
+        "planner card delete must be refused with 403"
     );
 
     // The row is still there.
-    let after = boot.repo.card_get(&spec_card_id).await.unwrap();
+    let after = boot.repo.card_get(&planner_card_id).await.unwrap();
     assert!(
         after.is_some(),
-        "spec card row must survive the refused delete"
+        "planner card row must survive the refused delete"
     );
 }
 
@@ -496,7 +496,7 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn track_delete_cascades_to_undeletable_spec_card() {
+async fn track_delete_cascades_to_undeletable_planner_card() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -507,15 +507,15 @@ async fn track_delete_cascades_to_undeletable_spec_card() {
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
     let track_id = body["id"].as_str().unwrap().to_string();
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
-    let spec_card = cards
+    let planner_card = cards
         .iter()
         .find(|c| c.kind == "codex")
-        .expect("spec card present");
-    let spec_card_id = spec_card.id.as_str().to_string();
-    assert!(!spec_card.deletable);
+        .expect("planner card present");
+    let planner_card_id = planner_card.id.as_str().to_string();
+    assert!(!planner_card.deletable);
 
     // The track-delete route surfaces the cascade through the FK chain.
-    // Spec cards carry a terminal, and `terminals.card_id` is ON DELETE
+    // Planner cards carry a terminal, and `terminals.card_id` is ON DELETE
     // RESTRICT (migration 0011); the route's terminal-reap step handles
     // that. We just assert the end state: track gone, card gone, no 403
     // leak from the per-card guard.
@@ -528,8 +528,11 @@ async fn track_delete_cascades_to_undeletable_spec_card() {
 
     let after_track = boot.repo.track_get(&track_id).await.unwrap();
     assert!(after_track.is_none());
-    let after_card = boot.repo.card_get(&spec_card_id).await.unwrap();
-    assert!(after_card.is_none(), "spec card cascade-deleted with track");
+    let after_card = boot.repo.card_get(&planner_card_id).await.unwrap();
+    assert!(
+        after_card.is_none(),
+        "planner card cascade-deleted with track"
+    );
 }
 
 #[tokio::test]

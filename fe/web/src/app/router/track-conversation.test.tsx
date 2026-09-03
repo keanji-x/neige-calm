@@ -3,12 +3,12 @@
 // Starting a conversation on a track, and finding one again from Today
 // (#1189 slice 5), driven through the real router and the real transport port.
 //
-// The track route used to fork on whether the track had a spec card: one branch
+// The track route used to fork on whether the track had a planner card: one branch
 // opened that card and created nothing, the other offered no `+` at all. It is
 // one `'rows'` route now — the list is the server's, it may be empty, and the
 // `+` is always there. Everything here is about what that change made possible
 // and about the two places it could silently not work: the row a track's own
-// list does not contain (the spec card's), and the Today → track open request,
+// list does not contain (the planner card's), and the Today → track open request,
 // which is consumed in one place and thrown away in another.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -30,15 +30,15 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
-/* The track the old fork left with no way to start anything: no spec card. */
+/* The track the old fork left with no way to start anything: no planner card. */
 const BARE_TRACK = { ...TRACK, id: 'w2', title: 'Bare track', sort: 2 };
-const SPEC_CARD = { id: 'card-spec', track_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+const PLANNER_CARD = { id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 /* The card an assistant conversation is: a codex card carrying the marker the
    kernel persists (`plain_chat.rs::card_is_track_assistant`). */
-const ASSISTANT_CARD = { ...SPEC_CARD, id: 'conv-assistant-1', title: null, payload: { harness_profile: 'assistant' }, sort: 2, updated_at: 30 };
+const ASSISTANT_CARD = { ...PLANNER_CARD, id: 'conv-assistant-1', title: null, payload: { harness_profile: 'assistant' }, sort: 2, updated_at: 30 };
 /* A worker card, so "the CARDS panel lists what has a surface" is asserted
    against a track that really has one thing to list. */
-const WORKER_CARD = { ...SPEC_CARD, id: 'card-worker', title: 'Worker', payload: {}, sort: 3, updated_at: 4 };
+const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', payload: {}, sort: 3, updated_at: 4 };
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
@@ -108,24 +108,24 @@ function setup(reply?: Reply) {
       if (request.path === '/api/areas/c1/conversations') return ok([]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') {
-        return ok({ track: TRACK, cards: [SPEC_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [] });
+        return ok({ track: TRACK, cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [] });
       }
       if (request.path === '/api/tracks/w2') return ok({ track: BARE_TRACK, cards: [], overlays: [] });
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
       if (request.path.includes('/harness/items')) return ok([]);
       /* Both card endpoints echo **the card in the path**, which is what the
-         kernel does (`cards.rs`'s `/spec/input` answers with the card it just
+         kernel does (`cards.rs`'s `/planner/input` answers with the card it just
          accepted input for). A fixture answering with a fixed id is a server
          that does not exist: nothing here reads the field today, so it is not
          a false green yet — it is a trap laid for the first case that does,
          which would then pass against a reply about the wrong conversation. */
-      if (request.path.endsWith('/spec/run')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r', phase: 'idle' });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r', phase: 'idle' });
       /* Answering an open conversation's send. The shape matters: an
          off-schema body is refused by the transport, the optimistic echo is
          rolled back, and the name derived from that echo — what the test
          below is about — never exists. */
-      if (request.path.endsWith('/spec/input')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r' });
+      if (request.path.endsWith('/planner/input')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r' });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },
@@ -202,16 +202,16 @@ afterEach(() => {
 });
 
 describe('track conversations', () => {
-  it('lists the track\'s assistant conversations beside the spec one', async () => {
+  it('lists the track\'s assistant conversations beside the planner one', async () => {
     setup();
-    await screen.findByRole('button', { name: 'Conversation Spec chat' });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await screen.findByRole('button', { name: 'Conversation Assistant' });
   });
 
   /*
    * ── G4 ─────────────────────────────────────────────────────────────────────
    *
-   * A track with no spec card is exactly the track that most needs to start a
+   * A track with no planner card is exactly the track that most needs to start a
    * conversation, and it was the one track that could not: the route resolved to
    * `'elsewhere'`, which offers no `+` on purpose because Today has no track to
    * attach one to. This track has one — itself.
@@ -219,7 +219,7 @@ describe('track conversations', () => {
    * The POST is what is asserted, not the drawer: a `+` that opened a draft
    * nothing could be sent from would satisfy any assertion about the button.
    */
-  it('[G4] starts a conversation on a track that has no spec card', async () => {
+  it('[G4] starts a conversation on a track that has no planner card', async () => {
     /* Stateful on purpose: a real server lists the row it just minted, and the
        create invalidates this very list. A fixture that kept answering `[]`
        would delete the adopted row a round trip later and the assertion below
@@ -254,14 +254,14 @@ describe('track conversations', () => {
       request.method === 'POST' && request.path === CONVERSATIONS
         ? created(derivedRow('w1', request))
         : undefined);
-    await screen.findByRole('button', { name: 'Conversation Spec chat' });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await openDraft();
     await write('first words');
     await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
     expect(requests.filter((request) => request.method === 'POST'
       && request.path.endsWith('/conversations') && request.path !== CONVERSATIONS)).toEqual([]);
     /* The message travelled with the POST, so nothing re-sends it afterwards. */
-    expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toEqual([]);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toEqual([]);
   });
 
   /*
@@ -274,20 +274,20 @@ describe('track conversations', () => {
    * that list: no other surface fetches it, and the drawer would have to be
    * opened on this very track for the older path to see it.
    *
-   * Both rows are asserted. The spec-derived row alone would stay green under a
+   * Both rows are asserted. The planner-derived row alone would stay green under a
    * remember that only wrote the injected row, which is a strictly smaller fix
    * that leaves the feature's own conversations invisible.
    */
   it('[G5] lists every conversation of a track on Today after merely visiting it', async () => {
     const { router } = setup();
-    await screen.findByRole('button', { name: 'Conversation Spec chat' });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await screen.findByRole('button', { name: 'Conversation Assistant' });
     /* Nothing was opened: `[data-nc-drawer]` is the drawer's own marker, and
        `role="complementary"` alone would match the rail. */
     expect(document.querySelector('[data-nc-drawer]')).toBeNull();
 
     await act(async () => { await router.navigate({ to: '/' }); });
-    const spec = await screen.findByRole('button', { name: 'Conversation Spec chat, on Test track' });
+    const planner = await screen.findByRole('button', { name: 'Conversation Planner chat, on Test track' });
     const assistant = await screen.findByRole('button', { name: 'Conversation Assistant, on Test track' });
     /*
      * And they are distinguishable **on screen**, not only to a screen reader.
@@ -300,9 +300,9 @@ describe('track conversations', () => {
      * text is pinned here, both that each row says its own name and that the
      * two rows differ.
      */
-    expect(spec.textContent).toBe('Spec chatTest track');
+    expect(planner.textContent).toBe('Planner chatTest track');
     expect(assistant.textContent).toBe('AssistantTest track');
-    expect(assistant.textContent).not.toBe(spec.textContent);
+    expect(assistant.textContent).not.toBe(planner.textContent);
   });
 
   /*
@@ -375,7 +375,7 @@ describe('track conversations', () => {
           id: 'conv-assistant-2', title: 'Recently touched', updatedAt: touchedAt,
         })]);
       }
-      if (request.path.endsWith('/spec/input')) {
+      if (request.path.endsWith('/planner/input')) {
         await settled;
         return { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } };
       }
@@ -448,7 +448,7 @@ describe('track conversations', () => {
     const held = new Map<string, () => void>();
     const release = (cardId: string) => held.get(cardId)?.();
     const { requests } = setup(async (request) => {
-      if (!request.path.endsWith('/spec/input')) return undefined;
+      if (!request.path.endsWith('/planner/input')) return undefined;
       const cardId = pathCardId(request.path);
       await new Promise<void>((resolve) => { held.set(cardId, resolve); });
       return { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } };
@@ -462,12 +462,12 @@ describe('track conversations', () => {
     /* Conversation B, on the same panel instance — the walk that resets
        `sendingRef` so this composer works at all. */
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation Spec chat' }));
-    await screen.findByRole('complementary', { name: 'Spec chat' });
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
     await write('the second conversation speaks');
-    await waitFor(() => expect(held.has(SPEC_CARD.id)).toBe(true));
+    await waitFor(() => expect(held.has(PLANNER_CARD.id)).toBe(true));
     const sends = () => requests.filter((request) =>
-      request.path === `/api/cards/${SPEC_CARD.id}/spec/input`);
+      request.path === `/api/cards/${PLANNER_CARD.id}/planner/input`);
     expect(sends()).toHaveLength(1);
 
     /* A's request lands now, and it is answering for a conversation nobody is
@@ -490,7 +490,7 @@ describe('track conversations', () => {
    * was waiting.
    *
    * `mutations.send` resolves two refreshes *after* its POST returned 200
-   * (`useSpecMutations` invalidates the item history and the run), and either
+   * (`usePlannerMutations` invalidates the item history and the run), and either
    * refresh can land first. So the interval between "this message is a fact"
    * and "the store may say so" is one in which the entry legitimately changes:
    * the server's own copy of the message arrives, the agent's reply arrives
@@ -519,14 +519,14 @@ describe('track conversations', () => {
           harnessMessage(2, 'agentMessage', { text: 'it runs tracks' }),
         ] : []);
       }
-      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/input`) {
+      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/input`) {
         answered = true;
         return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
       }
       /* The *second* of the two refreshes the send waits on, held open. The
          first one — the history — is answered above and is what lands the new
          facts in the registry while this one is still out. */
-      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/run`) {
+      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/run`) {
         await runSettled;
         return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
       }
@@ -580,13 +580,13 @@ describe('track conversations', () => {
       if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) {
         return ok([harnessMessage(1, 'userMessage', { content: [{ text: 'ping' }] })]);
       }
-      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/input`) {
+      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/input`) {
         answered = true;
         return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
       }
       /* Held so the send is still settling when the drawer shuts, which is the
          only window in which the write-through decides anything. */
-      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/run`) {
+      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/run`) {
         await runSettled;
         return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
       }
@@ -633,7 +633,7 @@ describe('track conversations', () => {
    * Today can only navigate; the track has to finish the job. Two things had to
    * change for an **assistant** row, and each of them alone leaves this red:
    *
-   *  * `TrackRoute` cleared any open request whose card was not a spec harness,
+   *  * `TrackRoute` cleared any open request whose card was not a planner harness,
    *    which threw this one away before the list had even loaded;
    *  * the panel's consume ran off `scope`, which on a `'rows'` route is null
    *    until a row is already open — the very thing being asked for.
@@ -755,7 +755,7 @@ describe('track conversations', () => {
       && request.path.endsWith('/conversations')
       ? { status: 500, statusText: 'Error', body: { code: 'internal', error: 'boom' } }
       : undefined);
-    await screen.findByRole('button', { name: 'Conversation Spec chat' });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await openDraft();
     await write('words for the track');
     /* Failed, so the draft is kept with its key and its words — which is the
@@ -784,7 +784,7 @@ describe('track conversations', () => {
    * ── §5.4 ───────────────────────────────────────────────────────────────────
    *
    * An assistant card is read in the drawer and draws nothing, so it is
-   * headless — like the spec card and the report card. Registering the entry is
+   * headless — like the planner card and the report card. Registering the entry is
    * only half of that: `codex` is scanned first and would otherwise claim the
    * card and put an empty terminal in this panel.
    */
@@ -836,11 +836,11 @@ describe('echo identity across store instances', () => {
     const holds: (() => void)[] = [];
     const transport: ApiTransportPort = {
       async send(request) {
-        if (request.path.endsWith('/spec/input')) {
+        if (request.path.endsWith('/planner/input')) {
           await new Promise<void>((resolve) => { holds.push(resolve); });
           return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
         }
-        if (request.path.endsWith('/spec/run')) {
+        if (request.path.endsWith('/planner/run')) {
           return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
         }
         /* No history: the server has brought nothing back, which is the state

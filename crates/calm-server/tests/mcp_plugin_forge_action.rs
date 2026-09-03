@@ -247,7 +247,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .await
         .expect("stop parked worker plugin");
 
-    let parked = boot_fixture_with_role(StubMode::Parked, CardRole::Spec).await;
+    let parked = boot_fixture_with_role(StubMode::Parked, CardRole::Planner).await;
     let parked_resp = call_forge_tool(&parked, 5).await;
     assert!(
         parked_resp.get("error").is_none(),
@@ -268,7 +268,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .await
         .expect("stop parked plugin");
 
-    let parked_missing_cwd = boot_fixture_with_role(StubMode::Parked, CardRole::Spec).await;
+    let parked_missing_cwd = boot_fixture_with_role(StubMode::Parked, CardRole::Planner).await;
     std::fs::remove_dir_all(parked_missing_cwd._tmp.path().join("track-cwd"))
         .expect("delete track cwd before parked forge action");
     let parked_missing_cwd_resp = call_forge_tool(&parked_missing_cwd, 6).await;
@@ -513,7 +513,7 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         "changed probe conflict must leave the frozen recovery probe unchanged"
     );
 
-    let second = create_track_caller(&fx, CardRole::Spec).await;
+    let second = create_track_caller(&fx, CardRole::Planner).await;
     let second_resp = call_forge_tool_for_caller(&fx, &second, 23).await;
     assert!(
         second_resp.get("error").is_none(),
@@ -879,7 +879,7 @@ async fn boot_plugin_host(
     env.insert("STUB_FORGE_IDEM_KEY".into(), json!(mode.idem_key()));
     env.insert("STUB_FORGE_PARKED".into(), json!(mode.parked().to_string()));
     env.insert(
-        "STUB_FORGE_EVENT_SPEC_JSON".into(),
+        "STUB_FORGE_EVENT_PLANNER_JSON".into(),
         json!(mode.event_spec_json()),
     );
     env.insert("STUB_FORGE_CONTEXT_JSON".into(), json!(mode.context_json()));

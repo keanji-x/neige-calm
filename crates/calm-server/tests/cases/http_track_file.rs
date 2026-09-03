@@ -13,7 +13,7 @@ use calm_server::mcp_server::tools::track_file::{TOOL_TRACK_CAT, TOOL_TRACK_LS};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::track_file::{
-    app, boot, call_tool, login, materialize_worker, request_codex, spec_identity,
+    app, boot, call_tool, login, materialize_worker, planner_identity, request_codex,
 };
 use tower::ServiceExt;
 
@@ -68,7 +68,7 @@ async fn http_ls_and_cat_match_mcp_outputs() {
         let mcp = call_tool(
             &boot,
             TOOL_TRACK_LS,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "path": path.as_str() }),
         )
         .await
@@ -102,7 +102,7 @@ async fn http_ls_and_cat_match_mcp_outputs() {
         let mcp = call_tool(
             &boot,
             TOOL_TRACK_CAT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "path": path }),
         )
         .await

@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = calm_server::boot_harnesses(&state).await {
         tracing::warn!(
             error = %e,
-            "spec harness boot recovery failed; continuing without recovered harness tasks"
+            "planner harness boot recovery failed; continuing without recovered harness tasks"
         );
     }
 

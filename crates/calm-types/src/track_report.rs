@@ -57,7 +57,7 @@ pub struct TrackReportPayload {
     #[schema(required = true)]
     pub doc_rev: u64,
     /// One-line summary used by sidebars / track-list previews. Empty
-    /// string is valid (means "spec agent has not produced a summary
+    /// string is valid (means "planner agent has not produced a summary
     /// yet"); the field stays a required `String` per the
     /// [[required-over-option]] rule.
     pub summary: String,
@@ -161,7 +161,7 @@ impl TrackReportPayload {
         }
     }
 
-    /// Canonical "track was just minted; spec hasn't run yet" payload.
+    /// Canonical "track was just minted; planner hasn't run yet" payload.
     /// Used by `routes::tracks::create_track` (PR B). Historical
     /// migration seeds stay frozen; freshly-minted tracks use this copy.
     ///
@@ -169,14 +169,14 @@ impl TrackReportPayload {
     /// a leading HTML comment, then the four default H1 sections (#1185).
     /// The comment is dropped when the document is rendered, so users never
     /// see it on the page — but it stays in the body source, which every
-    /// source-reading subject reads (the spec agent, a worker's
+    /// source-reading subject reads (the planner agent, a worker's
     /// `neige cat report.md`, the REST read surface, the track's VCS diff).
     /// It is layout control, not access control: never put secrets in it.
     pub fn initial() -> Self {
         Self::new("", initial_body())
     }
 
-    /// #1110 S3 — whether spec's first turn must `calm.report.read`.
+    /// #1110 S3 — whether planner's first turn must `calm.report.read`.
     ///
     /// False only when `summary` and `body` equal [`Self::initial()`].
     /// `doc_rev` / `blocks` are ignored so a CRDT-materialized placeholder
@@ -265,7 +265,7 @@ mod tests {
         );
 
         // —— the policy really did move here (these strings used to live in
-        // calm-server's spec_card.rs) ——
+        // calm-server's planner_card.rs) ——
         for rule in [
             "写产出，不写过程",
             "散文正文",

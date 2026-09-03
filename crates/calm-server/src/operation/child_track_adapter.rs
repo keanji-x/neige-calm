@@ -14,7 +14,7 @@ use crate::model::{
     CardRole, NewCard, NewOverlay, NewTrack, RequestTheme, TrackWorkspace, TrackWorkspaceKind,
     new_id, now_ms,
 };
-use crate::routes::tracks::{spec_harness_card_payload, spec_harness_layout_payload};
+use crate::routes::tracks::{planner_harness_card_payload, planner_harness_layout_payload};
 use crate::track_report::{TrackReportPayload, tasks_rebuild_tree_tx};
 
 use super::{
@@ -31,7 +31,7 @@ pub const CHILD_TRACK_KIND: &str = "child-track";
 pub use calm_truth::db::sqlite::{MAX_TRACK_TREE_DEPTH, TRACK_ROOT_DEPTH_SQL};
 use calm_truth::db::sqlite::{
     TRACK_BOUNDED_PATH_SQL, can_add_tree_member, track_tree_budget, track_tree_member_count,
-    track_tree_spec_inventory,
+    track_tree_planner_inventory,
 };
 
 const CHILD_TRACK_PHASES: &[PhaseTag] = &[
@@ -52,7 +52,7 @@ pub struct ChildTrackOperationPayload {
     pub cwd: Option<String>,
 }
 
-/// Stable first observation for the child spec. This function has no report
+/// Stable first observation for the child planner. This function has no report
 /// reader: all four fields come from the post-claim task row.
 pub fn render_child_seed(payload: &ChildTrackOperationPayload) -> String {
     let acceptance = payload.acceptance.as_deref().unwrap_or("Not specified");
@@ -105,7 +105,7 @@ impl ChildTrackAdapter {
 ///   at creation. Nothing recycles it, and several tracks pointing at one
 ///   checkout is an ordinary, pre-existing state.
 ///
-/// Frozen on both branches: a child is machine-created inside a running spec
+/// Frozen on both branches: a child is machine-created inside a running planner
 /// and its harness bootstraps on this path immediately, so there is no window
 /// in which re-pointing it would be safe.
 fn child_workspace_plan(
@@ -206,11 +206,11 @@ impl ProviderAdapter for ChildTrackAdapter {
         // `count == budget` would let the tree grow past its bound before any
         // schedulability verdict could see it.
         let budget = track_tree_budget(tx, &root_id).await?;
-        let inventory = track_tree_spec_inventory(tx, &root_id).await?;
+        let inventory = track_tree_planner_inventory(tx, &root_id).await?;
         if inventory >= budget {
             return Err(CalmError::Conflict(format!(
                 "sub-track-tree-budget-exhausted: track tree rooted at {root_id} holds {inventory} \
-                 unfinished spec task(s), at or over its tree_task_budget of {budget}"
+                 unfinished planner task(s), at or over its tree_task_budget of {budget}"
             )));
         }
         let members = track_tree_member_count(tx, &root_id).await?;
@@ -306,19 +306,19 @@ impl ProviderAdapter for ChildTrackAdapter {
             .execute(&mut **tx)
             .await?;
 
-        let spec_card_id = new_id();
+        let planner_card_id = new_id();
         let report_card_id = new_id();
-        let spec_card = card_create_with_id_tx(
+        let planner_card = card_create_with_id_tx(
             tx,
-            spec_card_id.clone(),
+            planner_card_id.clone(),
             NewCard {
                 title: None,
                 track_id: child.id.clone(),
                 kind: "codex".into(),
                 sort: None,
-                payload: spec_harness_card_payload(Some(seed.clone())),
+                payload: planner_harness_card_payload(Some(seed.clone())),
             },
-            CardRole::Spec,
+            CardRole::Planner,
             false,
             &self.card_role_cache,
         )
@@ -345,7 +345,7 @@ impl ProviderAdapter for ChildTrackAdapter {
                 entity_kind: "view".into(),
                 entity_id: child.id.to_string(),
                 kind: "layout".into(),
-                payload: spec_harness_layout_payload(&spec_card_id, &report_card_id),
+                payload: planner_harness_layout_payload(&planner_card_id, &report_card_id),
             },
         )
         .await?;
@@ -386,11 +386,11 @@ impl ProviderAdapter for ChildTrackAdapter {
             (
                 actor.clone(),
                 EventScope::Card {
-                    card: spec_card.id.clone(),
+                    card: planner_card.id.clone(),
                     track: child.id.clone(),
                     area: child.area_id.clone(),
                 },
-                Event::CardAdded(spec_card),
+                Event::CardAdded(planner_card),
             ),
             (
                 actor.clone(),
@@ -444,13 +444,13 @@ impl ProviderAdapter for ChildTrackAdapter {
         // child-track bootstrap (`scheduler::drive_child_track`) never re-reads
         // the track row: it takes `cwd` from THIS result — including from the
         // persisted `tx_output` of an older operation on an idempotency
-        // collision — and hands it to `spec-harness-start`. Changing the
+        // collision — and hands it to `planner-harness-start`. Changing the
         // adapter's allocation without changing this field would leave the
         // child's harness anchored on the parent's directory, which is the
         // adapter-only half of the same bug.
         let result = json!({
             "child_track_id": child.id,
-            "spec_card_id": CardId::from(spec_card_id),
+            "planner_card_id": CardId::from(planner_card_id),
             "report_card_id": CardId::from(report_card_id),
             "seed": seed,
             "cwd": child.workspace.path,
@@ -765,7 +765,7 @@ mod tests {
             .0;
         let mut conn = repo.pool().acquire().await.unwrap();
         let budget = track_tree_budget(&mut conn, &root_id).await.unwrap();
-        let inventory = track_tree_spec_inventory(&mut conn, &root_id)
+        let inventory = track_tree_planner_inventory(&mut conn, &root_id)
             .await
             .unwrap();
         let members = track_tree_member_count(&mut conn, &root_id).await.unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
             "recycling the child's workspace destroyed the parent's repository"
         );
 
-        // The scheduler bootstraps the child's spec harness from THIS field,
+        // The scheduler bootstraps the child's planner harness from THIS field,
         // never from the track row.
         assert_eq!(output.data["cwd"], child_path);
         assert_eq!(output.result["cwd"], child_path);
@@ -1305,9 +1305,9 @@ mod tests {
             output.data["seed"],
             "# Goal\nfrozen-goal\n\n# Acceptance\nfrozen-acceptance\n\n# Context\n```json\n{\n  \"frozen\": \"context\"\n}\n```\n\n# Task working directory\n/task-only-cwd"
         );
-        let spec_card_id = output.data["spec_card_id"].as_str().unwrap();
-        let spec_payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
-            .bind(spec_card_id)
+        let planner_card_id = output.data["planner_card_id"].as_str().unwrap();
+        let planner_payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+            .bind(planner_card_id)
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -1317,7 +1317,7 @@ mod tests {
             "frozen",
             "/task-only-cwd",
         ] {
-            assert!(spec_payload.contains(frozen_value), "{spec_payload}");
+            assert!(planner_payload.contains(frozen_value), "{planner_payload}");
         }
         for current_value in [
             "current-goal",
@@ -1325,7 +1325,10 @@ mod tests {
             "current-cwd",
             "current",
         ] {
-            assert!(!spec_payload.contains(current_value), "{spec_payload}");
+            assert!(
+                !planner_payload.contains(current_value),
+                "{planner_payload}"
+            );
         }
         let child_id = output.data["child_track_id"].as_str().unwrap();
         // #1147 S4 (D7 as amended) — this parent is ATTACHED (`/parent-cwd`, a
@@ -1563,7 +1566,7 @@ mod tests {
     }
 
     /// PR-B enforcement point one. The inventory counted is the WHOLE tree's
-    /// non-terminal spec rows. At B=2, inventory is exactly 2 while member
+    /// non-terminal planner rows. At B=2, inventory is exactly 2 while member
     /// admission N=1 -> 2 is legal, so ONLY the inventory guard can refuse.
     /// At B=3 both guards admit. This keeps the inventory `>=` tripwire
     /// independent from the later member-count guard.
@@ -1697,7 +1700,7 @@ mod tests {
     /// the review counterexamples: without the post-create whole-tree
     /// reprojection they finish at 9/8 and 15/12 respectively.
     #[tokio::test]
-    async fn whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences() {
+    async fn whole_tree_live_planner_never_exceeds_budget_across_admitted_growth_sequences() {
         // B=8: root keeps three rows; a four-row first child supplies the
         // second child-track operation. N=3 shrinks that member's share to 3,
         // so the shared rebuild must cull one pending row before child 2 can
@@ -1726,7 +1729,9 @@ mod tests {
         let second_child = create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
         project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
         let mut conn = repo.pool().acquire().await.unwrap();
-        let total_eight = track_tree_spec_inventory(&mut conn, &root).await.unwrap();
+        let total_eight = track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap();
 
         // B=12: three already-claimed root declarations create three siblings.
         // The final N=4 rebuild shrinks root from six live rows to share=3;
@@ -1757,7 +1762,9 @@ mod tests {
             project_pending_tasks(&repo, child, &format!("leaf-twelve-{index}"), 3).await;
         }
         let mut conn = repo.pool().acquire().await.unwrap();
-        let total_twelve = track_tree_spec_inventory(&mut conn, &root).await.unwrap();
+        let total_twelve = track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap();
         assert_eq!(
             (total_eight, total_twelve),
             (8, 12),
@@ -1817,7 +1824,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&error, CalmError::Conflict(message) if message.contains("5 unfinished spec task(s)") && message.contains("new share of 4")),
+            matches!(&error, CalmError::Conflict(message) if message.contains("5 unfinished planner task(s)") && message.contains("new share of 4")),
             "{error}"
         );
         tx.rollback().await.unwrap();
@@ -1846,7 +1853,7 @@ mod tests {
             &mut tx,
             &root,
             TrackPatch {
-                spec_task_ceiling: Some(Some(2)),
+                planner_task_ceiling: Some(Some(2)),
                 tree_task_budget: Some(Some(2)),
                 ..Default::default()
             },
@@ -1880,7 +1887,10 @@ mod tests {
         let plain_codes = codes(&plain);
         let tree_codes = codes(tree);
         assert_eq!(plain_codes, tree_codes, "rebuild entrypoints drifted");
-        assert_eq!(plain_codes, ["spec_task_ceiling", "tree_budget_exhausted"]);
+        assert_eq!(
+            plain_codes,
+            ["planner_task_ceiling", "tree_budget_exhausted"]
+        );
         tx.rollback().await.unwrap();
     }
 

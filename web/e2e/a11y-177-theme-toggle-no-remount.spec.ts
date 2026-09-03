@@ -9,7 +9,7 @@
 // running locally; the `a11y` project bootstraps everything from
 // scratch via `_setup/replay-server.setup.ts`.
 //
-// What this spec pins
+// What this planner pins
 // -------------------
 // The user's DevTools console captured an XtermView remount on every
 // theme toggle:
@@ -43,16 +43,16 @@
 //
 //  * We create a real area + track via the replay binary's REST surface
 //    (same pattern as `a11y-keyboard.spec.ts`), then rely on the
-//    sync-spawn spec-card path (#136 PR6) to mint an XtermView when
+//    sync-spawn planner-card path (#136 PR6) to mint an XtermView when
 //    the track page renders. No `+ Add → terminal` step needed.
 //
 // Outcome shapes
 // --------------
 //   * Test FAILS with `expected N, got N+1` (or higher) → reproduced
 //     the user-reported regression. Hand-off to the fix PR with this
-//     spec as the regression anchor.
+//     planner as the regression anchor.
 //   * Test PASSES → Playwright + the replay binary + Vite-dev together
-//     do not reproduce the production remount. The spec still pins
+//     do not reproduce the production remount. The planner still pins
 //     the contract "an app theme toggle MUST NOT remount any visible
 //     XtermView", so any future regression that re-introduces a
 //     remount in *any* env trips this assertion.
@@ -69,10 +69,10 @@ import { CODEX_BIN_FILE, CODEX_MISSING_SENTINEL } from './_setup/replay-server.s
 
 // Synchronous module-load probe so `test.skip` can run at the right
 // time (before the test body). The marker file is written by
-// `replay-server.setup.ts`; by the time this spec module evaluates it
+// `replay-server.setup.ts`; by the time this planner module evaluates it
 // MUST exist (Playwright wouldn't have reached the a11y project
 // otherwise). A missing file is treated as "skip" rather than throw —
-// running this spec standalone (without the setup project) self-skips
+// running this planner standalone (without the setup project) self-skips
 // with a useful message.
 const codexResolution = readCodexResolution();
 const codexAvailable =
@@ -91,10 +91,10 @@ test.setTimeout(60_000);
 test('#177 XtermView does not remount on app theme toggle', async ({
   page,
 }) => {
-  // The spec is most diagnostic with real PTY output flowing into
+  // The planner is most diagnostic with real PTY output flowing into
   // XtermView (so the theme toggle interacts with a non-degenerate
   // render path), and that means we need a real codex on disk for the
-  // spec card's daemon. Skip cleanly when it isn't available — CI
+  // planner card's daemon. Skip cleanly when it isn't available — CI
   // without codex stays green; the unit + integration tests still
   // pin the contract in isolation.
   test.skip(
@@ -121,7 +121,7 @@ test('#177 XtermView does not remount on app theme toggle', async ({
   });
   await expect(page).toHaveURL(/\/calm\/track\/[^/?]+\?testMounts=1$/);
 
-  // Step 4 — the track-create path mints a spec card synchronously
+  // Step 4 — the track-create path mints a planner card synchronously
   // (#136 PR6 / #182), which mounts XtermView. We wait for the
   // `.xterm-view` element + the `__xtermMounts__` counter to settle.
   await expect(page.locator('.xterm-view').first()).toBeVisible({

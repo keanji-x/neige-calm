@@ -6,7 +6,7 @@
 //! a Unix domain socket so it can authenticate the caller per-card via
 //! `card_mcp_tokens`. This shim is the glue: codex spawns it with
 //! `NEIGE_MCP_DAEMON_TOKEN` + `NEIGE_MCP_SOCKET` in the env (set by
-//! `spec_card::build_codex_env_map`), the shim opens the socket, injects
+//! `planner_card::build_codex_env_map`), the shim opens the socket, injects
 //! the token into the first `initialize` frame, then ferries bytes in
 //! both directions until either side closes.
 //!
@@ -70,7 +70,7 @@ async fn main() -> ExitCode {
 
     // Resolve the UDS path from the env. Codex sets this from the
     // `[mcp_servers.calm].env` block the kernel writes into the per-card
-    // config.toml — see `spec_card::build_role_codex_config_toml`.
+    // config.toml — see `planner_card::build_role_codex_config_toml`.
     let socket = match env::var(ENV_SOCKET) {
         Ok(v) if !v.is_empty() => v,
         _ => {
@@ -266,7 +266,7 @@ fn maybe_inject_token(line: &str, token: &str) -> String {
     // Walk down to `params._meta["dev.neige/auth"].token`, creating
     // intermediate objects as needed. The codex CLI's `initialize`
     // always carries a `params` object (it's required by the JSON-RPC
-    // spec for `initialize`), but we defensively handle missing /
+    // planner for `initialize`), but we defensively handle missing /
     // wrong-type cases by replacing them with empty objects.
     let params = ensure_object(&mut value, "params");
     let meta = ensure_object_in(params, "_meta");

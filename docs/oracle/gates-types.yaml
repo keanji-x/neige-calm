@@ -35,7 +35,7 @@
     新增 / 重命名 / 删除任何 token 必须在同一个 commit 里改这些数组
   why: >
     文件头注释明确写了：数据驱动检测（"找出所有 --surface-* 再推断哪些是 alias"）
-    被**刻意否决**。整份 spec 的目的就是让"我们现在有哪些 token"变成一个可 review
+    被**刻意否决**。整份 planner 的目的就是让"我们现在有哪些 token"变成一个可 review
     的 diff——加 token 的人和 reviewer 同时看到两半。#142 slice 2。
   source: web/src/calm-tokens.test.ts:35-60
   authoritative_test: web/src/calm-tokens.test.ts:47-267

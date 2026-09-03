@@ -35,7 +35,7 @@ async fn worker_sessions_card_id_dual_write_on_runtime_start() {
 }
 
 #[tokio::test]
-async fn worker_sessions_card_id_dual_write_on_deferred_spec_placeholder() {
+async fn worker_sessions_card_id_dual_write_on_deferred_planner_placeholder() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-card-id-placeholder-{}", new_id());
     let mut tx = repo
@@ -45,7 +45,7 @@ async fn worker_sessions_card_id_dual_write_on_deferred_spec_placeholder() {
         .expect("begin deferred placeholder tx");
     let card_id = create_card_in_tx(&repo, &mut tx, "card-id-placeholder", "codex").await;
     let init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 10_000);
-    session_prepare_deferred_spec_tx(&mut tx, &init)
+    session_prepare_deferred_planner_tx(&mut tx, &init)
         .await
         .expect("prepare deferred placeholder");
     tx.commit().await.expect("commit deferred placeholder tx");
@@ -80,12 +80,12 @@ async fn card_delete_removes_placeholder_worker_session() {
     )
     .await
     .expect("start active runtime");
-    let placeholder = session_prepare_deferred_spec_tx(
+    let placeholder = session_prepare_deferred_planner_tx(
         &mut tx,
         &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
     )
     .await
-    .expect("prepare deferred spec placeholder");
+    .expect("prepare deferred planner placeholder");
     tx.commit()
         .await
         .expect("commit card delete placeholder tx");
@@ -293,7 +293,7 @@ async fn runtime_get_by_id_tx_returns_superseded_runtime_by_id() {
 }
 
 #[tokio::test]
-async fn runtime_get_active_for_card_tx_returns_placeholder_during_deferred_spec_gap() {
+async fn runtime_get_active_for_card_tx_returns_placeholder_during_deferred_planner_gap() {
     let repo = fresh_repo().await;
 
     let label = "active-card-gap";
@@ -307,16 +307,16 @@ async fn runtime_get_active_for_card_tx_returns_placeholder_during_deferred_spec
         WorkerSessionState::Running,
         10_000,
     );
-    active_init.kind = WorkerSessionKind::SharedSpec;
+    active_init.kind = WorkerSessionKind::SharedPlanner;
     let active = session_start_runtime_tx(&mut tx, active_init)
         .await
         .expect("start old active runtime");
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
     )
     .await
-    .expect("prepare deferred spec placeholder");
+    .expect("prepare deferred planner placeholder");
 
     let card_session_id: Option<String> =
         sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")

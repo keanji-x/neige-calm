@@ -68,7 +68,7 @@
 - { path: fe/web/src/features/area, type: directory, owner: features/area, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
 - { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }
-- { path: fe/web/src/features/spec, type: directory, owner: features/spec, readonly: false, basis: "architecture §4 layer graph (authoritative over §5 abbreviated tree)" }
+- { path: fe/web/src/features/planner, type: directory, owner: features/planner, readonly: false, basis: "architecture §4 layer graph (authoritative over §5 abbreviated tree)" }
 - { path: fe/web/src/features/settings, type: directory, owner: features/settings, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/auth, type: directory, owner: features/auth, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/.gitkeep, type: file, owner: architecture, readonly: false, basis: "stage-1 placeholder" }

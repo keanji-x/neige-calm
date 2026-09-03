@@ -1094,10 +1094,10 @@ pub(crate) async fn get_plugin_view_html(
 ///
 /// The mapping is deliberately conservative: `default_src`, `script_src`,
 /// `style_src`, `connect_src`, `img_src` are emitted with their snake_case
-/// names rewritten to spec form (`default-src`, etc.); the `extras`
+/// names rewritten to planner form (`default-src`, etc.); the `extras`
 /// flatten-bucket from `CspBlock` is forwarded under its raw key with a
 /// best-effort `snake → kebab` rewrite for the same five-or-so canonical
-/// directives the spec names. Unknown keys flow through verbatim.
+/// directives the planner names. Unknown keys flow through verbatim.
 fn csp_header_from_meta(meta: Option<&Value>) -> Option<String> {
     let csp = meta?.pointer("/ui/csp")?.as_object()?;
     let mut parts: Vec<String> = Vec::new();

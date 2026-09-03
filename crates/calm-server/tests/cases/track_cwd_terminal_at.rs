@@ -4,7 +4,7 @@
 //! calendar window query `GET /api/tracks?since&until&area_id`.
 //!
 //! These tests boot a stub-daemon router (no real codex / no real
-//! terminal renderer) so the spec-push app-server boot fails on
+//! terminal renderer) so the planner-push app-server boot fails on
 //! `POST /api/tracks`. Issue #293 / PR #311 made that boot NON-FATAL —
 //! the route now returns 201 (inert track) on that branch rather than
 //! 500 — and the track + cards + (optional) area_folder rows land at
@@ -14,7 +14,7 @@
 //! daemon to actually exec the codex binary.
 //!
 //! Tests in `track_create_sync_daemon.rs` cover the real-daemon path
-//! end-to-end (spec daemon cwd == track.cwd, codex argv carries title);
+//! end-to-end (planner daemon cwd == track.cwd, codex argv carries title);
 //! this file owns the wider behavioral surface that doesn't need a
 //! real spawn.
 
@@ -96,7 +96,7 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
-    // Stub daemon bin — spec card daemon spawn will fail at the
+    // Stub daemon bin — planner card daemon spawn will fail at the
     // post-commit phase. The behaviors under test (track + folder row
     // shape, terminal_at stamps) all execute *before* the spawn, so
     // a 500 on the response is expected and the test asserts on DB
@@ -210,7 +210,7 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 
 /// Happy path 1: the body's area already claims an ancestor of cwd.
 /// `attach_folder = false` is enough — no new folder row is needed.
-/// Spec-daemon spawn will fail (stub bin); tolerate 201 or 500 but
+/// Planner-daemon spawn will fail (stub bin); tolerate 201 or 500 but
 /// assert the track row landed with the cwd verbatim.
 #[tokio::test]
 async fn post_api_tracks_uses_existing_folder_claim() {

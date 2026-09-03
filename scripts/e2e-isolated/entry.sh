@@ -179,7 +179,7 @@ start_egress_chain() {
 
 # ---- required-CLI preflight (sourceable) -----------------------------------
 # The contained agent stack shells out a small set of BARE commands that must
-# resolve on PATH: the spec/worker agents run `neige` (track reads), `rg` (code
+# resolve on PATH: the planner/worker agents run `neige` (track reads), `rg` (code
 # search) and `git`; codex execs `bwrap` for every sandboxed local_shell; the
 # worker rollout reader runs `zstd -dc`. Each is provisioned into the run
 # container either by a run.sh bind-mount (workspace binaries — `neige` ->

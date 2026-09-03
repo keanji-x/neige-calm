@@ -4,7 +4,7 @@ use crate::model::{Card, CardRole};
 ///
 /// `require_worker_codex` is for harness-facing boundaries, where the marker
 /// is only authoritative on a Worker `codex` card. Callers that merely need
-/// to suppress spec-only machinery (for example worker-flow attachment) pass
+/// to suppress planner-only machinery (for example worker-flow attachment) pass
 /// `false` so malformed/legacy marked rows still fail closed.
 pub(crate) fn card_is_plain_chat(
     card: &Card,
@@ -37,7 +37,7 @@ pub(crate) fn card_is_track_assistant(
         .payload
         .get("harness_profile")
         .and_then(serde_json::Value::as_str)
-        == Some(crate::operation::spec_harness_start_adapter::ASSISTANT_HARNESS_PROFILE_MARKER);
+        == Some(crate::operation::planner_harness_start_adapter::ASSISTANT_HARNESS_PROFILE_MARKER);
     marked
         && (!require_assistant_codex || (card.kind == "codex" && role == Some(CardRole::Assistant)))
 }
@@ -130,7 +130,7 @@ mod tests {
         ));
         assert!(!card_is_plain_chat(
             &card("codex"),
-            Some(CardRole::Spec),
+            Some(CardRole::Planner),
             true
         ));
         assert!(!card_is_plain_chat(

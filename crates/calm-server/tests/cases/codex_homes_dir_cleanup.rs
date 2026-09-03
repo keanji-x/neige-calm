@@ -72,14 +72,14 @@ async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
     assert!(
         path.exists(),
         "`new_stub()` must create the tempdir eagerly so track-create / \
-         spec-card spawn paths can immediately `mkdir <path>/<card_id>` \
+         planner-card spawn paths can immediately `mkdir <path>/<card_id>` \
          without checking; got non-existent {}",
         path.display(),
     );
 
-    // Simulate the real track-create / spec-card spawn: create a UUID
+    // Simulate the real track-create / planner-card spawn: create a UUID
     // named per-card subdir and a sentinel file inside it. This is the
-    // exact shape `spec_card.rs:230` / `codex_cards.rs:178` write.
+    // exact shape `planner_card.rs:230` / `codex_cards.rs:178` write.
     let card_id = uuid::Uuid::new_v4().to_string();
     let card_home = path.join(&card_id);
     std::fs::create_dir_all(&card_home).expect("seed per-card codex home");
@@ -163,7 +163,7 @@ async fn codex_homes_dir_cleanup_appstate_track_create_subdir_is_under_per_test_
 
     // Simulate a track-create that mints a per-card codex home — exactly
     // what the real handlers do via `<codex_homes_dir>/<card_id>/`
-    // (see `spec_card.rs:230` and `codex_cards.rs:178`).
+    // (see `planner_card.rs:230` and `codex_cards.rs:178`).
     let card_id = uuid::Uuid::new_v4().to_string();
     let card_home = state.codex.codex_homes_dir.join(&card_id);
     std::fs::create_dir_all(&card_home).expect("seed per-card codex home");

@@ -18,7 +18,7 @@ async function createTrack(page: Page): Promise<{ id: string; title: string }> {
       area_id: area.id,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This spec is about wheel mode, not working directories. See
+      // This planner is about wheel mode, not working directories. See
       // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-wheel-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },

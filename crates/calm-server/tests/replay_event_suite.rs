@@ -12,7 +12,7 @@ mod hook_ingest_idempotency;
 mod replay_bin_stdout_close;
 #[path = "cases/replay_fixtures.rs"]
 mod replay_fixtures;
-#[path = "cases/replay_force_spec_phase.rs"]
-mod replay_force_spec_phase;
+#[path = "cases/replay_force_planner_phase.rs"]
+mod replay_force_planner_phase;
 #[path = "cases/replay_legacy_schema.rs"]
 mod replay_legacy_schema;

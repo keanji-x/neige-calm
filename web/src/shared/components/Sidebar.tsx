@@ -214,8 +214,8 @@ export function Sidebar({
     .filter((w) => w.pinnedAt != null)
     .sort((a, b) => a.pinnedAt! - b.pinnedAt!);
   // Issue #254 — OR'd predicate: lifecycle ∪ kernel-card-FSM. Catches
-  // both "Spec Agent said blocked/reviewing/failed" AND "a worker card
-  // hit an AwaitingInput/Errored hook before Spec Agent could drive
+  // both "Planner Agent said blocked/reviewing/failed" AND "a worker card
+  // hit an AwaitingInput/Errored hook before Planner Agent could drive
   // lifecycle". The latter is the regression hole #248's deletion of
   // the track-level FSM union left open.
   // Waiting includes pinned attention tracks intentionally: a pinned

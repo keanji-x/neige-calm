@@ -1272,7 +1272,7 @@ mod tests {
               context_closure_truncated,decl_ready,decl_released_by_user,\
               context_verify_failures,spawn,created_at_ms,updated_at_ms) \
              VALUES (?1,?2,'terminal','terminal','true','null','[]',0,?3,\
-                     'spec',?4,?5,0,1,0,0,'in-wave',1,1)",
+                     'planner',?4,?5,0,1,0,0,'in-wave',1,1)",
         )
         .bind(&task_id)
         .bind(track.id.as_str())

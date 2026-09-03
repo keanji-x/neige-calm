@@ -2,7 +2,7 @@
 //! client against a **real `codex app-server`** booted over a unix socket.
 //!
 //! Feature-gated behind `codex-e2e` (same convention as
-//! `codex_e2e_spec_card.rs`) because CI ships no `codex` binary and cannot
+//! `codex_e2e_planner_card.rs`) because CI ships no `codex` binary and cannot
 //! run model turns. Run locally with:
 //!
 //! ```sh
@@ -26,7 +26,7 @@
 //! ## Self-skip (must NOT fail when codex/auth is absent)
 //!
 //! The test resolves the codex binary via `NEIGE_CODEX_BIN` only (#868 —
-//! no PATH/home fallback) exactly like `codex_e2e_spec_card.rs`. If the
+//! no PATH/home fallback) exactly like `codex_e2e_planner_card.rs`. If the
 //! env var is unset or unusable it prints a skip marker and returns. It
 //! also self-skips (not fails) if the app-server fails to boot or the WS
 //! handshake fails — both indicate an environment without a usable codex

@@ -39,14 +39,14 @@ function card(overrides: Partial<CardWire> & Pick<CardWire, 'id' | 'kind'>): Car
  * The headless pair is interleaved on purpose — dropping them must not shuffle
  * what is left.
  */
-const SPEC_CARD = card({ id: 'card-spec', kind: 'codex', title: 'Spec chat', payload: { spec_harness: true }, sort: 1 });
+const PLANNER_CARD = card({ id: 'card-planner', kind: 'codex', title: 'Planner chat', payload: { planner_harness: true }, sort: 1 });
 const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', title: 'Terminal one', sort: 2 });
 const REPORT_CARD = card({ id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, payload: { body: '' } });
 const VISIBLE_CARD = card({ id: 'card-surface', kind: 'panel-surface', title: 'Surface', sort: 4 });
 const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex chat', sort: 5, payload: {} });
 /*
  * The subject of the "unclaimed cards stay listed" assertion below. Every other
- * fixture here now resolves — terminal, codex, spec, track-report and the
+ * fixture here now resolves — terminal, codex, planner, track-report and the
  * surface stub — so without this the assertion has nothing to be about.
  *
  * The kind is deliberately not a member of `BUILTIN_CARD_ORDER`: naming it e.g.
@@ -54,7 +54,7 @@ const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex cha
  * day that entry lands, with no signal.
  */
 const UNCLAIMED_CARD = card({ id: 'card-unclaimed', kind: 'panel-unclaimed', title: 'Unclaimed thing', sort: 6 });
-const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX, UNCLAIMED_CARD];
+const CARDS = [PLANNER_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX, UNCLAIMED_CARD];
 
 /*
  * Terminal now owns a surface; this extra fixture still covers the unknown
@@ -197,11 +197,11 @@ describe('track route CARDS panel', () => {
     const labels = await inventoryLabels();
     // The two headless kinds are gone from the product surface, not merely
     // absent from a helper's return value.
-    expect(labels.some((label) => label.includes('Spec chat'))).toBe(false);
+    expect(labels.some((label) => label.includes('Planner chat'))).toBe(false);
     expect(labels.some((label) => label.includes('Report card'))).toBe(false);
-    // The spec card is still on the page as a *conversation* — it is the CARDS
+    // The planner card is still on the page as a *conversation* — it is the CARDS
     // module it must be absent from, so the assertion stays scoped to it.
-    expect(screen.queryByRole('button', { name: /Conversation Spec chat/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Conversation Planner chat/ })).toBeTruthy();
   });
 
   it('[INV-CARD-226] keeps unclaimed cards, because an unlisted card is worse than an unrecognised one', async () => {
@@ -263,7 +263,7 @@ describe('track route CARDS panel', () => {
   });
 
   it('[INV-CARD-226] shows the empty state when every card the track has is headless', async () => {
-    setup([SPEC_CARD, REPORT_CARD], { withVisibleFixture: false });
+    setup([PLANNER_CARD, REPORT_CARD], { withVisibleFixture: false });
     expect(await screen.findByText('No cards yet.')).toBeTruthy();
   });
 

@@ -1,6 +1,6 @@
 //! Kernel MCP server.
 //!
-//! The codex daemons spawned for Spec / Worker cards need a write path
+//! The codex daemons spawned for Planner / Worker cards need a write path
 //! back into the kernel for dispatch, task outcomes, verdicts, and report
 //! updates. The transport is MCP over a Unix domain socket so per-card identity is
 //! cryptographic (per-card token in `card_mcp_tokens`) and the wire

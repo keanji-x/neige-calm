@@ -19,7 +19,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
-use calm_server::harness::{HarnessState, Observation, SpecHarness};
+use calm_server::harness::{HarnessState, Observation, PlannerHarness};
 use calm_server::ids::{ActorId, TrackId};
 use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
 use calm_server::model::{TrackLifecycle, TrackPatch};
@@ -39,7 +39,7 @@ use support::oracle::{
     assert_converged_subject_has_merge, assert_event_skeleton_superset, assert_ordering,
     assert_subject_keyed_cap_enforcement,
 };
-use support::spec_turn::*;
+use support::planner_turn::*;
 use tokio::time::{Instant, sleep};
 use tower::ServiceExt;
 
@@ -148,12 +148,12 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 
     // Each test boots an isolated fixture/DB. This test's fixture sees NO
     // scripted `call_tool` for any `gh.*` or `git.commit` (its only direct
-    // tool call is the report task-block writer via the spec identity inside
+    // tool call is the report task-block writer via the planner identity inside
     // `plan_codex_task`; the d2 merge test scripts `gh.pr.create`/
     // `gh.pr.checks` only against its own separate fixture). Therefore the
     // ONLY thing that can emit `forge.pr.opened` / `forge.pr.checks` here is
     // the real worker's own MCP `tools/call`. Assert via the `events` table
-    // (NOT `harness_items`, which is spec-thread-only).
+    // (NOT `harness_items`, which is planner-thread-only).
     let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
     assert_eq!(s5.actor, ActorId::KernelDispatcher);
     assert_eq!(s5.scope_kind, "card");
@@ -213,7 +213,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 }
 
 #[tokio::test]
-async fn real_spec_agent_autonomously_plans_from_bound_template() {
+async fn real_planner_agent_autonomously_plans_from_bound_template() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -226,10 +226,10 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
     let goal =
         "Plan the smallest issue-development template for adding one marker file.".to_string();
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -244,12 +244,12 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
         }
     };
 
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (actor, plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
     assert!(
-        matches!(actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be AiSpecSession, got {actor:?}"
+        matches!(actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be AiPlannerSession, got {actor:?}"
     );
     assert!(
         plan["changed_keys"]
@@ -258,11 +258,11 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
         "plan.updated changed_keys must be non-empty: {plan}",
     );
     // These preconditions prove `bound_template_descriptor` resolves the
-    // trusted bound template instead of falling back to the vanilla spec prompt.
+    // trusted bound template instead of falling back to the vanilla planner prompt.
     assert_bound_issue_development_template_preconditions(&fx).await;
 
     // Superset-tolerant (design §1/§2): assert the kernel-deterministic
-    // Draft->Planning companion is present exactly once; the real spec may emit
+    // Draft->Planning companion is present exactly once; the real planner may emit
     // further lifecycle transitions (e.g. Planning->Dispatching) once it plans,
     // so we filter rather than assert the total count.
     let lifecycle = lifecycle_changed_rows(&fx.repo).await;
@@ -286,10 +286,10 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
     assert_eq!(lifecycle_payload["id"], json!(fx.track_id.as_str()));
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -298,7 +298,7 @@ async fn real_spec_agent_autonomously_plans_from_bound_template() {
 }
 
 #[tokio::test]
-async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor() {
+async fn real_planner_agent_autonomously_emits_design_review_round_from_descriptor() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -312,10 +312,10 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
                 then drive design-review convergence."
         .to_string();
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -330,21 +330,23 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
         }
     };
 
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
     assert!(
-        matches!(plan_actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+        matches!(plan_actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
 
-    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    let harness = recover_planner_harness(&fx)
+        .await
+        .expect("live planner harness");
     // Settle the planning turn before seeding so the accepted review.round is
     // causally a response to the injected task completions, not a planning-time
-    // fabrication. R6 deliberately does not prove the spec literally read runs/:
+    // fabrication. R6 deliberately does not prove the planner literally read runs/:
     // the runs/ pre-check proves the verdict data is present and readable, and
     // this causal wake is sufficient for the autonomy thesis.
-    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
     seed_design_channel_complete(&fx, "review-design-a", "a").await;
     seed_design_channel_complete(&fx, "review-design-b", "b").await;
     let floor = max_event_id(&fx.repo).await;
@@ -360,7 +362,7 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
     let rounds = wait_for_converged_design_review_round(&fx, floor, review_budget()).await;
     assert_real_design_review_round(&fx, &rounds).await;
 
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -369,7 +371,7 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
 }
 
 #[tokio::test]
-async fn real_spec_gives_up_at_review_cap_from_descriptor() {
+async fn real_planner_gives_up_at_review_cap_from_descriptor() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -393,10 +395,10 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
                 derived variant)."
     );
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -411,23 +413,25 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
         }
     };
 
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
     assert!(
-        matches!(plan_actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+        matches!(plan_actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
     // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
     // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
     // agent emits — they are different namespaces and the agent's slug drifts.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
-    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    let harness = recover_planner_harness(&fx)
+        .await
+        .expect("live planner harness");
     // Settle the planning turn before seeding (R6 causality guard): the
     // accepted give-up sequence must be causally a response to the injected
     // observations below, not a planning-time fabrication.
-    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
     // Pre-position the track at `reviewing` via a raw TrackPatch (precedent:
     // crates/calm-server/tests/review_ratify.rs `set_track_lifecycle`) —
@@ -450,9 +454,9 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // round is legal on this subject (n=9 > cap is rejected; n=8 is a duplicate
     // key). The real agent therefore cannot run "one more round" and must
     // escalate directly — the give-up branch under test. (#943: seeding n=7
-    // deadlocks this dispatcher-less spec-harness, because the agent correctly
+    // deadlocks this dispatcher-less planner-harness, because the agent correctly
     // re-dispatches a legitimate round-8 whose reviewer tasks nothing here can
-    // complete.) role_gate rule 2.8 makes AiSpec(spec card) the ONLY legal
+    // complete.) role_gate rule 2.8 makes AiPlanner(planner card) the ONLY legal
     // author for review.round — KernelDispatcher (R6's seed actor) is rejected.
     seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
 
@@ -466,17 +470,17 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
 
     // Wake: both channels changes_requested + the prior-round state, injected
     // exactly as the prod dispatcher's `harness_observation_from_event` would
-    // push them (design D5; no dispatcher runs in the spec-harness E2E).
+    // push them (design D5; no dispatcher runs in the planner-harness E2E).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
     inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle (a): the FSM's give-up edge, spec-only-legal. The *edge* lives in
+    // Oracle (a): the FSM's give-up edge, planner-only-legal. The *edge* lives in
     // the static prompt, but the *when* — escalate at the cap instead of
     // ratifying — comes only from the descriptor. The subject is seeded already
     // at the cap (n=8/cap=8), so no further review.round is kernel-legal and the
     // agent must escalate directly; we wait from the pre-wake `floor` (there is
-    // no spec-authored cap round to pin ordering against). #943: seeding n=7
+    // no planner-authored cap round to pin ordering against). #943: seeding n=7
     // deadlocks here — the agent re-dispatches a legitimate round-8 whose
     // reviewers the dispatcher-less harness can never complete.
     let (edge_actor, edge) = wait_for_track_failed_edge(&fx, floor, review_budget()).await;
@@ -487,8 +491,8 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     );
     assert_eq!(edge["id"], json!(fx.track_id.as_str()));
     assert!(
-        matches!(edge_actor, ActorId::AiSpecSession(_)),
-        "give-up edge actor must be AiSpecSession, got {edge_actor:?} for {edge}"
+        matches!(edge_actor, ActorId::AiPlannerSession(_)),
+        "give-up edge actor must be AiPlannerSession, got {edge_actor:?} for {edge}"
     );
 
     // Oracle (b): the tracks row landed on the terminal lifecycle.
@@ -511,10 +515,10 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
 
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -523,7 +527,7 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
 }
 
 #[tokio::test]
-async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
+async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -547,10 +551,10 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
                 phase qualifier, or derived variant)."
     );
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -565,23 +569,25 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
         }
     };
 
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
     assert!(
-        matches!(plan_actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+        matches!(plan_actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
     // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
     // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
     // agent emits — they are different namespaces and the agent's slug drifts.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
-    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    let harness = recover_planner_harness(&fx)
+        .await
+        .expect("live planner harness");
     // Settle the planning turn before seeding (R6 causality guard): the
     // accepted ASK-HUMAN sequence must be causally a response to the injected
     // observations below, not a planning-time fabrication.
-    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
     // Pre-position the track at `reviewing` via a raw TrackPatch (precedent:
     // crates/calm-server/tests/review_ratify.rs `set_track_lifecycle`) —
@@ -604,7 +610,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // round is legal on this subject (n=9 > cap is rejected; n=8 is a duplicate
     // key). The real agent therefore cannot run "one more round" and must
     // escalate directly to the ask-human branch under test. (#943: seeding n=7
-    // deadlocks this dispatcher-less spec-harness — the agent re-dispatches a
+    // deadlocks this dispatcher-less planner-harness — the agent re-dispatches a
     // legitimate round-8 whose reviewer tasks nothing here can complete.)
     seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
 
@@ -618,39 +624,39 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 
     // Wake: both channels changes_requested + the prior-round state, injected
     // exactly as the prod dispatcher's `harness_observation_from_event` would
-    // push them (design D5; no dispatcher runs in the spec-harness E2E).
+    // push them (design D5; no dispatcher runs in the planner-harness E2E).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
     inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
     // Oracle phase 1 (a): the ordered ASK-HUMAN chain. The subject is seeded
     // already at the cap (n=8/cap=8), so no further review.round is kernel-legal
-    // and the spec must escalate directly rather than run another round; we wait
+    // and the planner must escalate directly rather than run another round; we wait
     // from the pre-wake `floor` and the edges still rise monotonically below.
     // #943: seeding n=7 deadlocks here — the agent re-dispatches a legitimate
     // round-8 the dispatcher-less harness can never complete.
-    // `calm.ratify.request` demands lifecycle==Working, so the spec must first
+    // `calm.ratify.request` demands lifecycle==Working, so the planner must first
     // leave `reviewing`; the tool then emits working->blocked + ratify.requested
     // in ONE tx (mcp_server/tools/review.rs), so both must appear.
     let (rw_id, rw_actor, rw_edge) =
         wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
-        matches!(rw_actor, ActorId::AiSpecSession(_)),
-        "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
+        matches!(rw_actor, ActorId::AiPlannerSession(_)),
+        "reviewing->working edge actor must be AiPlannerSession, got {rw_actor:?} for {rw_edge}"
     );
     let (wb_id, wb_actor, wb_edge) =
         wait_for_track_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
     assert!(
-        matches!(wb_actor, ActorId::AiSpecSession(_)),
-        "working->blocked edge actor must be AiSpecSession, got {wb_actor:?} for {wb_edge}"
+        matches!(wb_actor, ActorId::AiPlannerSession(_)),
+        "working->blocked edge actor must be AiPlannerSession, got {wb_actor:?} for {wb_edge}"
     );
     // The request is REAL and structurally unforgeable: role_gate rule 2.8
-    // makes ratify.requested spec-session-only and this test never calls
-    // calm.ratify.request — only the real spec's own tool call can emit it.
+    // makes ratify.requested planner-session-only and this test never calls
+    // calm.ratify.request — only the real planner's own tool call can emit it.
     let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
     assert!(
-        matches!(req_actor, ActorId::AiSpecSession(_)),
-        "ratify.requested actor must be AiSpecSession, got {req_actor:?} for {req}"
+        matches!(req_actor, ActorId::AiPlannerSession(_)),
+        "ratify.requested actor must be AiPlannerSession, got {req_actor:?} for {req}"
     );
     assert!(
         req["reason"]
@@ -680,7 +686,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/cards/{}/ratify", fx.spec_card_id))
+                .uri(format!("/api/cards/{}/ratify", fx.planner_card_id))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .expect("grant request"),
@@ -762,7 +768,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     inject_ratify_resolved_grant(&harness, &fx).await;
 
     // Oracle phase 2 — PRIMARY resumption signal (independent checker's pin):
-    // the real spec re-enters review, working->reviewing, after the grant.
+    // the real planner re-enters review, working->reviewing, after the grant.
     // Since #888 the descriptor states the track is already back in `working`
     // after a grant and instructs a plain working->reviewing resume (the
     // historical "blocked->working->reviewing" wording produced a tolerated
@@ -772,8 +778,8 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
         wait_for_track_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
             .await;
     assert!(
-        matches!(resume_actor, ActorId::AiSpecSession(_)),
-        "post-grant working->reviewing edge actor must be AiSpecSession, got {resume_actor:?} for {resume_edge}"
+        matches!(resume_actor, ActorId::AiPlannerSession(_)),
+        "post-grant working->reviewing edge actor must be AiPlannerSession, got {resume_actor:?} for {resume_edge}"
     );
 
     // Post-grant convergence/merge is deliberately NOT asserted here: this
@@ -782,17 +788,17 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // kernel cap-extension arm resolved the old cap contradiction (the next
     // round n=9/cap=10 is now kernel-legal after the grant); the extension →
     // convergence → merge finish is exercised by the R7c E2E
-    // (`real_spec_extends_cap_after_grant_converges_and_merges`) on a
+    // (`real_planner_extends_cap_after_grant_converges_and_merges`) on a
     // real-PR impl subject. Merge must still be absent — structurally
     // impossible without a PR in this fixture.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
 
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -800,7 +806,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// #840 slice (d2) — S11/S12: the real spec session, woken only by injected
+// #840 slice (d2) — S11/S12: the real planner session, woken only by injected
 // observations, obeys merge fence F4 (call gh.pr.merge for a subject ONLY
 // when that subject's latest review.round has converged:true, passing
 // expected_head_sha equal to that round's head_sha) and then closes the
@@ -808,28 +814,28 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 //
 // Seat caveat (design pin): the seat was steered by goal text — the
 // production descriptor's merge step is kind:codex, so a real production run
-// may DISPATCH a worker to execute the merge instead of the spec calling
+// may DISPATCH a worker to execute the merge instead of the planner calling
 // gh.pr.merge itself; the worker-executed merge topology stays open for
 // slice (e)/capstone. The goal ALSO restates F4's WHEN trigger ("once the
 // impl review round reports converged, execute the merge step"), so for the
 // WHEN half of F4, descriptor-obedience and goal-obedience are
 // indistinguishable here. The genuinely unsteered F4 autonomy content is the
 // expected_head_sha selection: the goal never mentions any sha, so choosing
-// the converged round's head_sha (observed, not given) is the spec's own.
+// the converged round's head_sha (observed, not given) is the planner's own.
 //
 // Seat proof, construction W (d1 precedent) — LOAD-BEARING: no scripted call
 // to `gh.pr.merge` or `gh.issue.close` exists in this file beyond this
 // comment — scripted setup stops at `gh.pr.create`/`gh.pr.checks` (against
 // this test's isolated fixture only). The only possible emitter of
-// `forge.pr.merged` / `forge.issue.closed` is therefore the real spec
+// `forge.pr.merged` / `forge.issue.closed` is therefore the real planner
 // session's own MCP `tools/call`. The oracle's forge-action op idem-key
 // checks CORROBORATE only on the worker-seat axis (the embedded caller card
 // id excludes other-card callers); they cannot discriminate
-// scripted-vs-autonomous, because scripted setup calls use the same spec
-// thread → same spec card → a hypothetical scripted merge would produce a
+// scripted-vs-autonomous, because scripted setup calls use the same planner
+// thread → same planner card → a hypothetical scripted merge would produce a
 // byte-identical key.
 #[tokio::test]
-async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
+async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -841,17 +847,17 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Goal carries environment facts only (repo gitdir + issue number,
     // forge_pr_goal precedent) plus descriptor-legal branch steering. The
-    // pr_number and head_sha must reach the spec ONLY via observations —
+    // pr_number and head_sha must reach the planner ONLY via observations —
     // never as pre-chewed tool args. The goal needs the fixture's origin
     // path, which only exists post-boot, so it flows through the
-    // spec-harness start op (the spec's actual TrackGoal source,
-    // `initial_snapshot_with_goal`); `FixtureSpec.goal` only mirrors into
-    // the card payload `prompt`, which the spec-harness path never reads.
+    // planner-harness start op (the planner's actual TrackGoal source,
+    // `initial_snapshot_with_goal`); `FixturePlanner.goal` only mirrors into
+    // the card payload `prompt`, which the planner-harness path never reads.
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: None,
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -868,23 +874,25 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     let repo_arg = fx.origin_repo.display().to_string();
     let goal = merge_close_goal(&repo_arg, D2_ISSUE_NUMBER);
 
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
     assert!(
-        matches!(plan_actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+        matches!(plan_actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
     // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
     // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
     // agent emits — they are different namespaces and the agent's slug drifts.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
-    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    let harness = recover_planner_harness(&fx)
+        .await
+        .expect("live planner harness");
     // Settle the planning turn before setup/seeding (R6 causality guard): the
     // accepted merge+close must be causally a response to the injected
     // observations below, not a planning-time fabrication.
-    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
     // Pre-position the track at `reviewing` via a raw TrackPatch (R7a
     // precedent) — walking the FSM by real turns is capstone scope.
@@ -902,7 +910,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // Scripted REAL PR setup (setup, not the proof): branch + commit in the
     // track cwd with raw git, push to the bare origin, then scripted MCP
     // tools/call of gh.pr.create + gh.pr.checks through the daemon socket
-    // (identity = the live spec thread) so GENUINE forge.pr.opened /
+    // (identity = the live planner thread) so GENUINE forge.pr.opened /
     // forge.pr.checks events back the injected observations — the events go
     // through the real plugin lowering, not fabricated shim state.
     let branch = "neige-d2-impl-slice";
@@ -917,11 +925,11 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     run_git(&fx.track_cwd, ["push", "-u", "origin", branch]);
     run_git(&fx.track_cwd, ["checkout", "main"]);
 
-    let spec_thread_id = spec_session_thread_id(&fx).await;
+    let planner_thread_id = planner_session_thread_id(&fx).await;
     let create_resp = call_tool_via_socket(
         &fx.socket_path,
         &fx.daemon_token,
-        &spec_thread_id,
+        &planner_thread_id,
         201,
         PR_CREATE_TOOL,
         json!({
@@ -950,7 +958,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     let checks_resp = call_tool_via_socket(
         &fx.socket_path,
         &fx.daemon_token,
-        &spec_thread_id,
+        &planner_thread_id,
         202,
         PR_CHECKS_TOOL,
         json!({ "repo": repo_arg, "pr": pr_number }),
@@ -1002,9 +1010,9 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Seed ONE converged typed impl review.round carrying the REAL branch tip
     // (push precedes seeding so the round carries the real tip sha). Actor
-    // MUST be AiSpec(spec card) + track scope: role_gate rule 2.8 makes
-    // review.round spec-only, and the seeded AiSpec row stays
-    // actor-distinguishable from anything the real AiSpecSession emits.
+    // MUST be AiPlanner(planner card) + track scope: role_gate rule 2.8 makes
+    // review.round planner-only, and the seeded AiPlanner row stays
+    // actor-distinguishable from anything the real AiPlannerSession emits.
     seed_converged_impl_review_round(&fx, &slice_id, pr_number, &head_sha).await;
     let round_id = latest_event_id_of_kind(&fx, "review.round").await;
 
@@ -1026,8 +1034,8 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Wake: inject exactly what the prod dispatcher's
     // `harness_observation_from_event` would push for the rows that exist
-    // (dispatcher.rs shapes; no dispatcher runs in the spec-harness E2E).
-    // The converged ReviewRound observation is the F4 trigger and the spec's
+    // (dispatcher.rs shapes; no dispatcher runs in the planner-harness E2E).
+    // The converged ReviewRound observation is the F4 trigger and the planner's
     // ONLY channel for pr_number/head_sha selection (rounds have no runs/
     // projection).
     for key in ["implement-change", "open-pr"] {
@@ -1094,7 +1102,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
         "forge.pr.merged",
         floor,
         review_budget(),
-        "spec-initiated merge",
+        "planner-initiated merge",
         |_| true,
     )
     .await;
@@ -1131,7 +1139,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
         "merged subject pr: {merged}"
     );
 
-    // Oracle (b) — the F4 proof: the spec must have passed expected_head_sha.
+    // Oracle (b) — the F4 proof: the planner must have passed expected_head_sha.
     // The forge-action op idempotency key is
     // `{plugin}:{track}:{caller card}:{plugin idem}` (transport.rs
     // `submit_forge_action`), and the plugin idem is the WITH-sha shape
@@ -1140,15 +1148,15 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // `lower_gh_pr_merge`) — an omitted-sha merge produces
     // `gh.pr.merge:{repo}:{pr}` and MUST fail this assert. The embedded card
     // id corroborates the seat on the worker-exclusion axis ONLY: it proves
-    // the caller was the spec card, but scripted setup calls use the same
-    // spec thread (`spec_session_thread_id`) → same card → a scripted merge
+    // the caller was the planner card, but scripted setup calls use the same
+    // planner thread (`planner_session_thread_id`) → same card → a scripted merge
     // would produce a byte-identical key, so construction W (file-level
     // comment above the test) stays the sole scripted-vs-autonomous
     // discriminator.
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
         fx.track_id.as_str(),
-        fx.spec_card_id.as_str(),
+        fx.planner_card_id.as_str(),
         repo_arg,
         pr_number,
         head_sha
@@ -1167,7 +1175,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Oracle (c) — ordering (oracle-only; no kernel check ties gh.pr.merge to
     // review.round): the converged round precedes the merge (F4), and the
-    // checks event precedes the merge (attribute to setup ordering, not spec
+    // checks event precedes the merge (attribute to setup ordering, not planner
     // autonomy — S7 is d1's theorem).
     assert!(
         round_id < merged_id,
@@ -1187,7 +1195,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
         "forge.issue.closed",
         floor,
         review_budget(),
-        "spec-initiated issue close",
+        "planner-initiated issue close",
         |_| true,
     )
     .await;
@@ -1208,7 +1216,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     let expected_close_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.issue.close:{}:{}",
         fx.track_id.as_str(),
-        fx.spec_card_id.as_str(),
+        fx.planner_card_id.as_str(),
         repo_arg,
         D2_ISSUE_NUMBER
     );
@@ -1220,11 +1228,11 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     for key in &close_keys {
         assert_eq!(
             key, &expected_close_key,
-            "every gh.issue.close forge-action op must target the goal issue from the spec seat: {close_keys:?}"
+            "every gh.issue.close forge-action op must target the goal issue from the planner seat: {close_keys:?}"
         );
     }
 
-    // Exactly-once events (a spec retry with the same args dedups on the
+    // Exactly-once events (a planner retry with the same args dedups on the
     // parked idempotent op; a differently-keyed retry already failed above).
     assert_eq!(
         event_payloads(&fx.repo, "forge.pr.merged").await.len(),
@@ -1253,7 +1261,7 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     // Oracle (f): purity. Happy path needs no ratification grant; extra
     // lifecycle transitions (e.g. reviewing->done) are tolerated, but the
-    // track must not have failed; the plan must be the spec's own.
+    // track must not have failed; the plan must be the planner's own.
     assert_eq!(
         event_payloads(&fx.repo, "ratify.requested").await.len(),
         0,
@@ -1267,10 +1275,10 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     assert_ne!(lifecycle, "failed", "track must not fail on the happy path");
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -1278,17 +1286,17 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// #888 R7c — post-grant cap extension to the F4 finish. The real spec,
+// #888 R7c — post-grant cap extension to the F4 finish. The real planner,
 // cap-exhausted on a real-PR impl subject (seeded prior round already AT the
 // cap, n=8/cap=8 non-converged, so no further pre-grant round is kernel-legal
-// and the spec escalates directly — #943), walks the full ASK-HUMAN chain; a
+// and the planner escalates directly — #943), walks the full ASK-HUMAN chain; a
 // human grant (production HTTP route) then authorizes the descriptor's
-// "previous cap plus exactly 2" window, and the spec's SINGLE post-grant
+// "previous cap plus exactly 2" window, and the planner's SINGLE post-grant
 // round is both the extension AND the convergence (n=9, cap=10,
 // converged:true on the real branch tip — approved verdicts are injected
-// post-grant, before the spec's next round). Kernel acceptance of that
+// post-grant, before the planner's next round). Kernel acceptance of that
 // n=9/cap=10 row IS the E2E proof of the #888 extension arm and of
-// descriptor satisfiability; the merge then lands through the spec's own
+// descriptor satisfiability; the merge then lands through the planner's own
 // gh.pr.merge (F4). In-window multi-round continuation after an extension is
 // unit-tested (review_ratify.rs t2), deliberately not E2E'd here.
 //
@@ -1296,11 +1304,11 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 // d2 seat caveat + construction W carry over verbatim: no scripted call to
 // `gh.pr.merge` exists in this file — scripted setup stops at
 // `gh.pr.create`/`gh.pr.checks` against this test's isolated fixture, so the
-// only possible emitter of `forge.pr.merged` is the real spec session's own
-// MCP `tools/call`. No dependency on #863: the spec executes gh.pr.merge
+// only possible emitter of `forge.pr.merged` is the real planner session's own
+// MCP `tools/call`. No dependency on #863: the planner executes gh.pr.merge
 // through its own MCP socket exactly as the merged d2 test does.
 #[tokio::test]
-async fn real_spec_extends_cap_after_grant_converges_and_merges() {
+async fn real_planner_extends_cap_after_grant_converges_and_merges() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -1311,10 +1319,10 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
         .await;
 
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: None,
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -1331,21 +1339,23 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     let repo_arg = fx.origin_repo.display().to_string();
     let goal = extension_merge_goal(&repo_arg);
 
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
     assert!(
-        matches!(plan_actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+        matches!(plan_actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
     // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
     // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
     // agent emits — they are different namespaces and the agent's slug drifts.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
-    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    let harness = recover_planner_harness(&fx)
+        .await
+        .expect("live planner harness");
     // Settle the planning turn before setup/seeding (R6 causality guard).
-    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
     // Pre-position the track at `reviewing` (R7a/R7b precedent).
     fx.repo_dyn
@@ -1373,11 +1383,11 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     run_git(&fx.track_cwd, ["push", "-u", "origin", branch]);
     run_git(&fx.track_cwd, ["checkout", "main"]);
 
-    let spec_thread_id = spec_session_thread_id(&fx).await;
+    let planner_thread_id = planner_session_thread_id(&fx).await;
     let create_resp = call_tool_via_socket(
         &fx.socket_path,
         &fx.daemon_token,
-        &spec_thread_id,
+        &planner_thread_id,
         211,
         PR_CREATE_TOOL,
         json!({
@@ -1406,7 +1416,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     let checks_resp = call_tool_via_socket(
         &fx.socket_path,
         &fx.daemon_token,
-        &spec_thread_id,
+        &planner_thread_id,
         212,
         PR_CHECKS_TOOL,
         json!({ "repo": repo_arg, "pr": pr_number }),
@@ -1443,7 +1453,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
 
     // Seed ONE prior impl round ALREADY AT the cap (n=8/cap=8) carrying the REAL
     // branch tip + pr_number: no further round is kernel-legal pre-grant (n=9 >
-    // cap), so the spec must escalate to ask-human directly rather than run
+    // cap), so the planner must escalate to ask-human directly rather than run
     // another round. (#943: seeding n=7 deadlocks — the agent re-dispatches a
     // legitimate round-8 the dispatcher-less harness cannot complete.) The
     // post-grant cap extension (+2) still makes n=9/cap=10 the single legal
@@ -1464,7 +1474,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     );
 
     // Wake: dispatcher-shaped observations only (design D5; no dispatcher
-    // runs in the spec-harness E2E).
+    // runs in the planner-harness E2E).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-b")).await;
     inject_observation(
@@ -1501,27 +1511,27 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
 
     // Phase 1 (a) — the ordered ASK-HUMAN chain (rising floors, R7b oracle).
     // The subject is seeded already at the cap (n=8/cap=8), so no further round
-    // is kernel-legal pre-grant and the spec escalates directly; we wait from
+    // is kernel-legal pre-grant and the planner escalates directly; we wait from
     // the pre-wake `floor`. #943: seeding n=7 deadlocks here — the agent
     // re-dispatches a legitimate round-8 the dispatcher-less harness cannot
-    // complete. The single spec-authored round is the post-grant extension
+    // complete. The single planner-authored round is the post-grant extension
     // (n=9/cap=10), asserted below.
     let (rw_id, rw_actor, rw_edge) =
         wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
-        matches!(rw_actor, ActorId::AiSpecSession(_)),
-        "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
+        matches!(rw_actor, ActorId::AiPlannerSession(_)),
+        "reviewing->working edge actor must be AiPlannerSession, got {rw_actor:?} for {rw_edge}"
     );
     let (wb_id, wb_actor, wb_edge) =
         wait_for_track_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
     assert!(
-        matches!(wb_actor, ActorId::AiSpecSession(_)),
-        "working->blocked edge actor must be AiSpecSession, got {wb_actor:?} for {wb_edge}"
+        matches!(wb_actor, ActorId::AiPlannerSession(_)),
+        "working->blocked edge actor must be AiPlannerSession, got {wb_actor:?} for {wb_edge}"
     );
     let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
     assert!(
-        matches!(req_actor, ActorId::AiSpecSession(_)),
-        "ratify.requested actor must be AiSpecSession, got {req_actor:?} for {req}"
+        matches!(req_actor, ActorId::AiPlannerSession(_)),
+        "ratify.requested actor must be AiPlannerSession, got {req_actor:?} for {req}"
     );
 
     // Phase 1 (c) — parked, not merged.
@@ -1540,7 +1550,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/cards/{}/ratify", fx.spec_card_id))
+                .uri(format!("/api/cards/{}/ratify", fx.planner_card_id))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .expect("grant request"),
@@ -1606,7 +1616,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     );
 
     // Recovery wake + post-grant APPROVED verdicts for both channels,
-    // injected BEFORE the spec's next round so its single post-grant round is
+    // injected BEFORE the planner's next round so its single post-grant round is
     // both the extension and the convergence (design C1 resolution;
     // merge-test observation shapes).
     inject_ratify_resolved_grant(&harness, &fx).await;
@@ -1622,7 +1632,7 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     }
 
     // Oracle 1 — THE extension round: n=9 (= old cap + 1), cap=10 (= old cap
-    // + 2), converged, both channels approved, real branch tip, spec-authored.
+    // + 2), converged, both channels approved, real branch tip, planner-authored.
     // Kernel acceptance of this row is the E2E proof of the #888 arm.
     // #937: this oracle requires the steered slug to survive the grant re-wake,
     // the exact boundary where the within-run review-subject drift was observed.
@@ -1635,8 +1645,8 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     )
     .await;
     assert!(
-        matches!(ext_round_actor, ActorId::AiSpecSession(_)),
-        "extension round actor must be AiSpecSession, got {ext_round_actor:?} for {ext_round}"
+        matches!(ext_round_actor, ActorId::AiPlannerSession(_)),
+        "extension round actor must be AiPlannerSession, got {ext_round_actor:?} for {ext_round}"
     );
     assert_eq!(
         ext_round["n"],
@@ -1699,11 +1709,11 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     );
 
     // Oracle 3 — F4 op idem key: every gh.pr.merge forge-action row carries
-    // the WITH-sha shape from the spec seat (d2 oracle (b)).
+    // the WITH-sha shape from the planner seat (d2 oracle (b)).
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
         fx.track_id.as_str(),
-        fx.spec_card_id.as_str(),
+        fx.planner_card_id.as_str(),
         repo_arg,
         pr_number,
         head_sha
@@ -1770,13 +1780,13 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
         }
     }
 
-    // Oracle 7 — the plan was the spec's own.
+    // Oracle 7 — the plan was the planner's own.
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -1809,9 +1819,9 @@ fn extension_merge_goal(repo_gitdir: &str) -> String {
 /// carrying the REAL branch tip + pr_number (#888 R7c; shape =
 /// `seed_prior_design_review_round` × the impl subject/idem-key shape of
 /// `seed_converged_impl_review_round`). Actor MUST be
-/// `ActorId::AiSpec(spec card)` with `EventScope::Track`: role_gate rule 2.8
-/// makes review.round spec-only, and the seeded AiSpec row stays
-/// actor-distinguishable from the real spec's AiSpecSession rows.
+/// `ActorId::AiPlanner(planner card)` with `EventScope::Track`: role_gate rule 2.8
+/// makes review.round planner-only, and the seeded AiPlanner row stays
+/// actor-distinguishable from the real planner's AiPlannerSession rows.
 async fn seed_prior_impl_review_round(
     fx: &Fixture,
     slice_id: &str,
@@ -1826,7 +1836,7 @@ async fn seed_prior_impl_review_round(
     };
     fx.repo
         .log_pure_event(
-            ActorId::AiSpec(fx.spec_card_id.clone()),
+            ActorId::AiPlanner(fx.planner_card_id.clone()),
             track_scope,
             None,
             &fx.events,
@@ -1953,11 +1963,11 @@ async fn wait_for_impl_review_round_on_subject(
 //
 // One REAL run of the full issue→PR→merge→close backbone. The fixture serves
 // a real (non-toy) code task from a shim-served issue body, and everything
-// between the goal and the oracle is production machinery: real spec turns
-// via the `spec-harness-start` op, a LIVE kernel dispatcher (scheduler
+// between the goal and the oracle is production machinery: real planner turns
+// via the `planner-harness-start` op, a LIVE kernel dispatcher (scheduler
 // claims, workspace lease + git worktree, real codex workers for
 // inspect / design-review ×2 / implement / open-pr / review-pr ×2 / merge,
-// kernel commit, env-cleared gate run), and spec wake-ups EXCLUSIVELY via the
+// kernel commit, env-cleared gate run), and planner wake-ups EXCLUSIVELY via the
 // dispatcher's `harness_observation_from_event` push path (the dispatcher is
 // spawned with the FIXTURE's HarnessRegistry — `spawn_dispatcher_with_harness`
 // — so pushes reach the harness the start op registered). ZERO injected
@@ -2014,7 +2024,7 @@ with a `///` doc comment and a `#[test]` unit test covering a palindrome and a \
 non-palindrome. Do not push; do not merge.\n";
 
 #[tokio::test]
-async fn real_spec_drives_issue_to_close_capstone() {
+async fn real_planner_drives_issue_to_close_capstone() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -2025,10 +2035,10 @@ async fn real_spec_drives_issue_to_close_capstone() {
         .await;
 
     let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: None,
             template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealSpecTurn,
+            plan_source: PlanSource::RealPlannerTurn,
             issue_body: Some(FixtureIssue {
                 number: CAPSTONE_ISSUE_NUMBER,
                 body: CAPSTONE_ISSUE_BODY.into(),
@@ -2066,7 +2076,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
 
     let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
     let goal = capstone_goal(&repo_gitdir, CAPSTONE_ISSUE_NUMBER, &fx.origin_main_initial);
-    boot_spec_harness_via_start_op(&fx, goal).await;
+    boot_planner_harness_via_start_op(&fx, goal).await;
 
     // P7 bounding: every stage gets its own ≥480s floor (checker pin c —
     // substantial workers run for minutes each per d1), all under one overall
@@ -2075,12 +2085,15 @@ async fn real_spec_drives_issue_to_close_capstone() {
     let overall_deadline = Instant::now() + capstone_budget();
     let st = move || capstone_stage_budget().min(remaining(overall_deadline));
 
-    // S1 — the real spec plans from the bound template.
-    let (plan_actor, _plan) =
-        wait_for_plan_updated(&fx, spec_planning_budget().min(remaining(overall_deadline))).await;
+    // S1 — the real planner plans from the bound template.
+    let (plan_actor, _plan) = wait_for_plan_updated(
+        &fx,
+        planner_planning_budget().min(remaining(overall_deadline)),
+    )
+    .await;
     assert!(
-        matches!(plan_actor, ActorId::AiSpecSession(_)),
-        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+        matches!(plan_actor, ActorId::AiPlannerSession(_)),
+        "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
 
     // S0 — the inspect worker reads the SEEDED issue body through the real
@@ -2110,7 +2123,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
         "issue read artifact must carry the shim-seeded fixture body (S0)"
     );
 
-    // S2/S9 (design phase) — the spec records a design review round after the
+    // S2/S9 (design phase) — the planner records a design review round after the
     // real design reviewer workers complete. Convergence/round count is
     // tolerated here; presence is skeleton-required.
     let (_design_round_id, design_round_actor, design_round) = wait_capstone_event(
@@ -2118,13 +2131,13 @@ async fn real_spec_drives_issue_to_close_capstone() {
         "review.round",
         0,
         st(),
-        "spec records a design review round",
+        "planner records a design review round",
         |p| p["subject"]["phase"] == json!("design"),
     )
     .await;
     assert!(
-        matches!(design_round_actor, ActorId::AiSpecSession(_)),
-        "design review.round actor must be AiSpecSession, got {design_round_actor:?} for {design_round}"
+        matches!(design_round_actor, ActorId::AiPlannerSession(_)),
+        "design review.round actor must be AiPlannerSession, got {design_round_actor:?} for {design_round}"
     );
 
     // S5 — the kernel commits the implement worker's leased worktree.
@@ -2198,7 +2211,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
     // feeds (the round wait floors on diff_id), the open-pr goal FORBIDS
     // gh.pr.diff, the implement worker finishes before the PR exists, and the
     // merge worker dispatches only after the round — leaving the reviewer
-    // workers (or the spec itself, an equally-real unscripted read) as the
+    // workers (or the planner itself, an equally-real unscripted read) as the
     // only possible emitters. The event is card-anonymous, so exact reviewer
     // attribution stays tolerated (construction W: nothing scripted calls
     // gh.pr.diff in this file).
@@ -2213,9 +2226,9 @@ async fn real_spec_drives_issue_to_close_capstone() {
     .await;
     assert_eq!(diff_actor, ActorId::KernelDispatcher, "{diff_read}");
 
-    // S9/S10 — the spec records the converged impl review round for this PR.
-    // The manifest spec_instructions mark subject.pr_number OPTIONAL for
-    // review rounds and the goal never pins it, so a real spec omitting it
+    // S9/S10 — the planner records the converged impl review round for this PR.
+    // The manifest planner_instructions mark subject.pr_number OPTIONAL for
+    // review rounds and the goal never pins it, so a real planner omitting it
     // emits a perfectly legal round — tolerate absent/null, require equality
     // only when present (review channel A, item 1).
     let (round_id, round_actor, round) = wait_capstone_event(
@@ -2223,7 +2236,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
         "review.round",
         diff_id,
         st(),
-        "spec records the converged impl review round",
+        "planner records the converged impl review round",
         |p| {
             p["subject"]["phase"] == json!("impl")
                 && p["converged"] == json!(true)
@@ -2232,8 +2245,8 @@ async fn real_spec_drives_issue_to_close_capstone() {
     )
     .await;
     assert!(
-        matches!(round_actor, ActorId::AiSpecSession(_)),
-        "impl review.round actor must be AiSpecSession, got {round_actor:?} for {round}"
+        matches!(round_actor, ActorId::AiPlannerSession(_)),
+        "impl review.round actor must be AiPlannerSession, got {round_actor:?} for {round}"
     );
     let round_slice = round["subject"]["slice_id"]
         .as_str()
@@ -2292,19 +2305,19 @@ async fn real_spec_drives_issue_to_close_capstone() {
     .await;
     assert_eq!(closed_actor, ActorId::KernelDispatcher, "{closed}");
 
-    // S13 — the spec drives the track lifecycle to done.
+    // S13 — the planner drives the track lifecycle to done.
     let (_done_id, done_actor, done_edge) = wait_capstone_event(
         &fx,
         "track.lifecycle_changed",
         merged_id,
         st(),
-        "spec transitions the track to done",
+        "planner transitions the track to done",
         |p| p["to"] == json!("done") && p["id"] == json!(fx.track_id.as_str()),
     )
     .await;
     assert!(
-        matches!(done_actor, ActorId::AiSpecSession(_)),
-        "→done lifecycle edge actor must be AiSpecSession, got {done_actor:?} for {done_edge}"
+        matches!(done_actor, ActorId::AiPlannerSession(_)),
+        "→done lifecycle edge actor must be AiPlannerSession, got {done_actor:?} for {done_edge}"
     );
 
     // ------------------------- post-run oracle -------------------------
@@ -2316,7 +2329,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
     // pattern, acceptable because real runs happen only inside the #863
     // isolation wrapper, which reaps the whole session process group.
     drop(dispatcher);
-    shutdown_spec_harness_if_registered(&fx).await;
+    shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
         .stop(PLUGIN_ID)
         .await
@@ -2455,7 +2468,7 @@ async fn wait_capstone_event(
             panic_with_agent_diag(
                 fx,
                 format!(
-                    "track lifecycle landed `failed` (spec gave up — terminal) while waiting \
+                    "track lifecycle landed `failed` (planner gave up — terminal) while waiting \
                      for {kind} ({describe})"
                 ),
             )
@@ -2581,7 +2594,7 @@ async fn capstone_oracle(
 
     // Fence 6: subject-keyed cap enforcement + 6a existence (converged
     // subject must actually have a head-matching merge). 6a keys merges by
-    // the FULL subject; when the spec legally omitted pr_number from its
+    // the FULL subject; when the planner legally omitted pr_number from its
     // round subjects (item-1 tolerance) the round subject can never equal
     // the merge subject (which always carries pr_number from the tool args),
     // so 6a is replaced by the direct latest-fence assert already made
@@ -2594,14 +2607,14 @@ async fn capstone_oracle(
     // Actor table (event-row column, never payload).
     for (actor, payload) in actor_payload_rows(&fx.repo, "plan.updated").await {
         assert!(
-            matches!(actor, ActorId::AiSpecSession(_)),
-            "plan.updated actor must be AiSpecSession, got {actor:?} for {payload}"
+            matches!(actor, ActorId::AiPlannerSession(_)),
+            "plan.updated actor must be AiPlannerSession, got {actor:?} for {payload}"
         );
     }
     for (actor, payload) in actor_payload_rows(&fx.repo, "review.round").await {
         assert!(
-            matches!(actor, ActorId::AiSpecSession(_)),
-            "review.round actor must be AiSpecSession, got {actor:?} for {payload}"
+            matches!(actor, ActorId::AiPlannerSession(_)),
+            "review.round actor must be AiPlannerSession, got {actor:?} for {payload}"
         );
     }
     for kind in ["task.dispatched", "task.gate_result", "worktree.committed"] {
@@ -2620,7 +2633,7 @@ async fn capstone_oracle(
     // expected_head_sha was passed — an omitted-sha merge produces
     // `gh.pr.merge:{repo}:{pr}` and fails here. The caller card is NOT pinned
     // (the descriptor merge task is kind:codex, so a merge-worker seat is as
-    // legal as the spec seat); the with-sha suffix is the load-bearing F4
+    // legal as the planner seat); the with-sha suffix is the load-bearing F4
     // content.
     let merge_keys = forge_action_idem_keys_containing(fx, ":gh.pr.merge:").await;
     assert!(
@@ -2649,7 +2662,7 @@ async fn capstone_oracle(
         );
     }
 
-    // No-cargo audit (checker pin d): the spec copied gates into task blocks;
+    // No-cargo audit (checker pin d): the planner copied gates into task blocks;
     // no stored task gate may invoke cargo.
     let gate_jsons: Vec<Option<String>> = sqlx::query_scalar("SELECT gate_json FROM tasks")
         .fetch_all(fx.repo.pool())
@@ -2737,12 +2750,12 @@ async fn capstone_oracle(
     );
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 }
 
 /// Ordering 3 (kernel-forced): for every card that has BOTH events, the first
-/// `worktree.provisioned` precedes the first `runtime.started` (the spec card
+/// `worktree.provisioned` precedes the first `runtime.started` (the planner card
 /// has runtime.started but no worktree — vacuously skipped).
 async fn assert_provisioned_before_runtime_started_per_card(fx: &Fixture) {
     let provisioned = event_rows(&fx.repo, "worktree.provisioned").await;
@@ -2945,7 +2958,7 @@ async fn seed_design_channel_changes_requested(fx: &Fixture, key: &str, chan: &s
 
 /// Seed a design review-channel task pair (dispatched + completed) carrying
 /// `verdict`, then fail fast unless the runs/ projection surfaces that exact
-/// verdict — the real spec reads runs/ to learn the channel outcomes.
+/// verdict — the real planner reads runs/ to learn the channel outcomes.
 async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdict: &str) {
     seed_completed_task_pair(
         fx,
@@ -2962,7 +2975,7 @@ async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdic
 
 /// Seed a pipeline task pair (dispatched + completed) whose completion carries
 /// `result`, then fail fast unless the runs/ projection surfaces the exact
-/// `expected_summary` — the real spec reads runs/ to learn task outcomes.
+/// `expected_summary` — the real planner reads runs/ to learn task outcomes.
 /// (Generalized from R6's design-channel helper for #840 d2.)
 async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expected_summary: &str) {
     let verdict = expected_summary;
@@ -3022,10 +3035,10 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     // The seeded fixture shortcut does not mint a real worker session, so
     // author the completion as KernelDispatcher (gate-unrestricted per
     // role_gate rule 5). Card scope alone routes it to the completed bucket
-    // (is_spec_verdict_event is false for non-Track scope), so runs/ surfaces
-    // the summary the real spec reads.
+    // (is_planner_verdict_event is false for non-Track scope), so runs/ surfaces
+    // the summary the real planner reads.
     let card_scope = EventScope::Card {
-        card: fx.spec_card_id.clone(),
+        card: fx.planner_card_id.clone(),
         track: fx.track_id.clone(),
         area: fx.area_id.clone(),
     };
@@ -3054,7 +3067,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     let json_path = format!("runs/{task_id}.json");
     let json_read = handler(
         fx.ctx.clone(),
-        spec_identity(fx),
+        planner_identity(fx),
         json!({ "path": json_path }),
     )
     .await
@@ -3101,7 +3114,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     let md_path = format!("runs/{task_id}.md");
     let md_read = handler(
         fx.ctx.clone(),
-        spec_identity(fx),
+        planner_identity(fx),
         json!({ "path": md_path }),
     )
     .await
@@ -3129,10 +3142,10 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     );
 }
 
-async fn recover_spec_harness(fx: &Fixture) -> Option<SpecHarness> {
+async fn recover_planner_harness(fx: &Fixture) -> Option<PlannerHarness> {
     let runtime = fx
         .repo
-        .session_projection_active_for_card(&fx.spec_card_id.to_string())
+        .session_projection_active_for_card(&fx.planner_card_id.to_string())
         .await
         .ok()
         .flatten()?;
@@ -3140,7 +3153,7 @@ async fn recover_spec_harness(fx: &Fixture) -> Option<SpecHarness> {
 }
 
 #[cfg(feature = "fixtures")]
-async fn inject_task_completed(h: &SpecHarness, idem_key: &str) {
+async fn inject_task_completed(h: &PlannerHarness, idem_key: &str) {
     h.observe_for_test(
         Observation::TaskCompleted {
             idempotency_key: idem_key.into(),
@@ -3152,12 +3165,12 @@ async fn inject_task_completed(h: &SpecHarness, idem_key: &str) {
 }
 
 #[cfg(not(feature = "fixtures"))]
-async fn inject_task_completed(_h: &SpecHarness, _idem_key: &str) {
+async fn inject_task_completed(_h: &PlannerHarness, _idem_key: &str) {
     panic!("inject_task_completed requires the fixtures feature");
 }
 
 #[cfg(feature = "fixtures")]
-async fn inject_task_changes_requested(h: &SpecHarness, idem_key: &str) {
+async fn inject_task_changes_requested(h: &PlannerHarness, idem_key: &str) {
     h.observe_for_test(
         Observation::TaskCompleted {
             idempotency_key: idem_key.into(),
@@ -3169,18 +3182,18 @@ async fn inject_task_changes_requested(h: &SpecHarness, idem_key: &str) {
 }
 
 #[cfg(not(feature = "fixtures"))]
-async fn inject_task_changes_requested(_h: &SpecHarness, _idem_key: &str) {
+async fn inject_task_changes_requested(_h: &PlannerHarness, _idem_key: &str) {
     panic!("inject_task_changes_requested requires the fixtures feature");
 }
 
 /// Inject the same `Observation::ReviewRound` the prod dispatcher's
 /// `harness_observation_from_event` would push for the seeded prior round —
-/// the spec cannot learn prior rounds from runs//track-fs (no review.round
+/// the planner cannot learn prior rounds from runs//track-fs (no review.round
 /// projection exists), so this observation turn text is its ONLY channel for
 /// round state, exactly as in production.
 #[cfg(feature = "fixtures")]
 async fn inject_design_review_round_observation(
-    h: &SpecHarness,
+    h: &PlannerHarness,
     fx: &Fixture,
     slice_id: &str,
     n: u32,
@@ -3205,7 +3218,7 @@ async fn inject_design_review_round_observation(
 
 #[cfg(not(feature = "fixtures"))]
 async fn inject_design_review_round_observation(
-    _h: &SpecHarness,
+    _h: &PlannerHarness,
     _fx: &Fixture,
     _slice_id: &str,
     _n: u32,
@@ -3218,9 +3231,9 @@ async fn inject_design_review_round_observation(
 /// Seed one prior non-converged design review.round as typed
 /// `Event::ReviewRound` (typed-seeding precedent:
 /// crates/calm-truth/src/track_vcs.rs review/ratify batch test). Actor MUST be
-/// `ActorId::AiSpec(spec card)` with `EventScope::Track`: role_gate rule 2.8
-/// makes review.round spec-only, and the seeded AiSpec rows stay
-/// actor-distinguishable from the real spec's AiSpecSession rows.
+/// `ActorId::AiPlanner(planner card)` with `EventScope::Track`: role_gate rule 2.8
+/// makes review.round planner-only, and the seeded AiPlanner rows stay
+/// actor-distinguishable from the real planner's AiPlannerSession rows.
 async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, cap: u32) {
     let track_scope = EventScope::Track {
         track: fx.track_id.clone(),
@@ -3228,7 +3241,7 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
     };
     fx.repo
         .log_pure_event(
-            ActorId::AiSpec(fx.spec_card_id.clone()),
+            ActorId::AiPlanner(fx.planner_card_id.clone()),
             track_scope,
             None,
             &fx.events,
@@ -3386,8 +3399,8 @@ async fn lifecycle_changed_rows_between(
 }
 
 /// First post-floor `ratify.requested`. Never emitted by this test: role_gate
-/// rule 2.8 makes it spec-session-only, so an observed row proves the real
-/// spec's own `calm.ratify.request` tool call.
+/// rule 2.8 makes it planner-session-only, so an observed row proves the real
+/// planner's own `calm.ratify.request` tool call.
 async fn wait_for_ratify_requested(
     fx: &Fixture,
     floor: i64,
@@ -3454,7 +3467,7 @@ fn fixture_router(fx: &Fixture) -> axum::Router {
 /// `harness_observation_from_event` would push for the grant's
 /// ratify.resolved event (hard-fire).
 #[cfg(feature = "fixtures")]
-async fn inject_ratify_resolved_grant(h: &SpecHarness, fx: &Fixture) {
+async fn inject_ratify_resolved_grant(h: &PlannerHarness, fx: &Fixture) {
     h.observe_for_test(
         Observation::RatifyResolved {
             track_id: fx.track_id.clone(),
@@ -3466,11 +3479,11 @@ async fn inject_ratify_resolved_grant(h: &SpecHarness, fx: &Fixture) {
 }
 
 #[cfg(not(feature = "fixtures"))]
-async fn inject_ratify_resolved_grant(_h: &SpecHarness, _fx: &Fixture) {
+async fn inject_ratify_resolved_grant(_h: &PlannerHarness, _fx: &Fixture) {
     panic!("inject_ratify_resolved_grant requires the fixtures feature");
 }
 
-async fn wait_for_spec_turn_settled(fx: &Fixture, h: &SpecHarness, budget: Duration) {
+async fn wait_for_planner_turn_settled(fx: &Fixture, h: &PlannerHarness, budget: Duration) {
     let deadline = Instant::now() + budget;
     let mut last_state = h.state_for_test().await;
     let mut last_pending = h.pending_len_for_test().await;
@@ -3486,7 +3499,7 @@ async fn wait_for_spec_turn_settled(fx: &Fixture, h: &SpecHarness, budget: Durat
             panic_with_agent_diag(
                 fx,
                 format!(
-                    "timed out after {budget:?} waiting for spec harness turn to settle; \
+                    "timed out after {budget:?} waiting for planner harness turn to settle; \
                      last_state={last_state:?}; last_pending_len={last_pending}"
                 ),
             )
@@ -3610,15 +3623,15 @@ async fn assert_real_design_review_round(fx: &Fixture, rounds: &[(ActorId, Value
     );
     assert!(
         !fx.used_injected_plan(),
-        "RealSpecTurn must not use injected plan path"
+        "RealPlannerTurn must not use injected plan path"
     );
 
     let mut by_subject: std::collections::BTreeMap<(String, String, Option<u64>), Vec<&Value>> =
         std::collections::BTreeMap::new();
     for (actor, payload) in rounds {
         assert!(
-            matches!(actor, ActorId::AiSpecSession(_)),
-            "review.round actor must be AiSpecSession, got {actor:?} for {payload}"
+            matches!(actor, ActorId::AiPlannerSession(_)),
+            "review.round actor must be AiPlannerSession, got {actor:?} for {payload}"
         );
         assert_eq!(
             payload["cap"],
@@ -3698,17 +3711,17 @@ fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     )
 }
 
-/// The live spec session's bound codex thread id — the identity handle for
-/// scripted daemon-socket `tools/call`s (identical wire to the real spec's
+/// The live planner session's bound codex thread id — the identity handle for
+/// scripted daemon-socket `tools/call`s (identical wire to the real planner's
 /// own calls, so scripted setup events go through the real plugin lowering).
-async fn spec_session_thread_id(fx: &Fixture) -> String {
+async fn planner_session_thread_id(fx: &Fixture) -> String {
     fx.repo
-        .session_projection_active_for_card(&fx.spec_card_id.to_string())
+        .session_projection_active_for_card(&fx.planner_card_id.to_string())
         .await
-        .expect("active spec session lookup")
-        .expect("live spec session for spec card")
+        .expect("active planner session lookup")
+        .expect("live planner session for planner card")
         .thread_id
-        .expect("spec session bound to a codex thread")
+        .expect("planner session bound to a codex thread")
 }
 
 fn assert_forge_tool_accepted(resp: &Value, label: &str) {
@@ -3775,9 +3788,9 @@ async fn wait_for_track_forge_event(
 }
 
 /// Seed the ONE converged typed impl review.round (d2 design D2): actor MUST
-/// be `ActorId::AiSpec(spec card)` with `EventScope::Track` — role_gate rule
-/// 2.8 makes review.round spec-only, and the seeded AiSpec row stays
-/// actor-distinguishable from the real spec's AiSpecSession rows. Phase
+/// be `ActorId::AiPlanner(planner card)` with `EventScope::Track` — role_gate rule
+/// 2.8 makes review.round planner-only, and the seeded AiPlanner row stays
+/// actor-distinguishable from the real planner's AiPlannerSession rows. Phase
 /// literal is "impl" (forge_template_e2e `impl_round` precedent).
 async fn seed_converged_impl_review_round(
     fx: &Fixture,
@@ -3791,7 +3804,7 @@ async fn seed_converged_impl_review_round(
     };
     fx.repo
         .log_pure_event(
-            ActorId::AiSpec(fx.spec_card_id.clone()),
+            ActorId::AiPlanner(fx.planner_card_id.clone()),
             track_scope,
             None,
             &fx.events,
@@ -3866,29 +3879,29 @@ fn shim_counter(path: &Path) -> u64 {
 }
 
 #[cfg(feature = "fixtures")]
-async fn inject_observation(h: &SpecHarness, obs: Observation) {
+async fn inject_observation(h: &PlannerHarness, obs: Observation) {
     h.observe_for_test(obs, None).await;
 }
 
 #[cfg(not(feature = "fixtures"))]
-async fn inject_observation(_h: &SpecHarness, _obs: Observation) {
+async fn inject_observation(_h: &PlannerHarness, _obs: Observation) {
     panic!("inject_observation requires the fixtures feature");
 }
 
 fn review_budget() -> Duration {
-    std::env::var("NEIGE_SPEC_REVIEW_BUDGET")
+    std::env::var("NEIGE_PLANNER_REVIEW_BUDGET")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
-        // Default doubled vs spec_planning_budget — the review wait includes the spec's autonomous runs/ read round-trip and 1/5 stability runs exceeded 240s (design §6 headroom).
+        // Default doubled vs planner_planning_budget — the review wait includes the planner's autonomous runs/ read round-trip and 1/5 stability runs exceeded 240s (design §6 headroom).
         .unwrap_or_else(|| Duration::from_secs(480))
 }
 
 /// Budget for the ASK-HUMAN request-wait and the post-grant resume-wait
-/// (R7 design D6): each spans a full real spec turn, so it gets the same
+/// (R7 design D6): each spans a full real planner turn, so it gets the same
 /// headroom as `review_budget`.
 fn ratify_budget() -> Duration {
-    std::env::var("NEIGE_SPEC_RATIFY_BUDGET")
+    std::env::var("NEIGE_PLANNER_RATIFY_BUDGET")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)

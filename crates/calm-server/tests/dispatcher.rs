@@ -137,7 +137,7 @@ fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
 #[tokio::test]
 async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_updated() {
     let (repo, events, _cache, _wcc, track_id, _area_id) = boot().await;
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track_id.clone(),
             title: None,
@@ -146,9 +146,9 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
             payload: serde_json::json!({}),
         })
         .await
-        .expect("create spec card");
+        .expect("create planner card");
     let runtime = calm_server::db::write_in_tx_typed(repo.as_ref(), {
-        let card_id = spec_card.id.to_string();
+        let card_id = planner_card.id.to_string();
         move |tx| {
             Box::pin(async move {
                 let runtime = session_start_runtime_tx(
@@ -156,7 +156,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
                     WorkerSessionInit {
                         id: new_id(),
                         card_id,
-                        kind: WorkerSessionKind::SharedSpec,
+                        kind: WorkerSessionKind::SharedPlanner,
                         agent_provider: Some(AgentProvider::Codex),
                         status: WorkerSessionState::TurnPending,
                         terminal_run_id: None,
@@ -177,7 +177,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
     .expect("seed shared-spec runtime");
     let terminal = repo
         .terminal_create(NewTerminal {
-            card_id: spec_card.id.clone(),
+            card_id: planner_card.id.clone(),
             program: "codex".into(),
             cwd: "/workspace".into(),
             env: serde_json::json!({}),
@@ -189,12 +189,12 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
     pending
         .register(
             PendingEntry::new(
-                spec_card.id.to_string(),
+                planner_card.id.to_string(),
                 Some(track_id.to_string()),
                 terminal.id.to_string(),
                 runtime.id.clone(),
             )
-            .with_role(calm_server::model::CardRole::Spec),
+            .with_role(calm_server::model::CardRole::Planner),
         )
         .await
         .expect("register pending thread");
@@ -205,17 +205,17 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
             .on_thread_started("thread-tui-created")
             .await
             .expect("bind pending thread"),
-        Some(spec_card.id.to_string())
+        Some(planner_card.id.to_string())
     );
 
     let updated = repo
-        .card_get(spec_card.id.as_str())
+        .card_get(planner_card.id.as_str())
         .await
         .expect("card_get")
-        .expect("spec card still exists");
+        .expect("planner card still exists");
     assert!(updated.payload.get("codex_thread_id").is_none());
     let runtime = repo
-        .session_projection_active_for_card(&spec_card.id.to_string())
+        .session_projection_active_for_card(&planner_card.id.to_string())
         .await
         .unwrap()
         .expect("active runtime");
@@ -233,7 +233,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
     .expect("CardUpdated broadcast");
     match envelope.event {
         Event::CardUpdated(card) => {
-            assert_eq!(card.id, spec_card.id);
+            assert_eq!(card.id, planner_card.id);
             assert!(card.payload.get("codex_thread_id").is_none());
         }
         other => panic!("expected CardUpdated, got {other:?}"),
@@ -243,7 +243,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
 #[tokio::test]
 async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pending() {
     let (repo, events, _cache, _wcc, track_id, _area_id) = boot().await;
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track_id.clone(),
             title: None,
@@ -252,10 +252,10 @@ async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pendin
             payload: serde_json::json!(["corrupt-payload-shape"]),
         })
         .await
-        .expect("create malformed spec card");
+        .expect("create malformed planner card");
     let terminal = repo
         .terminal_create(NewTerminal {
-            card_id: spec_card.id.clone(),
+            card_id: planner_card.id.clone(),
             program: "codex".into(),
             cwd: "/workspace".into(),
             env: serde_json::json!({}),
@@ -267,12 +267,12 @@ async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pendin
     pending
         .register(
             PendingEntry::new(
-                spec_card.id.to_string(),
+                planner_card.id.to_string(),
                 Some(track_id.to_string()),
                 terminal.id.to_string(),
                 "missing-runtime".to_string(),
             )
-            .with_role(calm_server::model::CardRole::Spec),
+            .with_role(calm_server::model::CardRole::Planner),
         )
         .await
         .expect("register pending thread");
@@ -288,10 +288,10 @@ async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pendin
     assert_eq!(pending.pending_count().await, 0);
 
     let unchanged = repo
-        .card_get(spec_card.id.as_str())
+        .card_get(planner_card.id.as_str())
         .await
         .expect("card_get")
-        .expect("spec card still exists");
+        .expect("planner card still exists");
     assert_eq!(
         unchanged.payload,
         serde_json::json!(["corrupt-payload-shape"])

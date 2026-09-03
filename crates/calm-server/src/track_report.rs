@@ -2,7 +2,7 @@
 //!
 //! The track-report card is a kernel-owned card minted at track-create time
 //! (plus backfilled for legacy tracks via migration 0014). Its payload is a
-//! single Markdown document the spec agent maintains via three MCP tools
+//! single Markdown document the planner agent maintains via three MCP tools
 //! that mimic codex's native Read/Edit/Write file tools 1:1:
 //!
 //!   * `calm.report.read`  — fetch current body + summary
@@ -12,7 +12,7 @@
 //!
 //! Storage shape is intentionally one big Markdown string rather than a
 //! `Vec<Section>` — sections are derived at render time by splitting at
-//! H1 headings (`^# `). This keeps the spec agent's mental model simple
+//! H1 headings (`^# `). This keeps the planner agent's mental model simple
 //! (it's editing a Markdown file), keeps the wire shape stable across
 //! UI iterations on the section vocabulary, and avoids a second
 //! storage-shape negotiation if the section list ever needs to change.
@@ -52,7 +52,7 @@ use crate::db::sqlite::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TaskProjectionOutcome,
     TrackTreeTerm, TreeShare, card_body_crdt_get_tx, card_update_with_crdt_tx, deterministic_share,
     project_tasks_tx, project_tasks_with_tree_term_tx, track_tree_budget,
-    track_tree_spec_inventory_by_member,
+    track_tree_planner_inventory_by_member,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -218,7 +218,7 @@ pub async fn tasks_rebuild_tree_tx(
         projections.push((track, projection));
     }
 
-    let inventories = track_tree_spec_inventory_by_member(tx, root_id).await?;
+    let inventories = track_tree_planner_inventory_by_member(tx, root_id).await?;
     require_tree_budget_postcondition(root_id, budget, &shares, &inventories)?;
     if tree_cte_queries != 2 {
         return Err(CalmError::Internal(format!(
@@ -241,12 +241,12 @@ fn require_tree_budget_postcondition(
     if let Some((member_id, live)) = member_overage {
         let share = shares.get(member_id).copied().unwrap_or(0);
         return Err(CalmError::Conflict(format!(
-            "track tree change would leave member {member_id} with {live} unfinished spec task(s), above its new share of {share}; wait for in-flight work to finish"
+            "track tree change would leave member {member_id} with {live} unfinished planner task(s), above its new share of {share}; wait for in-flight work to finish"
         )));
     }
     if total > budget {
         return Err(CalmError::Conflict(format!(
-            "track tree rooted at {root_id} would hold {total} unfinished spec task(s), above its tree_task_budget of {budget}"
+            "track tree rooted at {root_id} would hold {total} unfinished planner task(s), above its tree_task_budget of {budget}"
         )));
     }
     Ok(())
@@ -602,7 +602,7 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
 /// pieces `persist_report` needs without duplicating the row-lookup
 /// logic across paths. The MCP path uses its own resolver
 /// (`mcp_server::tools::track_report::resolve_report_for_caller`)
-/// because it derives the track from the connection-bound spec card
+/// because it derives the track from the connection-bound planner card
 /// rather than a path parameter — but both ultimately funnel into
 /// the same [`persist_report`] writer below.
 pub async fn resolve_report_for_track(
@@ -639,8 +639,8 @@ pub async fn resolve_report_for_track(
 /// returns `{ updated_at }`).
 ///
 /// Single write boundary for every track-report mutation — both the
-/// spec-MCP tools (`calm.report.write` / `calm.report.edit`, with
-/// `author = Spec`) and the REST user-edit endpoint (`POST
+/// planner-MCP tools (`calm.report.write` / `calm.report.edit`, with
+/// `author = Planner`) and the REST user-edit endpoint (`POST
 /// /api/tracks/:id/report`, with `author = User`) funnel through this
 /// function so the CRDT-write + dual-event invariant holds uniformly:
 /// every call → one `CardUpdated` + one `TrackReportEdited`.
@@ -653,10 +653,10 @@ pub async fn resolve_report_for_track(
 /// Issue #247 PR2 — every call also emits a structured
 /// `Event::TrackReportEdited` carrying `(summary_before, summary_after,
 /// body_before, body_after, author, edit_id)` so PR4's UI can render an
-/// edit timeline and PR5's spec agent can wake on user-authored edits.
+/// edit timeline and PR5's planner agent can wake on user-authored edits.
 ///
 /// Issue #247 PR3 — `author` is now a parameter (was hard-coded
-/// `Spec`). The MCP tools pass `EditAuthor::Spec`; the REST handler
+/// `Planner`). The MCP tools pass `EditAuthor::Planner`; the REST handler
 /// passes `EditAuthor::User`. The `EditAuthor::Kernel` arm has no
 /// caller today and is reserved for future server-internal rewrites.
 ///
@@ -962,7 +962,7 @@ mod tests {
             require_tree_budget_postcondition("root", 8, &shares, &[("root".to_owned(), 9)])
                 .unwrap_err();
         assert!(
-            matches!(error, CalmError::Conflict(message) if message.contains("9 unfinished spec task(s)") && message.contains("tree_task_budget of 8"))
+            matches!(error, CalmError::Conflict(message) if message.contains("9 unfinished planner task(s)") && message.contains("tree_task_budget of 8"))
         );
     }
 
@@ -1030,7 +1030,7 @@ mod tests {
                 body: "# A\n\nalpha edited\n".into(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap();
         assert!(outcome.is_none());
@@ -1049,7 +1049,7 @@ mod tests {
                 body: "# B\n\nbeta\n".into(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "racing summary");
@@ -1060,7 +1060,7 @@ mod tests {
                 body: "# C\n\ngamma\n".into(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "explicit");
@@ -1070,7 +1070,7 @@ mod tests {
     fn every_report_doc_op_advances_document_revision() {
         fn assert_advances(mut doc: ReportDoc, op: ReportDocOp) {
             let before = doc.doc_rev().unwrap();
-            apply_persisted_report_op(&mut doc, &op, EditAuthor::Spec).unwrap();
+            apply_persisted_report_op(&mut doc, &op, EditAuthor::Planner).unwrap();
             assert_eq!(doc.doc_rev().unwrap(), before + 1, "op: {op:?}");
         }
 
@@ -1156,7 +1156,7 @@ mod tests {
                 if_doc_rev: None,
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
@@ -1176,7 +1176,7 @@ mod tests {
                 body: String::new(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");

@@ -1,7 +1,7 @@
 /*
  * #1189 S6 — starting a conversation from a track page, against the real kernel.
  *
- * Before S5 the track route forked on whether the track had a spec card and
+ * Before S5 the track route forked on whether the track had a planner card and
  * neither branch offered a `+`; there has never been a browser-level case for
  * creating a conversation at all. This is that case, and everything below is
  * served by the real server over the real HTTP surface — no mocked transport,
@@ -11,13 +11,13 @@
  *
  * `POST /api/tracks/{id}/conversations` mints the card AND starts its codex
  * harness in one operation (`track_conversations.rs`), so a 201 requires a live
- * shared codex app-server. This spec previously accepted `201 | 500` because
+ * shared codex app-server. This planner previously accepted `201 | 500` because
  * the job had none — and that made it prove far less than it looked like it
  * did: the 500 is raised by the adapter's daemon preflight, which runs
  * *before* `prepare_tx` mints the card, the session and the MCP token. A
  * kernel that minted the card with the wrong role, without the
  * `harness_profile` marker, or with no token at all would have returned the
- * same 500 and this spec would still have been green. It pinned the browser's
+ * same 500 and this planner would still have been green. It pinned the browser's
  * request contract and nothing about the thing the request asks for.
  *
  * So the job now runs a codex app-server: `ci.yml` points
@@ -30,7 +30,7 @@
  * What this file pins:
  *
  *   1. the track page **reads** its conversations from the real endpoint — the
- *      `'rows'` arm S5 replaced the spec-card fork with — and renders the list
+ *      `'rows'` arm S5 replaced the planner-card fork with — and renders the list
  *      that comes back;
  *   2. the `+` is there, on an ordinary track, and opens a draft;
  *   3. the first message produces **exactly one** POST, to the track in the URL
@@ -102,12 +102,12 @@ test('starts a conversation from a track page and sends the first message to tha
   await page.goto(`/next/track/${track.id}`);
 
   // (1) The list on screen is the server's, plus one row the route injects
-  // from the track's own spec card. Both halves are asserted, because either
+  // from the track's own planner card. Both halves are asserted, because either
   // one alone is satisfiable by a page that never asks the kernel anything:
   // that the page *made the request* (this array is the browser's own
   // traffic — `request.get` below is Playwright's, and never appears in it),
-  // and that a fresh track's answer is empty while the spec row still shows.
-  await expect(page.getByRole('button', { name: 'Conversation Spec' })).toBeVisible();
+  // and that a fresh track's answer is empty while the planner row still shows.
+  await expect(page.getByRole('button', { name: 'Conversation Planner' })).toBeVisible();
   expect(
     conversationReads(requests, track.id).length,
     'the page must read its conversations from GET /api/tracks/{id}/conversations',
@@ -165,7 +165,7 @@ test('starts a conversation from a track page and sends the first message to tha
   ]);
 
   // (5) On screen: the conversation opened as a drawer, and behind it the
-  // list now holds the spec row and this one conversation. An optimistic row
+  // list now holds the planner row and this one conversation. An optimistic row
   // that was never reconciled with the server's would show up here as a third
   // — a conversation the user can see twice, or one the kernel never made.
   // (The drawer replaces the list while it is open, so the list is counted

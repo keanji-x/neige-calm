@@ -14,7 +14,7 @@
 //! calm-server, so the IO-carrying enum must stay a local type there.
 //!
 //! Variant list = `CalmError` minus the IO/domain-specific arms (Db, the
-//! plugin family, spec-harness and codex-appserver variants). The `code()`
+//! plugin family, planner-harness and codex-appserver variants). The `code()`
 //! strings match `CalmError::code()` for the shared arms so error codes
 //! stay stable across the conversion.
 

@@ -38,7 +38,7 @@ const ALL_STATES: [TrackLifecycle; 9] = [
 ];
 
 /// Actor-kind labels as persisted in the golden, in row order.
-const ALL_KINDS: [&str; 4] = ["user", "spec_agent", "worker", "other"];
+const ALL_KINDS: [&str; 4] = ["user", "planner_agent", "worker", "other"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct EdgeRow {
@@ -55,12 +55,12 @@ fn golden_path() -> PathBuf {
 /// Every `ActorId` that classifies into the given golden actor-kind label.
 /// The golden is keyed on the semantic kind; asserting through ALL concrete
 /// representatives also pins `actor_kind()`'s classification (Kernel and
-/// KernelDispatcher behave as SpecAgent, AiClaude as Worker, ...).
+/// KernelDispatcher behave as PlannerAgent, AiClaude as Worker, ...).
 fn representatives(kind: &str) -> Vec<ActorId> {
     match kind {
         "user" => vec![ActorId::User],
-        "spec_agent" => vec![
-            ActorId::AiSpec(CardId::from("spec-card-golden")),
+        "planner_agent" => vec![
+            ActorId::AiPlanner(CardId::from("planner-card-golden")),
             ActorId::Kernel,
             ActorId::KernelDispatcher,
         ],
@@ -76,7 +76,7 @@ fn representatives(kind: &str) -> Vec<ActorId> {
 fn expected_actor_kind(label: &str) -> ActorKind {
     match label {
         "user" => ActorKind::User,
-        "spec_agent" => ActorKind::SpecAgent,
+        "planner_agent" => ActorKind::PlannerAgent,
         "worker" => ActorKind::Worker,
         "other" => ActorKind::Other,
         other => panic!("unknown actor_kind label in golden: {other:?}"),

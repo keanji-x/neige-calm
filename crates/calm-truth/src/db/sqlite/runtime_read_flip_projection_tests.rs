@@ -24,7 +24,7 @@ async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_p
         KeyedRuntimeSeed {
             label: "attribution-shared",
             card_kind: "codex",
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             thread_id: Some("thread-shared"),
             session_id: Some("session-shared"),
@@ -122,7 +122,7 @@ async fn runtime_get_projectable_for_card_from_pool_picks_exited_winner_without_
 }
 
 #[tokio::test]
-async fn runtime_get_projectable_for_card_from_pool_returns_deferred_spec_placeholder() {
+async fn runtime_get_projectable_for_card_from_pool_returns_deferred_planner_placeholder() {
     let repo = fresh_repo().await;
     let (card_id, placeholder_id) =
         seed_deferred_projectable_placeholder(&repo, "projectable-placeholder").await;
@@ -138,7 +138,7 @@ async fn runtime_get_projectable_for_card_from_pool_returns_deferred_spec_placeh
 // deferred placeholder, so the card's projectable session is the
 // placeholder until Phase 2 binds a real thread.
 #[tokio::test]
-async fn projectable_deferred_spec_gap_with_active_runtime_returns_placeholder() {
+async fn projectable_deferred_planner_gap_with_active_runtime_returns_placeholder() {
     let repo = fresh_repo().await;
     let label = "projectable-gap";
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
@@ -151,11 +151,11 @@ async fn projectable_deferred_spec_gap_with_active_runtime_returns_placeholder()
         WorkerSessionState::Running,
         30_000,
     );
-    active_init.kind = WorkerSessionKind::SharedSpec;
+    active_init.kind = WorkerSessionKind::SharedPlanner;
     let active = session_start_runtime_tx(&mut tx, active_init)
         .await
         .expect("start active shared-spec runtime");
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
     )
@@ -201,7 +201,7 @@ async fn terminals_orphaned_protects_terminal_when_old_session_active_and_placeh
         WorkerSessionInit {
             id: old_runtime_id,
             card_id: card_id.clone(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -215,7 +215,7 @@ async fn terminals_orphaned_protects_terminal_when_old_session_active_and_placeh
     )
     .await
     .expect("start old active shared-spec runtime");
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
     )
@@ -328,17 +328,17 @@ async fn runtime_get_projectable_for_cards_from_pool_picks_pointer_history_winne
 }
 
 #[tokio::test]
-async fn worker_session_backed_reads_return_deferred_spec_placeholder() {
+async fn worker_session_backed_reads_return_deferred_planner_placeholder() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-read-flip-placeholder-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
     let card_id = create_card_in_tx(&repo, &mut tx, "placeholder", "codex").await;
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit {
             id: placeholder_id.clone(),
             card_id: card_id.clone(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -367,7 +367,7 @@ async fn worker_session_backed_reads_return_deferred_spec_placeholder() {
     assert_eq!(active_for_card.id, placeholder_id);
 
     let active_for_kind =
-        runtimes_active_for_kind_from_pool(repo.pool(), WorkerSessionKind::SharedSpec)
+        runtimes_active_for_kind_from_pool(repo.pool(), WorkerSessionKind::SharedPlanner)
             .await
             .expect("active-for-kind read");
     assert_eq!(active_for_kind.len(), 1);
@@ -382,7 +382,7 @@ async fn worker_session_backed_reads_return_deferred_spec_placeholder() {
 }
 
 #[tokio::test]
-async fn deferred_spec_placeholder_rejects_non_null_session_id() {
+async fn deferred_planner_placeholder_rejects_non_null_session_id() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-placeholder-session-key-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
@@ -390,7 +390,7 @@ async fn deferred_spec_placeholder_rejects_non_null_session_id() {
     let mut init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 5_000);
     init.session_id = Some("future-placeholder-session".to_string());
 
-    let err = session_prepare_deferred_spec_tx(&mut tx, &init)
+    let err = session_prepare_deferred_planner_tx(&mut tx, &init)
         .await
         .expect_err("non-null session_id must be rejected");
     tx.commit().await.expect("commit placeholder tx");
@@ -398,24 +398,24 @@ async fn deferred_spec_placeholder_rejects_non_null_session_id() {
     match err {
         WorkerSessionProjectionRepoError::Message { message } => assert_eq!(
             message,
-            "deferred spec session placeholders must not have a thread, terminal run, or session"
+            "deferred planner session placeholders must not have a thread, terminal run, or session"
         ),
         other => panic!("unexpected error: {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn cohort_b_reads_exclude_deferred_spec_placeholder_by_null_keys() {
+async fn cohort_b_reads_exclude_deferred_planner_placeholder_by_null_keys() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-cohort-b-placeholder-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
     let card_id = create_card_in_tx(&repo, &mut tx, "cohort-b-placeholder", "codex").await;
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit {
             id: placeholder_id.clone(),
             card_id,
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,

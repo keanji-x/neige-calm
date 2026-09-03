@@ -1,21 +1,21 @@
-//! Track-state tools for reading track shape and recording spec verdicts on
+//! Track-state tools for reading track shape and recording planner verdicts on
 //! worker outcomes.
 //!
-//! These tools complete the spec-card closed loop: a spec daemon reads
+//! These tools complete the planner-card closed loop: a planner daemon reads
 //! the current track snapshot and marks individual worker results as
 //! accepted / rejected during validation. The dispatcher then closes the
-//! loop by pushing the next worker-emitted event onto the spec's thread
+//! loop by pushing the next worker-emitted event onto the planner's thread
 //! as a turn input (#293 — no polling).
 //!
 //! ## Tool surface
 //!
-//! * `calm.track.state` — Spec **or** Worker callable. Returns the
+//! * `calm.track.state` — Planner **or** Worker callable. Returns the
 //!   thread-mapped card's track row + the track's card list
 //!   (id/kind/role/runtime) as one JSON snapshot. No event emission.
-//!   Workers occasionally peek track state before they report; the spec
+//!   Workers occasionally peek track state before they report; the planner
 //!   gets a full snapshot every loop iteration.
 //!
-//! * `calm.task.verdict` — Spec only. Records the spec's
+//! * `calm.task.verdict` — Planner only. Records the planner's
 //!   accept/reject verdict on a worker's prior result. Lowers to
 //!   either `Event::TaskCompleted` (verdict = "accepted") or
 //!   `Event::TaskFailed` (verdict = "rejected"); the `idempotency_key`
@@ -26,10 +26,10 @@
 //!   The earliest-stage design considered adding
 //!   `Event::TaskMetaUpdated { idempotency_key, metadata: Value }` as
 //!   an explicit metadata channel. We picked the reuse path because:
-//!     * the only PR7b use case is the spec's accept/reject verdict on
+//!     * the only PR7b use case is the planner's accept/reject verdict on
 //!       a completed worker run — perfectly captured by the existing
 //!       success/failure semantics;
-//!     * the spec's verdict *is* a terminal outcome from the spec's
+//!     * the planner's verdict *is* a terminal outcome from the planner's
 //!       point of view, mirroring how the worker would report its own
 //!       outcome — a single kind for "this idempotency_key is done"
 //!       keeps consumer code (and the dispatcher's correlator)
@@ -42,14 +42,14 @@
 //!
 //!   The verdict + optional reason are folded into the
 //!   `TaskCompleted.result` JSON (`{status, reason}`) so the audit log
-//!   carries the spec's rationale verbatim.
+//!   carries the planner's rationale verbatim.
 //!
 //! ## Scope construction
 //!
 //! Unlike PR7a's emit tools (which scope to the caller's *card*), the
 //! the verdict write scopes to the caller's *track*. The verdict is
-//! track-level metadata about a worker the spec supervises, not the
-//! spec's own card state.
+//! track-level metadata about a worker the planner supervises, not the
+//! planner's own card state.
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
@@ -96,13 +96,13 @@ fn track_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_STATE.into(),
         description: "Read the current track snapshot bound to the calling card. \
-             Returns the track row plus a card list so a spec daemon can see \
+             Returns the track row plus a card list so a planner daemon can see \
              worker progress without a second call. Each card carries `id`, \
              `kind`, `role`, `sort`, `created_at`, `updated_at`, plus \
              `runtime` (typed `CardRuntimeView` or `null` when no runtime row). \
              `report_startup_read_required` is true iff the track-report \
              summary/body is not the canonical empty initial report. \
-             Callable by spec and worker cards alike; no event is emitted."
+             Callable by planner and worker cards alike; no event is emitted."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -118,7 +118,7 @@ async fn track_state(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let mut cards = ctx
         .repo
@@ -179,7 +179,7 @@ fn report_startup_read_required(cards: &[Card]) -> bool {
 fn task_verdict_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_VERDICT.into(),
-        description: "Spec-only: record the spec's accept/reject verdict on \
+        description: "Planner-only: record the planner's accept/reject verdict on \
              a worker's prior result. `idempotency_key` echoes the original \
              `*.worker_requested`. `status = \"accepted\"` emits \
              `task.completed`; `status = \"rejected\"` emits `task.failed` \
@@ -188,7 +188,7 @@ fn task_verdict_descriptor() -> ToolDescriptor {
              Optional `lifecycle` drives the track state machine in the same \
              atomic write when accepting, rejecting, blocking, or continuing \
              the track. The verdict is persisted on the events log so audit \
-             replay surfaces the spec's rationale."
+             replay surfaces the planner's rationale."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -202,7 +202,7 @@ fn task_verdict_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -211,7 +211,7 @@ async fn task_verdict(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let write_args = parse_write_args(&args, "task_verdict")?;
 
     let idempotency_key = args
@@ -235,9 +235,9 @@ async fn task_verdict(
         "accepted" => Event::TaskCompleted {
             idempotency_key,
             // Fold the verdict + reason into `result` so audit replay
-            // sees the spec's rationale verbatim. Workers' own
+            // sees the planner's rationale verbatim. Workers' own
             // task.completed emits leave `result` to free-form agent
-            // output; the spec's emits use this structured shape so a
+            // output; the planner's emits use this structured shape so a
             // downstream consumer can pattern-match on
             // `result.status == "accepted"` to tell verdicts apart
             // from worker self-reports.
@@ -251,7 +251,7 @@ async fn task_verdict(
         "rejected" => Event::TaskFailed {
             idempotency_key,
             // `reason` is required-by-convention for rejections; an
-            // empty string is a valid value (the spec might reject
+            // empty string is a valid value (the planner might reject
             // for "no reason given" — we don't second-guess the
             // verdict).
             reason: reason.unwrap_or_default(),
@@ -266,7 +266,7 @@ async fn task_verdict(
 
     let kind_tag = event.kind_tag();
     let res = CardDecisionSink::from_app_context(&ctx)
-        .commit_spec_verdict(&identity, write_args.message, write_args.lifecycle, event)
+        .commit_planner_verdict(&identity, write_args.message, write_args.lifecycle, event)
         .await;
 
     match res {
@@ -337,17 +337,17 @@ mod tests {
 
     #[test]
     fn require_role_accepts_matching_role() {
-        let id = identity_with_role(CardRole::Spec);
-        assert!(require_role(&id, CardRole::Spec).is_ok());
+        let id = identity_with_role(CardRole::Planner);
+        assert!(require_role(&id, CardRole::Planner).is_ok());
     }
 
     #[test]
-    fn require_role_rejects_worker_for_spec_tool() {
+    fn require_role_rejects_worker_for_planner_tool() {
         let id = identity_with_role(CardRole::Worker);
-        let err = require_role(&id, CardRole::Spec).expect_err("worker must be denied");
+        let err = require_role(&id, CardRole::Planner).expect_err("worker must be denied");
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
         assert!(
-            err.message.contains("Spec"),
+            err.message.contains("Planner"),
             "error should mention required role: {err:?}"
         );
         assert!(

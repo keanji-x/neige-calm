@@ -20,14 +20,14 @@ use crate::actor::Actor;
 use crate::conversation_keys::derive_area_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{AreaConversationSummary, Track};
-use crate::operation::spec_harness_start_adapter::{
-    HarnessProfile, LazyMintCardSeed, SpecHarnessStartOperationPayload,
+use crate::operation::planner_harness_start_adapter::{
+    HarnessProfile, LazyMintCardSeed, PlannerHarnessStartOperationPayload,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::{SendSpecInputRequest, send_spec_input};
+use crate::routes::cards::{SendPlannerInputRequest, send_planner_input};
 use crate::routes::conversations_shared::{
-    SPEC_HARNESS_START, first_message_digest, retryable_operation_key,
+    PLANNER_HARNESS_START, first_message_digest, retryable_operation_key,
     user_message_already_enqueued, validate_first_message,
 };
 use crate::routes::terminal_cards::{
@@ -106,7 +106,7 @@ pub fn router() -> Router<AppState> {
 /// Body of `POST /api/areas/{area_id}/conversations`: the first message.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct NewAreaConversationBody {
-    /// The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+    /// The first message. Validated exactly like `POST /api/cards/{id}/planner/input`
     /// (non-blank after trim, at most 32768 chars) and validated *before*
     /// anything is minted, so a rejected message leaves no card behind.
     pub text: String,
@@ -181,7 +181,7 @@ pub(crate) async fn list_area_conversations(
 /// # Same key, different `text`
 ///
 /// The first message's SHA-256 travels in the operation payload
-/// (`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part
+/// (`PlannerHarnessStartOperationPayload::first_message_sha256`), so it is part
 /// of `stable_payload_hash` and therefore part of what
 /// `OperationRuntime::submit` compares before it does anything else. Reusing a
 /// key with a different body is consequently a real 409 `conflict` — no card,
@@ -234,10 +234,10 @@ pub(crate) async fn create_area_conversation(
     let (track, _created) = ensure_area_chat_track_inner(&s, actor.clone(), &area_id).await?;
     let derived = derive_area_conversation_keys(&area_id, &idempotency_key);
 
-    let payload = SpecHarnessStartOperationPayload {
+    let payload = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
-        spec_card_id: derived.card_id.clone().into(),
+        planner_card_id: derived.card_id.clone().into(),
         report_card_id: None,
         sort: None,
         cwd: track.workspace.path.clone(),
@@ -267,7 +267,7 @@ pub(crate) async fn create_area_conversation(
     let op_id = s
         .operation_runtime
         .submit(
-            SPEC_HARNESS_START,
+            PLANNER_HARNESS_START,
             OperationKey {
                 operation_key: operation_key.clone(),
                 idempotency_key: Some(operation_key),
@@ -318,9 +318,9 @@ pub(crate) async fn create_area_conversation(
     //      Nothing about the id is secret either: it is a public,
     //      deterministic SHA-256 of `(area_id, Idempotency-Key)`, so anyone
     //      holding both can compute it (see `conversation_keys::derive_area_conversation_keys`).
-    //   3. `POST /api/cards/{id}/spec/input` is a public endpoint on exactly
+    //   3. `POST /api/cards/{id}/planner/input` is a public endpoint on exactly
     //      that card and writes exactly this `harness.user_message.enqueued`
-    //      kind (`routes/cards.rs::send_spec_input`).
+    //      kind (`routes/cards.rs::send_planner_input`).
     //   4. The retry under key K now reads that FOREIGN message as evidence
     //      that its own first message already landed, and skips the send.
     // What that chain actually demonstrates — and it is what the test below
@@ -343,7 +343,7 @@ pub(crate) async fn create_area_conversation(
     //   * event write SUCCEEDED ⇒ a retry under the same key reads it and
     //     does not re-send. This is the guarantee.
     //   * `harness.observe` succeeded but `log_pure_event` FAILED (a DB error
-    //     between the two steps of `send_spec_input`) ⇒ the message is
+    //     between the two steps of `send_planner_input`) ⇒ the message is
     //     already in the harness queue with nothing recorded, the client gets
     //     a 500, and a retry under the same key SENDS IT AGAIN — the agent can
     //     act twice on one instruction.
@@ -360,7 +360,7 @@ pub(crate) async fn create_area_conversation(
     // The structural fix is one change that closes both: fold the first
     // message into the same operation — seed `Observation::UserMessage` into
     // the harness snapshot's `pending_queue` inside `prepare_tx`, the way
-    // `initial_snapshot_with_goal` already seeds a spec harness's goal. Then
+    // `initial_snapshot_with_goal` already seeds a planner harness's goal. Then
     // the message ships inside the mint transaction, this read disappears, and
     // there is nothing left for a foreign send to satisfy. Tracked on #1098;
     // the user's ruling is that it is out of scope for this slice.
@@ -371,13 +371,13 @@ pub(crate) async fn create_area_conversation(
         // Call the real handler rather than reimplementing it: the first
         // message and every later message must go through byte-identical
         // validation, locking, harness recovery and audit.
-        let _queued = send_spec_input(
+        let _queued = send_planner_input(
             State(s.clone()),
             State(w.clone()),
             State(cs),
             actor,
             Path(derived.card_id.clone()),
-            Json(SendSpecInputRequest { text }),
+            Json(SendPlannerInputRequest { text }),
         )
         .await?;
     }
@@ -413,7 +413,7 @@ async fn area_chat_track(s: &RouteState, area_id: &str) -> Result<Option<Track>>
 ///
 /// The marker predicate mirrors `plain_chat::card_is_plain_chat(.., true)`
 /// exactly — Worker role, `codex` kind, `harness_profile == "plain_chat"` — so
-/// the chat track's kernel-owned spec and report cards can never appear here
+/// the chat track's kernel-owned planner and report cards can never appear here
 /// (INV-CHAT-007).
 ///
 /// The three conjuncts are NOT three equal defences, and the tests say so:
@@ -424,8 +424,8 @@ async fn area_chat_track(s: &RouteState, area_id: &str) -> Result<Option<Track>>
 ///   client, so a user can park a marked `terminal` card on the chat track.
 ///   This conjunct is the only thing that keeps it out.
 /// - `role = 'worker'` has **no production-reachable counterexample**: a chat
-///   track's spec/report cards never receive the marker (their payload is
-///   written by `create_track_with_spec_harness` and the adapter's payload
+///   track's planner/report cards never receive the marker (their payload is
+///   written by `create_track_with_planner_harness` and the adapter's payload
 ///   rewrite only touches thread keys). It is defence in depth against a
 ///   tampered/corrupt row, and its test fixture is a tampering model, not a
 ///   reachable state.

@@ -279,7 +279,7 @@ async fn track_detail_round_trips_non_object_payloads() {
 /// cards, one of them fabricated, with no error anywhere. Because the
 /// statement routes `payload` through `json()`, sqlite parses it and the
 /// whole statement errors instead — the behaviour
-/// `spec_harness_track_vcs::transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_harness`
+/// `planner_harness_track_vcs::transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_harness`
 /// relies on to degrade gracefully.
 #[tokio::test]
 async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {

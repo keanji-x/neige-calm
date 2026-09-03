@@ -96,7 +96,7 @@ async fn boot_with_rendezvouses(
     let tracks = TrackAreaCache::new();
     // Seeded, not empty: a second server over an existing database must
     // recognise the cards already there, or `ensure` tries to mint a second
-    // spec card and the re-point fixture stops being a re-point.
+    // planner card and the re-point fixture stops being a re-point.
     repo.seed_card_role_cache(&roles).await.unwrap();
     repo.seed_track_area_cache(&tracks).await.unwrap();
     let events = EventBus::new();
@@ -747,7 +747,7 @@ const SUMMARY_MARKER: &str = "Today's activity across the workspace";
 /// returned 409 unconditionally.
 ///
 /// The statement is narrow by design: it is about **this endpoint**.
-/// `POST /api/tracks/{id}/conversations` and `POST /api/cards/{id}/spec/input`
+/// `POST /api/tracks/{id}/conversations` and `POST /api/cards/{id}/planner/input`
 /// remain reachable and are deliberately out of scope — a user typing to an
 /// agent by hand is not what is being prevented.
 #[tokio::test]
@@ -1041,7 +1041,7 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
     );
 }
 
-/// A dormant harness is recovered by re-submitting `spec-harness-start`, and
+/// A dormant harness is recovered by re-submitting `planner-harness-start`, and
 /// the conversation's transcript survives it.
 ///
 /// D5 makes this mandatory, and the reason is that with one long-lived
@@ -1049,8 +1049,8 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
 /// is no other route back to a live harness, so the button would answer 409
 /// forever until a human pressed Reset.
 ///
-/// **What must NOT happen is the easy fix.** `reset_spec_harness_card` — the
-/// `/spec/reset` path — hard-codes `reset_harness_items: true`, which erases
+/// **What must NOT happen is the easy fix.** `reset_planner_harness_card` — the
+/// `/planner/reset` path — hard-codes `reset_harness_items: true`, which erases
 /// the card's harness items. Those items *are* the conversation the user asked
 /// for, so recovering through reset would answer 200 while deleting the thing
 /// the feature exists to produce. Nothing about that shows up in a status code,
@@ -1095,7 +1095,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     // first trigger.
     let mark = b.last_event_id().await;
 
-    // Dormancy, in the shape `ensure_live_spec_harness` actually tests for: no
+    // Dormancy, in the shape `ensure_live_planner_harness` actually tests for: no
     // session row in an active state for this card. That is trigger B of #649 —
     // the state a failed start or a crashed session leaves behind.
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
@@ -1118,7 +1118,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         .await,
         items_before,
         "the recovery must not erase the transcript — that is the difference \
-         between re-submitting a start and going through `/spec/reset`"
+         between re-submitting a start and going through `/planner/reset`"
     );
     /*
      * Identity, not a count. If the dormant retry re-sent the BOOTSTRAP text
@@ -1149,7 +1149,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
      */
     /*
      * `card.updated` specifically, because that is the event
-     * `SpecHarnessStartAdapter` writes under the operation payload's `actor` —
+     * `PlannerHarnessStartAdapter` writes under the operation payload's `actor` —
      * i.e. the one row whose attribution this module chose.
      *
      * A first version asked only "is any event about this card since the mark
@@ -1164,7 +1164,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     assert_eq!(
         restart_actors,
         vec![stored(ActorId::Kernel)],
-        "the dormant recovery's `spec-harness-start` must be attributed to the \
+        "the dormant recovery's `planner-harness-start` must be attributed to the \
          kernel — it is the one act here no human asked for, and \
          `Actor(\"kernel\").to_actor_id()` silently degrades to User, so it is \
          also the one place this module builds an `ActorId` by hand"
@@ -1186,7 +1186,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
 ///   first compensation error and never re-drives it, leaving the card behind
 ///   (`deletable: false`) with no first message **and no runtime**;
 /// * the create operation *succeeds* and `create_track_conversation`'s own first
-///   `send_spec_input` then fails — a 503 from a shared app-server that went
+///   `send_planner_input` then fails — a 503 from a shared app-server that went
 ///   down in between. It returns `Err`, so the summary is not sent either. Here
 ///   the runtime DOES exist.
 ///
@@ -1276,7 +1276,7 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
 }
 
 /// D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒ carry on
-/// to the spec input.**
+/// to the planner input.**
 ///
 /// The window is one request wide — between this handler's `card_get` and its
 /// create, a concurrent request under the same fixed key can mint the card —

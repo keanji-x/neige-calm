@@ -394,7 +394,7 @@ git grep -l 'NewTrack {'      -- '*.rs'             | wc -l   # 147
 | `NewTrack.workflow_id`（`crates/calm-truth/src/model.rs:108`）、`.workflow_input`（doc `:116-122`） | 改名 **+ 改 doc**（doc 里逐字写了旧名） |
 | `calm_types::Track`（`crates/calm-types/src/model.rs:339` 定义，`workflow_id` 在 `:359`、`workflow_input` 在 `:370`，都带 `#[serde(default)]`） | **改名 + 加单向读别名**（§3.4）。它经 `TrackUpdatedPayload`（`crates/calm-types/src/event.rs:83`，`#[serde(flatten)]`）进历史事件——**全清单里唯一有 fail-open 危险的一格** |
 | `crates/calm-server/src/plugin_host/workflow_input.rs` **整个模块**（模块名、模块 doc `:3`、`WORKFLOW_INPUT_MAX_BYTES`（`:27`）、`validate_workflow_input`（`:240`）；**26 处命中**，`grep -c workflow_input` 实测） | 见下面「用户可见错误词汇」 |
-| `spec_harness_start_adapter.rs:162-180`（`bound_workflow`） | 跟改；fail-safe（`:181-190`）语义不变 |
+| `planner_harness_start_adapter.rs:162-180`（`bound_workflow`） | 跟改；fail-safe（`:181-190`）语义不变 |
 | `mcp_server/tool_visibility.rs` | **不受影响**：真正的 gate 只读 `plugin_scope`（`:109`）。七处 `workflow_id` 命中 = 两条注释（`:18`、`:61`）+ 五处测试结构体字面量（`:200-209`、`:340-345`）。**两个通道本轮独立复核，判定 §5.1 的说法正确**——不要「顺手」改这里的 gate |
 
 **用户可见错误词汇（本类里最容易漏的一格，v4 完全没记账）**：
@@ -532,7 +532,7 @@ git grep -n 'workflow_id\|workflow_input' -- . \
 
 **测试侧的原始 SQL**（会大声红，不是生产风险，但列出来免得被误诊成「改名把测试搞坏了」）：
 `crates/calm-server/tests/forge_workflow_e2e.rs:160`、`:176`、
-`crates/calm-server/tests/support/spec_turn.rs:121`、
+`crates/calm-server/tests/support/planner_turn.rs:121`、
 `crates/calm-server/src/operation/child_track_adapter.rs:1350`
 （**在 `#[cfg(test)] mod tests` 内**，该 mod 自 `:499` 起——所以它是测试不是生产，
 通道 B 把它列进「显式测试 SELECT」是对的）。
@@ -1063,7 +1063,7 @@ T4. 其后的 card / report 写入                                              
 
 ```
 P1. materialize_workspace   tracks.rs:1620-1633   → 非 2xx，而 track/cards/events 已提交
-P2. spec-harness start      tracks.rs:1660-1676   → 运行期失败降级为 warn；
+P2. planner-harness start      tracks.rs:1660-1676   → 运行期失败降级为 warn；
                                                     但提交前的序列化/提交仍可返回错误
 ```
 
@@ -1214,7 +1214,7 @@ v1 给了 4 个站点，两个通道各自重扫后都指出扫描不完整（�
 | `crates/calm-server/src/plugin_host/manifest.rs:1388`、`:1409-1413`、`:1557` | `issue-development` / 参数化 | — | ✗ manifest 解析单测 |
 | `crates/calm-server/src/plugin_host/manifest.rs:2246`、`:2312` | `wf.build` | ✗ | ✗ manifest 解析单测 |
 | `crates/calm-server/src/mcp_server/tool_visibility.rs:375-377` | `WORKFLOW_ID`（非模板） | ✗ | ✗ 工具可见性单测 |
-| `crates/calm-server/src/operation/spec_harness_start_adapter.rs:1829-1831` | `WORKFLOW_ID`（非模板） | ✗ | ✗ `bound_workflow` 解析单测 |
+| `crates/calm-server/src/operation/planner_harness_start_adapter.rs:1829-1831` | `WORKFLOW_ID`（非模板） | ✗ | ✗ `bound_workflow` 解析单测 |
 | `crates/calm-server/src/operation/child_track_adapter.rs:1980` | `[]`（空） | — | ✗ |
 | `crates/calm-server/tests/cases/mcp_plugin_tools.rs:924-926` | `WORKFLOW_ID`（非模板） | ✗ | ✗ 见下 |
 | `crates/calm-server/tests/plugin_workflow_uniqueness.rs:350-352` | `SHARED_WORKFLOW_ID`（非模板） | ✗ | ✗ spawn 准入 |
@@ -1235,7 +1235,7 @@ FE / e2e / oracle 侧无消费者：`fe/e2e/track-create.spec.ts:141` 用 `small
 
 另有两条下游确认它的消失不会波及别处：
 
-* `bound_workflow`（`spec_harness_start_adapter.rs:162-180`）读的是 `tracks.workflow_id`
+* `bound_workflow`（`planner_harness_start_adapter.rs:162-180`）读的是 `tracks.workflow_id`
   这一列。收紧 create 之后这列只可能装模板 key；老数据里若有别的值，
   `bound_workflow` 的行为完全不变（它自己去 registry 解析，解析不到就 fail-safe 回
   vanilla prompt，`:181-190`）。**不需要数据迁移。**
@@ -1258,7 +1258,7 @@ FE / e2e / oracle 侧无消费者：`fe/e2e/track-create.spec.ts:141` 用 `small
 * `WorkflowDescriptor` 明写「Extra JSON keys are ignored」（`manifest.rs:467-475`），
   且有测试专门钉住这一点（`manifest.rs:1407-1416`
   `extra_workflow_descriptor_fields_are_ignored`，把 `plan_template`/`gates`/
-  `spec_instructions`/`card_kinds`/`input_schema` 塞进去仍解析成功）。
+  `planner_instructions`/`card_kinds`/`input_schema` 塞进去仍解析成功）。
 * `manifest.rs:761-765` 不是字段白名单，是「connector-only 插件不得声明 `workflows`」
   这条校验（错误信息 `cannot own a track workflow`）。
 
@@ -2092,7 +2092,7 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
   * `crates/calm-truth/src/db/rows.rs`、`crates/calm-truth/src/db/sqlite/track.rs`（层 5，**手写列名**）
   * `crates/calm-truth/migrations/00NN_tracks_rename_workflow_id_to_template_id.sql`（**新建**，层 5）
   * `crates/calm-types/src/model.rs`（层 4，**加 `serde(alias)`**）
-  * `crates/calm-server/src/operation/spec_harness_start_adapter.rs`、
+  * `crates/calm-server/src/operation/planner_harness_start_adapter.rs`、
     `crates/calm-server/src/routes/today.rs`（层 6）
   * `crates/calm-server/src/routes/version.rs`（`WEB_COMPAT_VERSION`、`API_VERSION`，§3.6）
   * `crates/neige-app/src/package.rs`（默认 `productMajor`，§5.3；连带它的两条断言与
@@ -2112,7 +2112,7 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
     `web/src/track-fs-viewers/schemas.ts:152,160`（**第三个 Zod reader**）
   * **（v5 新增）** `crates/calm-server/tests/forge_workflow_e2e.rs:203`（**第三条文案断言**，§10.3）
   * **（v5 新增）** 测试侧原始 SQL 四处：`forge_workflow_e2e.rs:160,176`、
-    `tests/support/spec_turn.rs:121`、`operation/child_track_adapter.rs:1350`（在 test mod 内）
+    `tests/support/planner_turn.rs:121`、`operation/child_track_adapter.rs:1350`（在 test mod 内）
   * **（v5 新增）** 字符串名册：`crates/calm-server/tests/cases/track_projection_policy_patch.rs:155`
   * **（v5 新增）** 注释 / 文档 / CSS：`web/src/shared/components/issueUrl.ts:1,6,57` + 其测试、
     `fe/core/domain/issue-url.ts:2,48` + 其测试、`web/src/calm.css:4414`、
@@ -2710,7 +2710,7 @@ assert!(error.contains("missing-workflow"), "body={body}");           // 被拒�
 | **T4** | **B/M3（第三个 Zod reader）** | zod 侧不是两个 reader 是三个；`web/src/track-fs-viewers/schemas.ts:152,160` 读旧 `track.json`/FS snapshot，机械改名 ⇒ 旧 snapshot 静默 `template_id=null` | **ACCEPTED（这条只有通道 B 看到）** | 实测 `:160` 是 `z.unknown().default(null)`、`:152` 是 `.nullable().default(null)`——正是 fail-open 的形状。§3.4 改成三 reader 表，要求同形的单向 normalize，并禁止「把旧键做成 schema 的可选字段」（那是写口方案 B 的前端版）。测试 #14 从「两个前端各一条」改成 **Rust + 三个 parser 四条，且必须各自独立变红** |
 | **T5** | **A/m3 + A/m4** | §3.4 的 fail-open 证据引的是 goldens（测试数据）而不是读取者；测试 #14 没点名载体 | **ACCEPTED，且发现失败模式更糟** | 实测 `Event::from_kind_and_payload` 的调用点在 `crates/calm-truth/src/db/sqlite/events.rs:577`（`events_since` 追赶路径），其 `Err` 分支（`:578-585`）只 `tracing::error!` 然后**跳过整行**。§3.4 因此写出**两条方向相反的坏路**（缺键静默 `None` / 删 `default` 后整行被跳），裁决改为 **alias + 保留 `default`**。§10.2 新增「#14 的形状」，点名 `event_serde_goldens.rs:11-27` 的 `wire`/`canonical` 三步契约，并写明「不说清会怎样」 |
 | **T6** | **B/M4** | 三处 `WEB_COMPAT_VERSION` 数目确为三，但 **CI 从不比较它们**：Rust 侧断言字面量（`tests/cases/version.rs:148,153`）、两个前端各读自己的本地常量；计划测试 #15 只能证明服务端 floor | **ACCEPTED（v4 的「三处 lockstep」是名不副实）** | 实测三处都是 `16`，且 `version.rs:148`/`:153` 确实是字面量断言。§3.6 加了**三种漂移后果表**（今天全绿），并把「PR-2 必须二选一：(a) 比较三处导出值的 CI 静态门禁 / (b) 单一源生成」写成硬要求，推荐 (a)。#15 更名为 `web_compat_floor_is_above_the_previous_bundle` 并降低 claim；(b) 进 §9 非目标 12 |
-| **T7** | **B/M5** | §4.4 不是两棵树：事务在 `tracks.rs:1609` 提交后还有 `materialize_workspace`（`:1620-1633`，可返回非 2xx 而副作用已提交）与 spec-harness start（`:1660-1676`）；旧拼写 400 发生在 serde extractor、函数体之前 | **ACCEPTED（v4 漏了一整段）** | 实测四个坐标全部成立，且 P1 的孤儿结果**今天就被 `track_workspace_materialize.rs:270-313` 明确钉住**（注释 `:293-306` 逐字写着「不要靠放松断言来修」）。§4.4 改成**四个阶段**（0 serde extractor / 1 事务前 / 2 事务内 / 3 事务后），矩阵新增行 P1；`tracks.rs:759-760` 的注释改写文本再加一句 |
+| **T7** | **B/M5** | §4.4 不是两棵树：事务在 `tracks.rs:1609` 提交后还有 `materialize_workspace`（`:1620-1633`，可返回非 2xx 而副作用已提交）与 planner-harness start（`:1660-1676`）；旧拼写 400 发生在 serde extractor、函数体之前 | **ACCEPTED（v4 漏了一整段）** | 实测四个坐标全部成立，且 P1 的孤儿结果**今天就被 `track_workspace_materialize.rs:270-313` 明确钉住**（注释 `:293-306` 逐字写着「不要靠放松断言来修」）。§4.4 改成**四个阶段**（0 serde extractor / 1 事务前 / 2 事务内 / 3 事务后），矩阵新增行 P1；`tracks.rs:759-760` 的注释改写文本再加一句 |
 | **T8** | **B/M5 的尾巴** | 横切错误的载体写错：v4 写「任何 `await?`」，但 `materialize` 是同步 `?`、`resolve_trusted_workflow(...).await` **根本没有 `?`** | **ACCEPTED** | 实测两处都成立。改为「**任何可失败的 DB / FS 操作**」，并把两个反例写进正文——这条修的不是措辞，是一个会让人按错模型写测试期望的判据 |
 | **T9** | **B/M5 + A（矩阵）** | 「统一后」在同一张表里同时指 PR-1 后与 PR-2 后；行 6/8/9/10/11 在终态仍承诺旧的 `workflow_input`/`workflow_id` 错误串 | **ACCEPTED** | 矩阵拆成 **今天 / PR-1 后 / PR-2 后** 三组列，先给通用映射规则（含旧串的正文一律换，状态码与顺序不变），再逐行标例外。行 10 尤其点名：它的正文产生处**不在 `tracks.rs`**，在 `plugin_host/workflow_input.rs` —— 正是 T2 里 v4 整个漏掉的那个模块 |
 | **T10** | **A/M3 + B/MINOR2（两个通道独立发现）** | §8.2 自称「对 `7b85caa3` 复测」的 `1230-s1` 坐标**在任何提交上都复现不出来**（`7b85caa3` 与 `b93fb767` 逐字节相同；`d51571d7` 又是另一组），来自 dirty working tree | **ACCEPTED（一条自称 OBSERVED 的数据不可复现，本仓有专门的记忆条目）** | 实测本轮 HEAD 已经是**第四个**基线 `3b9cc03c`。**处置不是更新坐标，是删掉全部 `1230-s1` 行号**——四轮四变，文档承载不了另一条活分支的坐标。只留「6 test + 1 生产 + 1 import」这个在四个基线上都成立的形状，外加「合流时对当时的 HEAD 重跑 grep」这条动作。文首新增「v5 的记账纪律」，§8 开头新增基线声明（通道 A n2 也提了这个位置问题） |
@@ -2912,7 +2912,7 @@ v2 采用的是我自己读到的坐标：
 | system-area fork 过滤 | `tracks.rs:507-509` | `:505-507` |
 | 播种写入 | `tracks.rs:446-455`、`:459-484` | 循环 `:449-455`、建 area `:459-485`、建 track+落 report `:517-579` |
 | 迁移测试里的 `workflow_id` 列 | `track_plugin_scope_migration_tests.rs:78-83` | `:65-72`（`:76-85` 是 manifest fixture） |
-| `bound_workflow` | `spec_harness_start_adapter.rs:161-177`、fail-safe `:181-188` | `:162-180`、fail-safe `:181-190` |
+| `bound_workflow` | `planner_harness_start_adapter.rs:161-177`、fail-safe `:181-188` | `:162-180`、fail-safe `:181-190` |
 | `WorkflowDescriptor` | `manifest.rs:473-475` | `:472-475`（doc 从 `:467` 起） |
 | `#1230` 版 `current_definition` | `:256-279` | 命中分支 `:256-264`，回落分支 `:270-278` |
 | `#1230` 的 read-only 测试 | 「#1230 追加段」 | `1230-s1` `tests/cases/track_workflow_templates.rs:634-665`，helper `:168-184` |

@@ -34,7 +34,7 @@ Running and Recent are ambience and live in the panel.
 
 - **INV-TODAYDOC-001** — the page load only *resolves* (`GET /api/today/launchpad`).
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
-  `spec-harness-start` operation, so it must never be on this path; it belongs
+  `planner-harness-start` operation, so it must never be on this path; it belongs
   to an explicit action. There is no such action yet.
 - **INV-TODAYDOC-002** — **`null` is data; any failure is an error.** A failed
   read is rendered as an error and the empty state is suppressed: a 5xx that

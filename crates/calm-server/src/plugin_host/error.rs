@@ -48,7 +48,7 @@ pub enum ProcessError {
 
 /// Wire-level failures from the JSON-RPC framer or the actor. These are
 /// distinct from `RpcError` (which models JSON-RPC's own `error` object
-/// per §5.1 of the JSON-RPC 2.0 spec).
+/// per §5.1 of the JSON-RPC 2.0 planner).
 #[derive(Debug, Error)]
 pub enum McpError {
     /// stdin/stdout I/O died — child closed its end, or we got an `EPIPE`.
@@ -139,7 +139,7 @@ pub enum HostError {
     /// #891 slice ④ — registration-time template-id uniqueness. A trusted
     /// plugin declares a template id another **running trusted** plugin
     /// already registers; spawning it would make the binding resolvers
-    /// (`routes::tracks::resolve_template_binding`, the spec harness's
+    /// (`routes::tracks::resolve_template_binding`, the planner harness's
     /// `bound_template`, the MCP per-track tool scope) ambiguous. Like
     /// `KernelTooOld` this fires before any process spawn or token mint, so
     /// no half-spawned state is left behind; the boot autospawn loop's

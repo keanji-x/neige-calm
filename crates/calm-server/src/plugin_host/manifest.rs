@@ -643,7 +643,7 @@ pub struct View {
 
     /// MCP Apps `_meta.ui.permissions` mirror. Today only the `tools` slot is
     /// populated (list of tool-name globs the iframe may call); the closed
-    /// camera/microphone/etc. set in the upstream spec will land alongside
+    /// camera/microphone/etc. set in the upstream planner will land alongside
     /// AppBridge integration in M5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<UiPermissions>,
@@ -652,7 +652,7 @@ pub struct View {
 /// `_meta.ui.csp` mirror — kept open-shape so we can pass unmodeled directives
 /// straight through to AppBridge without bumping the manifest schema.
 ///
-/// The five named fields are the ones the spec calls out explicitly
+/// The five named fields are the ones the planner calls out explicitly
 /// (default_src, script_src, style_src, connect_src, img_src); everything
 /// else flows through `extras` via `#[serde(flatten)]`.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -720,7 +720,7 @@ pub struct ExposedTool {
 
 /// Track-create handle that names a plugin-owned template id.
 ///
-/// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, spec instructions,
+/// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, planner instructions,
 /// and card kinds left the parser; `input_schema` lives on [`Manifest`].
 /// Extra JSON keys are ignored (same forwards-compat as [`Manifest`]).
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -923,7 +923,7 @@ impl Manifest {
 
         // #1297: `kernel` is a reserved writer identity, not merely a naming
         // convention. `card_fsm` stamps it on the overlay rows the scheduler
-        // and spec-harness admission read back as fact, and the callback path
+        // and planner-harness admission read back as fact, and the callback path
         // writes `ctx.plugin_id` verbatim — so a plugin that simply *named
         // itself* `kernel` would forge that authorship without touching any
         // of the guards on the REST side. The regex above admits it, so the
@@ -1214,7 +1214,7 @@ impl McpHttpBlock {
                     "required whenever `api_key_secret` is set",
                 ));
             }
-            (Some(_), Some(spec)) => match ApiKeyIn::parse(spec) {
+            (Some(_), Some(planner)) => match ApiKeyIn::parse(planner) {
                 None => {
                     return Err(ManifestError::invalid(
                         "mcp_http.api_key_in",
@@ -1814,7 +1814,7 @@ mod tests {
     use serde_json::json;
 
     const ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN: &str =
-        include_str!("../../tests/goldens/issue_development_spec_prompt.txt");
+        include_str!("../../tests/goldens/issue_development_planner_prompt.txt");
 
     fn assert_full_golden_eq(expected: &str, actual: &str) {
         assert!(
@@ -2099,7 +2099,7 @@ mod tests {
         let mut v = template_manifest_value();
         v["templates"][0]["plan_template"] = json!([]);
         v["templates"][0]["gates"] = json!([]);
-        v["templates"][0]["spec_instructions"] = json!("leftover");
+        v["templates"][0]["planner_instructions"] = json!("leftover");
         v["templates"][0]["card_kinds"] = json!(["terminal"]);
         v["templates"][0]["input_schema"] = json!({"type": "object"});
         let m = parse_manifest_value(v).expect("S5 ignores retired descriptor fields");
@@ -2169,16 +2169,16 @@ mod tests {
             id: "issue-development".into(),
         };
         let rendered =
-            crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
+            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
                 "track-give-up",
                 Some(&template),
                 None,
             );
-        crate::spec_card::validate_spec_prompt_contract(&rendered)
+        crate::planner_card::validate_planner_prompt_contract(&rendered)
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(
             !rendered.contains("If n == cap and the round is non-approving"),
-            "S5 descriptor has no spec_instructions to inject"
+            "S5 descriptor has no planner_instructions to inject"
         );
     }
 
@@ -2213,21 +2213,21 @@ mod tests {
         )
         .expect("full golden template_input satisfies the shipped schema");
         let rendered =
-            crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
+            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
                 "track-golden-985",
                 Some(template),
                 Some(&template_input),
             );
 
-        if std::env::var_os("REGEN_SPEC_PROMPT_GOLDEN").is_some() {
+        if std::env::var_os("REGEN_PLANNER_PROMPT_GOLDEN").is_some() {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/goldens/issue_development_spec_prompt.txt");
+                .join("tests/goldens/issue_development_planner_prompt.txt");
             // Write back `rendered + "\n"`: the assertion side does
             // `strip_suffix('\n')`, so omitting it panics on the very next run.
             std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
             panic!(
-                "issue_development_spec_prompt.txt regenerated from the current prompt; \
-                 hand-verify the diff, commit, and re-run without REGEN_SPEC_PROMPT_GOLDEN"
+                "issue_development_planner_prompt.txt regenerated from the current prompt; \
+                 hand-verify the diff, commit, and re-run without REGEN_PLANNER_PROMPT_GOLDEN"
             );
         }
 

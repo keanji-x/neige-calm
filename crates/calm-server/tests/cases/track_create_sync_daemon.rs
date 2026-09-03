@@ -1,12 +1,12 @@
-//! Issue #236 (closes) — `POST /api/tracks` must spawn the spec card's
+//! Issue #236 (closes) — `POST /api/tracks` must spawn the planner card's
 //! codex daemon **synchronously** before returning 201.
 //!
 //! ## Why
 //!
-//! Pre-fix: the route returned 201 the instant the track + spec card +
-//! terminal-row tx committed, and `seed_and_spawn_spec_daemon` was
+//! Pre-fix: the route returned 201 the instant the track + planner card +
+//! terminal-row tx committed, and `seed_and_spawn_planner_daemon` was
 //! fired through `tokio::spawn`. That opened a ~400 ms race window in
-//! which the frontend could open the spec card's WS (which goes
+//! which the frontend could open the planner card's WS (which goes
 //! through `ws::terminal::resolve_live_renderer`), see
 //! `renderer entry = None` on the terminal row, and trigger the
 //! revive-by-respawn path with the row's **baked env** — which omits
@@ -16,15 +16,15 @@
 //! no-MCP one, breaking the codex MCP handshake.
 //!
 //! Post-fix: by the time 201 reaches the client, `renderer entry` on
-//! the spec card's terminal row is `Some(<sock>)`, the socket exists
+//! the planner card's terminal row is `Some(<sock>)`, the socket exists
 //! on disk, and a subsequent WS attach never hits the respawn branch.
 //!
 //! ## Test design
 //!
 //! We use the real terminal renderer path (the same one
 //! `tests/codex_card_endpoint.rs` and `tests/ws_terminal_e2e.rs`
-//! locate). The spec card's `program` is hard-coded to `"codex"` by
-//! `seed_and_spawn_spec_daemon`; there's no `codex` binary in CI, so
+//! locate). The planner card's `program` is hard-coded to `"codex"` by
+//! `seed_and_spawn_planner_daemon`; there's no `codex` binary in CI, so
 //! `/bin/sh -c codex` will fail-fast inside the daemon child. That's
 //! fine — `spawn_terminal_for` waits for the *daemon* socket to accept,
 //! not for the spawned program to stay alive. The socket binds before
@@ -33,7 +33,7 @@
 //!
 //! Assertions:
 //!   1. `POST /api/tracks` returns 201 (synchronous spawn succeeded).
-//!   2. The spec card's terminal row has `renderer entry = Some(_)`.
+//!   2. The planner card's terminal row has `renderer entry = Some(_)`.
 //!   3. The socket file exists on disk at that path.
 //!   4. A second `terminal_get` immediately after the response (the
 //!      shape `ws::terminal::resolve_live_renderer` would see) does NOT
@@ -157,25 +157,25 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Verify: after `POST /api/tracks` returns 201, the spec card's
+/// Verify: after `POST /api/tracks` returns 201, the planner card's
 /// terminal row has a registered renderer entry and a persisted pid.
 /// This is the post-#388 Phase 3b contract — no race window.
 /// Regression test for the WS attach path: immediately after `POST
 /// /api/tracks`, the fresh terminal must already have a renderer entry.
 /// Phase 3b no longer has a daemon-UDS revive branch.
-/// Issue #293 / PR #311 — the spec-push app-server boot is NON-FATAL to
+/// Issue #293 / PR #311 — the planner-push app-server boot is NON-FATAL to
 /// track creation. Every codex-free environment (CI's web a11y job, the
 /// chromium docker stack) has no working `codex`, so booting the
 /// shared codex daemon fails. This MUST NOT 500 the track create:
 /// the route logs a warning and returns **201** with an inert track (the
-/// spec card has no `codex_thread_id` or shared source marker).
+/// planner card has no `codex_thread_id` or shared source marker).
 ///
 /// This test boots with a deterministically-broken `codex_bin` (an
 /// absolute path that does not exist, so the boot fails fast regardless
 /// of whether a real `codex` is on PATH) and asserts:
 ///   1. `POST /api/tracks` returns 201 (boot failure is tolerated),
-///   2. the track + spec card rows are committed,
-///   3. the spec card payload has NO `codex_thread_id` / `appserver_sock`
+///   2. the track + planner card rows are committed,
+///   3. the planner card payload has NO `codex_thread_id` / `appserver_sock`
 ///      (the persist step is skipped on the failure path),
 ///   4. no pending shared thread-start entry is registered for the inert track.
 #[tokio::test]
@@ -252,7 +252,7 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
         "broken codex bin must yield 201 (inert track), not 500 (issue #293 / PR #311); body={body}",
     );
 
-    // (2) The track + spec card rows committed.
+    // (2) The track + planner card rows committed.
     let tracks = repo.tracks_by_area(&area_id).await.unwrap();
     assert_eq!(
         tracks.len(),
@@ -261,29 +261,29 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
     );
     let track = tracks.into_iter().next().unwrap();
     let cards = repo.cards_by_track(track.id.as_str()).await.unwrap();
-    let spec_card = cards
+    let planner_card = cards
         .iter()
-        .find(|c| card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .expect("spec card persisted even though the spec agent didn't start");
+        .find(|c| card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Planner))
+        .expect("planner card persisted even though the planner agent didn't start");
 
-    // (3) The spec is NOT running: no codex_thread_id / appserver_sock
+    // (3) The planner is NOT running: no codex_thread_id / appserver_sock
     // were persisted (those writes live AFTER the boot, on the success
     // path only).
     assert!(
-        spec_card
+        planner_card
             .payload
             .get("codex_thread_id")
             .is_none_or(Value::is_null),
-        "inert track's spec card must NOT carry a codex_thread_id; payload = {}",
-        spec_card.payload,
+        "inert track's planner card must NOT carry a codex_thread_id; payload = {}",
+        planner_card.payload,
     );
     assert!(
-        spec_card
+        planner_card
             .payload
             .get("appserver_sock")
             .is_none_or(Value::is_null),
-        "inert track's spec card must NOT carry an appserver_sock; payload = {}",
-        spec_card.payload,
+        "inert track's planner card must NOT carry an appserver_sock; payload = {}",
+        planner_card.payload,
     );
 
     // (4) No pending shared thread registration exists for this inert track.
@@ -295,7 +295,7 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
 }
 
 /// Issue #1211 (retires the #251 contract) — track create must NOT stamp
-/// `payload.prompt` on the spec card, not even for a non-empty title.
+/// `payload.prompt` on the planner card, not even for a non-empty title.
 ///
 /// #251 threaded the track title into `payload.prompt` so the shared daemon's
 /// `turn/start` would open the session with the title as the agent's first
@@ -303,15 +303,15 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
 /// rested entirely on "the title IS the track's intent" — the single new-track
 /// input box doubled as the title and as the statement of what to do.
 /// #1211 takes that premise apart: the title defaults to a placeholder and the
-/// spec agent names the track (`calm.track.rename`) once it has worked out from
+/// planner agent names the track (`calm.track.rename`) once it has worked out from
 /// the conversation what the work actually is. With no intent in the title
 /// there is nothing to seed, so the `prompt` key must be absent.
 ///
 /// The child-track path still passes a seed through
-/// `spec_harness_card_payload` — that seed is the task goal the parent spec
+/// `planner_harness_card_payload` — that seed is the task goal the parent planner
 /// declared, not a track title, and it is deliberately untouched here.
 #[tokio::test]
-async fn post_api_tracks_does_not_stamp_prompt_on_spec_card() {
+async fn post_api_tracks_does_not_stamp_prompt_on_planner_card() {
     let boot = boot().await;
 
     let title = "draft the design doc for #251";
@@ -323,25 +323,31 @@ async fn post_api_tracks_does_not_stamp_prompt_on_spec_card() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Find the Spec card the route minted.
+    // Find the Planner card the route minted.
     let tracks = boot.repo.tracks_by_area(&boot.area_id).await.unwrap();
     let track = tracks.into_iter().next().unwrap();
     let cards = boot.repo.cards_by_track(track.id.as_str()).await.unwrap();
-    let spec_card = cards
+    let planner_card = cards
         .iter()
-        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .expect("exactly one Spec-role card per track");
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Planner))
+        .expect("exactly one Planner-role card per track");
 
     assert!(
-        spec_card.payload.get("prompt").is_none_or(Value::is_null),
+        planner_card
+            .payload
+            .get("prompt")
+            .is_none_or(Value::is_null),
         "a non-empty track title must NOT stamp payload.prompt (#1211); \
          payload = {}",
-        spec_card.payload,
+        planner_card.payload,
     );
     // The rest of the production payload shape is untouched by the retirement.
-    assert_eq!(spec_card.payload.get("spec_harness"), Some(&json!(true)));
     assert_eq!(
-        spec_card.payload.get("codex_source"),
+        planner_card.payload.get("planner_harness"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        planner_card.payload.get("codex_source"),
         Some(&json!("shared"))
     );
     // The title itself still round-trips onto the track row — #1211 retires the
@@ -349,10 +355,10 @@ async fn post_api_tracks_does_not_stamp_prompt_on_spec_card() {
     assert_eq!(track.title, title);
 }
 
-/// Issue #251 — when a track's title is whitespace-only the spec card
+/// Issue #251 — when a track's title is whitespace-only the planner card
 /// must NOT stamp a `payload.prompt` and the codex command line must
 /// fall back to a bare `codex`. The route layer rejects empty titles
-/// in production, but the spec_card seed path defenses against an
+/// in production, but the planner_card seed path defenses against an
 /// empty title here too so a future loosening of route validation
 /// doesn't quietly start an empty shared-daemon turn.
 ///
@@ -363,7 +369,7 @@ async fn post_api_tracks_does_not_stamp_prompt_on_spec_card() {
 /// shape. The shape assertion uses the same payload-prompt field
 /// the shared-daemon `turn/start` path keys on.
 #[tokio::test]
-async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
+async fn whitespace_title_does_not_stamp_prompt_on_planner_card() {
     let boot = boot().await;
 
     // Route accepts and trims the title; assert the post-trim shape.
@@ -386,19 +392,22 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
     let tracks = boot.repo.tracks_by_area(&boot.area_id).await.unwrap();
     let track = tracks.into_iter().next().unwrap();
     let cards = boot.repo.cards_by_track(track.id.as_str()).await.unwrap();
-    let spec_card = cards
+    let planner_card = cards
         .iter()
-        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .expect("exactly one Spec-role card per track");
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Planner))
+        .expect("exactly one Planner-role card per track");
     assert!(
-        spec_card.payload.get("prompt").is_none_or(Value::is_null),
+        planner_card
+            .payload
+            .get("prompt")
+            .is_none_or(Value::is_null),
         "whitespace-only title must NOT stamp payload.prompt; got payload = {}",
-        spec_card.payload,
+        planner_card.payload,
     );
 }
 
 // ---------------------------------------------------------------------------
-// Issue #250 PR 2 — track.cwd → spec-daemon cwd contract
+// Issue #250 PR 2 — track.cwd → planner-daemon cwd contract
 // ---------------------------------------------------------------------------
 
 /// PR 2 contract: track create persists `track.cwd` and uses the same
@@ -476,7 +485,7 @@ async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
 
     // March the track through the happy path to Done. We use the repo
     // directly (which routes through `track_update_tx`) so we don't
-    // have to mint a SpecAgent actor at the route boundary; the
+    // have to mint a PlannerAgent actor at the route boundary; the
     // route's lifecycle validator is unit-tested in
     // `track_lifecycle.rs`. The interesting wiring here is the
     // track_update_tx → terminal_at column write.

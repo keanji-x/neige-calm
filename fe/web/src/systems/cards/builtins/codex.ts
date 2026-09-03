@@ -1,6 +1,6 @@
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
 import { isAssistantHarnessPayload } from './assistant.ts';
-import { isSpecHarnessPayload } from './spec.ts';
+import { isPlannerHarnessPayload } from './planner.ts';
 import { TerminalCardView } from './terminal-card.tsx';
 import { terminalIdFromPayload } from './terminal.ts';
 
@@ -70,7 +70,7 @@ export const CODEX_CARD_ENTRY = Object.freeze({
   }),
   fromKernel: (card: KernelCardInput): CodexCard | null => (
     card.kind === 'codex'
-      && !isSpecHarnessPayload(card.payload)
+      && !isPlannerHarnessPayload(card.payload)
       && !isPlainChatPayload(card.payload)
       /* #1189 — and the assistant marker, for the same reason as the two
          above: `codex` is scanned before `assistant`, so without this clause

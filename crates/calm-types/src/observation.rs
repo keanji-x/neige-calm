@@ -1,7 +1,7 @@
-//! Spec-harness observation vocabulary (#679 PR1).
+//! Planner-harness observation vocabulary (#679 PR1).
 //!
 //! [`Observation`] is the unit the kernel pushes into an agent session
-//! (today: the spec harness queue; tomorrow: any planner session via
+//! (today: the planner harness queue; tomorrow: any planner session via
 //! calm-exec's `ObservationSink`). It is pure data — persisted inside
 //! `HarnessSnapshot.pending_queue` (Tier-A `handle_state_json` contract)
 //! and replayed on boot — so it lives in the vocabulary crate. The queue,
@@ -21,13 +21,13 @@ pub enum Observation {
         text: String,
     },
     /// A `track.report_edited` the dispatcher decided warrants waking the
-    /// spec (`dispatcher::SPEC_WAKE_AUTHORS` — `user` / `plugin` /
-    /// `assistant`, never the spec's own writes).
+    /// planner (`dispatcher::PLANNER_WAKE_AUTHORS` — `user` / `plugin` /
+    /// `assistant`, never the planner's own writes).
     ReportEdited {
         track_id: TrackId,
         body_sha256: String,
         body: String,
-        /// #1252 S0 R1/F2 — who made the edit. The spec system prompt tells
+        /// #1252 S0 R1/F2 — who made the edit. The planner system prompt tells
         /// the agent to consider the edit's `author`, so the turn text has
         /// to carry one; before this it hardcoded "The user edited …" and
         /// mislabelled every plugin/assistant edit as a user edit.
@@ -70,8 +70,8 @@ pub enum Observation {
     },
     /// Issue #644 PR-C (§6.5) — the kernel gate runner recorded a
     /// verdict for one gate attempt. Hard-fired: for a gated task this
-    /// REPLACES the suppressed worker self-report as the spec's wake-up
-    /// (the spec hears the gate, not the claim). `idempotency_key` is
+    /// REPLACES the suppressed worker self-report as the planner's wake-up
+    /// (the planner hears the gate, not the claim). `idempotency_key` is
     /// the task id (`"{track_id}:{key}"`); `key` is the plan key used in
     /// the turn-text paths (`plan/<key>/gate.log`, `runs/<task.id>.md`).
     TaskGateResult {
@@ -196,7 +196,7 @@ impl Observation {
             // byte-identical pre-#1252 sentence so replayed history does
             // not change under a reader. Everything the dispatcher enqueues
             // today names its author in the same `author = "..."` spelling
-            // the spec system prompt uses.
+            // the planner system prompt uses.
             Observation::ReportEdited { author: None, .. } => {
                 "The user edited the track report. Re-read the track state.".to_string()
             }
@@ -358,10 +358,10 @@ mod tests {
         }
     }
 
-    /// #1252 S0 R1/F2 — the spec system prompt tells the agent the waking
+    /// #1252 S0 R1/F2 — the planner system prompt tells the agent the waking
     /// `track.report_edited` carries an `author` of `user` / `plugin` /
     /// `assistant`. The turn text used to hardcode "The user edited …", so a
-    /// plugin- or assistant-authored edit woke the spec with a sentence that
+    /// plugin- or assistant-authored edit woke the planner with a sentence that
     /// contradicted the event and the prompt both.
     #[test]
     fn report_edited_turn_text_names_the_real_author() {

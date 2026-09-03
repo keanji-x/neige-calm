@@ -70,8 +70,8 @@
 //!
 //! Every field of [`WorkspaceActivityWindow`] is an integer. No track titles, no
 //! area names, no detail lists, and nothing else of variable length. That is
-//! not tidiness: the prompt this feeds goes through `POST /api/cards/{id}/spec/input`,
-//! which rejects anything over `MAX_SPEC_INPUT_CHARS` (32,768) — so the
+//! not tidiness: the prompt this feeds goes through `POST /api/cards/{id}/planner/input`,
+//! which rejects anything over `MAX_PLANNER_INPUT_CHARS` (32,768) — so the
 //! rendered prompt's length has to have a bound that can be computed without
 //! running it. Template text plus five integers has one. A "just for context"
 //! list of track titles does not, and re-introducing one means also

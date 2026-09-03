@@ -17,7 +17,7 @@
 //!   §3 emit-tx flips — `worker_report_flips_row_inside_emit_tx`,
 //!     `duplicate_report_is_idempotent`,
 //!     `gated_success_report_flips_to_verifying_and_suppresses_promotion`.
-//!   §3 verdict isolation — `spec_verdict_never_flips_rows`.
+//!   §3 verdict isolation — `planner_verdict_never_flips_rows`.
 //!   M2 live path — `terminal_hook_completes_task_on_exit`.
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
 //!     `sweep_resubmits_dispatched_task_with_missing_operation`.
@@ -112,7 +112,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     area_id: AreaId,
     track_id: TrackId,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     worker_card_id: CardId,
     shared_codex_appserver: Arc<SharedCodexAppServer>,
 }
@@ -150,11 +150,11 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: Value::Null,
         })
@@ -189,22 +189,26 @@ async fn boot() -> Boot {
     let shared_codex_appserver =
         SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
-    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
-        .await;
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
+    support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        planner_card.id.as_str(),
+        CardRole::Planner,
+    )
+    .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
     seed_runtime_session(
         &sqlx_repo,
-        spec_card.id.as_str(),
-        "spec-session",
-        "spec-thread",
+        planner_card.id.as_str(),
+        "planner-session",
+        "planner-thread",
     )
     .await;
-    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
         .bind(track.id.as_str())
         .execute(sqlx_repo.pool())
         .await
-        .expect("mark spec session as track root");
+        .expect("mark planner session as track root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -242,7 +246,7 @@ async fn boot() -> Boot {
         registry: Arc::new(registry),
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         worker_card_id: worker_card.id,
         shared_codex_appserver,
     }
@@ -504,7 +508,7 @@ async fn seed_task(boot: &Boot, task: Task) {
 }
 
 async fn seed_projected_task(boot: &Boot, task: Task) {
-    seed_projected_task_for(boot, boot.track_id.as_str(), spec_identity(boot), task).await;
+    seed_projected_task_for(boot, boot.track_id.as_str(), planner_identity(boot), task).await;
 }
 
 async fn seed_projected_task_for(
@@ -808,7 +812,7 @@ async fn seed_worker_op_target(boot: &Boot, kind: &str, task_id: &str, card_id: 
 
 /// [`seed_worker_op_target`] with a caller-supplied persisted payload —
 /// the round-5 F2 legacy-actor test seeds a `calm.task.dispatch`-shaped
-/// op (actor = the requesting spec card) under the task's idempotency
+/// op (actor = the requesting planner card) under the task's idempotency
 /// key to prove it does NOT count as ownership.
 async fn seed_worker_op_target_with_payload(
     boot: &Boot,
@@ -856,15 +860,15 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "spec-session".to_string(),
+        session_id: "planner-session".to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".into(),
+        thread_id: "planner-thread".into(),
     }
 }
 
@@ -1058,7 +1062,7 @@ impl BootstrapAdapter {
 #[async_trait]
 impl ProviderAdapter for BootstrapAdapter {
     fn kind(&self) -> &'static str {
-        "spec-harness-start"
+        "planner-harness-start"
     }
     fn phases(&self) -> &'static [PhaseTag] {
         if self.block.is_some() {
@@ -1540,40 +1544,40 @@ async fn inv_1110_001_template_track_does_not_dispatch() {
         .expect("template track Working + ungated");
     boot.track_area_cache
         .insert(template_track.id.clone(), boot.area_id.clone());
-    let template_spec = boot
+    let template_planner = boot
         .repo
         .card_create(NewCard {
             track_id: template_track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: Value::Null,
         })
         .await
         .unwrap();
     boot.card_role_cache.insert(
-        template_spec.id.clone(),
-        CardRole::Spec,
+        template_planner.id.clone(),
+        CardRole::Planner,
         template_track.id.clone(),
     );
     support::mcp::set_persisted_card_role(
         boot.repo.as_ref(),
-        template_spec.id.as_str(),
-        CardRole::Spec,
+        template_planner.id.as_str(),
+        CardRole::Planner,
     )
     .await;
     seed_runtime_session_in_pool(
         &boot.repo.sqlite_pool().expect("sqlite pool"),
-        template_spec.id.as_str(),
-        "template-spec-session",
-        "template-spec-thread",
+        template_planner.id.as_str(),
+        "template-planner-session",
+        "template-planner-thread",
     )
     .await;
-    sqlx::query("UPDATE tracks SET root_session_id = 'template-spec-session' WHERE id = ?1")
+    sqlx::query("UPDATE tracks SET root_session_id = 'template-planner-session' WHERE id = ?1")
         .bind(template_track.id.as_str())
         .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
         .await
-        .expect("mark template spec session as track root");
+        .expect("mark template planner session as track root");
     boot.repo
         .overlay_upsert(NewOverlay {
             plugin_id: "kernel".into(),
@@ -1585,13 +1589,13 @@ async fn inv_1110_001_template_track_does_not_dispatch() {
         .await
         .expect("template overlay");
     let template_identity = ToolCallIdentity {
-        card_id: template_spec.id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: template_planner.id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "template-spec-session".to_string(),
+        session_id: "template-planner-session".to_string(),
         track_id: Some(template_track.id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "template-spec-thread".into(),
+        thread_id: "template-planner-thread".into(),
     };
     seed_projected_task_for(
         &boot,
@@ -1790,7 +1794,7 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
     assert!(row.finished_at_ms.is_some());
 
     let failed = event_rows(&boot, "task.failed").await;
-    assert_eq!(failed.len(), 1, "kernel task.failed pushed for the spec");
+    assert_eq!(failed.len(), 1, "kernel task.failed pushed for the planner");
     assert!(
         failed[0].0.contains("KernelDispatcher"),
         "spawn-failure task.failed actor must be KernelDispatcher, got {}",
@@ -1875,7 +1879,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         "operation last_error should carry the git diagnosis, got {last_error:?}"
     );
 
-    // #1147 ①: so must the task row the spec and the FE read.
+    // #1147 ①: so must the task row the planner and the FE read.
     let row = task_row(&boot, "nogit").await;
     assert_eq!(row.status, TaskStatus::Failed);
     let detail = row.status_detail.clone().unwrap_or_default();
@@ -1888,10 +1892,10 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         "status_detail must carry the real reason, got {detail:?}"
     );
 
-    // #1149 dependency: and it must reach the wire type both the spec
+    // #1149 dependency: and it must reach the wire type both the planner
     // (`calm.report.read` → `taskDiagnostics`) and the FE (`GET
     // /api/tracks/:id`, same `BlockVerdict`) read.
-    let report = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+    let report = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("report read");
     let verdict = report["taskDiagnostics"]
@@ -2119,7 +2123,7 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
 }
 
 #[tokio::test]
-async fn spec_verdict_never_flips_rows() {
+async fn planner_verdict_never_flips_rows() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Reviewing).await;
     let mut task = plan_task(&boot.track_id, "v", TaskKind::Codex, &[]);
@@ -2127,13 +2131,13 @@ async fn spec_verdict_never_flips_rows() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
 
-    // The spec records an accepted verdict — a duplicate-key
-    // task.completed emission from the SPEC actor. The emit-tx hook
+    // The planner records an accepted verdict — a duplicate-key
+    // task.completed emission from the PLANNER actor. The emit-tx hook
     // lives only in the worker-gated handlers, so the row must not move.
     call_tool(
         &boot,
         TOOL_TASK_VERDICT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "idempotency_key": task_id,
             "status": "accepted",
@@ -2146,13 +2150,13 @@ async fn spec_verdict_never_flips_rows() {
     assert_eq!(
         task_row(&boot, "v").await.status,
         TaskStatus::Running,
-        "spec verdict emissions must never flip task rows"
+        "planner verdict emissions must never flip task rows"
     );
     let completed = event_rows(&boot, "task.completed").await;
     assert_eq!(completed.len(), 1, "the verdict event itself persisted");
     assert!(
-        completed[0].0.contains("AiSpec"),
-        "verdict actor is the spec, got {}",
+        completed[0].0.contains("AiPlanner"),
+        "verdict actor is the planner, got {}",
         completed[0].0
     );
 }
@@ -3528,7 +3532,7 @@ async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)], if_doc_
     call_tool(
         boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({"body": body, "if_doc_rev": if_doc_rev}),
     )
     .await
@@ -3869,7 +3873,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             call_tool(
                 &boot,
                 TOOL_REPORT_BLOCKS_DELETE,
-                spec_identity(&boot),
+                planner_identity(&boot),
                 json!({"id": id, "if_rev": rev}),
             )
             .await
@@ -4314,7 +4318,7 @@ async fn seed_fresh_context_copies(
               decl_ready,decl_released_by_user,context_verify_failures,spawn,\
               created_at_ms,updated_at_ms) \
              VALUES (?1,?2,?3,'terminal','true','null','[]',0,'dispatched',\
-                     'spec',?4,0,0,0,0,'in-wave',1,1)",
+                     'planner',?4,0,0,0,0,'in-wave',1,1)",
         )
         .bind(&task_id)
         .bind(boot.track_id.as_str())
@@ -4409,7 +4413,7 @@ async fn seed_stale_context_copies(
               decl_ready,decl_released_by_user,context_verify_failures,spawn,\
               created_at_ms,updated_at_ms) \
              VALUES (?1,?2,?3,'terminal','true','null','[]',0,'dispatched',\
-                     'spec',?4,1,0,0,0,0,'in-wave',1,1)",
+                     'planner',?4,1,0,0,0,0,'in-wave',1,1)",
         )
         .bind(&task_id)
         .bind(clone_track_id.as_str())
@@ -6927,7 +6931,7 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    // The plan.updated shape: the spec inserts a new prerequisite task
+    // The plan.updated shape: the planner inserts a new prerequisite task
     // and revises the still-pending row to depend on it.
     seed_task(
         &boot,
@@ -7308,9 +7312,9 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    // A legacy `calm.task.dispatch` operation created by a spec reusing
+    // A legacy `calm.task.dispatch` operation created by a planner reusing
     // the same idempotency key: kind + key + card target all match the
-    // scheduler shape, but the persisted payload actor is the spec card
+    // scheduler shape, but the persisted payload actor is the planner card
     // — NOT KernelDispatcher.
     bind_worker_card_payload(&boot, &task_id).await;
     seed_worker_op_target_with_payload(
@@ -7319,7 +7323,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
         &task_id,
         boot.worker_card_id.as_str(),
         json!({
-            "actor": ActorId::AiSpec(boot.spec_card_id.clone()),
+            "actor": ActorId::AiPlanner(boot.planner_card_id.clone()),
             "track_id": boot.track_id.as_str()
         }),
     )
@@ -7511,7 +7515,7 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
     );
     assert!(row.finished_at_ms.is_some());
     let failed = event_rows(&boot, "task.failed").await;
-    assert_eq!(failed.len(), 1, "kernel task.failed pushed for the spec");
+    assert_eq!(failed.len(), 1, "kernel task.failed pushed for the planner");
     assert!(failed[0].0.contains("KernelDispatcher"));
     assert_eq!(failed[0].1["idempotency_key"], json!(legacy_id));
     let reason = failed[0].1["reason"].as_str().unwrap_or_default();
@@ -8324,7 +8328,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Running
     );
-    assert_eq!(operation_count(&boot, "spec-harness-start").await, 1);
+    assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
     let pool = boot.repo.sqlite_pool().unwrap();
     let child_id: String = sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
         .bind(&task_id)
@@ -8353,7 +8357,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     // state — S3's workspace PATCH is the one that will — so the fixture moves
     // the row directly rather than borrowing some particular mover's code.
     //
-    // The already-recorded `spec-harness-start` stays behind on the OLD path:
+    // The already-recorded `planner-harness-start` stays behind on the OLD path:
     // that row is what the re-drive below has to get past.
     let repointed_cwd = calm_server::workspace_materialize::managed_workspace_path(
         &child_track_workspace_root(),
@@ -8403,12 +8407,12 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     );
     assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(
-        operation_count(&boot, "spec-harness-start").await,
+        operation_count(&boot, "planner-harness-start").await,
         2,
         "the new path must mint a second bootstrap, not collide with the old key"
     );
     let keys: Vec<String> = sqlx::query_scalar(
-        "SELECT idempotency_key FROM operations WHERE kind='spec-harness-start' ORDER BY created_at_ms",
+        "SELECT idempotency_key FROM operations WHERE kind='planner-harness-start' ORDER BY created_at_ms",
     )
     .fetch_all(&pool)
     .await
@@ -8465,7 +8469,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         child_result.outcome,
         OperationOutcome::Succeeded { .. }
     ));
-    assert_eq!(operation_count(&boot, "spec-harness-start").await, 0);
+    assert_eq!(operation_count(&boot, "planner-harness-start").await, 0);
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Dispatched
@@ -8514,10 +8518,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .unwrap();
     scheduler.sweep_all().await;
     assert_eq!(operation_count(&boot, "child-track").await, 1);
-    assert_eq!(operation_count(&boot, "spec-harness-start").await, 1);
+    assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
     assert_eq!(minted.load(Ordering::SeqCst), 1);
     let idem: String = sqlx::query_scalar(
-        "SELECT idempotency_key FROM operations WHERE kind='spec-harness-start'",
+        "SELECT idempotency_key FROM operations WHERE kind='planner-harness-start'",
     )
     .fetch_one(&boot.repo.sqlite_pool().unwrap())
     .await
@@ -8525,7 +8529,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     // #1147 S4 — the key carries a digest of the cwd the bootstrap was
     // submitted with (same rule S2 gave the launchpad). Two things must hold
     // and both are asserted: the key is stable for an unchanged path (the
-    // re-drive above deduped, `spec-harness-start` count is still 1), and it
+    // re-drive above deduped, `planner-harness-start` count is still 1), and it
     // *moves* when the path does — see the repair scenario below.
     let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
         .bind(&child_id)
@@ -8603,7 +8607,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         TaskStatus::Dispatched
     );
     assert_eq!(operation_count(&crash_boot, "child-track").await, 1);
-    assert_eq!(operation_count(&crash_boot, "spec-harness-start").await, 1);
+    assert_eq!(
+        operation_count(&crash_boot, "planner-harness-start").await,
+        1
+    );
     assert_eq!(crash_minted.load(Ordering::SeqCst), 1);
     crashed_sweep.abort();
     assert!(crashed_sweep.await.unwrap_err().is_cancelled());
@@ -8654,7 +8661,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         TaskStatus::Running
     );
     assert_eq!(operation_count(&crash_boot, "child-track").await, 1);
-    assert_eq!(operation_count(&crash_boot, "spec-harness-start").await, 1);
+    assert_eq!(
+        operation_count(&crash_boot, "planner-harness-start").await,
+        1
+    );
     assert_eq!(crash_minted.load(Ordering::SeqCst), 1);
 }
 
@@ -8736,7 +8746,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                     Some("injected"),
                 )
             };
-            sqlx::query("UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 WHERE kind='spec-harness-start'")
+            sqlx::query("UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 WHERE kind='planner-harness-start'")
                 .bind(phase).bind(detail).bind(last_error)
                 .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
         }

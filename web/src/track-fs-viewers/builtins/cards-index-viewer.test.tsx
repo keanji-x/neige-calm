@@ -71,7 +71,7 @@ describe('CardsIndexViewer', () => {
         JSON.stringify([
           {
             id: 'card_1',
-            kind: 'spec',
+            kind: 'planner',
             role: null,
             sort: 0,
             deletable: true,

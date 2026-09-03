@@ -12,7 +12,7 @@
 //!
 //! The scheduler never re-runs a `failed` task, never reorders beyond
 //! `(priority DESC, created_at ASC, key ASC)`, never edits the plan,
-//! and never garbage-collects. Retry is the spec inserting a new task.
+//! and never garbage-collects. Retry is the planner inserting a new task.
 //! The only runtime judgment it holds is the persisted agent-worker
 //! liveness deadline; terminal workers remain mechanically reconciled
 //! by exit status.
@@ -64,7 +64,7 @@ use crate::model::{Task, TaskKind, TaskStatus, Track, TrackLifecycle, new_id, no
 use crate::operation::child_track_adapter::{CHILD_TRACK_KIND, ChildTrackOperationPayload};
 use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
-use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::task_verify_adapter::{
     GateResultCtx, GateVerdict, TASK_VERIFY_KIND, TaskVerifyOperationPayload,
     apply_gate_result_in_tx, gate_attempt_key,
@@ -166,7 +166,7 @@ pub fn lifecycle_allows_scheduling(lifecycle: TrackLifecycle) -> bool {
 /// the checkout; future-proofed here even though no task reaches
 /// `verifying` before PR-C). Deps are satisfied **only** by `done`
 /// siblings: `canceled`/`failed` never satisfy a dependency (§3.1), so
-/// successors sit `pending` until the spec revises the plan.
+/// successors sit `pending` until the planner revises the plan.
 ///
 /// Issue #760 slice 1: resource disjointness for `budget > 1` is not a
 /// second scheduler predicate. Codex tasks acquire a durable workspace
@@ -1342,7 +1342,7 @@ impl Scheduler {
                         // a fast report's Working → Reviewing promotion can
                         // never race ahead of this one. §5.2 deliberately
                         // schedules Planning tracks (review F5) — a track the
-                        // spec never moved past Planning is promoted along
+                        // planner never moved past Planning is promoted along
                         // the legal kernel chain Planning → Dispatching →
                         // Working here. §5.2 also keeps Reviewing in the
                         // schedulable set (round-5 review F1): a dependent
@@ -1496,10 +1496,12 @@ impl Scheduler {
             .ok_or_else(|| {
                 CalmError::Internal("child-track result missing child_track_id".into())
             })?;
-        let spec_card_id = result
-            .get("spec_card_id")
+        let planner_card_id = result
+            .get("planner_card_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("child-track result missing spec_card_id".into()))?;
+            .ok_or_else(|| {
+                CalmError::Internal("child-track result missing planner_card_id".into())
+            })?;
         let report_card_id = result
             .get("report_card_id")
             .and_then(Value::as_str)
@@ -1515,10 +1517,10 @@ impl Scheduler {
             .and_then(Value::as_str)
             .ok_or_else(|| CalmError::Internal("child-track result missing seed".into()))?;
 
-        let bootstrap = SpecHarnessStartOperationPayload {
+        let bootstrap = PlannerHarnessStartOperationPayload {
             actor: ActorId::KernelDispatcher,
             track_id: child_id.to_string(),
-            spec_card_id: crate::ids::CardId::from(spec_card_id.to_string()),
+            planner_card_id: crate::ids::CardId::from(planner_card_id.to_string()),
             report_card_id: Some(report_card_id.to_string()),
             sort: None,
             cwd: cwd.to_string(),
@@ -1532,11 +1534,11 @@ impl Scheduler {
         let bootstrap_payload = serde_json::to_value(&bootstrap)?;
         let bootstrap_id = runtime
             .submit(
-                "spec-harness-start",
+                "planner-harness-start",
                 OperationKey {
                     operation_key: new_id(),
                     // #1147 S4 — the key carries a digest of the cwd, the same
-                    // rule S2 landed for the launchpad's `spec-harness-start`.
+                    // rule S2 landed for the launchpad's `planner-harness-start`.
                     // The payload includes `cwd`, and the operation runtime
                     // refuses "same idempotency key, different payload hash"
                     // permanently. A child whose workspace was re-pointed by
@@ -1775,7 +1777,7 @@ impl Scheduler {
 
     /// Spawn failure/stuck (§5.4 step 3): guarded
     /// `dispatched/running → failed('spawn-failed')` + kernel
-    /// `task.failed` (actor `KernelDispatcher`) in one tx so the spec
+    /// `task.failed` (actor `KernelDispatcher`) in one tx so the planner
     /// gets pushed, + the same `Working → Reviewing` promotion the
     /// legacy spawn-failure path performs. 0-row flip → the row already
     /// moved on; no event is emitted.
@@ -1784,7 +1786,7 @@ impl Scheduler {
     /// rides along into `status_detail` as `"spawn-failed: <reason>"`.
     /// The bare classifier left the only readable diagnosis (e.g. "track
     /// … cwd … is not a git repository") stranded in the operation's
-    /// `phase_detail_json`, which neither the spec nor the FE reads.
+    /// `phase_detail_json`, which neither the planner nor the FE reads.
     /// The `spawn-failed` CLASSIFIER stays the prefix — everything that
     /// dispatches on the vocabulary goes through `status_detail_class`.
     async fn fail_spawn(&self, task: &Task, track: &Track, reason: &str) -> Result<()> {
@@ -2668,7 +2670,7 @@ impl TerminalTaskHook {
     /// worker operation's immutable target card (round-4 review F2 —
     /// card payloads are patchable, so they are not proof). Terminals
     /// with no task row (user terminals, legacy `calm.task.dispatch`
-    /// workers, spec terminals) no-op here.
+    /// workers, planner terminals) no-op here.
     pub async fn on_terminal_exit(
         &self,
         terminal_id: &str,
@@ -2749,7 +2751,7 @@ impl TerminalTaskHook {
 ///
 /// Exit 0 → `task.completed`; non-zero / signal / synthetic `-1` →
 /// `task.failed`. Every event uses actor `ActorId::KernelDispatcher`
-/// (so `is_spec_verdict_event` never classifies it as a spec verdict)
+/// (so `is_planner_verdict_event` never classifies it as a planner verdict)
 /// at track scope, stamps `worker_card_id` via COALESCE, and carries the
 /// same `Working → Reviewing` promotion as a worker self-report (§3).
 #[allow(clippy::too_many_arguments)]

@@ -26,7 +26,7 @@ import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
 import {
-  cardAddMenuEntries, isAssistantHarnessPayload, isSpecHarnessPayload, partitionTrackCards,
+  cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, partitionTrackCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { AreaPage } from '../../features/area/page/public.tsx';
@@ -66,8 +66,8 @@ import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, areaConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
-  prefetchAreaList, specRunQueryOptions, todayLaunchpadQueryOptions,
-  useAreaConversationMutations, useAreaMutations, useSpecMutations, useTodaySummaryMutation,
+  prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
+  useAreaConversationMutations, useAreaMutations, usePlannerMutations, useTodaySummaryMutation,
   useTrackConversationMutations, useTrackMutations, useTrackTemplates, useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackTaskVerdictsQueryOptions,
@@ -78,7 +78,7 @@ import { ConversationProvider, useConversationRegistry } from '../conversations/
 import {
   renderedMobilePanel,
   useGo, useGoSameTrack, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
-  useSpecOpenIntent, useTrackPanelNavigation, validateTrackSearch, type TrackSearch,
+  usePlannerOpenIntent, useTrackPanelNavigation, validateTrackSearch, type TrackSearch,
 } from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -227,7 +227,7 @@ function describeConversation(
 export function useConversationStore(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
-  scope: SpecConversationScope | null,
+  scope: PlannerConversationScope | null,
   routeIntent: ConversationRouteIntent,
 ): ConversationStore {
   const registry = useConversationRegistry();
@@ -243,11 +243,11 @@ export function useConversationStore(
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
-  const run = useQuery({ ...specRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
-  const mutations = useSpecMutations(transport, cardId, unauthorized);
+  const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
+  const mutations = usePlannerMutations(transport, cardId, unauthorized);
   const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
   /**
-   * The echo whose `POST /spec/input` has not been answered yet, if any.
+   * The echo whose `POST /planner/input` has not been answered yet, if any.
    *
    * One id and not a set, and that is a claim about reachability rather than
    * about this line: a second unanswered echo would make `confirmedEchoes`
@@ -485,7 +485,7 @@ export function useConversationStore(
       /* `updatedAt` never goes backwards, which is the same rule once more.
          A row's time is whatever column produced it — the listed rows read
          `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, the
-         injected spec row reads the card's `updated_at`, and neither moves
+         injected planner row reads the card's `updated_at`, and neither moves
          when a turn is added to a conversation the drawer is reading. The
          drawer *does* know that time (`turns.at(-1)?.atMs`) and wrote it here.
          Taking the later of the two keeps a conversation you have just been
@@ -568,7 +568,7 @@ export function useConversationStore(
        * Through `updateExisting`, not `remember`, because both halves of this
        * write have to happen at the moment of the write rather than at the
        * moment of the send. `mutations.send` resolves two refreshes after its
-       * POST returned 200 (`useSpecMutations`), and either of them can land a
+       * POST returned 200 (`usePlannerMutations`), and either of them can land a
        * newer transcript, turn count or state in this entry first: merging into
        * `registry.conversations` and `registry.turnsOf` as captured here would
        * put the pre-send entry back and drop what just arrived. The
@@ -586,7 +586,7 @@ export function useConversationStore(
         /*
          * The refresh may already have brought this very message back.
          *
-         * `POST /spec/input` is answered, the history query refetches, the
+         * `POST /planner/input` is answered, the history query refetches, the
          * server's own row for this message lands, and the effect above writes
          * the transcript containing it — all before this promise settles.
          * Appending the echo then would show the reader their message twice and
@@ -678,13 +678,13 @@ export function useConversationStore(
  * `id` is the track the card hangs off; `title` is that track's title *when the
  * surface knows one*, which an area route does not — its chat track is hidden on
  * purpose. `kind` carries what the list row already knew, so opening a chat row
- * cannot make it read as a spec one. `state` carries the row's server state as
+ * cannot make it read as a planner one. `state` carries the row's server state as
  * the *baseline*; the open row is the only one this route can watch live, so it
  * — and only it — also picks up the local phase (`turn_pending` while a turn is
  * in flight) and the name derived from its first message, which is why the open
  * row can show a name and a dot the closed rows cannot (§7).
  */
-type SpecConversationScope = Readonly<{
+type PlannerConversationScope = Readonly<{
   id: string;
   title?: string;
   cardId: string;
@@ -707,7 +707,7 @@ type SpecConversationScope = Readonly<{
  *
  * Two routes select two of the three: Today is `'elsewhere'` and both the area
  * and the track route are `'rows'`. **`'card'` is selected by nothing** since the
- * track route stopped forking on its spec card (#1189 §5.3) — it is dead, and it
+ * track route stopped forking on its planner card (#1189 §5.3) — it is dead, and it
  * is left standing for the reason given on `ConversationListIntent`: removing it
  * also removes `store.start`, the `scope` arm of the open-request consume, and
  * the `/new` parity argument below, none of which belongs in a review fix. Read
@@ -715,7 +715,7 @@ type SpecConversationScope = Readonly<{
  */
 type ConversationPanelSource =
   | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
-  | Readonly<{ kind: 'card'; intent: ConversationListIntent; scope: SpecConversationScope }>
+  | Readonly<{ kind: 'card'; intent: ConversationListIntent; scope: PlannerConversationScope }>
   | Readonly<{
     kind: 'rows';
     /**
@@ -728,7 +728,7 @@ type ConversationPanelSource =
     /** See `ConversationRouteIntent`: the track these rows may be sent to, or
      *  null when there is none and nothing may be remembered. */
     rememberOn: string | null;
-    scopeOf: (conversationId: string) => SpecConversationScope | null;
+    scopeOf: (conversationId: string) => PlannerConversationScope | null;
     /**
      * The id the card minted under this key *will* have, derived rather than
      * observed — the two endpoints derive it from different namespaces, so this
@@ -1014,7 +1014,7 @@ function useConversationPanel(
   const [creating, setCreating] = useState(false);
   /*
    * The conversation whose composer this route was asked to put the caret in
-   * — a just-created track's spec row (#1211 S2), and nothing else.
+   * — a just-created track's planner row (#1211 S2), and nothing else.
    *
    * It has to be held here rather than read off the registry at render time,
    * because the request is cleared in the same commit that opens the row. Read
@@ -1025,7 +1025,7 @@ function useConversationPanel(
 
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
-  const scope: SpecConversationScope | null = source.kind === 'card'
+  const scope: PlannerConversationScope | null = source.kind === 'card'
     ? source.scope
     : source.kind === 'rows' && openRowId !== null ? source.scopeOf(openRowId) : null;
   const routeIntent: ConversationRouteIntent = source.kind === 'rows'
@@ -1166,7 +1166,7 @@ function useConversationPanel(
   }, [open, store]);
 
   /*
-   * The `+` opens a conversation. On a track that is the track's one spec card,
+   * The `+` opens a conversation. On a track that is the track's one planner card,
    * which already exists; on an area it is a draft, because the card is minted
    * by the first message and there is nothing to open until then. On Today
    * there is neither a track nor an area to attach one to, so the action is not
@@ -1224,7 +1224,7 @@ function useConversationPanel(
    *
    * `'card'` (a track route): the `+` is offered, and `/new` is **not**. This is
    * the one place the two differ, deliberately. On a track there is exactly one
-   * spec card, so `start()` there does not create anything — it opens the row,
+   * planner card, so `start()` there does not create anything — it opens the row,
    * and from inside the drawer that row is the one already open, which makes
    * the command a no-op. A menu entry named `New conversation` that reopens the
    * conversation you are reading is a lie told by a control, and the honest
@@ -1550,7 +1550,7 @@ function useConversationPanel(
                  composer mounts when the drawer opens on a row, and the flag
                  is dropped when it closes (the effect beside
                  `composerFocusFor`). #1211 S2 — a track created from the `+`
-                 lands with its spec conversation open and the caret in it,
+                 lands with its planner conversation open and the caret in it,
                  because the reader's first sentence is the track's intent. */
               focusOnMount={composerFocusFor === open.id}
               disabled={store.sending}
@@ -1653,7 +1653,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    *
    * `POST /api/today/launchpad/ensure` is deliberately not called from here,
    * and that is INV-TODAYDOC-001, not a nicety: `ensure` materializes a
-   * workspace and then submits a `spec-harness-start` operation and waits on
+   * workspace and then submits a `planner-harness-start` operation and waits on
    * it, so putting it on the page-load path would make Today fail hard
    * whenever codex is down — worse than the Today this replaces, which needed
    * nothing to render. `ensure` belongs to an explicit action; PR1 has none.
@@ -1668,7 +1668,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    *
    * It is a mutation on an explicit action and nowhere near the page load:
    * the endpoint bootstraps the launchpad internally, which materializes a
-   * workspace and waits on a `spec-harness-start` (INV-TODAYDOC-001 is about
+   * workspace and waits on a `planner-harness-start` (INV-TODAYDOC-001 is about
    * keeping exactly that off the render path).
    *
    * A success does not refresh the document here. The agent's write arrives
@@ -1835,17 +1835,17 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  * ## What it does NOT do yet: deliver the first message (#1299)
  *
  * The composer's sentence is the track's *intent*, and its destination is the
- * track's spec card as the first message. That is deliberately **not** done
+ * track's planner card as the first message. That is deliberately **not** done
  * here, and the reason is worth stating so nobody adds it back casually.
  *
  * Doing it from this page takes three writes — create, read the detail to find
- * the spec card, post the message — and two review rounds established that the
+ * the planner card, post the message — and two review rounds established that the
  * sequence cannot be made sound from a component:
  *
  *  * the reader can navigate away mid-flight; the requests are not cancelled,
  *    the route unmounts, and the track exists with the sentence lost and nothing
  *    said; and
- *  * `POST /api/cards/{id}/spec/input` carries no idempotency key, and the
+ *  * `POST /api/cards/{id}/planner/input` carries no idempotency key, and the
  *    server enqueues *before* it writes audit and responds — so a lost response
  *    or a 500-after-enqueue makes any retry deliver the same sentence twice.
  *
@@ -1859,12 +1859,12 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  *
  * Until then the sentence is not sent, the form says so where the reader can
  * see it before pressing anything, and this route lands them on the track with
- * the spec conversation **already open and holding the caret** so saying it
+ * the planner conversation **already open and holding the caret** so saying it
  * again is one keystroke. That landing is stated on the navigation itself
- * (`openSpec`), and its only effect is a drawer.
+ * (`openPlanner`), and its only effect is a drawer.
  *
  * The create posts **no title** — the kernel stores the empty string and the
- * spec agent names the track through `calm.track.rename` once it knows what the
+ * planner agent names the track through `calm.track.rename` once it knows what the
  * work is (#1211 S1).
  */
 function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
@@ -1894,11 +1894,11 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
   }, []);
 
   /*
-   * Landing in the spec conversation is stated on the **navigation**, not read
-   * here (#1211 S2, `useSpecOpenIntent`).
+   * Landing in the planner conversation is stated on the **navigation**, not read
+   * here (#1211 S2, `usePlannerOpenIntent`).
    *
    * This route cannot name the card to open — `POST /api/tracks` answers with a
-   * `Track`, and the spec card arrives a route later with the track detail — so
+   * `Track`, and the planner card arrives a route later with the track detail — so
    * an earlier shape of this slice read the detail here, raced it against a
    * deadline, and wrote the card id into the conversation registry before
    * navigating. That registry outlives every route, which is what made the
@@ -1906,7 +1906,7 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
    * the track (a failing detail read, an error box) leaves the request standing,
    * and it springs a drawer open on some later visit nobody asked for.
    *
-   * `openSpec` puts the intent on the history entry this navigation creates, so
+   * `openPlanner` puts the intent on the history entry this navigation creates, so
    * it is scoped to exactly one landing, is redeemed by the track route body
    * against its own cards, and cannot be seen — or cleared — by any other
    * route. `focusComposer` comes with it: the track is unnamed and empty, and
@@ -1921,7 +1921,7 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
       area_id: areaId,
       /* No `title` (#1211): the sentence the reader typed is the track's intent,
          not its name. It is not put on the wire at all yet — see the #1299 note
-         on this route — which is why the landing opens the spec composer. */
+         on this route — which is why the landing opens the planner composer. */
       theme: readHostThemeRgb(),
       // Spread, not two optional fields: no template leaves both keys absent,
       // and `template_id: undefined` is not the same request as no
@@ -1960,7 +1960,7 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        * a real "is this surface current" signal rather than a mount flag.
        */
       if (!liveRef.current) return;
-      go({ name: 'track', trackId: track.id, openSpec: true });
+      go({ name: 'track', trackId: track.id, openPlanner: true });
     }).catch((failure: unknown) => {
       const conflict = folderConflictOf(failure);
       if (conflict !== null) {
@@ -2006,7 +2006,7 @@ function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
    * session registry and nothing here is written back into it: the track they
    * belong to is not a place the reader can be sent.
    *
-   * The list is intentionally not the tracks' spec conversations any more. Those
+   * The list is intentionally not the tracks' planner conversations any more. Those
    * belong to a track and are read on that track's page; mixing them in would put
    * rows in this panel whose drawer this route cannot open.
    */
@@ -2143,9 +2143,9 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
   });
   /*
    * The card Today asked for, if this track has it and it is a conversation card
-   * at all. **Both** conversation markers, not just the spec one (#1189 §5.2):
+   * at all. **Both** conversation markers, not just the planner one (#1189 §5.2):
    * an assistant card is a `codex` card carrying `harness_profile: 'assistant'`,
-   * and while this predicate said `isSpecHarnessPayload` alone every assistant
+   * and while this predicate said `isPlannerHarnessPayload` alone every assistant
    * request answered `undefined` here and was cleared by the effect below —
    * before `TrackRouteBody`'s conversation list had even loaded. The Today →
    * assistant path was cut here, one level above the effect that consumes it,
@@ -2157,7 +2157,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
    */
   const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
     && card.kind === 'codex'
-    && (isSpecHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)));
+    && (isPlannerHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)));
   const detailMatchesRoute = trackId !== undefined && detail.data?.track.id === trackId;
   useEffect(() => {
     if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
@@ -2227,23 +2227,23 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
   const cardRegistry = cardRuntime.registry;
   // `showTrack: false` — on a track's own page the track's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
-  // The same predicate the spec entry resolves by (`INV-CARD-182`), imported
+  // The same predicate the planner entry resolves by (`INV-CARD-182`), imported
   // rather than copied: hiding the card from CARDS and giving it a drawer are
   // one decision, and two hand-written copies would drift apart silently.
-  const specCard = cards.find((card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload));
+  const plannerCard = cards.find((card) => card.kind === 'codex' && isPlannerHarnessPayload(card.payload));
   const registry = useConversationRegistry();
   /*
-   * ── Redeeming "open the spec conversation of the track I just created" ────
+   * ── Redeeming "open the planner conversation of the track I just created" ────
    *
    * The intent rides on the history entry the create navigated to
-   * (`useSpecOpenIntent`), so `armed` is already "this track, this visit": no
+   * (`usePlannerOpenIntent`), so `armed` is already "this track, this visit": no
    * other route body can see it, and there is no global slot for one of them
    * to clear out from under another. What is left here is the half only this
    * component knows — which card the intent names. `POST /api/tracks` answers
-   * with a `Track`, and the spec card's id exists only once the detail has
+   * with a `Track`, and the planner card's id exists only once the detail has
    * landed, which is here.
    *
-   * `disarm()` before the open, unconditionally: a track with no spec card has
+   * `disarm()` before the open, unconditionally: a track with no planner card has
    * nothing to open, and an intent left armed on this entry would fire on the
    * next visit to it (the Back button reaches one).
    *
@@ -2251,23 +2251,23 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
    * and empty, and the reader's first sentence *is* the intent, so the caret
    * has to be where they can type it.
    */
-  const specOpenIntent = useSpecOpenIntent(track.id);
+  const plannerOpenIntent = usePlannerOpenIntent(track.id);
   useEffect(() => {
-    if (!specOpenIntent.armed) return;
-    specOpenIntent.disarm();
-    if (specCard === undefined) return;
-    registry.requestOpen(specCard.id, { focusComposer: true });
-  }, [registry, specCard, specOpenIntent]);
+    if (!plannerOpenIntent.armed) return;
+    plannerOpenIntent.disarm();
+    if (plannerCard === undefined) return;
+    registry.requestOpen(plannerCard.id, { focusComposer: true });
+  }, [registry, plannerCard, plannerOpenIntent]);
   /*
    * The track's assistant conversations (#1189). Its own endpoint, its own list;
-   * the spec card is deliberately not in it — the server's list predicate is
+   * the planner card is deliberately not in it — the server's list predicate is
    * `role == Assistant` — so the row for it is injected below.
    */
   const conversationsQuery = useQuery(trackConversationsQueryOptions(transport, track.id, unauthorized));
   const assistantRows = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const trackTitle = trackDisplayTitle(track.title);
   /*
-   * The track's opening conversation, derived from the spec card rather than
+   * The track's opening conversation, derived from the planner card rather than
    * listed — it is the one row on this route the server does not send.
    *
    * `updatedAt` comes from the card's own `updated_at`. That is the same
@@ -2286,23 +2286,23 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
    * honest reading. The row picks up the live phase the moment it is opened —
    * that is the one row `useConversationStore` replaces in place.
    */
-  const specRow = useMemo<Conversation | null>(() => specCard === undefined ? null : {
-    id: specCard.id,
+  const plannerRow = useMemo<Conversation | null>(() => plannerCard === undefined ? null : {
+    id: plannerCard.id,
     trackId: track.id,
     trackTitle,
-    title: specCard.title,
+    title: plannerCard.title,
     kind: 'shared-spec',
     state: null,
-    updatedAt: specCard.updated_at,
-  }, [specCard, track.id, trackTitle]);
+    updatedAt: plannerCard.updated_at,
+  }, [plannerCard, track.id, trackTitle]);
   /* Every row carries the track's title, so a row that reaches Today can say
      where it is. On this page `showTrack: false` hides it again.
      *
-     * Unconditionally, and *before* the spec row is considered: whether this
-     * track happens to have a spec card has nothing to do with whether its
+     * Unconditionally, and *before* the planner row is considered: whether this
+     * track happens to have a planner card has nothing to do with whether its
      * assistant rows know where they live, and while the two were one
-     * expression the `specRow === null` arm returned the rows untouched. A
-     * reader who had only ever visited tracks without a spec card then saw a
+     * expression the `plannerRow === null` arm returned the rows untouched. A
+     * reader who had only ever visited tracks without a planner card then saw a
      * Today list of rows reading `Assistant` with no track named on any of
      * them — the tracks that most need the `+` (§5.3) losing the label first. */
   const placedRows = useMemo(
@@ -2310,15 +2310,15 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
     [assistantRows, trackTitle],
   );
   const rows = useMemo<readonly Conversation[]>(
-    () => specRow === null ? placedRows : [specRow, ...placedRows],
-    [placedRows, specRow],
+    () => plannerRow === null ? placedRows : [plannerRow, ...placedRows],
+    [placedRows, plannerRow],
   );
   /*
-   * `'rows'`, unconditionally — no longer `'card'` when a spec card exists and
+   * `'rows'`, unconditionally — no longer `'card'` when a planner card exists and
    * `'elsewhere'` when it does not (§5.3).
    *
    * The branch that is gone took the `+` away from exactly the tracks that need
-   * it most: a track with no spec card had no conversation at all and no way to
+   * it most: a track with no planner card had no conversation at all and no way to
    * start one. The list being empty is a state this panel already renders, and
    * an empty list with a `+` over it is the whole feature.
    */
@@ -2336,12 +2336,12 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
       rememberOn: track.id,
       derivedCardId: (idempotencyKey) => trackConversationCardId(track.id, idempotencyKey),
       scopeOf: (conversationId) => {
-        /* The spec row first: it is not in `assistantRows`, and without this
+        /* The planner row first: it is not in `assistantRows`, and without this
            arm the one conversation a track has always had would stop opening. */
-        if (specCard !== undefined && conversationId === specCard.id) {
+        if (plannerCard !== undefined && conversationId === plannerCard.id) {
           return {
-            id: track.id, title: trackTitle, cardId: specCard.id,
-            cardTitle: specCard.title, updatedAt: specCard.updated_at,
+            id: track.id, title: trackTitle, cardId: plannerCard.id,
+            cardTitle: plannerCard.title, updatedAt: plannerCard.updated_at,
             kind: 'shared-spec', state: null,
           };
         }
@@ -2380,7 +2380,7 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
    *
    * So: the read is over, it failed, and the id is not among whatever rows did
    * arrive. Not "the read failed", which would also throw away a perfectly
-   * openable spec row.
+   * openable planner row.
    */
   useEffect(() => {
     const requestedOpenId = registry.requestedOpenId;
@@ -2414,7 +2414,7 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
     tasks: deriveReportTasks(reportBlocks, verdicts),
   }), [reportBlocks, verdicts]);
   /*
-   * INV-CARD-226 — the CARDS module lists cards that have a surface. `spec` and
+   * INV-CARD-226 — the CARDS module lists cards that have a surface. `planner` and
    * `track-report` resolve to headless adapters and are dropped; anything no
    * adapter claimed stays, because an unlisted card is worse than an
    * unrecognised one. Both branches carry `originalIndex`, bound before the

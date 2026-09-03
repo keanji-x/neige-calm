@@ -21,7 +21,7 @@ function bootedRegistry() {
 describe('headless card filtering', () => {
   it('[INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array', () => {
     const cards = [
-      wire({ id: 'spec-1', kind: 'codex', payload: { spec_harness: true } }),
+      wire({ id: 'planner-1', kind: 'codex', payload: { planner_harness: true } }),
       wire({ id: 'report', kind: 'track-report' }),
       wire({ id: 'term-1', kind: 'terminal' }),
       wire({ id: 'term-2', kind: 'terminal' }),
@@ -29,16 +29,16 @@ describe('headless card filtering', () => {
     const { visible, unknown } = partitionTrackCards(bootedRegistry(), cards);
 
     // Two headless cards sit in front. A display index would report 0 and 1
-    // here, and `detail.cards[0]` is the spec card — removing `term-1` would
+    // here, and `detail.cards[0]` is the planner card — removing `term-1` would
     // delete the harness instead.
     expect(visible.map((slot) => [slot.wire.id, slot.originalIndex])).toEqual([['term-1', 2], ['term-2', 3]]);
     expect(unknown).toEqual([]);
     for (const slot of visible) expect(cards[slot.originalIndex]).toBe(slot.wire);
   });
 
-  it('[INV-CARD-226] drops resolved spec and track-report cards from both branches', () => {
+  it('[INV-CARD-226] drops resolved planner and track-report cards from both branches', () => {
     const { visible, unknown } = partitionTrackCards(bootedRegistry(), [
-      wire({ id: 'spec-1', kind: 'codex', payload: { spec_harness: true } }),
+      wire({ id: 'planner-1', kind: 'codex', payload: { planner_harness: true } }),
       wire({ id: 'report', kind: 'track-report' }),
     ]);
     expect(visible).toEqual([]);
@@ -59,16 +59,16 @@ describe('headless card filtering', () => {
   });
 
   it('[INV-CARD-226] keeps ordinary codex cards visible, never headless', () => {
-    // The counter-example that guards the spec predicate end to end: if spec
+    // The counter-example that guards the planner predicate end to end: if planner
     // matched on `kind === 'codex'` alone these cards would resolve headless
     // and vanish from the track entirely. Before #1150 they merely landed in
-    // `unknown` (no adapter); now the codex entry is registered ahead of spec,
+    // `unknown` (no adapter); now the codex entry is registered ahead of planner,
     // so the same three payloads must come out of the *visible* branch — which
     // is also the bug #1150 fixed, checked at the partition boundary.
     const { visible, unknown } = partitionTrackCards(bootedRegistry(), [
       wire({ id: 'codex-1', kind: 'codex', payload: {} }),
       wire({ id: 'codex-2', kind: 'codex', payload: null }),
-      wire({ id: 'codex-3', kind: 'codex', payload: { spec_harness: false } }),
+      wire({ id: 'codex-3', kind: 'codex', payload: { planner_harness: false } }),
     ]);
     expect(visible.map((slot) => slot.wire.id)).toEqual(['codex-1', 'codex-2', 'codex-3']);
     expect(visible.map((slot) => slot.card.type)).toEqual(['codex', 'codex', 'codex']);
@@ -76,10 +76,10 @@ describe('headless card filtering', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('[INV-CARD-226] accepts the known gap: a payload-less spec card cannot be recognised as headless', () => {
+  it('[INV-CARD-226] accepts the known gap: a payload-less planner card cannot be recognised as headless', () => {
     const bare = createCardRegistry();
-    const { unknown } = partitionTrackCards(bare, [wire({ id: 'spec-1', kind: 'codex', payload: null })]);
-    expect(unknown.map((slot) => slot.wire.id)).toEqual(['spec-1']);
+    const { unknown } = partitionTrackCards(bare, [wire({ id: 'planner-1', kind: 'codex', payload: null })]);
+    expect(unknown.map((slot) => slot.wire.id)).toEqual(['planner-1']);
   });
 
   it('routes cards with a surface into the visible branch with their wire and index', () => {

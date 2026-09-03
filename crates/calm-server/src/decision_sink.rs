@@ -117,7 +117,7 @@ impl CardDecisionSink {
                     // `calm.task.dispatch` key with no tasks row, an already
                     // terminal row, or a foreign-track id all no-op. This hook
                     // lives ONLY in the worker-role-gated
-                    // `calm.task.complete` / `calm.task.fail` handlers — spec
+                    // `calm.task.complete` / `calm.task.fail` handlers — planner
                     // verdict emissions (`calm.task.verdict`, track_state.rs)
                     // never run it, so verdicts can never flip rows.
                     let now = crate::model::now_ms();
@@ -291,7 +291,7 @@ impl CardDecisionSink {
         Ok(())
     }
 
-    pub async fn commit_spec_verdict(
+    pub async fn commit_planner_verdict(
         &self,
         identity: &ToolCallIdentity,
         message: String,
@@ -426,8 +426,8 @@ impl CardDecisionSink {
     /// write passes through, so the two things that must differ for an
     /// assistant caller are decided here, once, from `identity.role`:
     ///
-    /// * **attribution** (`EditAuthor`). Hard-coding `Spec` would let an
-    ///   assistant's edits land in the event log under the spec's name —
+    /// * **attribution** (`EditAuthor`). Hard-coding `Planner` would let an
+    ///   assistant's edits land in the event log under the planner's name —
     ///   and would silently undo the `author_name(Assistant) == None`
     ///   line in `track_report_edit_guard`, which is half of the P2 task
     ///   guard.
@@ -479,17 +479,17 @@ impl CardDecisionSink {
 ///
 /// Exhaustive on purpose (no `_` arm): a future role reaching this funnel has
 /// to state its attribution and its auto-promote verdict rather than inherit
-/// the spec's by default.
+/// the planner's by default.
 ///
 /// `Worker` and `ReportCard` are refused outright rather than folded in with
-/// `Spec`. Folding them in would attribute their edits to the spec *and* hand
-/// them auto-promote; today the five entry points' `require_role_any([Spec,
+/// `Planner`. Folding them in would attribute their edits to the planner *and* hand
+/// them auto-promote; today the five entry points' `require_role_any([Planner,
 /// Assistant])` masks that, but S3 is about to move the role surface, and this
 /// funnel must not be the thing that has to be re-audited when it does.
 fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError> {
     Ok(match role {
         CardRole::Assistant => (EditAuthor::Assistant, false),
-        CardRole::Spec => (EditAuthor::Spec, true),
+        CardRole::Planner => (EditAuthor::Planner, true),
         role @ (CardRole::Worker | CardRole::ReportCard) => {
             return Err(CalmError::Forbidden(format!(
                 "card role {role:?} may not write the track report"
@@ -566,19 +566,19 @@ impl DecisionSink for CardDecisionSink {
     }
 }
 
-/// Structural-only spec-harness reactor for #679 PR6a-2.
+/// Structural-only planner-harness reactor for #679 PR6a-2.
 ///
-/// No `worker_sessions` row backs a spec harness yet, and nothing reads this
+/// No `worker_sessions` row backs a planner harness yet, and nothing reads this
 /// principal until PR7. The live run loop still delivers observations through
 /// the existing turn queue and is deliberately not wired to this stub.
 #[derive(Clone, Debug)]
-pub struct SpecHarnessAgentReactor {
+pub struct PlannerHarnessAgentReactor {
     runtime_id: RuntimeId,
     track_id: TrackId,
     area_id: AreaId,
 }
 
-impl SpecHarnessAgentReactor {
+impl PlannerHarnessAgentReactor {
     pub fn new(runtime_id: RuntimeId, track_id: TrackId, area_id: AreaId) -> Self {
         Self {
             runtime_id,
@@ -589,7 +589,7 @@ impl SpecHarnessAgentReactor {
 }
 
 #[async_trait]
-impl AgentReactor for SpecHarnessAgentReactor {
+impl AgentReactor for PlannerHarnessAgentReactor {
     fn principal(&self) -> Principal {
         Principal::Agent {
             session_id: WorkerSessionId::from(self.runtime_id.clone()),
@@ -631,15 +631,15 @@ mod tests {
 
     /// #1189 §3.2a — the report-write funnel's role table, pinned at the one
     /// layer where every role is reachable. On the production path the five
-    /// block-channel entry points carry `require_role_any([Spec, Assistant])`,
+    /// block-channel entry points carry `require_role_any([Planner, Assistant])`,
     /// so Worker/ReportCard never arrive today; S3 moves that surface, and
     /// this is the assertion that catches it if the funnel is left assuming
-    /// "anything not Assistant is the spec".
+    /// "anything not Assistant is the planner".
     #[test]
     fn report_op_attribution_refuses_worker_and_report_cards() {
         assert_eq!(
-            report_op_attribution(CardRole::Spec).expect("spec writes its own report"),
-            (EditAuthor::Spec, true)
+            report_op_attribution(CardRole::Planner).expect("planner writes its own report"),
+            (EditAuthor::Planner, true)
         );
         assert_eq!(
             report_op_attribution(CardRole::Assistant).expect("assistant writes the report"),
@@ -652,7 +652,7 @@ mod tests {
                     "{role:?} refusal should say why, got {msg:?}"
                 ),
                 other => panic!(
-                    "{role:?} must be refused outright, not attributed to the spec; got {other:?}"
+                    "{role:?} must be refused outright, not attributed to the planner; got {other:?}"
                 ),
             }
         }
@@ -909,7 +909,7 @@ mod tests {
             })
             .await
             .expect("create track");
-        let spec_card = repo
+        let planner_card = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
                 title: None,
@@ -918,7 +918,7 @@ mod tests {
                 payload: Value::Null,
             })
             .await
-            .expect("create spec card");
+            .expect("create planner card");
         let report_card = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
@@ -932,17 +932,17 @@ mod tests {
             .expect("create report card");
 
         let root_session_id = WorkerSessionId::from("root-session");
-        seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, &root_session_id).await;
+        seed_track_root_session(repo.as_ref(), &track.id, &planner_card.id, &root_session_id).await;
         // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
         // `card_create` persists `worker` regardless of kind.
-        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-            .bind(spec_card.id.as_str())
+        sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
+            .bind(planner_card.id.as_str())
             .execute(repo.pool())
             .await
-            .expect("persist spec card role");
+            .expect("persist planner card role");
 
         let card_role_cache = CardRoleCache::new();
-        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+        card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
         card_role_cache.insert(
             report_card.id.clone(),
             CardRole::ReportCard,
@@ -959,8 +959,8 @@ mod tests {
             write: WriteContext::new(card_role_cache, track_area_cache),
         };
         let identity = ToolCallIdentity {
-            card_id: spec_card.id.as_str().to_string(),
-            role: CardRole::Spec,
+            card_id: planner_card.id.as_str().to_string(),
+            role: CardRole::Planner,
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: "non-root-session".to_string(),
             track_id: Some(track.id.as_str().to_string()),
@@ -1057,7 +1057,7 @@ mod tests {
             )
             .await
             .expect("set planning");
-        let spec_card = repo
+        let planner_card = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
                 title: None,
@@ -1066,7 +1066,7 @@ mod tests {
                 payload: Value::Null,
             })
             .await
-            .expect("create spec card");
+            .expect("create planner card");
         let report_card = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
@@ -1080,17 +1080,17 @@ mod tests {
             .expect("create report card");
 
         let root_session_id = WorkerSessionId::from("root-session");
-        seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, &root_session_id).await;
+        seed_track_root_session(repo.as_ref(), &track.id, &planner_card.id, &root_session_id).await;
         // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
         // `card_create` persists `worker` regardless of kind.
-        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-            .bind(spec_card.id.as_str())
+        sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
+            .bind(planner_card.id.as_str())
             .execute(repo.pool())
             .await
-            .expect("persist spec card role");
+            .expect("persist planner card role");
 
         let card_role_cache = CardRoleCache::new();
-        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+        card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
         card_role_cache.insert(
             report_card.id.clone(),
             CardRole::ReportCard,
@@ -1107,8 +1107,8 @@ mod tests {
             write: WriteContext::new(card_role_cache, track_area_cache),
         };
         let identity = ToolCallIdentity {
-            card_id: spec_card.id.as_str().to_string(),
-            role: CardRole::Spec,
+            card_id: planner_card.id.as_str().to_string(),
+            role: CardRole::Planner,
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: root_session_id.as_str().to_string(),
             track_id: Some(track.id.as_str().to_string()),
@@ -1155,8 +1155,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_harness_agent_reactor_is_inert_and_shapes_principal() {
-        let reactor = SpecHarnessAgentReactor::new(
+    async fn planner_harness_agent_reactor_is_inert_and_shapes_principal() {
+        let reactor = PlannerHarnessAgentReactor::new(
             "runtime-1".to_string(),
             TrackId::from("track-1"),
             AreaId::from("area-1"),

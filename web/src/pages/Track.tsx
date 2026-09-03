@@ -275,7 +275,7 @@ export function TrackPage({
 
   // After a successful AddPanel-driven card create, if the user was reading
   // the report view, hand them to grid so the new worker card is visible
-  // (TrackReportPage filters spec/track-report out via excludeReportCards).
+  // (TrackReportPage filters planner/track-report out via excludeReportCards).
   // Error paths intentionally do NOT switch — the inline error sits in the
   // current header / modal, switching modes would hide it.
   const goGridAfterAdd = () => {

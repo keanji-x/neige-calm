@@ -19,7 +19,7 @@ use calm_server::mcp_server::tools::track_report_blocks::{
 use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
-use calm_server::operation::spec_harness_start_adapter::render_spec_developer_instructions_for_test;
+use calm_server::operation::planner_harness_start_adapter::render_planner_developer_instructions_for_test;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::AgentProvider;
@@ -514,7 +514,7 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
 
 /// Counts every table the fork persistence path writes, so a "zero residue"
 /// assertion covers the whole surface: the track row, the attached area folder,
-/// both cards (spec + reportcard), the overlays, and the `tasks` rows that
+/// both cards (planner + reportcard), the overlays, and the `tasks` rows that
 /// `persist_fork_report_and_project_tasks_tx` projects out of the copied report.
 async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
     calm_server::db::write_in_tx_typed(repo, |tx| {
@@ -525,9 +525,10 @@ async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
             let folders = sqlx::query_scalar("SELECT COUNT(*) FROM area_folders")
                 .fetch_one(&mut **tx)
                 .await?;
-            let spec_cards = sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role='spec'")
-                .fetch_one(&mut **tx)
-                .await?;
+            let planner_cards =
+                sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role='planner'")
+                    .fetch_one(&mut **tx)
+                    .await?;
             let report_cards =
                 sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role='reportcard'")
                     .fetch_one(&mut **tx)
@@ -538,7 +539,14 @@ async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
             let tasks = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
                 .fetch_one(&mut **tx)
                 .await?;
-            Ok((tracks, folders, spec_cards, report_cards, overlays, tasks))
+            Ok((
+                tracks,
+                folders,
+                planner_cards,
+                report_cards,
+                overlays,
+                tasks,
+            ))
         })
     })
     .await
@@ -689,7 +697,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
             "kind": "task",
             "rev": source_truth[7].1,
             "payload": {
-                // #1111 — the copy is spec-owned on BOTH privilege fields.
+                // #1111 — the copy is planner-owned on BOTH privilege fields.
                 "key": "rejected", "tombstone": {"reason": "not now"},
                 "declared_by": "spec", "tombstoned_by": "spec"
             }
@@ -1136,7 +1144,7 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     let after = fork_row_counts(boot.repo.as_ref()).await;
     assert_eq!(after.0, before.0, "failed fork left a tracks row");
     assert_eq!(after.1, before.1, "failed fork left a area_folders row");
-    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.2, before.2, "failed fork left a planner card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
@@ -1218,7 +1226,7 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     let after = fork_row_counts(boot.repo.as_ref()).await;
     assert_eq!(after.0, before.0, "failed fork left a tracks row");
     assert_eq!(after.1, before.1, "failed fork left a area_folders row");
-    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.2, before.2, "failed fork left a planner card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
@@ -1399,11 +1407,11 @@ async fn unsafe_markdown_destinations_fail_fork_with_block_and_source() {
 /// `tombstoned_by: "user"` privilege into every track forked from it.
 ///
 /// The fixture report holds a tombstone declared AND tombstoned by the user.
-/// After a fork, the spec author owns the copy: the guard's `user_owned`
+/// After a fork, the planner author owns the copy: the guard's `user_owned`
 /// disjunction (`declared_by == "user" || tombstoned_by == "user"`) plus the
 /// immutability of `tombstoned_by` would otherwise freeze that block forever.
 #[tokio::test]
-async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
+async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editable() {
     let boot = boot().await;
     let (status, target_track) = request_json(
         &boot.app,
@@ -1445,16 +1453,16 @@ async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
         "fixture block must be a tombstone: {tombstone}"
     );
 
-    // Drive the real spec write path (MCP `calm.report.blocks.*` →
+    // Drive the real planner write path (MCP `calm.report.blocks.*` →
     // `CardDecisionSink::commit_report_op` → `guard_task_declarations`).
-    let (ctx, registry, identity) = spec_tool_channel(&boot, &target_track_id).await;
+    let (ctx, registry, identity) = planner_tool_channel(&boot, &target_track_id).await;
     let rewritten = json!({
         "key": "rejected",
-        "tombstone": { "reason": "spec re-scoped this task" },
+        "tombstone": { "reason": "planner re-scoped this task" },
         "declared_by": tombstone["payload"]["declared_by"].clone(),
         "tombstoned_by": tombstone["payload"]["tombstoned_by"].clone()
     });
-    let upsert = call_spec_tool(
+    let upsert = call_planner_tool(
         &ctx,
         &registry,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -1467,9 +1475,9 @@ async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
         }),
     )
     .await
-    .expect("spec author must be able to rewrite a forked tombstone");
+    .expect("planner author must be able to rewrite a forked tombstone");
 
-    let delete = call_spec_tool(
+    let delete = call_planner_tool(
         &ctx,
         &registry,
         TOOL_REPORT_BLOCKS_DELETE,
@@ -1477,7 +1485,7 @@ async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
         json!({ "id": tombstone["id"], "if_rev": upsert["rev"] }),
     )
     .await
-    .expect("spec author must be able to delete a forked tombstone");
+    .expect("planner author must be able to delete a forked tombstone");
     assert!(delete.get("docRev").is_some(), "delete returns docRev");
 
     let (status, after) = request_json(
@@ -1495,15 +1503,15 @@ async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
             .unwrap()
             .iter()
             .any(|block| block["id"] == tombstone["id"]),
-        "the spec-owned tombstone is gone after the spec delete: {after}"
+        "the planner-owned tombstone is gone after the planner delete: {after}"
     );
     assert_eq!(
         tombstone["payload"]["tombstoned_by"], "spec",
-        "fork must re-attribute the copied tombstone to the spec author: {tombstone}"
+        "fork must re-attribute the copied tombstone to the planner author: {tombstone}"
     );
 }
 
-const FORKED_SPEC_SESSION_ID: &str = "forked-spec-session";
+const FORKED_PLANNER_SESSION_ID: &str = "forked-planner-session";
 
 fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
     WorkerSession {
@@ -1535,24 +1543,24 @@ fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSessio
     }
 }
 
-/// An MCP tool channel bound to the forked track's own spec card — the
-/// production identity a spec agent writes its track report through.
-async fn spec_tool_channel(
+/// An MCP tool channel bound to the forked track's own planner card — the
+/// production identity a planner agent writes its track report through.
+async fn planner_tool_channel(
     boot: &Boot,
     track_id: &str,
 ) -> (Arc<AppContext>, Arc<ToolRegistry>, ToolCallIdentity) {
-    let spec_card = boot
+    let planner_card = boot
         .repo
         .cards_by_track(track_id)
         .await
         .unwrap()
         .into_iter()
         .find(|card| card.kind == "codex")
-        .expect("forked track has a spec card");
+        .expect("forked track has a planner card");
     let session = planner_session(
-        FORKED_SPEC_SESSION_ID,
+        FORKED_PLANNER_SESSION_ID,
         TrackId::from(track_id.to_string()),
-        spec_card.id.clone(),
+        planner_card.id.clone(),
     );
     let root_session_id = session.id.clone();
     let root_track_id = TrackId::from(track_id.to_string());
@@ -1568,7 +1576,7 @@ async fn spec_tool_channel(
         })
     })
     .await
-    .expect("seed the forked track's root spec session");
+    .expect("seed the forked track's root planner session");
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let ctx = Arc::new(AppContext {
@@ -1584,18 +1592,18 @@ async fn spec_tool_channel(
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     let identity = ToolCallIdentity {
-        card_id: spec_card.id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: planner_card.id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: FORKED_SPEC_SESSION_ID.to_string(),
+        session_id: FORKED_PLANNER_SESSION_ID.to_string(),
         track_id: Some(track_id.to_string()),
         area_id: boot.area_id.clone(),
-        thread_id: "forked-spec-thread".to_string(),
+        thread_id: "forked-planner-thread".to_string(),
     };
     (ctx, Arc::new(registry), identity)
 }
 
-async fn call_spec_tool(
+async fn call_planner_tool(
     ctx: &Arc<AppContext>,
     registry: &Arc<ToolRegistry>,
     name: &str,
@@ -1610,7 +1618,7 @@ async fn call_spec_tool(
 
 /// The task payload the source track's user declares. `declared_by: "user"` is
 /// the only shape the REST user path may create (Rule 1); fork rewrites it to
-/// `"spec"`, which is exactly the shape `declare_and_wait` is meant to hold.
+/// `"planner"`, which is exactly the shape `declare_and_wait` is meant to hold.
 fn released_fixture_payload(key: &str) -> Value {
     json!({
         "key": key,
@@ -1756,7 +1764,7 @@ async fn forked_task_does_not_inherit_the_source_users_release() {
     let forked = task_block_by_key(&report, "allowed-upstream").clone();
     assert_eq!(
         forked["payload"]["declared_by"], "spec",
-        "fork re-attributes the copy to the spec author: {forked}"
+        "fork re-attributes the copy to the planner author: {forked}"
     );
     assert_ne!(
         forked["payload"]["released_by_user"],
@@ -1884,16 +1892,16 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
     let after = fork_row_counts(boot.repo.as_ref()).await;
     assert_eq!(after.0, before.0, "failed fork left a tracks row");
     assert_eq!(after.1, before.1, "failed fork left a area_folders row");
-    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.2, before.2, "failed fork left a planner card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
 /// INV-1110-002: a forked track's `neige state` / `calm.track.state` bit is
-/// true, and the spec developer instructions (first-turn prompt) tell the
+/// true, and the planner developer instructions (first-turn prompt) tell the
 /// agent to `calm.report.read` when that bit is set. This is not a live
-/// Codex turn; the fixture's spec harness uses a nonexistent binary.
+/// Codex turn; the fixture's planner harness uses a nonexistent binary.
 #[tokio::test]
 async fn inv_1110_002_forked_track_requires_report_startup_read() {
     let boot = boot().await;
@@ -1931,10 +1939,10 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         "forked report content must differ from TrackReportPayload::initial()"
     );
 
-    let (ctx, registry, identity) = spec_tool_channel(&boot, &target_track_id).await;
-    let state = call_spec_tool(&ctx, &registry, TOOL_TRACK_STATE, identity, json!({}))
+    let (ctx, registry, identity) = planner_tool_channel(&boot, &target_track_id).await;
+    let state = call_planner_tool(&ctx, &registry, TOOL_TRACK_STATE, identity, json!({}))
         .await
-        .expect("forked spec can read track state");
+        .expect("forked planner can read track state");
     assert_eq!(
         state
             .get("report_startup_read_required")
@@ -1943,7 +1951,8 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         "forked track state must require a startup report read: {state}"
     );
 
-    let prompt = render_spec_developer_instructions_for_test(target_track_id.as_str(), None, None);
+    let prompt =
+        render_planner_developer_instructions_for_test(target_track_id.as_str(), None, None);
     // #1185 §1.5 A — the read is unconditional now. The bit above still
     // matters, and matters more: its meaning narrowed from "must you read" to
     // "does this document already hold content beyond the default skeleton",
@@ -1952,7 +1961,7 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         prompt.contains(
             "Before you write anything to the report in a session, call `calm.report.read` once"
         ),
-        "spec first-turn prompt must mandate an unconditional first read"
+        "planner first-turn prompt must mandate an unconditional first read"
     );
     assert!(prompt.contains("authoritative pre-set plan"));
     assert!(prompt.contains("Do not mint duplicate tasks"));
@@ -1992,10 +2001,10 @@ async fn initial_track_does_not_require_report_startup_read() {
     assert_eq!(payload, TrackReportPayload::initial());
     assert!(!payload.report_startup_read_required());
 
-    let (ctx, registry, identity) = spec_tool_channel(&boot, &track_id).await;
-    let state = call_spec_tool(&ctx, &registry, TOOL_TRACK_STATE, identity, json!({}))
+    let (ctx, registry, identity) = planner_tool_channel(&boot, &track_id).await;
+    let state = call_planner_tool(&ctx, &registry, TOOL_TRACK_STATE, identity, json!({}))
         .await
-        .expect("fresh spec can read track state");
+        .expect("fresh planner can read track state");
     assert_eq!(
         state
             .get("report_startup_read_required")

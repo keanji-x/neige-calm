@@ -18,7 +18,7 @@ import { ThemeProvider } from '../theme/public.tsx';
  * request body, which `deny_unknown_fields` makes a hard break for older
  * bundles.
  */
-export const WEB_COMPAT_VERSION = 20;
+export const WEB_COMPAT_VERSION = 21;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

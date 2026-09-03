@@ -21,8 +21,8 @@ import { CalmApiError, type TrackFsContent, type TrackFsEntry } from '../api/cal
 import * as api from '../api/calm';
 import type { Track, TrackCardSlot } from '../types';
 import type { TrackReportCardData } from '../cards/builtins/track-report';
-import { useSpecChatHistory } from './useSpecChatHistory';
-import { useSpecCurrentRun } from './useSpecCurrentRun';
+import { usePlannerChatHistory } from './usePlannerChatHistory';
+import { usePlannerCurrentRun } from './usePlannerCurrentRun';
 
 vi.mock('../api/queries', () => ({
   useOverlaysByKindQuery: vi.fn(),
@@ -32,13 +32,13 @@ vi.mock('../api/queries', () => ({
   useTrackReportQuery: vi.fn(),
 }));
 
-vi.mock('./useSpecChatHistory', () => ({
-  useSpecChatHistory: vi.fn(),
+vi.mock('./usePlannerChatHistory', () => ({
+  usePlannerChatHistory: vi.fn(),
 }));
 
-vi.mock('./useSpecCurrentRun', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./useSpecCurrentRun')>();
-  return { ...actual, useSpecCurrentRun: vi.fn() };
+vi.mock('./usePlannerCurrentRun', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./usePlannerCurrentRun')>();
+  return { ...actual, usePlannerCurrentRun: vi.fn() };
 });
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -64,7 +64,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   };
 });
 
-// The spec-conversation panel's status dot reads `useCardOverlay`, which is
+// The planner-conversation panel's status dot reads `useCardOverlay`, which is
 // React-Query-backed (REST-seeded card overlay snapshot) and would need a
 // QueryClientProvider around every render below. The overlay value is
 // irrelevant to this page's assertions (report body, files rail, event
@@ -125,8 +125,8 @@ const mockUseTrackFileContent = vi.mocked(useTrackFileContent);
 const mockUseTrackReportQuery = vi.mocked(useTrackReportQuery);
 const mockUseTrackBacklinksQuery = vi.mocked(useTrackBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
-const mockUseSpecChatHistory = vi.mocked(useSpecChatHistory);
-const mockUseSpecCurrentRun = vi.mocked(useSpecCurrentRun);
+const mockUsePlannerChatHistory = vi.mocked(usePlannerChatHistory);
+const mockUsePlannerCurrentRun = vi.mocked(usePlannerCurrentRun);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
 const REPORT_OUTLINE_COLLAPSED_STORAGE_KEY =
@@ -141,7 +141,7 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
   return {
     id: 'track_1',
     areaId: 'area_1',
-    title: 'Spec track',
+    title: 'Planner track',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
     progress: 0,
@@ -175,11 +175,11 @@ function reportSlot(
   };
 }
 
-function specSlot(id = 'card_spec_1'): TrackCardSlot {
+function plannerSlot(id = 'card_planner_1'): TrackCardSlot {
   return {
     kind: 'card',
     card: {
-      type: 'spec',
+      type: 'planner',
       id,
       goal: 'Answer follow-up questions',
     },
@@ -243,7 +243,7 @@ describe('TrackReportPage', () => {
       data: undefined,
       refetch: vi.fn(async () => ({ data: undefined })),
     } as unknown as ReturnType<typeof useTrackReportQuery>);
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: [],
       initialLoading: false,
       hasEarlier: false,
@@ -252,8 +252,8 @@ describe('TrackReportPage', () => {
       addEcho: vi.fn(),
       addSystemNote: vi.fn(),
     });
-    mockUseSpecCurrentRun.mockReturnValue({
-      cardId: 'card_spec_1',
+    mockUsePlannerCurrentRun.mockReturnValue({
+      cardId: 'card_planner_1',
       rawState: 'Idle',
       fsm: 'Idle',
       phase: 'idle',
@@ -302,7 +302,7 @@ describe('TrackReportPage', () => {
 
     expect(
       screen.getByText(
-        'Report not ready. The spec agent has not produced a report yet.',
+        'Report not ready. The planner agent has not produced a report yet.',
       ),
     ).toBeInTheDocument();
   });
@@ -346,7 +346,7 @@ describe('TrackReportPage', () => {
     );
 
     expect(
-      screen.getByRole('heading', { level: 1, name: 'Spec track' }),
+      screen.getByRole('heading', { level: 1, name: 'Planner track' }),
     ).toBeInTheDocument();
     expect(screen.getByText('answer').tagName).toBe('STRONG');
     const scrollRoot = screen.getByLabelText('Report document');
@@ -363,7 +363,7 @@ describe('TrackReportPage', () => {
       configurable: true,
       value: vi.fn(),
     });
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: [
         { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
         { id: 2, atMs: 2, kind: 'agent', text: 'Agent reply' },
@@ -381,7 +381,7 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
 
@@ -413,7 +413,7 @@ describe('TrackReportPage', () => {
       configurable: true,
       value: vi.fn(),
     });
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: [
         { id: 1, atMs: 1, kind: 'user', text: 'Pinned instruction' },
       ],
@@ -428,7 +428,7 @@ describe('TrackReportPage', () => {
     const { rerender } = render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Pinned instruction' }));
@@ -437,7 +437,7 @@ describe('TrackReportPage', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
 
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: [],
       initialLoading: false,
       hasEarlier: false,
@@ -449,7 +449,7 @@ describe('TrackReportPage', () => {
     rerender(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Open conversation' }));
@@ -458,7 +458,7 @@ describe('TrackReportPage', () => {
   });
 
   it('does not claim the conversation is empty before initial history loads', () => {
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: [],
       initialLoading: true,
       hasEarlier: false,
@@ -471,7 +471,7 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
 
@@ -482,7 +482,7 @@ describe('TrackReportPage', () => {
   });
 
   it('caps activity focus stops and discloses omitted earlier turns', () => {
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: Array.from({ length: 15 }, (_, index) => ({
         id: index + 1,
         atMs: index + 1,
@@ -500,7 +500,7 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
 
@@ -511,7 +511,7 @@ describe('TrackReportPage', () => {
   });
 
   it('does not claim an exact omitted count while earlier pages remain', () => {
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: Array.from({ length: 15 }, (_, index) => ({
         id: index + 1,
         atMs: index + 1,
@@ -529,7 +529,7 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
 
@@ -544,22 +544,22 @@ describe('TrackReportPage', () => {
     const { rerender } = render(
       <TrackReportPage track={makeTrack()} cards={[reportSlot('Report')]} />,
     );
-    expect(screen.getByText('This track has no Spec Agent.')).toBeInTheDocument();
+    expect(screen.getByText('This track has no Planner Agent.')).toBeInTheDocument();
 
     rerender(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
     expect(screen.getByRole('button', { name: 'Open conversation' }))
       .toBeInTheDocument();
-    expect(screen.queryByText('This track has no Spec Agent.'))
+    expect(screen.queryByText('This track has no Planner Agent.'))
       .not.toBeInTheDocument();
   });
 
   it('puts the working indicator on only the newest user turn', () => {
-    mockUseSpecChatHistory.mockReturnValue({
+    mockUsePlannerChatHistory.mockReturnValue({
       entries: [
         { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
         { id: 2, atMs: 2, kind: 'user', text: 'New instruction' },
@@ -571,8 +571,8 @@ describe('TrackReportPage', () => {
       addEcho: vi.fn(),
       addSystemNote: vi.fn(),
     });
-    mockUseSpecCurrentRun.mockReturnValue({
-      ...mockUseSpecCurrentRun(undefined),
+    mockUsePlannerCurrentRun.mockReturnValue({
+      ...mockUsePlannerCurrentRun(undefined),
       working: true,
       fsm: 'Working',
       phase: 'turn_running',
@@ -581,15 +581,15 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report'), specSlot()]}
+        cards={[reportSlot('Report'), plannerSlot()]}
       />,
     );
 
     const panel = screen.getByLabelText('Recent conversation activity');
     const rows = within(panel).getAllByRole('button');
-    expect(within(rows[0]).getByLabelText('Spec Agent is working'))
+    expect(within(rows[0]).getByLabelText('Planner Agent is working'))
       .toHaveClass('busy');
-    expect(within(rows[1]).queryByLabelText('Spec Agent is working'))
+    expect(within(rows[1]).queryByLabelText('Planner Agent is working'))
       .not.toBeInTheDocument();
   });
 
@@ -1004,7 +1004,7 @@ describe('TrackReportPage', () => {
     fireEvent.click(within(task).getByRole('button', { name: 'Remove task' }));
     await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('track_1', 'b_task', 3));
     expect(confirm).toHaveBeenLastCalledWith(
-      'Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
+      'Should future Planner tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
     );
     expect(updateTrack).not.toHaveBeenCalled();
     fireEvent.click(within(task).getByRole('button', { name: 'Restore automatic AI tasks' }));
@@ -1015,7 +1015,7 @@ describe('TrackReportPage', () => {
     await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('track_1', 'b_second', 5));
     expect(confirm).toHaveBeenCalledTimes(2);
     expect(confirm).toHaveBeenLastCalledWith(
-      'Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
+      'Should future Planner tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
     );
     await waitFor(() => expect(updateTrack).toHaveBeenCalledWith('track_1', {
       automation_policy: 'declare-and-wait',
@@ -1562,7 +1562,7 @@ describe('TrackReportPage', () => {
         content: JSON.stringify({
           id: 'card_meta',
           kind: 'codex',
-          role: 'spec',
+          role: 'planner',
           sort: 5,
           deletable: false,
           created_at: new Date('2026-06-10T10:00:00Z').getTime(),
@@ -1590,7 +1590,7 @@ describe('TrackReportPage', () => {
     expect(await screen.findByRole('heading', { name: 'codex' })).toHaveClass(
       'track-fs-viewer-primary',
     );
-    expect(screen.getByText('spec')).toHaveClass('track-fs-viewer-chip');
+    expect(screen.getByText('planner')).toHaveClass('track-fs-viewer-chip');
     expect(screen.getByText('deletable: no')).toBeInTheDocument();
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
@@ -2358,7 +2358,7 @@ describe('TrackReportPage', () => {
     const { container } = render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[specSlot(), reportSlot('Report with chat')]}
+        cards={[plannerSlot(), reportSlot('Report with chat')]}
       />,
     );
 
@@ -2368,14 +2368,14 @@ describe('TrackReportPage', () => {
       'report-page--conversation-open',
     );
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
-    expect(screen.getByLabelText('Ask the Spec Agent')).toBeInTheDocument();
+    expect(screen.getByLabelText('Ask the Planner Agent')).toBeInTheDocument();
   });
 
   it('opens the drawer without unmounting the report document', () => {
     const { container } = render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[specSlot(), reportSlot('Report with chat')]}
+        cards={[plannerSlot(), reportSlot('Report with chat')]}
       />,
     );
 
@@ -2392,17 +2392,17 @@ describe('TrackReportPage', () => {
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
   });
 
-  it('does not offer a meaningless drawer entry without a spec card', () => {
+  it('does not offer a meaningless drawer entry without a planner card', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report without spec')]}
+        cards={[reportSlot('Report without planner')]}
       />,
     );
 
     expect(screen.queryByRole('button', { name: 'Open conversation' }))
       .not.toBeInTheDocument();
-    expect(screen.getByText('This track has no Spec Agent.'))
+    expect(screen.getByText('This track has no Planner Agent.'))
       .toBeInTheDocument();
   });
 
@@ -2415,16 +2415,16 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[reportSlot('Report without spec')]}
+        cards={[reportSlot('Report without planner')]}
       />,
     );
 
     expect(screen.getByLabelText('Conversation drawer')).toHaveClass(
       'report-conversation-drawer--open',
     );
-    expect(screen.getByText('Spec Agent is unavailable for this track.'))
+    expect(screen.getByText('Planner Agent is unavailable for this track.'))
       .toBeInTheDocument();
-    expect(screen.queryByLabelText('Ask the Spec Agent'))
+    expect(screen.queryByLabelText('Ask the Planner Agent'))
       .not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open conversation' }))
       .not.toBeInTheDocument();
@@ -2434,24 +2434,24 @@ describe('TrackReportPage', () => {
     render(
       <TrackReportPage
         track={makeTrack()}
-        cards={[specSlot(), reportSlot('Report with chat')]}
+        cards={[plannerSlot(), reportSlot('Report with chat')]}
       />,
     );
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Open conversation' }),
     );
-    const draft = screen.getByLabelText('Ask the Spec Agent');
+    const draft = screen.getByLabelText('Ask the Planner Agent');
     fireEvent.change(draft, { target: { value: 'Persistent draft' } });
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Close conversation' }),
     );
-    expect(screen.getByLabelText('Ask the Spec Agent')).toBe(draft);
+    expect(screen.getByLabelText('Ask the Planner Agent')).toBe(draft);
     fireEvent.click(
       screen.getByRole('button', { name: 'Open conversation' }),
     );
-    expect(screen.getByLabelText('Ask the Spec Agent')).toHaveValue(
+    expect(screen.getByLabelText('Ask the Planner Agent')).toHaveValue(
       'Persistent draft',
     );
   });
@@ -2459,7 +2459,7 @@ describe('TrackReportPage', () => {
   it('persists the drawer state across remounts', () => {
     const props = {
       track: makeTrack(),
-      cards: [specSlot(), reportSlot('Report with chat')],
+      cards: [plannerSlot(), reportSlot('Report with chat')],
     };
     const first = render(<TrackReportPage {...props} />);
 
@@ -2577,7 +2577,7 @@ describe('TrackReportPage', () => {
       data: {
         backlinks: [{
           src_track_id: 'track_1',
-          src_track_title: 'Spec track',
+          src_track_title: 'Planner track',
           src_block_id: 'b_source',
           dst_block_id: 'b_target',
           label: 'Self citation',

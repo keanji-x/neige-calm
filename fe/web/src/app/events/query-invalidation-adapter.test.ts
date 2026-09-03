@@ -38,7 +38,7 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['overlays', 'track'])).toEqual(queryKeys.overlaysByKind('track'));
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
     expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
-    expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
+    expect(mapPlannedQueryKey(['planner-run', 'card-1'])).toEqual(queryKeys.plannerRun('card-1'));
     expect(mapPlannedQueryKey(['track-report', 'w1'])).toEqual(queryKeys.trackReport('w1'));
     expect(mapPlannedQueryKey(['track-report'])).toEqual(queryKeys.trackReportPrefix());
     expect(mapPlannedQueryKey(['area-conversations'])).toEqual(queryKeys.areaConversationsPrefix());
@@ -202,7 +202,7 @@ describe('query invalidation adapter', () => {
    * the wire, and an earlier version of this test cast a `{ card_id }` stub
    * instead — which planned `['track-conversations', undefined]`, mapped to
    * nothing, and froze the missing conversation arms into the expectation as if
-   * a bare `spec-run` were the correct answer for `harness.phase.changed`.
+   * a bare `planner-run` were the correct answer for `harness.phase.changed`.
    */
   it('turns each real harness plan into its exact live query invalidations', () => {
     const base = { runtime_id: 'r-1', card_id: 'card-1', track_id: 'track-1' } as const;
@@ -214,17 +214,17 @@ describe('query invalidation adapter', () => {
       [
         { ...base, old_phase: 'idle', new_phase: 'turn_running' },
         'harness.phase.changed',
-        [queryKeys.specRun('card-1'), queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1')],
+        [queryKeys.plannerRun('card-1'), queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1')],
       ],
       [
         { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
         'harness.transcript.cleared',
-        [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')],
+        [queryKeys.harnessItems('card-1'), queryKeys.plannerRun('card-1')],
       ],
       [
         { ...base, char_count: 3 }, 'harness.user_message.enqueued',
         [
-          queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1'),
+          queryKeys.harnessItems('card-1'), queryKeys.plannerRun('card-1'),
           queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1'),
         ],
       ],

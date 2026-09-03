@@ -21,7 +21,7 @@ card
 
 - 有初始 prompt 的 card：先创建并持久绑定 thread，再启动 turn。
 - 空 prompt 的交互 card：进入 pending registry，daemon 报告 thread started 后完成绑定。
-- Spec card：使用相同 thread 机制，但带 Spec role 和产品指令。
+- Planner card：使用相同 thread 机制，但带 Planner role 和产品指令。
 - Worker card：由 scheduler/dispatcher 创建，使用 Worker role 和稳定 task identity。
 - Reset：为同一 card 创建新 thread 并原子替换映射；旧 turn 被 interrupt，旧 thread 不再作为 card 权威。
 
@@ -31,7 +31,7 @@ Thread id 是 provider identity，card id 是产品 identity。调用方不能�
 
 共享 daemon 的 MCP 配置位于 daemon home；每个 thread/card 通过受控环境和 session identity获得自己的 Neige capability。
 
-Spec、Worker 和 Plain 的工具权限不同。共享同一进程不意味着共享 actor、token 或 role。Hook/MCP 写入仍必须解析到 card/session 并通过 role gate。
+Planner、Worker 和 Plain 的工具权限不同。共享同一进程不意味着共享 actor、token 或 role。Hook/MCP 写入仍必须解析到 card/session 并通过 role gate。
 
 任何全局 daemon 配置变更都需要评估：
 
@@ -68,6 +68,6 @@ Broadcast 或内存 registry 不能成为唯一事实。Daemon 重启后，数�
 - Kernel 在持久绑定前崩溃不会留下看似可用的 card。
 - Reset 后旧 thread hook 不能修改新 session。
 - Daemon 重启后映射恢复，不重复创建 worker turn。
-- Spec/Worker/Plain 的 MCP capability 不串权。
+- Planner/Worker/Plain 的 MCP capability 不串权。
 - Pending thread started event 重复、乱序或缺失时结果明确。
 - 全局 daemon 重建不会丢失产品状态或把运行中状态伪装成成功。

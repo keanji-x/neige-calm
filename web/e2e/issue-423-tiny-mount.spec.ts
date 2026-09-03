@@ -340,7 +340,7 @@ async function createTrack(
       area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This spec is about tiny-mount card layout, not working
+      // This planner is about tiny-mount card layout, not working
       // directories. See `helpers/reset.ts::createTrackInArea` for why
       // the invented `/tmp/playwright-area-<id>` attached path was
       // never valid.

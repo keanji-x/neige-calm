@@ -91,7 +91,7 @@ async fn patch(
 }
 
 async fn columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, Option<String>) {
-    sqlx::query_as("SELECT spec_task_ceiling, automation_policy FROM tracks WHERE id = ?1")
+    sqlx::query_as("SELECT planner_task_ceiling, automation_policy FROM tracks WHERE id = ?1")
         .bind(track_id)
         .fetch_one(&repo.sqlite_pool().unwrap())
         .await
@@ -157,7 +157,7 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "template_id",
     "template_input",
     "purpose",
-    "spec_task_ceiling",
+    "planner_task_ceiling",
     "automation_policy",
     "parent_track_id",
     "tree_task_budget",
@@ -351,7 +351,7 @@ async fn write_report_task(
         &state.events,
         state.write(),
         ActorId::Kernel,
-        EditAuthor::Spec,
+        EditAuthor::Planner,
         track,
         report,
         current,
@@ -391,7 +391,7 @@ async fn policy_only_patch_is_not_short_circuited_and_clear_nulls_work() {
         state.clone(),
         &track_id,
         None,
-        json!({"spec_task_ceiling": 7}),
+        json!({"planner_task_ceiling": 7}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -401,7 +401,7 @@ async fn policy_only_patch_is_not_short_circuited_and_clear_nulls_work() {
         state,
         &track_id,
         None,
-        json!({"automation_policy": null, "spec_task_ceiling": null}),
+        json!({"automation_policy": null, "planner_task_ceiling": null}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -416,7 +416,7 @@ async fn non_user_policy_patches_are_forbidden_without_rows_or_events() {
 
     for body in [
         json!({"automation_policy": "auto-declare"}),
-        json!({"spec_task_ceiling": 99}),
+        json!({"planner_task_ceiling": 99}),
     ] {
         let response = patch(state.clone(), &track_id, Some("ai:codex"), body).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -430,7 +430,7 @@ async fn invalid_policy_values_are_rejected() {
     let (state, track_id, repo) = boot().await;
     for body in [
         json!({"automation_policy": "unsafe"}),
-        json!({"spec_task_ceiling": -1}),
+        json!({"planner_task_ceiling": -1}),
     ] {
         let response = patch(state.clone(), &track_id, None, body).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -447,13 +447,13 @@ async fn tree_budget(repo: &Arc<dyn Repo>, track_id: &str) -> Option<i64> {
 }
 
 /// #985 slice 6 PR-B — `tree_task_budget` reaches the column through the SAME
-/// production PATCH surface as `spec_task_ceiling`, with the same four
+/// production PATCH surface as `planner_task_ceiling`, with the same four
 /// behaviors (write, present-null reset, non-user 403, negative 400) plus the
 /// root-only rule. Without a write surface the column would be permanently
 /// pinned at the kernel default and every test would have to poke it with raw
 /// SQL — a fixture bypassing the production route.
 #[tokio::test]
-async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
+async fn tree_task_budget_patch_matches_the_planner_task_ceiling_surface() {
     let (state, track_id, repo) = boot().await;
     assert_eq!(tree_budget(&repo, &track_id).await, None);
     let before = event_count(&repo).await;
@@ -785,7 +785,7 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
 /// immutable in-flight occupancy. Every persistent task column is preserved,
 /// and new admission remains frozen until occupancy converges to the ceiling.
 #[tokio::test]
-async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state() {
+async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_state() {
     let (state, track_id, repo) = boot().await;
     let task_id = seed_pending_report_task(&repo, &track_id, "inflight").await;
     let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
@@ -807,7 +807,7 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
         state.clone(),
         &track_id,
         None,
-        json!({"spec_task_ceiling": 0}),
+        json!({"planner_task_ceiling": 0}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -819,7 +819,7 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
     assert_track_columns_unchanged_except(
         &before_track,
         &after_track,
-        &["updated_at", "spec_task_ceiling"],
+        &["updated_at", "planner_task_ceiling"],
     );
     assert_eq!(
         task_row_snapshot(&repo, &task_id).await,

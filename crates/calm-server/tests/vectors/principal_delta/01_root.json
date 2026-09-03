@@ -1,18 +1,18 @@
 [
   {
-    "description": "the track root session (a Spec card of this track) may record a track lifecycle transition — under #1189 the grant comes from the card, not from root-ness",
+    "description": "the track root session (a Planner card of this track) may record a track lifecycle transition — under #1189 the grant comes from the card, not from root-ness",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "track.lifecycle_changed", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "root lifecycle" } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
   },
   {
-    "description": "the track root session (a Spec card of this track) may record a report write — same grant, card-keyed",
+    "description": "the track root session (a Planner card of this track) may record a report write — same grant, card-keyed",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
-    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-root-report", "summary_before": "", "summary_after": "root", "body_before": "", "body_after": "root body", "agent_message": "root report" } },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
+    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "planner", "edit_id": "pd-root-report", "summary_before": "", "summary_after": "root", "body_before": "", "body_after": "root body", "agent_message": "root report" } },
     "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
@@ -20,7 +20,7 @@
   {
     "description": "root planner may request a codex worker",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "pd-root-codex", "goal": "implement", "context": null, "acceptance_criteria": null, "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
@@ -29,25 +29,25 @@
   {
     "description": "root planner may request a terminal worker",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "terminal.worker_requested", "data": { "idempotency_key": "pd-root-terminal", "cmd": "echo ok", "cwd": null, "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
   },
   {
-    "description": "root planner AiSpec to task.completed remains allowed by the role gate (vec-r-47 deferred)",
+    "description": "root planner AiPlanner to task.completed remains allowed by the role gate (vec-r-47 deferred)",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "pd-root-complete", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
   },
   {
-    "description": "root planner AiSpec to task.failed remains allowed by the role gate",
+    "description": "root planner AiPlanner to task.failed remains allowed by the role gate",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "task.failed", "data": { "idempotency_key": "pd-root-fail", "reason": "not accepted", "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
@@ -56,18 +56,18 @@
   {
     "description": "root planner may write a codex hook observation event",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
-    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.stop", "hook_idempotency_key": "pd-root-hook", "payload": {} } },
-    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$PLANNER_CARD", "kind": "hook.codex.stop", "hook_idempotency_key": "pd-root-hook", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$PLANNER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
   },
   {
     "description": "root planner may write a harness user-message observation event",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
-    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "$ROOT_SESSION", "card_id": "$SPEC_CARD", "track_id": "$HOME_TRACK", "char_count": 4 } },
-    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "$ROOT_SESSION", "card_id": "$PLANNER_CARD", "track_id": "$HOME_TRACK", "char_count": 4 } },
+    "scope": { "kind": "Card", "id": { "card": "$PLANNER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
   }

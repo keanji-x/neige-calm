@@ -8,7 +8,7 @@
 //! reaps only the launcher and leaks the grandchild (which keeps the
 //! listen socket bound and continues writing rollouts). The production
 //! code today uses `proc_identity::signal_process_group(pgid, …)`
-//! everywhere (Drop, `reap_spec_push`, takeover pre-respawn cleanup),
+//! everywhere (Drop, `reap_planner_push`, takeover pre-respawn cleanup),
 //! which IS correct.
 //!
 //! ## Why this encoding (and how it differs from the v1 version)
@@ -68,7 +68,7 @@
 //! handle leaks any group member. The bug R1-B2 listed is fixed. The
 //! residual gap a stricter reading might cite — "`Drop` only fires
 //! SIGTERM, no SIGKILL escalation, so a non-cooperative launcher
-//! survives Drop" — is by design (`reap_spec_push` is the load-bearing
+//! survives Drop" — is by design (`reap_planner_push` is the load-bearing
 //! teardown ladder; `Drop` is the synchronous best-effort safety net),
 //! and the issue forbids reshaping production. We document the gap and
 //! ship the two regression-guard tests above instead of inventing a

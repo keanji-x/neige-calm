@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::task::Poll;
 
-use crate::mcp_track_report::{Boot, boot as new_boot, call_tool, spec_identity};
+use crate::mcp_track_report::{Boot, boot as new_boot, call_tool, planner_identity};
 use axum::body::Body;
 use axum::extract::{FromRef, Path, State};
 use axum::http::Request;
@@ -47,7 +47,7 @@ fn task(key: &str) -> Value {
 }
 
 async fn read(boot: &Boot) -> Value {
-    call_tool(boot, TOOL_REPORT_READ, spec_identity(boot), json!({}))
+    call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
         .expect("calm.report.read")
 }
@@ -59,9 +59,14 @@ async fn upsert(boot: &Boot, id_rev: Option<(&str, u64)>, payload: Value) -> (St
             json!({"kind": "task", "payload": payload, "if_doc_rev": read(boot).await["docRev"]})
         }
     };
-    let out = call_tool(boot, TOOL_REPORT_BLOCKS_UPSERT, spec_identity(boot), args)
-        .await
-        .expect("task upsert");
+    let out = call_tool(
+        boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(boot),
+        args,
+    )
+    .await
+    .expect("task upsert");
     (
         out["id"].as_str().unwrap().to_string(),
         out["rev"].as_u64().unwrap(),
@@ -496,11 +501,11 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind":"task", "payload":forbidden, "if_doc_rev":read(&boot).await["docRev"]}),
     )
     .await
-    .expect_err("spec cannot release");
+    .expect_err("planner cannot release");
     assert_eq!(
         err.code,
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
@@ -645,7 +650,7 @@ async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declara
     let target = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind": "prose", "markdown": "old target", "if_doc_rev": read(&boot).await["docRev"]}),
     )
     .await
@@ -749,7 +754,7 @@ async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declara
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"body": body, "if_doc_rev": snapshot["docRev"]}),
     )
     .await
@@ -785,7 +790,7 @@ async fn production_ids_cover_depth_two_referenced_block_absence() {
     let target = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind":"prose","markdown":"leaf","if_doc_rev":read(&boot).await["docRev"]}),
     )
     .await
@@ -795,7 +800,7 @@ async fn production_ids_cover_depth_two_referenced_block_absence() {
     let middle = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind":"prose","markdown":format!("[leaf](neige://wave/{}#{target_id})",boot.track_id),"if_doc_rev":read(&boot).await["docRev"]}),
     )
     .await
@@ -922,7 +927,7 @@ async fn deleting_in_flight_task_block_keeps_withdrawal_diagnostic_readable() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id":id, "if_rev":rev}),
     )
     .await
@@ -956,11 +961,11 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id":id, "if_rev":rev}),
     )
     .await
-    .expect("spec deletion is permitted before user tombstone coverage");
+    .expect("planner deletion is permitted before user tombstone coverage");
 
     let (id, rev) = upsert(&boot, None, task("phoenix")).await;
 
@@ -1085,10 +1090,10 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
     upsert(&boot, Some((&id, rev)), changed).await;
     assert_diagnosed_on_both_reads(&boot, "waiting", "requires user release").await;
 
-    // spec_task_ceiling
+    // planner_task_ceiling
     let boot = new_boot().await;
     let (id, rev) = upsert(&boot, None, task("ceiling")).await;
-    sqlx::query("UPDATE tracks SET spec_task_ceiling=0 WHERE id=?1")
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=0 WHERE id=?1")
         .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -1157,7 +1162,7 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id":duplicate_id,"if_rev":duplicate_rev}),
     )
     .await
@@ -1460,7 +1465,7 @@ async fn deleting_dependency_converges_in_one_evaluation_and_rebuild_matches_rea
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id":k1,"if_rev":k1_rev}),
     )
     .await
@@ -1582,7 +1587,7 @@ async fn malformed_gate_keeps_keyed_declaration_and_readable_payload_diagnostic(
 #[tokio::test]
 async fn ceiling_rebuild_is_stable_and_only_new_candidate_is_rejected() {
     let boot = new_boot().await;
-    sqlx::query("UPDATE tracks SET spec_task_ceiling=2 WHERE id=?1")
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=2 WHERE id=?1")
         .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -1610,7 +1615,7 @@ async fn ceiling_rebuild_is_stable_and_only_new_candidate_is_rejected() {
 #[tokio::test]
 async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
     let boot = new_boot().await;
-    sqlx::query("UPDATE tracks SET spec_task_ceiling=1 WHERE id=?1")
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=1 WHERE id=?1")
         .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -1621,7 +1626,7 @@ async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id":second,"to_index":0,"if_doc_rev":read(&boot).await["docRev"]}),
     )
     .await
@@ -1631,9 +1636,9 @@ async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
 }
 
 #[tokio::test]
-async fn terminal_spec_key_does_not_consume_ceiling_capacity() {
+async fn terminal_planner_key_does_not_consume_ceiling_capacity() {
     let boot = new_boot().await;
-    sqlx::query("UPDATE tracks SET spec_task_ceiling=1 WHERE id=?1")
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=1 WHERE id=?1")
         .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await

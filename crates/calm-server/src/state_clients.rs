@@ -51,7 +51,7 @@ impl DaemonClient {
         self.data_dir.join(format!("{terminal_id}.sock"))
     }
 
-    /// PR3a (#293) — per-card directory for a spec card's `codex
+    /// PR3a (#293) — per-card directory for a planner card's `codex
     /// app-server` listen socket: `<data_dir>/appserver/<card_id>/`.
     ///
     /// **Must be user-owned**, NOT a bare sticky `/tmp` directory: the

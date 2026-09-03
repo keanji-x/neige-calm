@@ -29,7 +29,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const SPEC_SESSION_ID: &str = "review-ratify-spec-session";
+const PLANNER_SESSION_ID: &str = "review-ratify-planner-session";
 
 struct Boot {
     ctx: Arc<AppContext>,
@@ -38,7 +38,7 @@ struct Boot {
     app: axum::Router,
     area_id: AreaId,
     track_id: TrackId,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     // Exposed for tests that seed events via `log_pure_event` (#888 t10/t12/t13).
     events: EventBus,
     card_role_cache: CardRoleCache,
@@ -133,7 +133,7 @@ async fn boot() -> Boot {
         )
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
@@ -143,15 +143,21 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, SPEC_SESSION_ID).await;
+    seed_track_root_session(
+        repo.as_ref(),
+        &track.id,
+        &planner_card.id,
+        PLANNER_SESSION_ID,
+    )
+    .await;
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
-        spec_card.id.as_str(),
-        CardRole::Spec,
+        planner_card.id.as_str(),
+        CardRole::Planner,
     )
     .await;
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
@@ -209,22 +215,22 @@ async fn boot() -> Boot {
         app,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         events,
         card_role_cache,
         track_area_cache,
     }
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: SPEC_SESSION_ID.to_string(),
+        session_id: PLANNER_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".to_string(),
+        thread_id: "planner-thread".to_string(),
     }
 }
 
@@ -237,7 +243,7 @@ async fn call_tool(
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), spec_identity(boot), args).await
+    handler(boot.ctx.clone(), planner_identity(boot), args).await
 }
 
 async fn request_ratification(
@@ -674,7 +680,7 @@ async fn post_ratify(boot: &Boot, decision: &str) -> (StatusCode, Value) {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/cards/{}/ratify", boot.spec_card_id))
+                .uri(format!("/api/cards/{}/ratify", boot.planner_card_id))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -723,7 +729,7 @@ async fn plain_chat_worker_card_cannot_ratify() {
     assert!(
         body["error"]
             .as_str()
-            .is_some_and(|message| message.contains("not a spec codex card")),
+            .is_some_and(|message| message.contains("not a planner codex card")),
         "{body}"
     );
 }
@@ -1121,13 +1127,13 @@ async fn review_round_one_grant_extends_each_subject_exhausted_before_it() {
 
 /// Seed a `review.round` row for the standard impl subject directly via
 /// `log_pure_event`, bypassing the tool's kernel (events carry no idempotency
-/// uniqueness index; role_gate 2.8 admits AiSpec(spec card)). Used for
+/// uniqueness index; role_gate 2.8 admits AiPlanner(planner card)). Used for
 /// histories the tool cannot produce: tied-n rows (t10) and u32-boundary
 /// n/cap values (t12/t13 — the only way there without ~4B tool calls).
 async fn seed_pure_round(boot: &Boot, n: u32, cap: u32, tag: &str) {
     boot.repo
         .log_pure_event(
-            ActorId::AiSpec(boot.spec_card_id.clone()),
+            ActorId::AiPlanner(boot.planner_card_id.clone()),
             EventScope::Track {
                 track: boot.track_id.clone(),
                 area: boot.area_id.clone(),

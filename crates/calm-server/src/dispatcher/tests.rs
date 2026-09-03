@@ -329,14 +329,14 @@ fn dispatcher_filter_matches_push_kinds() {
 }
 
 /// The push branch in `handle_envelope` acts on a User-authored
-/// `track.report_edited` and ignores Spec/Kernel ones. The gating is a
+/// `track.report_edited` and ignores Planner/Kernel ones. The gating is a
 /// simple `author == EditAuthor::User` check; assert that predicate
 /// directly against each variant (the branch itself is exercised
 /// end-to-end by the gated e2e).
 #[test]
 fn track_report_edited_author_gating() {
     assert!(EditAuthor::User == EditAuthor::User);
-    assert!(EditAuthor::Spec != EditAuthor::User);
+    assert!(EditAuthor::Planner != EditAuthor::User);
     assert!(EditAuthor::Kernel != EditAuthor::User);
 }
 
@@ -413,7 +413,7 @@ async fn gated_self_report_predicate() {
     gated_worker_timeout.status = crate::model::TaskStatus::Failed;
     gated_worker_timeout.status_detail = Some("worker-timeout".into());
     // Gated row the gate already failed — a late worker
-    // `task.failed` retry must not re-wake the spec.
+    // `task.failed` retry must not re-wake the planner.
     let mut gated_gate_failed = mk_task("gated-gate-failed", gate_json());
     gated_gate_failed.status = crate::model::TaskStatus::Failed;
     gated_gate_failed.status_detail = Some("gate-red".into());
@@ -571,15 +571,15 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
 }
 
 #[test]
-fn event_warrants_spec_push_covers_push_allowlist() {
+fn event_warrants_planner_push_covers_push_allowlist() {
     let cache = CardRoleCache::new();
     let track = TrackId::from("w");
     let area = AreaId::from("c");
     let worker = CardId::from("worker");
-    let spec = CardId::from("spec");
+    let planner = CardId::from("planner");
     let unknown = CardId::from("unknown");
     cache.insert(worker.clone(), CardRole::Worker, track.clone());
-    cache.insert(spec.clone(), CardRole::Spec, track.clone());
+    cache.insert(planner.clone(), CardRole::Planner, track.clone());
     let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let completed = Event::TaskCompleted {
@@ -588,14 +588,14 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         artifacts: Vec::new(),
         agent_message: None,
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &completed,
         &ActorId::AiCodex(worker.clone()),
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &completed,
-        &ActorId::AiSpec(spec.clone()),
+        &ActorId::AiPlanner(planner.clone()),
         &write
     ));
 
@@ -604,14 +604,14 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         reason: "boom".into(),
         agent_message: None,
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &failed,
         &ActorId::AiCodex(worker.clone()),
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &failed,
-        &ActorId::AiSpec(spec.clone()),
+        &ActorId::AiPlanner(planner.clone()),
         &write
     ));
 
@@ -629,7 +629,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         attempt: 1,
         agent_message: None,
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &gate_result,
         &ActorId::KernelDispatcher,
         &write
@@ -637,7 +637,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
 
     let report = |author| Event::TrackReportEdited {
         track_id: track.clone(),
-        card_id: spec.clone(),
+        card_id: planner.clone(),
         author,
         author_plugin_id: None,
         edit_id: "edit".into(),
@@ -647,34 +647,34 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         body_after: String::new(),
         agent_message: None,
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &report(EditAuthor::User),
         &ActorId::User,
         &write
     ));
     // Issue #955 §5.7 — plugin-authored edits (proposal accept's Batch
     // apply; envelope actor is Kernel, attribution rides on `author`)
-    // wake the spec exactly like user edits.
-    assert!(event_warrants_spec_push(
+    // wake the planner exactly like user edits.
+    assert!(event_warrants_planner_push(
         &report(EditAuthor::Plugin),
         &ActorId::Kernel,
         &write
     ));
     // #1189 §3.4 — an assistant session editing the report is a *different*
-    // session writing the spec's work product, so it wakes the spec for the
+    // session writing the planner's work product, so it wakes the planner for the
     // same reason a user or plugin edit does. Leaving it out would mean the
-    // spec keeps reasoning from a report that changed under it.
-    assert!(event_warrants_spec_push(
+    // planner keeps reasoning from a report that changed under it.
+    assert!(event_warrants_planner_push(
         &report(EditAuthor::Assistant),
         &ActorId::AiCodex(worker.clone()),
         &write
     ));
-    assert!(!event_warrants_spec_push(
-        &report(EditAuthor::Spec),
+    assert!(!event_warrants_planner_push(
+        &report(EditAuthor::Planner),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &report(EditAuthor::Kernel),
         &ActorId::User,
         &write
@@ -688,7 +688,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         lease_id: "lease".into(),
         path: "/tmp/ws".into(),
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &leased,
         &ActorId::KernelDispatcher,
         &write
@@ -698,7 +698,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         card_id: worker.clone(),
         lease_id: "lease".into(),
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &released,
         &ActorId::KernelDispatcher,
         &write
@@ -771,13 +771,13 @@ fn event_warrants_spec_push_covers_push_allowlist() {
             branch: "neige/w/card".into(),
         },
     ] {
-        assert!(event_warrants_spec_push(
+        assert!(event_warrants_planner_push(
             &forge_event,
             &ActorId::KernelDispatcher,
             &write
         ));
     }
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &Event::ForgePrDiffRead {
             track_id: track.clone(),
             pr_number: 1,
@@ -788,7 +788,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         &ActorId::KernelDispatcher,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &Event::WorktreeRemoved {
             track_id: track.clone(),
             card_id: worker.clone(),
@@ -810,47 +810,47 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         hook_idempotency_key: format!("hook-claude-{kind}"),
         payload: serde_json::Value::Null,
     };
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &codex_hook(worker.clone(), "hook.codex.stop"),
         &ActorId::User,
         &write
     ));
-    assert!(event_warrants_spec_push(
+    assert!(event_warrants_planner_push(
         &claude_hook(worker.clone(), "hook.claude.stop"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
-        &codex_hook(spec.clone(), "hook.codex.stop"),
+    assert!(!event_warrants_planner_push(
+        &codex_hook(planner.clone(), "hook.codex.stop"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
-        &claude_hook(spec.clone(), "hook.claude.stop"),
+    assert!(!event_warrants_planner_push(
+        &claude_hook(planner.clone(), "hook.claude.stop"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &codex_hook(unknown.clone(), "hook.codex.stop"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &claude_hook(unknown, "hook.claude.stop"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &codex_hook(worker.clone(), "hook.codex.permission_request"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &codex_hook(worker, "hook.codex.post_tool_use"),
         &ActorId::User,
         &write
     ));
-    assert!(!event_warrants_spec_push(
+    assert!(!event_warrants_planner_push(
         &Event::TrackDeleted {
             id: track,
             area_id: area,
@@ -861,19 +861,19 @@ fn event_warrants_spec_push_covers_push_allowlist() {
 }
 
 /// #679 PR0-E — actor-matrix pin for task terminal events plus the
-/// request-kind exclusion. `event_warrants_spec_push_covers_push_allowlist`
-/// above pins the AiCodex/AiSpec rows; this pins the remaining actor
-/// variants (only `AiSpec` is excluded — everything else pushes) and
-/// that the two `*.worker_requested` kinds never push back to the spec
+/// request-kind exclusion. `event_warrants_planner_push_covers_push_allowlist`
+/// above pins the AiCodex/AiPlanner rows; this pins the remaining actor
+/// variants (only `AiPlanner` is excluded — everything else pushes) and
+/// that the two `*.worker_requested` kinds never push back to the planner
 /// regardless of actor.
 #[test]
-fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
+fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
     let cache = CardRoleCache::new();
     let track = TrackId::from("w");
     let worker = CardId::from("worker");
-    let spec = CardId::from("spec");
+    let planner = CardId::from("planner");
     cache.insert(worker.clone(), CardRole::Worker, track.clone());
-    cache.insert(spec.clone(), CardRole::Spec, track.clone());
+    cache.insert(planner.clone(), CardRole::Planner, track.clone());
     let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let completed = Event::TaskCompleted {
@@ -887,9 +887,9 @@ fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
         reason: "boom".into(),
         agent_message: None,
     };
-    // Every non-AiSpec actor warrants a push for task terminal events —
+    // Every non-AiPlanner actor warrants a push for task terminal events —
     // including the kernel dispatcher itself (its spawn-failure
-    // `task.failed` fallback must wake the spec).
+    // `task.failed` fallback must wake the planner).
     for actor in [
         ActorId::User,
         ActorId::Kernel,
@@ -900,30 +900,30 @@ fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
         ActorId::AiClaudeSession(WorkerSessionId::from("sess-claude")),
     ] {
         assert!(
-            event_warrants_spec_push(&completed, &actor, &write),
+            event_warrants_planner_push(&completed, &actor, &write),
             "task.completed must push for actor {actor}"
         );
         assert!(
-            event_warrants_spec_push(&failed, &actor, &write),
+            event_warrants_planner_push(&failed, &actor, &write),
             "task.failed must push for actor {actor}"
         );
     }
     for actor in [
-        ActorId::AiSpec(spec.clone()),
-        ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+        ActorId::AiPlanner(planner.clone()),
+        ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
     ] {
         assert!(
-            !event_warrants_spec_push(&completed, &actor, &write),
+            !event_warrants_planner_push(&completed, &actor, &write),
             "task.completed must not self-push for actor {actor}"
         );
         assert!(
-            !event_warrants_spec_push(&failed, &actor, &write),
+            !event_warrants_planner_push(&failed, &actor, &write),
             "task.failed must not self-push for actor {actor}"
         );
     }
 
-    // The two request kinds are dispatcher *inputs*, never spec pushes
-    // — for any actor, including the spec that authored them.
+    // The two request kinds are dispatcher *inputs*, never planner pushes
+    // — for any actor, including the planner that authored them.
     let codex_req = Event::CodexWorkerRequested {
         idempotency_key: "k".into(),
         goal: "g".into(),
@@ -940,15 +940,15 @@ fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
     for actor in [
         ActorId::User,
         ActorId::KernelDispatcher,
-        ActorId::AiSpec(spec.clone()),
+        ActorId::AiPlanner(planner.clone()),
         ActorId::AiCodex(worker.clone()),
     ] {
         assert!(
-            !event_warrants_spec_push(&codex_req, &actor, &write),
+            !event_warrants_planner_push(&codex_req, &actor, &write),
             "codex.worker_requested must never push for actor {actor}"
         );
         assert!(
-            !event_warrants_spec_push(&terminal_req, &actor, &write),
+            !event_warrants_planner_push(&terminal_req, &actor, &write),
             "terminal.worker_requested must never push for actor {actor}"
         );
     }
@@ -1319,7 +1319,7 @@ fn harness_observation_from_event_mapping_pin() {
 /// kinds carry false-side rows where the observation stays `Some`
 /// (the mapping is per-kind; the predicate additionally gates on
 /// actor/author/role).
-struct SpecPushWiringRow {
+struct PlannerPushWiringRow {
     event: Event,
     actor: ActorId,
     expect_push: bool,
@@ -1331,7 +1331,7 @@ struct SpecPushWiringRow {
 /// complete accepted-tag set when asked to parse an unknown `ev`, so
 /// this census cannot drift from the enum — adding a variant grows
 /// the set automatically, and the completeness assertion in
-/// `spec_push_predicate_and_observation_mapping_agree` then fails
+/// `planner_push_predicate_and_observation_mapping_agree` then fails
 /// until the table gains a row. The canary assert fails loudly (with
 /// the raw diagnostic) if serde's message shape ever changes, rather
 /// than letting the census silently shrink.
@@ -1371,7 +1371,7 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
 
 /// #828 slice 1 — predicate⇒mapping consistency table over EVERY
 /// event kind. Each row checks the push predicate
-/// (`event_warrants_spec_push`) and the harness-observation mapping
+/// (`event_warrants_planner_push`) and the harness-observation mapping
 /// (`harness_observation_from_event`) jointly, and the
 /// `all_event_kind_tags` census asserts the table covers every kind:
 /// a new `Event` variant breaks compilation at the two exhaustive
@@ -1382,28 +1382,28 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
 /// The invariant is one-directional (predicate ⇒ mapping), enforced
 /// structurally on the expectations themselves: a row that expects
 /// push without an observation is rejected before the seams are even
-/// consulted. Conditional kinds carry false-side rows (spec-actor
-/// task terminals, spec-authored report edit, stop hooks on
-/// spec/unknown-role cards, non-stop hooks for both providers) whose
+/// consulted. Conditional kinds carry false-side rows (planner-actor
+/// task terminals, planner-authored report edit, stop hooks on
+/// planner/unknown-role cards, non-stop hooks for both providers) whose
 /// observation column shows the mapping staying `Some` where it is
 /// kind-scoped. The exhaustive actor/author/role matrices remain
-/// pinned in `event_warrants_spec_push_covers_push_allowlist` and
-/// `event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin`;
+/// pinned in `event_warrants_planner_push_covers_push_allowlist` and
+/// `event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin`;
 /// this table owns per-kind coverage and cross-seam agreement.
 #[test]
-fn spec_push_predicate_and_observation_mapping_agree() {
+fn planner_push_predicate_and_observation_mapping_agree() {
     let cache = CardRoleCache::new();
     let track = TrackId::from("w");
     let area = AreaId::from("c");
     let worker = CardId::from("worker");
-    let spec = CardId::from("spec");
+    let planner = CardId::from("planner");
     let unknown = CardId::from("unknown");
     cache.insert(worker.clone(), CardRole::Worker, track.clone());
-    cache.insert(spec.clone(), CardRole::Spec, track.clone());
+    cache.insert(planner.clone(), CardRole::Planner, track.clone());
     let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let row = |event: Event, actor: ActorId, expect_push: bool, expect_observation: bool| {
-        SpecPushWiringRow {
+        PlannerPushWiringRow {
             event,
             actor,
             expect_push,
@@ -1424,7 +1424,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
     };
     let report_edited = |author: EditAuthor| Event::TrackReportEdited {
         track_id: track.clone(),
-        card_id: spec.clone(),
+        card_id: planner.clone(),
         author,
         author_plugin_id: None,
         edit_id: "e".into(),
@@ -1458,7 +1458,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         updated_at: 1,
     };
 
-    let rows: Vec<SpecPushWiringRow> = vec![
+    let rows: Vec<PlannerPushWiringRow> = vec![
         // -- Push-capable kinds, push-side rows: predicate true ⇒
         //    mapping Some. ------------------------------------------
         row(
@@ -1644,11 +1644,21 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         // -- Conditional kinds, false side: predicate false while the
         //    kind-scoped mapping stays Some — the exact asymmetry a
         //    single shared bool could not express. -------------------
-        row(task_completed(), ActorId::AiSpec(spec.clone()), false, true),
-        row(task_failed(), ActorId::AiSpec(spec.clone()), false, true),
         row(
-            report_edited(EditAuthor::Spec),
-            ActorId::AiSpec(spec.clone()),
+            task_completed(),
+            ActorId::AiPlanner(planner.clone()),
+            false,
+            true,
+        ),
+        row(
+            task_failed(),
+            ActorId::AiPlanner(planner.clone()),
+            false,
+            true,
+        ),
+        row(
+            report_edited(EditAuthor::Planner),
+            ActorId::AiPlanner(planner.clone()),
             false,
             true,
         ),
@@ -1659,13 +1669,13 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             true,
         ),
         row(
-            codex_hook(&spec, "hook.codex.stop"),
+            codex_hook(&planner, "hook.codex.stop"),
             ActorId::User,
             false,
             true,
         ),
         row(
-            claude_hook(&spec, "hook.claude.stop"),
+            claude_hook(&planner, "hook.claude.stop"),
             ActorId::User,
             false,
             true,
@@ -1752,7 +1762,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
             false,
         ),
-        // #955 — proposal lifecycle records never push; the spec wakes
+        // #955 — proposal lifecycle records never push; the planner wakes
         // on the plugin-authored `track.report_edited` the accept tx
         // emits alongside instead.
         row(
@@ -1848,7 +1858,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::HarnessItemAdded {
                 runtime_id: "rt".into(),
-                card_id: spec.clone(),
+                card_id: planner.clone(),
                 track_id: track.clone(),
                 item_db_id: 1,
                 item_uuid: None,
@@ -1863,7 +1873,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::HarnessPhaseChanged {
                 runtime_id: "rt".into(),
-                card_id: spec.clone(),
+                card_id: planner.clone(),
                 track_id: track.clone(),
                 old_phase: calm_types::harness::HarnessPhaseTag::Idle,
                 new_phase: calm_types::harness::HarnessPhaseTag::TurnRunning,
@@ -1875,7 +1885,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::HarnessTranscriptCleared {
                 runtime_id: "rt".into(),
-                card_id: spec.clone(),
+                card_id: planner.clone(),
                 track_id: track.clone(),
                 cleared_item_count: Some(7),
                 cleared_params_bytes: Some(2_048),
@@ -1888,7 +1898,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::HarnessUserMessageEnqueued {
                 runtime_id: "rt".into(),
-                card_id: spec.clone(),
+                card_id: planner.clone(),
                 track_id: track.clone(),
                 char_count: 5,
             },
@@ -1957,7 +1967,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
                 acceptance_criteria: None,
                 agent_message: None,
             },
-            ActorId::AiSpec(spec.clone()),
+            ActorId::AiPlanner(planner.clone()),
             false,
             false,
         ),
@@ -1968,7 +1978,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
                 cwd: None,
                 agent_message: None,
             },
-            ActorId::AiSpec(spec.clone()),
+            ActorId::AiPlanner(planner.clone()),
             false,
             false,
         ),
@@ -1978,7 +1988,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
                 changed_keys: vec!["k".into()],
                 agent_message: None,
             },
-            ActorId::AiSpec(spec.clone()),
+            ActorId::AiPlanner(planner.clone()),
             false,
             false,
         ),
@@ -2065,7 +2075,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             "row for {kind} violates predicate⇒mapping: expect_push without expect_observation"
         );
         assert_eq!(
-            event_warrants_spec_push(&row.event, &row.actor, &write),
+            event_warrants_planner_push(&row.event, &row.actor, &write),
             row.expect_push,
             "push predicate mismatch for {kind} (actor {})",
             row.actor
@@ -2098,7 +2108,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
 
 /// #313 round-2 (B3) — the per-track push lock map must serialize
 /// concurrent acquisitions for the SAME track (so boot takeover's
-/// `Dispatcher::push_lock` and the live `push_to_spec`'s lock cannot run
+/// `Dispatcher::push_lock` and the live `push_to_planner`'s lock cannot run
 /// the dedup-check-and-deliver body concurrently — which would lose
 /// events in the seed→insert window). DIFFERENT tracks must remain
 /// independent so a slow takeover for track A doesn't block live
@@ -2134,7 +2144,7 @@ async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_track
             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             max_in_flight.fetch_max(now, Ordering::SeqCst);
             // Simulate the dedup-check-and-deliver body holding the
-            // lock for a few yields (representative of `push_to_spec`'s
+            // lock for a few yields (representative of `push_to_planner`'s
             // async work).
             tokio::task::yield_now().await;
             tokio::time::sleep(std::time::Duration::from_millis(2 * (i as u64 + 1))).await;

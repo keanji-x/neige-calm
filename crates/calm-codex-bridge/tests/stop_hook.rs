@@ -4,7 +4,7 @@
 //! #293 push cutover, the `Stop` event was special-cased: it long-polled
 //! `GET /internal/codex/pending_events` and emitted
 //! `{"decision":"block","reason":...}` when events came back (the pull
-//! model). Pull is gone — spec agents are now driven by observations pushed
+//! model). Pull is gone — planner agents are now driven by observations pushed
 //! onto their codex thread by the kernel — so `Stop` no longer special-cases
 //! anything. It takes the same fire-and-forget path every other hook does:
 //!

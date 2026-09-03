@@ -166,7 +166,7 @@ impl EventBus {
     /// The production emit paths (`write_with_event` / `log_pure_event`)
     /// assign a fresh strictly-increasing `events.id` each call, so they
     /// can't reproduce "the SAME id delivered twice". The #293 PR3b
-    /// dispatcher dedups its spec-push on `envelope.id`; its gated e2e uses
+    /// dispatcher dedups its planner-push on `envelope.id`; its gated e2e uses
     /// this helper to redeliver a previously-persisted envelope verbatim and
     /// assert the second delivery does NOT double-push.
     ///
@@ -247,7 +247,7 @@ pub struct SubscribeFilter {
     /// `Card{area=c,...}`). When false, only exact equality matches —
     /// e.g. `Area(c)` matches the area-level event but not any track
     /// under it. The dispatcher uses `true` so a `*.worker_requested`
-    /// emitted from any spec card scope (Card) routes upward.
+    /// emitted from any planner card scope (Card) routes upward.
     pub include_descendants: bool,
     /// `None` accepts any kind; `Some([...])` accepts only those exact
     /// `kind_tag` strings. No glob support in PR5 — see

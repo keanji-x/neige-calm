@@ -27,7 +27,7 @@ const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
 const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
 /// #615 F3 fold-in: upper bound on the size of a folded `UserMessage` tail
-/// entry. Each individual `/spec/input` body is capped at 32_768 chars at the
+/// entry. Each individual `/planner/input` body is capped at 32_768 chars at the
 /// route layer, but the fold path concatenates adjacent UserMessage
 /// observations into one entry. Under sustained backpressure a stream of
 /// max-size posts could otherwise grow the tail without bound and inflate every
@@ -38,11 +38,11 @@ const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
 const MAX_FOLDED_USER_MESSAGE_CHARS: usize = 4 * 32_768;
 
 #[derive(Clone)]
-pub struct SpecHarness {
+pub struct PlannerHarness {
     inner: Arc<Inner>,
 }
 
-pub struct SpecHarnessParams {
+pub struct PlannerHarnessParams {
     pub runtime_id: RuntimeId,
     pub track_id: TrackId,
     pub card_id: CardId,
@@ -91,7 +91,7 @@ pub(super) struct Inner {
     /// Issue #682 review — issuance kill-switch for dev-forced harnesses.
     /// Checked at the top of [`maybe_issue_turn`]; observations still
     /// enqueue normally, the harness just never calls `turn_start`. Only
-    /// the fixtures-gated [`SpecHarness::pause_issuance_for_dev`] sets it,
+    /// the fixtures-gated [`PlannerHarness::pause_issuance_for_dev`] sets it,
     /// so production harnesses never pause.
     issuance_paused: AtomicBool,
     abort_handle: StdMutex<Option<AbortHandle>>,
@@ -127,8 +127,8 @@ struct DebounceState {
     hard_fire: bool,
 }
 
-impl SpecHarness {
-    pub fn run(params: SpecHarnessParams) -> Self {
+impl PlannerHarness {
+    pub fn run(params: PlannerHarnessParams) -> Self {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
@@ -143,7 +143,7 @@ impl SpecHarness {
             .inner
             .abort_handle
             .lock()
-            .expect("spec harness abort handle mutex poisoned") = Some(abort);
+            .expect("planner harness abort handle mutex poisoned") = Some(abort);
         tokio::spawn(async move {
             let _ = task.await;
         });
@@ -152,7 +152,7 @@ impl SpecHarness {
 
     #[cfg(feature = "fixtures")]
     pub fn run_unstarted_for_test(
-        params: SpecHarnessParams,
+        params: PlannerHarnessParams,
         observation_buffer: usize,
     ) -> (Self, mpsc::Receiver<HarnessObservationDelivery>) {
         params.snapshot.assert_known_schema();
@@ -198,7 +198,7 @@ impl SpecHarness {
                 tracing::warn!(
                     thread_id,
                     error = %e,
-                    "spec harness shutdown thread interrupt failed"
+                    "planner harness shutdown thread interrupt failed"
                 );
             }
             if active_turn_id.is_none()
@@ -213,7 +213,7 @@ impl SpecHarness {
                     thread_id,
                     turn_id = %last_turn_id,
                     error = %e,
-                    "spec harness shutdown last-known turn interrupt failed"
+                    "planner harness shutdown last-known turn interrupt failed"
                 );
             }
         }
@@ -221,7 +221,7 @@ impl SpecHarness {
             .inner
             .abort_handle
             .lock()
-            .expect("spec harness abort handle mutex poisoned")
+            .expect("planner harness abort handle mutex poisoned")
             .take();
         if let Some(abort) = abort {
             abort.abort();
@@ -266,12 +266,12 @@ impl SpecHarness {
     }
 
     /// Issue #682 — dev-only seam for the replay binary's
-    /// `POST /dev/force-spec-phase`. Forces the harness FSM into the state
+    /// `POST /dev/force-planner-phase`. Forces the harness FSM into the state
     /// matching `tag` (synthesized with `"dev-forced"` sentinel ids) and
     /// runs the regular [`persist_snapshot`] path — the single write point
     /// that updates the persisted snapshot (`session_set_handle_state_tx`),
     /// the worker-session status, and emits `HarnessPhaseChanged` when the
-    /// phase actually changed. All three read surfaces (`GET /spec/run`,
+    /// phase actually changed. All three read surfaces (`GET /planner/run`,
     /// the WS event stream, the DB snapshot) stay consistent by
     /// construction. Forcing the same phase twice emits no duplicate event
     /// (persist only emits on `last_phase != new_phase`).
@@ -283,10 +283,10 @@ impl SpecHarness {
     /// - `wedged` is rejected (`BadRequest`): persisting it writes
     ///   `WorkerSessionState::Failed` via `run_status_for`, and
     ///   `session_projection_active_for_card` filters failed rows, so `GET
-    ///   /spec/run` would instantly report dormant and the next force would
+    ///   /planner/run` would instantly report dormant and the next force would
     ///   mint a second runtime. The dev endpoint
-    ///   (`replay::force_spec_phase`) 400s before ever reaching here;
-    /// - any armed `interrupt_deadline` (a prior `/spec/interrupt`) and
+    ///   (`replay::force_planner_phase`) 400s before ever reaching here;
+    /// - any armed `interrupt_deadline` (a prior `/planner/interrupt`) and
     ///   `issued_turn_id` are cleared before persisting, so the interrupt
     ///   watchdog can't asynchronously flip a freshly forced phase to
     ///   `Wedged` mid-test.
@@ -324,13 +324,13 @@ impl SpecHarness {
             HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
             // See doc-comment: a forced Wedged would persist as
             // `WorkerSessionState::Failed`, which the active-runtime read path
-            // filters out. `replay::force_spec_phase` rejects the tag with
+            // filters out. `replay::force_planner_phase` rejects the tag with
             // the client-facing message; this arm is defense in depth for
             // any future direct caller.
             HarnessPhaseTag::Wedged => {
                 return Err(CalmError::BadRequest(
                     "force_phase_for_dev does not support `wedged` (a failed runtime row \
-                     is no longer projectable by GET /spec/run)"
+                     is no longer projectable by GET /planner/run)"
                         .into(),
                 ));
             }
@@ -353,7 +353,7 @@ impl SpecHarness {
             }
         }
         // Issue #682 review — disarm async followers of the *previous*
-        // state before persisting the forced one: a `/spec/interrupt`
+        // state before persisting the forced one: a `/planner/interrupt`
         // issued earlier arms `interrupt_deadline` (30s), after which
         // `watchdog_tick` would flip the harness to `Wedged` mid-test and
         // emit an unexpected phase event. `issued_turn_id` likewise belongs
@@ -365,12 +365,12 @@ impl SpecHarness {
     }
 
     /// Issue #682 review — permanently stop this harness from issuing
-    /// turns. `replay::force_spec_phase` calls this on every harness it
+    /// turns. `replay::force_planner_phase` calls this on every harness it
     /// hands out: in replay mode the shared codex app-server is a
     /// non-running stub, so `turn_start` always fails and the run loop
     /// would otherwise churn (`issuing_turn` → fail → re-buffer with
     /// `hard_fire` → retry) on every 50ms tick once an issuable phase
-    /// holds a pending observation. Observations (`/spec/input`) still
+    /// holds a pending observation. Observations (`/planner/input`) still
     /// enqueue normally — the harness just never issues.
     #[cfg(feature = "fixtures")]
     pub fn pause_issuance_for_dev(&self) {
@@ -400,19 +400,19 @@ fn map_observation_send_error(
     match e {
         // Backpressure: server is temporarily saturated, client should retry.
         mpsc::error::TrySendError::Full(_) => CalmError::ServiceUnavailable(
-            "spec harness observation queue full, retry shortly".into(),
+            "planner harness observation queue full, retry shortly".into(),
         ),
         // Lifecycle race: the runtime is going away mid-request. State has
         // changed since the caller's runtime lookup; client should re-poll
         // or accept the runtime as gone.
         mpsc::error::TrySendError::Closed(_) => {
-            CalmError::Conflict("spec harness runtime shutting down".into())
+            CalmError::Conflict("planner harness runtime shutting down".into())
         }
     }
 }
 
 fn inner_from_params(
-    params: SpecHarnessParams,
+    params: PlannerHarnessParams,
     observations: mpsc::Sender<HarnessObservationDelivery>,
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
@@ -449,7 +449,7 @@ fn inner_from_params(
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
         // Round-trips through the snapshot so the reading survives a reboot
-        // and the lazy-recovery respawn in `ensure_live_spec_harness`. Without
+        // and the lazy-recovery respawn in `ensure_live_planner_harness`. Without
         // this line the value would be written to disk and then silently
         // dropped on the way back in — codex only re-pushes it on the next
         // model response, so a resumed-but-idle thread would read as having no
@@ -476,7 +476,7 @@ fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
                 card_id = %card,
                 track_id = %track,
                 event_name,
-                "spec harness event missing track area cache entry; using system scope"
+                "planner harness event missing track area cache entry; using system scope"
             );
             EventScope::System
         }
@@ -539,28 +539,28 @@ async fn run_loop(
                 let Some(delivery) = delivery else { break };
                 on_observation(&inner, delivery.observation, delivery.envelope_id).await;
                 if let Err(e) = persist_snapshot(&inner).await {
-                    tracing::warn!(error = %e, "spec harness snapshot persist failed after observation");
+                    tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                 }
             }
             notif = notifications.recv() => {
                 match notif {
                     Ok(notif) => {
                         if let Err(e) = on_notification(&inner, notif).await {
-                            tracing::warn!(error = %e, "spec harness notification handling failed");
+                            tracing::warn!(error = %e, "planner harness notification handling failed");
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "spec harness notification receiver lagged");
+                        tracing::warn!(skipped, "planner harness notification receiver lagged");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             _ = tick.tick() => {
                 if let Err(e) = watchdog_tick(&inner).await {
-                    tracing::warn!(error = %e, "spec harness watchdog tick failed");
+                    tracing::warn!(error = %e, "planner harness watchdog tick failed");
                 }
                 if let Err(e) = maybe_issue_turn(&inner).await {
-                    tracing::warn!(error = %e, "spec harness turn issuance failed");
+                    tracing::warn!(error = %e, "planner harness turn issuance failed");
                 }
             }
             _ = shutdown.recv() => {
@@ -603,7 +603,7 @@ fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
     snapshot.pending_queue.drain(..drop_count);
     snapshot.pending_envelope_ids.drain(..drop_count);
     tracing::warn!(
-        target: "spec.harness.backpressure",
+        target: "planner.harness.backpressure",
         original_len = len,
         retained_len = snapshot.pending_queue.len(),
         "snapshot pending_queue truncated to newest observations"
@@ -627,7 +627,7 @@ async fn enqueue_pending_observation(
             envelope_ids.remove(drop_idx);
         } else {
             tracing::warn!(
-                target: "spec.harness.backpressure",
+                target: "planner.harness.backpressure",
                 queue_len = queue.len(),
                 hard,
                 variant = ?obs,
@@ -672,7 +672,7 @@ fn try_fold_pending_tail(
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
             // The fold keeps the NEWEST edit's state, attribution included:
-            // the spec is told to treat the surviving body as ground truth,
+            // the planner is told to treat the surviving body as ground truth,
             // so it must be told who actually wrote that body (#1252 F2).
             *author = *new_author;
             true
@@ -719,7 +719,7 @@ async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, obs: &Observation) -> 
     let mut set = inner.recent_hook_key_set.lock().await;
     if set.contains(idempotency_key) {
         tracing::warn!(
-            target: "spec.harness.dedupe",
+            target: "planner.harness.dedupe",
             key = %idempotency_key,
             "duplicate WorkerHookStop suppressed"
         );
@@ -747,7 +747,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
     {
         tracing::warn!(
             method,
-            "spec harness ignoring approval-shaped notification under approval_policy=never"
+            "planner harness ignoring approval-shaped notification under approval_policy=never"
         );
         return Ok(());
     }
@@ -782,7 +782,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         }
         Notification::TurnStarted { turn, .. } => {
             let Some(turn_id) = turn.get("id").and_then(Value::as_str).map(str::to_string) else {
-                tracing::debug!(?turn, "spec harness ignoring TurnStarted without id");
+                tracing::debug!(?turn, "planner harness ignoring TurnStarted without id");
                 return persist_snapshot(inner).await;
             };
             let state_snap = inner.state.lock().await.clone();
@@ -806,7 +806,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_seen = ?last_seen,
                     issued = ?issued,
                     state = ?state_snap,
-                    "spec harness ignoring TurnStarted that does not match expected turn"
+                    "planner harness ignoring TurnStarted that does not match expected turn"
                 );
                 return persist_snapshot(inner).await;
             }
@@ -848,7 +848,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                         observed_turn_id = %turn_id,
                         target_turn_id = %target_turn_id,
                         status = ?turn.get("status"),
-                        "spec harness ignoring non-target completion while interrupt is pending"
+                        "planner harness ignoring non-target completion while interrupt is pending"
                     );
                     return persist_snapshot(inner).await;
                 }
@@ -868,7 +868,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     observed = %turn_id,
                     active = ?active,
                     state = ?state,
-                    "spec harness ignoring stale TurnCompleted"
+                    "planner harness ignoring stale TurnCompleted"
                 );
                 return persist_snapshot(inner).await;
             }
@@ -881,7 +881,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         }
         Notification::Other { method, params } if method == "turn/aborted" => {
             let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
-                tracing::debug!("spec harness ignoring turn/aborted without a turn id");
+                tracing::debug!("planner harness ignoring turn/aborted without a turn id");
                 return persist_snapshot(inner).await;
             };
             let interrupt_target = {
@@ -897,7 +897,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             let Some(target_turn_id) = interrupt_target else {
                 tracing::debug!(
                     turn_id = %aborted_turn_id,
-                    "spec harness ignoring turn/aborted outside interrupt issuance"
+                    "planner harness ignoring turn/aborted outside interrupt issuance"
                 );
                 return persist_snapshot(inner).await;
             };
@@ -905,7 +905,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 tracing::debug!(
                     observed_turn_id = %aborted_turn_id,
                     target_turn_id = %target_turn_id,
-                    "spec harness ignoring non-target aborted turn while interrupt is pending"
+                    "planner harness ignoring non-target aborted turn while interrupt is pending"
                 );
                 return persist_snapshot(inner).await;
             }
@@ -920,7 +920,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             let Some(item) = params.get("item") else {
                 tracing::debug!(
                     method,
-                    "spec harness ignoring item notification without item"
+                    "planner harness ignoring item notification without item"
                 );
                 return persist_snapshot(inner).await;
             };
@@ -929,7 +929,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     runtime_id = %inner.runtime_id,
                     card_id = %inner.card_id,
                     method,
-                    "spec harness item notification arrived before thread id was known"
+                    "planner harness item notification arrived before thread id was known"
                 );
                 return persist_snapshot(inner).await;
             };
@@ -1011,7 +1011,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     runtime_id = %inner.runtime_id,
                     card_id = %inner.card_id,
                     method,
-                    "spec harness dropping turn/plan/updated: the frame carries no threadId \
+                    "planner harness dropping turn/plan/updated: the frame carries no threadId \
                      and no thread is known yet"
                 );
                 return persist_snapshot(inner).await;
@@ -1093,14 +1093,14 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         // that reason does not transfer to a value whose whole content is
         // "the current number".
         //
-        // CROSS-THREAD GATE. `SpecHarness::run` subscribes to the daemon's
+        // CROSS-THREAD GATE. `PlannerHarness::run` subscribes to the daemon's
         // *global* notification broadcast, so every harness on this box sees
         // every `thread/tokenUsage/updated` frame from every thread. The only
         // thing keeping card A's meter from showing card B's context is
         // `on_notification`'s prologue — `notif.thread_id() != current_thread`
         // — and its failure mode is a plausible-looking wrong number, never an
         // error. `token_usage_from_a_foreign_thread_is_ignored` in
-        // `tests/cases/spec_harness_token_usage.rs` is the test that holds it.
+        // `tests/cases/planner_harness_token_usage.rs` is the test that holds it.
         //
         // One lenient edge, recorded because it is real and NOT worth building
         // machinery for: `other_thread_id` returns `None` for a frame with no
@@ -1121,7 +1121,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     let mut slot = inner.token_usage.lock().await;
                     let merged = incoming.sticky_merge(slot.as_ref());
                     // Logged at ingest rather than inside `TokenUsage::percent`
-                    // on purpose. `percent` is called once per `GET /spec/run`,
+                    // on purpose. `percent` is called once per `GET /planner/run`,
                     // i.e. once per client poll, so warning there would emit
                     // the same line forever for one bad frame. Here it fires
                     // once per frame that is actually anomalous, and the frame
@@ -1136,12 +1136,12 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     // see its docs); this line is how anyone finds out.
                     if merged.exceeds_window() {
                         tracing::warn!(
-                            target: "spec.harness.token_usage",
+                            target: "planner.harness.token_usage",
                             runtime_id = %inner.runtime_id,
                             card_id = %inner.card_id,
                             used_tokens = merged.used_tokens,
                             context_window = ?merged.context_window,
-                            "spec harness context usage exceeds the model context window; \
+                            "planner harness context usage exceeds the model context window; \
                              reporting the raw count with no percentage. The occupancy proxy \
                              (tokenUsage.last.totalTokens) may be wrong across compaction"
                         );
@@ -1155,11 +1155,11 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 // false statement than "unknown"; the previous reading is left
                 // in place instead. See `TokenUsage::from_params`.
                 None => tracing::warn!(
-                    target: "spec.harness.token_usage",
+                    target: "planner.harness.token_usage",
                     runtime_id = %inner.runtime_id,
                     card_id = %inner.card_id,
                     method,
-                    "spec harness dropping thread/tokenUsage/updated: no usable \
+                    "planner harness dropping thread/tokenUsage/updated: no usable \
                      (non-negative integer) tokenUsage.last.totalTokens in the frame"
                 ),
             }
@@ -1191,7 +1191,7 @@ fn should_persist_item_method(method: &str) -> bool {
 }
 
 /// 5s defensive cap on the track-vcs diff-block fetch inside `maybe_issue_turn`.
-/// The diff block is a context augmentation prepended to spec turn
+/// The diff block is a context augmentation prepended to planner turn
 /// observations (#595 PR2); it is never a correctness requirement. If the
 /// underlying sqlite SELECT chain stalls (issue #639 — silent stuck-turn
 /// hypothesis), this ceiling converts an unobservable hang into a logged
@@ -1202,7 +1202,7 @@ const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Issue #682 review — dev-forced harnesses run against the replay
-    // binary's stub app-server; see `SpecHarness::pause_issuance_for_dev`.
+    // binary's stub app-server; see `PlannerHarness::pause_issuance_for_dev`.
     if inner.issuance_paused.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -1224,7 +1224,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // state-blocked case, and the happy path logs the state implicitly through
     // the "calling daemon.turn_start" → "daemon.turn_start ok" pair.
     tracing::debug!(
-        target: "calm_server::spec_harness_issue",
+        target: "calm_server::planner_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
@@ -1239,7 +1239,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     } else {
         let Some(first) = first_pending_at else {
             tracing::debug!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
@@ -1250,7 +1250,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         };
         let Some(last) = last_pending_at else {
             tracing::debug!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
@@ -1264,7 +1264,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     if !should_issue {
         tracing::debug!(
-            target: "calm_server::spec_harness_issue",
+            target: "calm_server::planner_harness_issue",
             runtime_id = %inner.runtime_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
@@ -1282,7 +1282,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let state = inner.state.lock().await;
         if !state.can_issue_turn() {
             tracing::debug!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
@@ -1307,7 +1307,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //   - Skipping the WRITE: the refresh commits a track-scoped track-vcs
     //     commit before every turn, and #1189's premise is N conversations on
     //     one track, so keeping it would multiply that write by N and make every
-    //     assistant turn contend for the same sqlite write lock as the spec
+    //     assistant turn contend for the same sqlite write lock as the planner
     //     harness's own per-turn refresh.
     //
     //     This is a REAL, BOUNDED degradation — not "nothing is lost" — and the
@@ -1323,12 +1323,12 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //         `HarnessTranscriptCleared` / `HarnessUserMessageEnqueued` dirty
     //         only `.payload.json` + `runtime.json`, and `CodexHook` /
     //         `ClaudeHook` produce an EMPTY delta (`track_vcs/delta.rs`).
-    //         `spec_harness_track_vcs.rs::
+    //         `planner_harness_track_vcs.rs::
     //         since_last_turn_override_fences_post_refresh_hook_commit` pins
     //         that fact directly: a post-refresh hook commit advances HEAD and
     //         still does not contain its own transcript.
     //       * So on this track the freshness of BOTH transcript paths is
-    //         maintained solely by the spec harness's own per-turn refresh. The
+    //         maintained solely by the planner harness's own per-turn refresh. The
     //         event-driven path still keeps `report.md`, `runs/*`,
     //         `cards/<id>/.payload.json`, `cards/<id>/runtime.json` and newly
     //         added cards current; the skip degrades transcripts and nothing
@@ -1336,16 +1336,16 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //
     //     Why that degradation is acceptable for THIS role and only this role:
     //     an assistant cannot read those paths at all. `track_file` (ls/cat) and
-    //     `track_history` are `require_role_any([Spec, Worker])`, so an
+    //     `track_history` are `require_role_any([Planner, Worker])`, so an
     //     Assistant card is rejected by role; its track-fs surface is
-    //     `track_report*` (`[Spec, Assistant]`), and `report.md` IS kept fresh by
+    //     `track_report*` (`[Planner, Assistant]`), and `report.md` IS kept fresh by
     //     the event-driven path. The collaboration channel this design gives the
     //     assistant is the report block, not the transcript.
     //
     //     Consequences for whoever touches this next: (a) do NOT extend the skip
-    //     to Spec or Worker cards — they can `track_file cat`
+    //     to Planner or Worker cards — they can `track_file cat`
     //     `conversation.md`/`events.json` and would read a stale HEAD; (b) if
-    //     the spec harness of this track ever stops refreshing per turn, these
+    //     the planner harness of this track ever stops refreshing per turn, these
     //     two paths have no writer left and go stale for everyone. The root fix
     //     is to make the hook / harness-item event transactions dirty the
     //     transcript paths too; that changes `track_vcs` delta semantics for all
@@ -1399,7 +1399,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .await
     };
     tracing::debug!(
-        target: "calm_server::spec_harness_issue",
+        target: "calm_server::planner_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
@@ -1413,7 +1413,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         diff_with_timeout(inner, refresh_head.as_ref()).await
     };
     tracing::debug!(
-        target: "calm_server::spec_harness_issue",
+        target: "calm_server::planner_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
@@ -1426,7 +1426,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
             tracing::debug!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
@@ -1481,7 +1481,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let drained_count = drained.len();
     let text = prepend_diff_block(diff.block, joined_observation_text);
     tracing::debug!(
-        target: "calm_server::spec_harness_issue",
+        target: "calm_server::planner_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
@@ -1496,7 +1496,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     {
         Ok(turn_id) => {
             tracing::debug!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
@@ -1519,7 +1519,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.issued_turn_id.lock().await = None;
             *inner.issued_turn_head.lock().await = None;
             persist_snapshot(inner).await?;
-            tracing::warn!(error = %e, "spec harness turn/start failed; re-buffered batch");
+            tracing::warn!(error = %e, "planner harness turn/start failed; re-buffered batch");
         }
     }
     Ok(())
@@ -1539,7 +1539,7 @@ where
         Ok(Ok(head)) => Some(head),
         Ok(Err(e)) => {
             tracing::warn!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
                 track_id,
@@ -1550,7 +1550,7 @@ where
         }
         Err(_) => {
             tracing::warn!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
                 track_id,
@@ -1602,7 +1602,7 @@ where
         Ok(diff) => diff,
         Err(_) => {
             tracing::warn!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
                 track_id,
@@ -1633,19 +1633,19 @@ async fn current_head_after_diff_timeout(
         Ok(Ok(head)) => head,
         Ok(Err(head_err)) => {
             tracing::warn!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 track_id = %inner.track_id,
                 error = %head_err,
-                "spec harness could not read track-vcs head after diff timeout"
+                "planner harness could not read track-vcs head after diff timeout"
             );
             None
         }
         Err(_) => {
             tracing::warn!(
-                target: "calm_server::spec_harness_issue",
+                target: "calm_server::planner_harness_issue",
                 track_id = %inner.track_id,
                 timeout_secs = SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT.as_secs(),
-                "spec harness track-vcs head read timed out after diff timeout"
+                "planner harness track-vcs head read timed out after diff timeout"
             );
             None
         }
@@ -1679,7 +1679,7 @@ async fn since_last_turn_diff_block(
                         tracing::warn!(
                             track_id = %inner.track_id,
                             error = %head_err,
-                            "spec harness could not read track-vcs head after diff failure"
+                            "planner harness could not read track-vcs head after diff failure"
                         );
                         None
                     }
@@ -1691,7 +1691,7 @@ async fn since_last_turn_diff_block(
                 last_seen_head = ?last_seen_head,
                 current_head = ?current_head,
                 error = %e,
-                "spec harness track-vcs diff failed; issuing turn without diff block"
+                "planner harness track-vcs diff failed; issuing turn without diff block"
             );
             track_vcs::SinceLastTurnBlock {
                 current_head,
@@ -1799,7 +1799,7 @@ async fn issue_interrupt(inner: &Arc<Inner>, reason: String) -> Result<()> {
             _ => {
                 tracing::debug!(
                     phase = ?*state,
-                    "spec harness interrupt ignored because no turn is active"
+                    "planner harness interrupt ignored because no turn is active"
                 );
                 None
             }
@@ -1816,7 +1816,7 @@ async fn issue_interrupt(inner: &Arc<Inner>, reason: String) -> Result<()> {
         None => None,
     };
     let Some(turn_id) = turn_id else {
-        tracing::debug!("spec harness interrupt ignored because no active turn id is known");
+        tracing::debug!("planner harness interrupt ignored because no active turn id is known");
         return Ok(());
     };
     issue_interrupt_for_turn(inner, turn_id, reason).await
@@ -1859,7 +1859,7 @@ async fn issue_interrupt_for_turn(
             turn_id = %target_turn_id,
             reason,
             error = %e,
-            "spec harness turn/interrupt failed; interrupt timeout watchdog remains armed"
+            "planner harness turn/interrupt failed; interrupt timeout watchdog remains armed"
         );
     }
     Ok(())
@@ -1988,7 +1988,7 @@ async fn persist_snapshot_inner(
                 ?old_phase,
                 ?new_phase,
                 error = %e,
-                "spec harness phase event persist failed; retaining previous phase for retry"
+                "planner harness phase event persist failed; retaining previous phase for retry"
             );
             return Err(e.into());
         }

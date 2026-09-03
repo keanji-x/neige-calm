@@ -178,10 +178,10 @@ async fn resolve_card_for_thread_preserves_role() {
 #[tokio::test]
 async fn resolve_card_for_thread_preserves_track_id() {
     let (app, repo, track_id) = fresh().await;
-    let card_id = create_card(&repo, &track_id, CardRole::Spec).await;
-    bind_runtime_thread(&repo, &card_id, "thread-spec").await;
+    let card_id = create_card(&repo, &track_id, CardRole::Planner).await;
+    bind_runtime_thread(&repo, &card_id, "thread-planner").await;
 
-    let (status, body) = get(app, "thread-spec").await;
+    let (status, body) = get(app, "thread-planner").await;
     assert_eq!(status, StatusCode::OK, "body={body:?}");
     assert_eq!(body["track_id"], track_id);
 }

@@ -17,10 +17,10 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{CalmError, Result};
 use crate::operation::Phase;
-use crate::routes::cards::MAX_SPEC_INPUT_CHARS;
+use crate::routes::cards::MAX_PLANNER_INPUT_CHARS;
 use crate::state::{RouteState, WorkerState};
 
-pub(crate) const SPEC_HARNESS_START: &str = "spec-harness-start";
+pub(crate) const PLANNER_HARNESS_START: &str = "planner-harness-start";
 
 /// Ceiling on the `#N` operation-key suffix search of
 /// [`retryable_operation_key`]. Reaching it means one `(scope, key)` pair
@@ -31,7 +31,7 @@ pub(crate) const MAX_OPERATION_KEY_ATTEMPTS: u32 = 64;
 /// Validate a conversation's first message *before* anything is minted, so a
 /// rejected message leaves no card behind.
 ///
-/// Byte-identical rules to `POST /api/cards/{id}/spec/input`, because that is
+/// Byte-identical rules to `POST /api/cards/{id}/planner/input`, because that is
 /// the handler the message is ultimately delivered through: a message this
 /// function accepts must not be rejected two steps later, after the card,
 /// session and thread already exist.
@@ -39,9 +39,9 @@ pub(crate) fn validate_first_message(text: &str) -> Result<()> {
     if text.trim().is_empty() {
         return Err(CalmError::BadRequest("text must not be empty".into()));
     }
-    if text.chars().count() > MAX_SPEC_INPUT_CHARS {
+    if text.chars().count() > MAX_PLANNER_INPUT_CHARS {
         return Err(CalmError::BadRequest(format!(
-            "text must be at most {MAX_SPEC_INPUT_CHARS} characters",
+            "text must be at most {MAX_PLANNER_INPUT_CHARS} characters",
         )));
     }
     Ok(())
@@ -51,7 +51,7 @@ pub(crate) fn validate_first_message(text: &str) -> Result<()> {
 ///
 /// Verbatim on purpose: this is the value that decides whether "same key,
 /// different body" is a 409, so it has to change whenever the bytes the agent
-/// would receive change. `send_spec_input` also forwards the text untrimmed,
+/// would receive change. `send_planner_input` also forwards the text untrimmed,
 /// so hashing the untrimmed string is what actually mirrors what is sent.
 pub(crate) fn first_message_digest(text: &str) -> String {
     let mut hasher = Sha256::new();
@@ -89,7 +89,7 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
         };
         let existing = s
             .operation_runtime
-            .find_by_kind_and_idempotency(SPEC_HARNESS_START, &key)
+            .find_by_kind_and_idempotency(PLANNER_HARNESS_START, &key)
             .await?;
         match existing {
             None => return Ok(key),
@@ -114,7 +114,7 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// Has this conversation card ever had a user message enqueued?
 ///
 /// The truth read here is the same row the transcript, the tests and the audit
-/// log read — `harness.user_message.enqueued`, written by `send_spec_input`
+/// log read — `harness.user_message.enqueued`, written by `send_planner_input`
 /// *after* the observation reached the harness queue. There is deliberately no
 /// separate "first message sent" flag: a write-only marker would have to be
 /// set before or after the send and would be wrong in one direction either way

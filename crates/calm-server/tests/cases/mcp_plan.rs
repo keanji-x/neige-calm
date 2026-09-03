@@ -41,7 +41,7 @@ struct Boot {
     repo: Arc<dyn Repo>,
     area_id: AreaId,
     track_id: TrackId,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     worker_card_id: CardId,
     report_card_id: CardId,
 }
@@ -75,11 +75,11 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: serde_json::Value::Null,
         })
@@ -122,14 +122,14 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     // #1189 §3.6 — the recorder gate resolves session → card → {role, track}
-    // with a live `cards` read, so the spec card must be persisted as Spec
+    // with a live `cards` read, so the planner card must be persisted as Planner
     // and not merely cached that way (`Repo::card_create` mints Worker).
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
-        spec_card.id.as_str(),
-        CardRole::Spec,
+        planner_card.id.as_str(),
+        CardRole::Planner,
     )
     .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
@@ -140,16 +140,16 @@ async fn boot() -> Boot {
     );
     seed_runtime_session(
         &sqlx_repo,
-        spec_card.id.as_str(),
-        "spec-session",
-        "spec-thread",
+        planner_card.id.as_str(),
+        "planner-session",
+        "planner-thread",
     )
     .await;
-    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
         .bind(track.id.as_str())
         .execute(sqlx_repo.pool())
         .await
-        .expect("mark spec session as track root");
+        .expect("mark planner session as track root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -184,7 +184,7 @@ async fn boot() -> Boot {
         repo,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         worker_card_id: worker_card.id,
         report_card_id: report_card.id,
     }
@@ -227,15 +227,15 @@ async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
-        session_id: "spec-session".to_string(),
+        session_id: "planner-session".to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".to_string(),
+        thread_id: "planner-thread".to_string(),
     }
 }
 
@@ -286,7 +286,7 @@ async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
     call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({"kind": "task", "payload": payload, "if_doc_rev": report.doc_rev}),
     )
     .await
@@ -452,9 +452,14 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
     let before = all_persistent_rows(&boot).await;
 
     // Deliberately invalid under the legacy schema: the shim must not parse it.
-    let out = call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), json!(null))
-        .await
-        .expect("registered compatibility shim");
+    let out = call_tool(
+        &boot,
+        TOOL_PLAN_UPSERT,
+        planner_identity(&boot),
+        json!(null),
+    )
+    .await
+    .expect("registered compatibility shim");
 
     assert!(out["error"].as_str().unwrap().contains("retired (#985)"));
     assert_eq!(out["migration"]["use"], "calm.report.blocks.upsert");
@@ -467,11 +472,11 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
     assert_eq!(
         all_persistent_rows(&boot).await,
         before,
-        "spec shim changed a persistent table"
+        "planner shim changed a persistent table"
     );
     assert!(
         drain_events(&mut rx).await.is_empty(),
-        "spec shim broadcast an EventBus envelope"
+        "planner shim broadcast an EventBus envelope"
     );
 }
 
@@ -489,7 +494,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let out = call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "key": "a", "message": "obsolete" }),
     )
     .await
@@ -519,7 +524,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let out = call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "key": "a", "message": "retry" }),
     )
     .await
@@ -543,7 +548,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
     call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "key": "a", "message": "obsolete" }),
     )
     .await
@@ -553,7 +558,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
     let out = call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" }),
     )
     .await
@@ -606,14 +611,19 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     let args =
         json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" });
-    call_tool(&boot, TOOL_PLAN_CANCEL, spec_identity(&boot), args.clone())
-        .await
-        .expect("first cancel with lifecycle ok");
+    call_tool(
+        &boot,
+        TOOL_PLAN_CANCEL,
+        planner_identity(&boot),
+        args.clone(),
+    )
+    .await
+    .expect("first cancel with lifecycle ok");
 
     // Retry the exact same call: row already `canceled`, track already
     // `dispatching`.
     let mut rx = boot.ctx.events.subscribe();
-    let out = call_tool(&boot, TOOL_PLAN_CANCEL, spec_identity(&boot), args)
+    let out = call_tool(&boot, TOOL_PLAN_CANCEL, planner_identity(&boot), args)
         .await
         .expect("idempotent re-cancel with same-state lifecycle must succeed");
     assert_eq!(out["ok"], true);
@@ -655,7 +665,7 @@ async fn cancel_in_flight_task_refused_with_409_text() {
         let err = call_tool(
             &boot,
             TOOL_PLAN_CANCEL,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "key": "a", "message": "too late" }),
         )
         .await
@@ -688,7 +698,7 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
 
     let err = plan_cancel_after_pre_read_for_test(
         boot.ctx.clone(),
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"key": "race", "message": "too late", "lifecycle": "dispatching"}),
         move || async move {
             sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
@@ -734,7 +744,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     let err = call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "key": "a", "message": "m" }),
     )
     .await
@@ -745,7 +755,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     let err = call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "key": "ghost", "message": "m" }),
     )
     .await
@@ -820,7 +830,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
     )
     .await;
 
-    let out = call_tool(&boot, TOOL_PLAN_LIST, spec_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
         .await
         .expect("list ok");
     let tasks = out["tasks"].as_array().expect("tasks array");
@@ -871,7 +881,7 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
             .await
             .expect_err("worker refused");
         assert_eq!(err.code, -32602, "{tool}: {err:?}");
-        assert!(err.message.contains("Spec"), "{tool}: {err:?}");
+        assert!(err.message.contains("Planner"), "{tool}: {err:?}");
     }
     assert_eq!(
         all_persistent_rows(&boot).await,
@@ -894,7 +904,7 @@ async fn plan_list_hides_gate_commands_but_shows_step_names() {
                                       { "name": "test", "cmd": "cargo test -p secret" } ] } }),
     )
     .await;
-    let out = call_tool(&boot, TOOL_PLAN_LIST, spec_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
         .await
         .expect("plan.list");
     let listed = out["tasks"]

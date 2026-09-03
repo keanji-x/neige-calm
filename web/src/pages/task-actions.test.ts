@@ -17,7 +17,7 @@ function deps(answer: boolean) {
 }
 
 describe('task card actions', () => {
-  it('asks on deleting a spec task and tightens the track when the user chooses yes', async () => {
+  it('asks on deleting a planner task and tightens the track when the user chooses yes', async () => {
     const calls = deps(true);
     await performTaskAction('w1', task, 'delete', calls);
     expect(calls.confirm).toHaveBeenCalledWith(expect.stringContaining('remove only this task'));

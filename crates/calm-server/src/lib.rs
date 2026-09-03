@@ -599,6 +599,8 @@ pub mod openapi;
 pub mod operation;
 pub mod pending_codex_threads;
 pub(crate) mod per_card_lock;
+pub mod planner_appserver;
+pub mod planner_card;
 pub mod plugin_host;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;
@@ -613,8 +615,6 @@ pub mod session_projection_lookup;
 pub mod session_projection_repo;
 pub mod shared_codex_appserver;
 pub mod shared_codex_home;
-pub mod spec_appserver;
-pub mod spec_card;
 pub mod state;
 pub mod task_context;
 pub mod terminal_renderer;
@@ -634,7 +634,7 @@ pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
 /// The template roster and its report recipes.
 ///
-/// `pub` for the same reason `routes::tracks::spec_harness_card_payload` is: an
+/// `pub` for the same reason `routes::tracks::planner_harness_card_payload` is: an
 /// integration test that transcribes kilobytes of production prose by hand
 /// stops being a test of that prose and becomes a change detector. #1300 S2's
 /// characterization test (`track_template_tracks::
@@ -714,7 +714,7 @@ pub async fn recover_harnesses_after_daemon_boot(
             // by the failed spawn keeps retrying, and the first observed
             // Running triggers a claim-based recovery pass that never
             // stomps a runtime the user resumed in the meantime.
-            tracing::warn!("deferring spec harness recovery until the shared daemon self-heals");
+            tracing::warn!("deferring planner harness recovery until the shared daemon self-heals");
             // The JoinHandle is intentionally detached: the task owns every
             // part it needs (Arc-cloned out of AppState) and lives until a
             // recovery pass completes or process teardown.
@@ -734,7 +734,7 @@ mod boot_order_tests {
             .expect("main boot asserts worker_sessions.card_id completeness");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
-            .expect("main boot starts daemon and gates spec harness recovery");
+            .expect("main boot starts daemon and gates planner harness recovery");
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
@@ -754,7 +754,7 @@ mod boot_order_tests {
             .expect("main boot asserts worker_sessions.card_id completeness");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
-            .expect("main boot starts daemon and gates spec harness recovery");
+            .expect("main boot starts daemon and gates planner harness recovery");
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
@@ -786,7 +786,7 @@ mod boot_order_tests {
             .expect("main boot fences overlapping area_folders claims");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
-            .expect("main boot starts daemon and gates spec harness recovery");
+            .expect("main boot starts daemon and gates planner harness recovery");
         assert!(card_id_assert < folders_fence);
         assert!(folders_fence < boot_harnesses);
     }

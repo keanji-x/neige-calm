@@ -58,7 +58,7 @@ pub struct CardBoot {
 /// `CardRoleCache` leaves the database disagreeing with the test's own
 /// story. That was harmless while every role check read the cache; #1189
 /// §3.6 made the recorder gate resolve session → card → `{role, track}`
-/// with a live in-tx `cards` read, and a fixture whose "spec card" is
+/// with a live in-tx `cards` read, and a fixture whose "planner card" is
 /// persisted as a worker now denies for a reason the test never intended.
 ///
 /// Production mints go through `card_with_codex_create_tx`, which writes
@@ -80,8 +80,9 @@ pub async fn boot_with_role(role: CardRole) -> CardBoot {
     boot_with_role_and_daemon_token(role, None).await
 }
 
-pub async fn boot_shared_daemon_with_spec_thread() -> CardBoot {
-    boot_with_role_and_daemon_token(CardRole::Spec, Some("mcp-test-daemon-token".to_string())).await
+pub async fn boot_shared_daemon_with_planner_thread() -> CardBoot {
+    boot_with_role_and_daemon_token(CardRole::Planner, Some("mcp-test-daemon-token".to_string()))
+        .await
 }
 
 async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<String>) -> CardBoot {

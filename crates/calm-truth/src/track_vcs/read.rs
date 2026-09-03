@@ -143,7 +143,7 @@ pub async fn since_last_turn_block(
     track_id: &TrackId,
     last_seen_head: Option<&str>,
     current_override: Option<&CommitHash>,
-    spec_card_id: Option<&CardId>,
+    planner_card_id: Option<&CardId>,
 ) -> Result<SinceLastTurnBlock> {
     let Some(current) = (match current_override {
         Some(current) => Some(current.clone()),
@@ -167,7 +167,7 @@ pub async fn since_last_turn_block(
     let entries = diff(pool, previous, &current, None)
         .await?
         .into_iter()
-        .filter(|entry| !is_internal_observation_diff_path(&entry.path, spec_card_id))
+        .filter(|entry| !is_internal_observation_diff_path(&entry.path, planner_card_id))
         .collect::<Vec<_>>();
     if entries.is_empty() {
         return Ok(SinceLastTurnBlock {
@@ -492,17 +492,17 @@ async fn changed_paths_for_commit(pool: &SqlitePool, record: &CommitRecord) -> R
     Ok(entries)
 }
 
-fn is_internal_observation_diff_path(path: &str, spec_card_id: Option<&CardId>) -> bool {
+fn is_internal_observation_diff_path(path: &str, planner_card_id: Option<&CardId>) -> bool {
     if path.starts_with("cards/") && path.ends_with("/runtime.json") {
         return true;
     }
-    let Some(spec_card_id) = spec_card_id else {
+    let Some(planner_card_id) = planner_card_id else {
         return false;
     };
-    let spec_card_id = spec_card_id.as_str();
+    let planner_card_id = planner_card_id.as_str();
     // Legacy spellings appear once per track in the post-rename healing commit.
-    path == format!("cards/{spec_card_id}/.payload.json")
-        || path == format!("cards/{spec_card_id}/payload.json")
+    path == format!("cards/{planner_card_id}/.payload.json")
+        || path == format!("cards/{planner_card_id}/payload.json")
 }
 
 fn short_hash(hash: &str) -> &str {

@@ -831,8 +831,8 @@ describe('degraded blocks', () => {
     ['dependency_cycle', { keys: 'a -> b -> a' }, /Break one dependency/],
     ['unknown_dependency', { dependency: 'legacy-only' }, /older task row/],
     ['gate_required', {}, /Add a check/],
-    ['spec_task_ceiling', { ceiling: 2, occupied: 1 }, /document order, then by key/],
-    ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1 }, /settings to at least 1 before allowing AI tasks/],
+    ['planner_task_ceiling', { ceiling: 2, occupied: 1 }, /document order, then by key/],
+    ['planner_task_ceiling', { ceiling: 0, occupied: 0, minimum_planner_task_ceiling: 1 }, /settings to at least 1 before allowing AI tasks/],
     ['reference_needs_block', { reference: 'neige:\/\/wave\/w' }, /exact block/],
     ['reference_missing', { reference: 'neige:\/\/wave\/w#gone' }, /link an existing block/],
     ['reference_cross_area', { reference: 'neige:\/\/wave\/other#b' }, /another area/],
@@ -847,10 +847,10 @@ describe('degraded blocks', () => {
     ['tree_budget_exhausted', { tree_tracks: 2, tree_task_budget: 2, share: 1, minimum_tree_task_budget: 4 }, /group’s excess in-progress work finish/],
     ['tree_budget_exhausted', { tree_tracks: 2, tree_task_budget: 2, share: 1, admission_frozen: true, minimum_tree_task_budget: 6 }, /immutable in-progress work than its share/],
     ['tree_budget_exhausted', { tree_tracks: 2, tree_task_budget: 2, share: 1, bounds_tied: true, minimum_tree_task_budget: 4 }, /raising either one alone will not admit another card/],
-    ['spec_task_ceiling', { ceiling: 2, occupied: 3, minimum_spec_task_ceiling: 4, bounds_tied: true }, /settings to at least 4.*raising either one alone/],
-    ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1, admission_frozen: true }, /group is frozen.*settings to at least 1/],
-    ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1, admission_frozen: true, capacity_raise_unavailable: true }, /group is frozen.*no higher legal target.*local limit alone/],
-    ['spec_task_ceiling', { ceiling: 64, occupied: 64, minimum_spec_task_ceiling: 65, bounds_tied: true, capacity_raise_unavailable: true }, /both full.*no higher legal target/],
+    ['planner_task_ceiling', { ceiling: 2, occupied: 3, minimum_planner_task_ceiling: 4, bounds_tied: true }, /settings to at least 4.*raising either one alone/],
+    ['planner_task_ceiling', { ceiling: 0, occupied: 0, minimum_planner_task_ceiling: 1, admission_frozen: true }, /group is frozen.*settings to at least 1/],
+    ['planner_task_ceiling', { ceiling: 0, occupied: 0, minimum_planner_task_ceiling: 1, admission_frozen: true, capacity_raise_unavailable: true }, /group is frozen.*no higher legal target.*local limit alone/],
+    ['planner_task_ceiling', { ceiling: 64, occupied: 64, minimum_planner_task_ceiling: 65, bounds_tied: true, capacity_raise_unavailable: true }, /both full.*no higher legal target/],
     ['tree_budget_exhausted', {}, /cannot be released by raising/],
     ['tree_root_unresolved', {}, /operator must repair the track tree/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
@@ -942,7 +942,7 @@ describe('degraded blocks', () => {
         .map((match) => [match[1], match[2]]),
     );
     expect(actions.get('tree_budget_exhausted')).toBe('raise_tree_task_budget');
-    expect(actions.get('spec_task_ceiling')).toBe('raise_spec_task_ceiling');
+    expect(actions.get('planner_task_ceiling')).toBe('raise_planner_task_ceiling');
 
     const treeCopy = taskDiagnosticText({
       code: 'tree_budget_exhausted', messageArgs: {
@@ -966,8 +966,8 @@ describe('degraded blocks', () => {
     expect(unavailableTreeCopy).not.toMatch(/at least\s*(?:0|$)/);
 
     const ceilingCopy = taskDiagnosticText({
-      code: 'spec_task_ceiling', messageArgs: { ceiling: 1, occupied: 3, minimum_spec_task_ceiling: 4 },
-      relatedBlockIds: [], path: 'key', message: '', action: actions.get('spec_task_ceiling'),
+      code: 'planner_task_ceiling', messageArgs: { ceiling: 1, occupied: 3, minimum_planner_task_ceiling: 4 },
+      relatedBlockIds: [], path: 'key', message: '', action: actions.get('planner_task_ceiling'),
     });
     expect(ceilingCopy).toMatch(/track settings/);
     expect(ceilingCopy).toMatch(/at least 4/);
@@ -1000,7 +1000,7 @@ describe('degraded blocks', () => {
         key: 'ceiling-action', kind: 'codex', goal: 'Ceiling action', ready: true, declared_by: 'spec',
       }} verdict={{
         blockId: 'b_ceiling', key: 'ceiling-action', schedulable: false,
-        diagnostics: [diagnostic('spec_task_ceiling', actions.get('spec_task_ceiling') ?? '')],
+        diagnostics: [diagnostic('planner_task_ceiling', actions.get('planner_task_ceiling') ?? '')],
       }} trackId="track-root-985" />
       <ReportTaskBlock payload={{
         key: 'ordinary-action', kind: 'codex', goal: 'Ordinary action', ready: true, declared_by: 'spec',

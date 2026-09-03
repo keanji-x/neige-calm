@@ -21,7 +21,7 @@ pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, Stri
 /// the daemon's AI exec-shells. codex does NOT inherit the daemon process env
 /// into exec-shells; the per-thread `shell_environment_policy.set` field is the
 /// ONLY channel that reaches the `neige` CLI an agent must run to report its
-/// task. Both the spec harness (`spec_harness_start_adapter`) and the codex
+/// task. Both the planner harness (`planner_harness_start_adapter`) and the codex
 /// worker spawn (`codex_adapter`) emit this same shape.
 pub(crate) fn card_mcp_thread_start_config(
     socket_path: &Path,
@@ -116,10 +116,10 @@ mod tests {
     }
 
     /// #838 (lean Move 1): the single channel-3 producer used by ALL spawn
-    /// paths (spec, worker, cold-respawn) emits the exact
+    /// paths (planner, worker, cold-respawn) emits the exact
     /// `shell_environment_policy.set.{NEIGE_MCP_SOCKET,NEIGE_MCP_TOKEN}` shape.
     /// Pinning the byte shape here locks the contract every producer now goes
-    /// through after the spec path's parallel `SpecThread*` structs were
+    /// through after the planner path's parallel `PlannerThread*` structs were
     /// deleted — i.e. the unification holds at the function level.
     #[test]
     fn card_mcp_thread_start_config_emits_channel_3_shape() {
@@ -188,7 +188,7 @@ mod tests {
                 sort: None,
                 payload: Value::Null,
             },
-            CardRole::Spec,
+            CardRole::Planner,
             true,
             &role_cache,
         )

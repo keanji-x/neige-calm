@@ -1,6 +1,6 @@
 //! Issue #229 PR B — track-report MCP tools.
 //!
-//! Three tools the spec agent uses to maintain its track-report card's
+//! Three tools the planner agent uses to maintain its track-report card's
 //! Markdown body. The argument shapes deliberately mimic codex's native
 //! `Read` / `Edit` / `Write` file tools 1:1 so the agent's mental model
 //! is "the report is a file I can edit," not "the report is a structured
@@ -17,22 +17,22 @@
 //! ## Authorization
 //!
 //! The two write tools require the caller's per-call card to be a
-//! `CardRole::Spec`. `calm.report.read` additionally accepts
+//! `CardRole::Planner`. `calm.report.read` additionally accepts
 //! `CardRole::Assistant` (#1189): it is the only source of `docRev` and
 //! the per-block `rev`s, so an assistant that could not call it could
 //! never form the `if_doc_rev` / `if_rev` a block-channel write needs.
 //! The assistant's response body is trimmed: `taskDiagnostics` (the
-//! dispatched-task runtime projection) is Spec-only, so opening the read
+//! dispatched-task runtime projection) is Planner-only, so opening the read
 //! does not hand the assistant the state `calm.plan.list` withholds.
 //! We re-use [`require_role`] / [`require_role_any`] for the soft gate; the
 //! eventized write itself routes through `card_update_tx` on the
 //! track-report card row, which doesn't itself touch the role gate (the
 //! report card emits `CardUpdated` under its own card scope, which any
-//! actor with write access to the track can do — the actual "only spec
+//! actor with write access to the track can do — the actual "only planner
 //! may edit the report" policy lives at the MCP entry).
 //!
-//! The track the caller's spec card belongs to is the track whose report
-//! card these tools mutate; a spec card from a different track cannot
+//! The track the caller's planner card belongs to is the track whose report
+//! card these tools mutate; a planner card from a different track cannot
 //! reach this track's report. The lookup-by-(caller's track_id +
 //! kind="track-report") path makes cross-track writes impossible by
 //! construction.
@@ -100,13 +100,13 @@ where
 fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
-        description: "Spec + Assistant: read the track's report. Returns \
+        description: "Planner + Assistant: read the track's report. Returns \
              `{ text, body, summary, schemaVersion, docRev, updated_at, \
              blocks, taskDiagnostics }` — `text` is the flat Markdown (`body` is a \
              legacy alias with the same value) and `blocks` is the \
              addressable index `[{ id, kind, rev }]` in document \
              order; `taskDiagnostics` is the read-time DB-aware task-block \
-             schedulability result and is returned to Spec callers only \
+             schedulability result and is returned to Planner callers only \
              (it carries dispatched-task runtime state). \
              The report is made of blocks: address them with \
              `calm.report.blocks.upsert` / `.move` / `.delete` (all \
@@ -139,11 +139,11 @@ pub(crate) async fn report_read(
 ) -> Result<Value, RpcError> {
     // #1189 — Assistant reads too. This tool is the ONLY source of
     // `docRev` and the per-block `rev`s, and every block-channel write
-    // takes `if_doc_rev` / `if_rev`; keeping it Spec-only would leave the
+    // takes `if_doc_rev` / `if_rev`; keeping it Planner-only would leave the
     // assistant unable to bootstrap the CAS handshake S2 opens up. The
     // write channel (`calm.report.write` / `.edit`, which can carry
-    // lifecycle) stays Spec-only — that is the §3.2 dividing line.
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
+    // lifecycle) stays Planner-only — that is the §3.2 dividing line.
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -197,12 +197,12 @@ pub(crate) async fn report_read(
     // #1189 review round 2 — `taskDiagnostics` is NOT report content. It
     // is the read-time task/track-tree projection (`status`, `statusDetail`,
     // `gateResult`, `workerCardId`, `childTrackId`), i.e. exactly the class
-    // of dispatched-task runtime state `calm.plan.list` is kept Spec-only
+    // of dispatched-task runtime state `calm.plan.list` is kept Planner-only
     // to withhold. Opening `report.read` to the assistant must not become a
     // side door onto it, so the assistant gets the document (`text` /
     // `body` / `summary` / `schemaVersion` / `docRev` / `updated_at` /
-    // `blocks`) and nothing else. Spec keeps the full payload.
-    if identity.role == CardRole::Spec {
+    // `blocks`) and nothing else. Planner keeps the full payload.
+    if identity.role == CardRole::Planner {
         response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
     }
     Ok(response)
@@ -215,7 +215,7 @@ pub(crate) async fn report_read(
 fn write_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE.into(),
-        description: "Spec-only compatibility interface: wholesale-\
+        description: "Planner-only compatibility interface: wholesale-\
              replace the track's report body (and optionally `summary`). \
              Prefer the block-addressed tools — `calm.report.blocks.\
              upsert`/`.move`/`.delete` for targeted changes, or \
@@ -240,7 +240,7 @@ fn write_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -249,7 +249,7 @@ async fn report_write(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let write_args = parse_write_args(&args, "calm.report.write")?;
     let obj = args.as_object().ok_or_else(|| {
         RpcError::invalid_params("calm.report.write: arguments must be an object")
@@ -301,7 +301,7 @@ async fn report_write(
 fn edit_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_EDIT.into(),
-        description: "Spec-only compatibility interface: string-replace \
+        description: "Planner-only compatibility interface: string-replace \
              inside the track's report body. Prefer \
              `calm.report.blocks.upsert` with `id` + `if_rev` for \
              targeted block replacement. Behaves like the codex `Edit` \
@@ -331,7 +331,7 @@ fn edit_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -340,7 +340,7 @@ async fn report_edit(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let write_args = parse_write_args(&args, "calm.report.edit")?;
     let obj = args
         .as_object()
@@ -444,10 +444,10 @@ fn count_matches(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
 
-/// Resolve the (track, spec card, report card, current payload) tuple
-/// for the per-call spec identity. Errors:
-///   * spec card row missing (delete-while-active race) → InternalError;
-///   * track row missing under that spec card → InternalError;
+/// Resolve the (track, planner card, report card, current payload) tuple
+/// for the per-call planner identity. Errors:
+///   * planner card row missing (delete-while-active race) → InternalError;
+///   * track row missing under that planner card → InternalError;
 ///   * no track-report card on the track → InternalError (the invariant
 ///     is "every track has exactly one report card"; failing this is a
 ///     data-shape bug, not a user-visible 404);
@@ -462,30 +462,30 @@ pub(crate) async fn resolve_report_for_caller(
     identity: &ToolCallIdentity,
 ) -> Result<(Track, Card, Card, TrackReportPayload), RpcError> {
     let card_id_str = identity.card_id.as_str().to_string();
-    let spec_card = ctx
+    let planner_card = ctx
         .repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("track_report: spec card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("track_report: planner card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_report: bound spec card {card_id_str} not found (deleted mid-connection?)"
+                "track_report: bound planner card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
-        .track_get(spec_card.track_id.as_str())
+        .track_get(planner_card.track_id.as_str())
         .await
         .map_err(|e| RpcError::internal(format!("track_report: track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_report: track {} for spec card {} not found",
-                spec_card.track_id.as_str(),
+                "track_report: track {} for planner card {} not found",
+                planner_card.track_id.as_str(),
                 card_id_str
             ))
         })?;
     let (report_card, payload) = load_report_for_track(ctx, &track).await?;
-    Ok((track, spec_card, report_card, payload))
+    Ok((track, planner_card, report_card, payload))
 }
 
 /// Load the track-report card and current payload for an already-resolved track.
@@ -528,9 +528,9 @@ pub(crate) async fn load_report_for_track(
 /// MCP-side thin wrapper around [`CardDecisionSink::commit_report_write`].
 ///
 /// Resolves the session-shaped actor from the per-call [`ToolCallIdentity`]
-/// (Spec maps to `ActorId::AiSpecSession`; `require_role` upstream guarantees
-/// the role is Spec by the time we reach this site), tags every write as the
-/// spec-MCP emitter inside the sink, and projects the returned
+/// (Planner maps to `ActorId::AiPlannerSession`; `require_role` upstream guarantees
+/// the role is Planner by the time we reach this site), tags every write as the
+/// planner-MCP emitter inside the sink, and projects the returned
 /// `Card` into the MCP wire shape `{ updated_at, docRev }`. The error mapping
 /// reproduces the pre-PR3 contract
 /// (`CalmError::Forbidden` → `-32403`, anything else → internal).

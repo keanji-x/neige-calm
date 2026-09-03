@@ -192,13 +192,13 @@ async fn migration_0037_backfills_plain_to_worker() {
     stage_to_0036(&pool).await;
     seed_track(&pool, "track-0037").await;
     seed_card(&pool, "card-plain", "track-0037", "plain").await;
-    seed_card(&pool, "card-spec", "track-0037", "spec").await;
+    seed_card(&pool, "card-planner", "track-0037", "planner").await;
     seed_card(&pool, "card-worker", "track-0037", "worker").await;
 
     apply_sql(&pool, "0037_drop_plain_role", MIGRATION_0037_SQL).await;
 
     assert_eq!(card_role(&pool, "card-plain").await, "worker");
-    assert_eq!(card_role(&pool, "card-spec").await, "spec");
+    assert_eq!(card_role(&pool, "card-planner").await, "planner");
     assert_eq!(card_role(&pool, "card-worker").await, "worker");
 }
 

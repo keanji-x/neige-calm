@@ -18,7 +18,7 @@ describe('track-report card entry', () => {
   });
 
   it('[INV-CARD-201] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
-    // Same standard as the sister headless entry `spec`: every builtin resolves
+    // Same standard as the sister headless entry `planner`: every builtin resolves
     // through `fromKernel` so one scan order decides every shared kernel kind.
     // Read through the interface: the entry literal is checked with `satisfies`
     // so registration can require `headless`, which means the constant's own

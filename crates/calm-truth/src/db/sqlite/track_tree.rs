@@ -34,8 +34,8 @@ pub const DEFAULT_TREE_TASK_BUDGET: i64 = 32;
 /// whole-tree reprojection may perform.
 pub const MAX_TREE_TASK_BUDGET: i64 = 64;
 
-/// Kernel default for `tracks.spec_task_ceiling`.
-pub(crate) const DEFAULT_SPEC_TASK_CEILING: i64 = 32;
+/// Kernel default for `tracks.planner_task_ceiling`.
+pub(crate) const DEFAULT_PLANNER_TASK_CEILING: i64 = 32;
 
 /// Decode nullable persisted limits at every enforcement point.
 ///
@@ -101,11 +101,11 @@ pub const TRACK_TREE_MEMBERS_SQL: &str = concat!(
      ORDER BY w.created_at, w.id"
 );
 
-/// Membership plus fixed (non-cullable in this projection) spec occupancy.
+/// Membership plus fixed (non-cullable in this projection) planner occupancy.
 /// The outer correlated count preserves the same recursive shape/order while
 /// detecting a member already above its deterministic share. Pending rows are
 /// excluded because they re-enter projection as candidates.
-const TRACK_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
+const TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
     "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
        WHERE t.track_id=w.id AND t.declared_by='spec' \
@@ -115,8 +115,8 @@ const TRACK_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
      ORDER BY w.created_at, w.id"
 );
 
-/// Whole-tree non-terminal spec inventory — enforcement point one.
-pub const TRACK_TREE_SPEC_INVENTORY_SQL: &str = concat!(
+/// Whole-tree non-terminal planner inventory — enforcement point one.
+pub const TRACK_TREE_PLANNER_INVENTORY_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
     "SELECT count(*) FROM tasks t \
      JOIN (SELECT DISTINCT id FROM down) d ON t.track_id = d.id \
@@ -127,7 +127,7 @@ pub const TRACK_TREE_SPEC_INVENTORY_SQL: &str = concat!(
 ///
 /// `floor(B / N)` for everyone, and the remainder `r = B mod N` distributed
 /// one apiece to the first `r` members. `Σ share = B` exactly — that identity
-/// is what makes `Σ_v live_spec(v) ≤ B` the real tree bound.
+/// is what makes `Σ_v live_planner(v) ≤ B` the real tree bound.
 ///
 /// Purely a function of the tree's SHAPE. It reads no projection output (no
 /// `pending` row, no sibling admission), which is precisely why the tree term
@@ -214,11 +214,12 @@ pub async fn track_tree_term(
         });
     }
     let root_id = root_id.clone();
-    let members: Vec<(String, i64, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_WITH_FIXED_SPEC_SQL)
-        .bind(&root_id)
-        .bind(MAX_TRACK_TREE_DEPTH + 1)
-        .fetch_all(&mut *conn)
-        .await?;
+    let members: Vec<(String, i64, i64)> =
+        sqlx::query_as(TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL)
+            .bind(&root_id)
+            .bind(MAX_TRACK_TREE_DEPTH + 1)
+            .fetch_all(&mut *conn)
+            .await?;
     queries += 1;
     // Poisoned data: a member deeper than the legal bound, or a tree that does
     // not contain the track we started from. Both mean the shape we would
@@ -319,8 +320,11 @@ pub async fn track_tree_budget(conn: &mut SqliteConnection, root_id: &str) -> Re
 }
 
 /// Whole-tree non-terminal `declared_by='spec'` row count, rooted at `root_id`.
-pub async fn track_tree_spec_inventory(conn: &mut SqliteConnection, root_id: &str) -> Result<i64> {
-    let (count,): (i64,) = sqlx::query_as(TRACK_TREE_SPEC_INVENTORY_SQL)
+pub async fn track_tree_planner_inventory(
+    conn: &mut SqliteConnection,
+    root_id: &str,
+) -> Result<i64> {
+    let (count,): (i64,) = sqlx::query_as(TRACK_TREE_PLANNER_INVENTORY_SQL)
         .bind(root_id)
         .bind(MAX_TRACK_TREE_DEPTH + 1)
         .fetch_one(&mut *conn)
@@ -343,8 +347,8 @@ pub async fn track_tree_member_count(conn: &mut SqliteConnection, root_id: &str)
 /// The whole-tree reprojection seam uses this after deleting excess pending
 /// rows. A remaining member over its new share can only be over because of
 /// already in-flight work; callers then reject the shape/budget change rather
-/// than committing a tree for which `sum(live_spec) <= B` is false.
-pub async fn track_tree_spec_inventory_by_member(
+/// than committing a tree for which `sum(live_planner) <= B` is false.
+pub async fn track_tree_planner_inventory_by_member(
     conn: &mut SqliteConnection,
     root_id: &str,
 ) -> Result<Vec<(String, i64)>> {

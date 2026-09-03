@@ -284,7 +284,7 @@ describe('TrackGrid — overlay-backed layout', () => {
     const client = makeClient();
     const undeletable: TrackCardSlot = {
       kind: 'unknown',
-      id: 'spec-card',
+      id: 'planner-card',
       kernelKind: 'codex',
       deletable: false,
     };

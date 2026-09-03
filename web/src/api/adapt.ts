@@ -86,7 +86,7 @@ export function adaptTrack(k: KernelTrack, overlays: KernelOverlay[] = []): Trac
     areaId: k.area_id,
     title: k.title,
     // Issue #145 — the kernel always stamps a lifecycle on track rows
-    // (defaults to 'draft' on create, advanced explicitly by the Spec
+    // (defaults to 'draft' on create, advanced explicitly by the Planner
     // Agent). Wire payloads from pre-#145 servers may omit the field;
     // mirror the zod schema's default and fall back to 'draft'.
     lifecycle: (k.lifecycle as TrackLifecycle | undefined) ?? 'draft',

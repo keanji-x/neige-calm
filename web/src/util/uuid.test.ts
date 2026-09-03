@@ -48,7 +48,7 @@ describe('makeUuid', () => {
     expect(makeUuid()).toBe(sentinel);
   });
 
-  it('synthesises a v4 UUID matching the spec layout when randomUUID is absent', () => {
+  it('synthesises a v4 UUID matching the planner layout when randomUUID is absent', () => {
     withRandomUUIDDisabled(() => {
       const id = makeUuid();
       expect(id).toMatch(UUID_V4_REGEX);

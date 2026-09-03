@@ -3,7 +3,7 @@
 /**
  * Semantic identity of an event producer.
  */
-export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiSpecSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId };
+export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiPlanner", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiPlannerSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId };
 
 export type AgentProvider = "codex" | "claude";
 
@@ -102,7 +102,7 @@ payload: unknown, title?: string, runtime?: CardRuntimeView,
  * Issue #229 PR A — system-card guard. `true` for user-facing cards
  * (the default; all pre-#229 rows backfill via the column DEFAULT in
  * migration 0013). `false` for kernel-owned cards that the user
- * cannot remove via REST / plugin callbacks — currently spec cards
+ * cannot remove via REST / plugin callbacks — currently planner cards
  * (retroactively undeletable via the same migration's UPDATE) and
  * PR B's track-report cards.
  *
@@ -123,7 +123,7 @@ export type CardId = string;
 /**
  * Authorization role persisted on each card and enforced by `role_gate`.
  */
-export type CardRole = "worker" | "spec" | "reportcard" | "assistant";
+export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
 
 /**
  * Live runtime projection read from `worker_sessions` when a card is fetched
@@ -147,7 +147,7 @@ export type ChannelVerdictKind = "approved" | "changes_requested";
 /**
  * Producer of a track-report edit. Existing variants are persisted wire values.
  */
-export type EditAuthor = "spec" | "user" | "assistant" | "kernel" | "plugin";
+export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
 
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.
@@ -212,7 +212,7 @@ card_id: CardId,
  */
 kind: string, 
 /**
- * Stable hook ingest key used by the server and spec harness to
+ * Stable hook ingest key used by the server and planner harness to
  * suppress duplicate lifecycle posts.
  */
 hook_idempotency_key: string, 
@@ -229,7 +229,7 @@ card_id: CardId,
  */
 kind: string, 
 /**
- * Stable hook ingest key used by the server and spec harness to
+ * Stable hook ingest key used by the server and planner harness to
  * suppress duplicate lifecycle posts.
  */
 hook_idempotency_key: string, 
@@ -441,7 +441,7 @@ terminal_at: number | null, workspace: TrackWorkspace, created_at: number, updat
 export type TrackConversationSummary = { 
 /**
  * The assistant card's id. This is the conversation's identity everywhere,
- * and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+ * and it is also the card the CARDS panel and `/api/cards/{id}/planner/*`
  * address.
  */
 id: string, 
@@ -502,7 +502,7 @@ export type TrackId = string;
  * Issue #145 — Track lifecycle state machine.
  *
  * One explicit state per track, advanced through a typed state machine
- * (see `crate::track_lifecycle`). The Spec Agent drives the happy path
+ * (see `crate::track_lifecycle`). The Planner Agent drives the happy path
  * (`draft → planning → dispatching → working → reviewing → done`);
  * the user can cancel any non-terminal state and reopen terminals;
  * worker cards have no authority to touch this field at all.
@@ -559,7 +559,7 @@ schemaVersion: number,
 docRev: number, 
 /**
  * One-line summary used by sidebars / track-list previews. Empty
- * string is valid (means "spec agent has not produced a summary
+ * string is valid (means "planner agent has not produced a summary
  * yet"); the field stays a required `String` per the
  * [[required-over-option]] rule.
  */

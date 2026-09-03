@@ -3,12 +3,12 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
     session_bind_attribution_tx, session_commit_exit_tx, session_complete_for_card_tx,
     session_complete_tx, session_fail_if_active_runtime_tx, session_insert_tx,
-    session_mark_superseded_runtime_tx, session_mcp_token_set_tx, session_prepare_deferred_spec_tx,
-    session_projection_active_for_card_tx, session_projection_by_id_tx,
-    session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
-    session_set_handle_state_tx, session_set_harness_observation_runtime_tx,
-    session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
-    session_supersede_and_start_tx,
+    session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
+    session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
+    session_projection_by_id_tx, session_restore_from_superseded_runtime_tx,
+    session_set_active_turn_tx, session_set_handle_state_tx,
+    session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
+    session_set_status_tx, session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use calm_server::ids::CardId;
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
@@ -332,7 +332,7 @@ async fn session_get_by_active_token_hash_filters_terminal_rows() {
 }
 
 #[tokio::test]
-async fn runtime_start_shared_spec_restarts_track_root_on_respawn() {
+async fn runtime_start_shared_planner_restarts_track_root_on_respawn() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
@@ -340,7 +340,7 @@ async fn runtime_start_shared_spec_restarts_track_root_on_respawn() {
         &mut tx,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Starting,
         ),
@@ -362,7 +362,7 @@ async fn runtime_start_shared_spec_restarts_track_root_on_respawn() {
         &first.id,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Starting,
         ),
@@ -381,7 +381,7 @@ async fn runtime_start_shared_spec_restarts_track_root_on_respawn() {
 }
 
 #[tokio::test]
-async fn runtime_start_terminal_shared_spec_does_not_stamp_track_root() {
+async fn runtime_start_terminal_shared_planner_does_not_stamp_track_root() {
     let repo = fresh_repo().await;
     let track = make_track(&repo).await;
     let failed_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
@@ -391,7 +391,7 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_track_root() {
         &mut tx,
         runtime_init(
             failed_card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Failed,
         ),
@@ -414,7 +414,7 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_track_root() {
         &mut tx,
         runtime_init(
             live_card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Starting,
         ),
@@ -437,7 +437,7 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_track_root() {
         &mut tx,
         runtime_init(
             exited_card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Exited,
         ),
@@ -469,7 +469,7 @@ async fn runtime_start_executor_respawn_leaves_track_root_unchanged() {
         &mut tx,
         runtime_init(
             planner_card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Starting,
         ),
@@ -546,14 +546,14 @@ async fn phase1_reorder_cold_start_no_supersede() {
     let card = make_card(&repo, "codex").await;
     let init = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Starting,
     );
     let placeholder_id = init.id.clone();
 
     let mut tx = repo.pool().begin().await.unwrap();
-    session_prepare_deferred_spec_tx(&mut tx, &init)
+    session_prepare_deferred_planner_tx(&mut tx, &init)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -588,7 +588,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
         &mut tx,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Idle,
         ),
@@ -603,7 +603,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
         &old.id,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Starting,
         ),
@@ -676,7 +676,7 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
         &mut tx,
         runtime_init(
             active_card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Idle,
         ),
@@ -685,12 +685,12 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
     .unwrap();
     let placeholder_init = runtime_init(
         active_card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Starting,
     );
     let placeholder_id = placeholder_init.id.clone();
-    session_prepare_deferred_spec_tx(&mut tx, &placeholder_init)
+    session_prepare_deferred_planner_tx(&mut tx, &placeholder_init)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -722,13 +722,13 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
     let fresh_card = make_card(&repo, "codex").await;
     let fresh_placeholder_init = runtime_init(
         fresh_card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Starting,
     );
     let fresh_placeholder_id = fresh_placeholder_init.id.clone();
     let mut tx = repo.pool().begin().await.unwrap();
-    session_prepare_deferred_spec_tx(&mut tx, &fresh_placeholder_init)
+    session_prepare_deferred_planner_tx(&mut tx, &fresh_placeholder_init)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -774,20 +774,20 @@ async fn phase2_supersedes_placeholder_one_row() {
     let card = make_card(&repo, "codex").await;
     let placeholder_init = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Starting,
     );
     let placeholder_id = placeholder_init.id.clone();
     let mut tx = repo.pool().begin().await.unwrap();
-    session_prepare_deferred_spec_tx(&mut tx, &placeholder_init)
+    session_prepare_deferred_planner_tx(&mut tx, &placeholder_init)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     let mut real_init = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Idle,
     );
@@ -988,7 +988,7 @@ async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
         &mut tx,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Idle,
         ),
@@ -1076,14 +1076,14 @@ async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_
 #[tokio::test]
 async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     let repo = fresh_repo().await;
-    let card = make_card(&repo, "spec").await;
+    let card = make_card(&repo, "planner").await;
     let card_id = card.id.to_string();
     let mut tx = repo.pool().begin().await.unwrap();
     let old = session_start_runtime_tx(
         &mut tx,
         runtime_init(
             card_id.clone(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Idle,
         ),
@@ -1139,14 +1139,14 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     .unwrap();
     assert_eq!(active_count.0, 0);
 
-    let replacement_card = make_card(&repo, "spec").await;
+    let replacement_card = make_card(&repo, "planner").await;
     let replacement_card_id = replacement_card.id.to_string();
     let mut tx = repo.pool().begin().await.unwrap();
     let replaced_old = session_start_runtime_tx(
         &mut tx,
         runtime_init(
             replacement_card_id.clone(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Idle,
         ),
@@ -1158,7 +1158,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
         &replaced_old.id,
         runtime_init(
             replacement_card_id.clone(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Starting,
         ),
@@ -1597,15 +1597,15 @@ async fn worker_session_spawn_op_id_stamped_only_for_worker_mints() {
         .expect("codex-create session");
     assert_eq!(codex_create_session.spawn_op_id, None);
 
-    let spec_card = make_card(&repo, "codex").await;
-    let spec_runtime_id = new_id();
+    let planner_card = make_card(&repo, "codex").await;
+    let planner_runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: spec_runtime_id.clone(),
-            card_id: spec_card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            id: planner_runtime_id.clone(),
+            card_id: planner_card.id.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -1620,12 +1620,12 @@ async fn worker_session_spawn_op_id_stamped_only_for_worker_mints() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    let spec_session = repo
-        .session_get(&WorkerSessionId(spec_runtime_id))
+    let planner_session = repo
+        .session_get(&WorkerSessionId(planner_runtime_id))
         .await
         .unwrap()
-        .expect("spec harness session");
-    assert_eq!(spec_session.spawn_op_id, None);
+        .expect("planner harness session");
+    assert_eq!(planner_session.spawn_op_id, None);
 }
 
 #[tokio::test]
@@ -2223,12 +2223,12 @@ async fn session_set_handle_state_tx_noops_for_superseded_runtime() {
 }
 
 #[tokio::test]
-async fn session_start_runtime_tx_shared_spec_thread_present_running() {
+async fn session_start_runtime_tx_shared_planner_thread_present_running() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
     let mut init = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Running,
     );
@@ -2238,7 +2238,7 @@ async fn session_start_runtime_tx_shared_spec_thread_present_running() {
     let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(runtime.kind, WorkerSessionKind::SharedSpec);
+    assert_eq!(runtime.kind, WorkerSessionKind::SharedPlanner);
     assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.thread_id.as_deref(), Some("thread-1"));
 }
@@ -2318,13 +2318,13 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
     let card = make_card(&repo, "codex").await;
     let failed = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Failed,
     );
     let mut active = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Running,
     );
@@ -2344,7 +2344,7 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
         .await
         .unwrap();
     let runtime = projected.runtime.as_ref().expect("projected card runtime");
-    assert_eq!(runtime.kind, WorkerSessionKind::SharedSpec);
+    assert_eq!(runtime.kind, WorkerSessionKind::SharedPlanner);
     assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert!(runtime.terminal_id.is_none());
@@ -2357,19 +2357,19 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
 }
 
 #[tokio::test]
-async fn runtime_shared_spec_reset_supersedes_active_runtime() {
+async fn runtime_shared_planner_reset_supersedes_active_runtime() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
     let mut first_init = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Running,
     );
     first_init.thread_id = Some("T1".into());
     let mut second_init = runtime_init(
         card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Running,
     );
@@ -2394,7 +2394,7 @@ async fn runtime_shared_spec_reset_supersedes_active_runtime() {
         .unwrap()
         .expect("active runtime");
     assert_eq!(active.id, second.id);
-    assert_eq!(active.kind, WorkerSessionKind::SharedSpec);
+    assert_eq!(active.kind, WorkerSessionKind::SharedPlanner);
     assert_eq!(active.status, WorkerSessionState::Running);
     assert_eq!(active.thread_id.as_deref(), Some("T2"));
 
@@ -2411,7 +2411,7 @@ async fn runtime_shared_spec_reset_supersedes_active_runtime() {
 }
 
 #[tokio::test]
-async fn session_start_runtime_tx_shared_spec_absent_turn_pending() {
+async fn session_start_runtime_tx_shared_planner_absent_turn_pending() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
@@ -2419,7 +2419,7 @@ async fn session_start_runtime_tx_shared_spec_absent_turn_pending() {
         &mut tx,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::TurnPending,
         ),
@@ -2570,7 +2570,7 @@ async fn runtime_active_shared_thread_attribution_returns_shared_and_codex_with_
 
     let mut shared_init = runtime_init(
         shared.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Running,
     );
@@ -2635,7 +2635,7 @@ async fn runtimes_active_for_kind_filters() {
         &mut tx,
         runtime_init(
             active_shared.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Running,
         ),
@@ -2657,7 +2657,7 @@ async fn runtimes_active_for_kind_filters() {
         &mut tx,
         runtime_init(
             completed_shared.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
             WorkerSessionState::Running,
         ),
@@ -2670,12 +2670,12 @@ async fn runtimes_active_for_kind_filters() {
     tx.commit().await.unwrap();
 
     let rows = repo
-        .session_projection_active_for_kind(WorkerSessionKind::SharedSpec)
+        .session_projection_active_for_kind(WorkerSessionKind::SharedPlanner)
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, active_shared_runtime.id);
-    assert_eq!(rows[0].kind, WorkerSessionKind::SharedSpec);
+    assert_eq!(rows[0].kind, WorkerSessionKind::SharedPlanner);
 }
 
 #[tokio::test]
@@ -2686,7 +2686,7 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
 
     let placeholder = runtime_init(
         placeholder_card.id.to_string(),
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
         Some(AgentProvider::Codex),
         WorkerSessionState::Starting,
     );
@@ -2700,7 +2700,7 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
     let codex_id = codex.id.clone();
 
     let mut tx = repo.pool().begin().await.unwrap();
-    session_prepare_deferred_spec_tx(&mut tx, &placeholder)
+    session_prepare_deferred_planner_tx(&mut tx, &placeholder)
         .await
         .unwrap();
     session_start_runtime_tx(&mut tx, codex).await.unwrap();

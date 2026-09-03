@@ -31,7 +31,7 @@ const sep = raw.indexOf(0);
 if (sep < 0) process.exit(2);
 const cards = JSON.parse(raw.subarray(0, sep).toString("utf8"));
 const track = JSON.parse(raw.subarray(sep + 1).toString("utf8")).track ?? {};
-const workers = cards.filter((c) => c.kind === "codex" && !(c.payload && c.payload.spec_harness === true));
+const workers = cards.filter((c) => c.kind === "codex" && !(c.payload && c.payload.planner_harness === true));
 const report = cards.find((c) => c.kind === "track-report");
 const body = typeof report?.payload?.body === "string" ? report.payload.body : "";
 const flags = [
@@ -66,7 +66,7 @@ multitask_poll_track() {
     if (( worker_count >= 2 )); then
       stage1_ok=1
     elif (( elapsed >= stage1 )); then
-      fail "stage 1 timed out: fewer than 2 non-spec codex worker cards after 5 minutes"
+      fail "stage 1 timed out: fewer than 2 non-planner codex worker cards after 5 minutes"
     fi
 
     if (( stage1_ok == 1 )) \

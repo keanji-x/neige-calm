@@ -220,7 +220,7 @@ pub async fn card_with_terminal_rollback_tx(
 /// On any failure the surrounding transaction rolls back; a partial state
 /// (card without terminal, or terminal without worker-session row) is
 /// impossible.
-/// PR7a (#136) — third return slot is `Some(raw_token)` for Spec/Worker
+/// PR7a (#136) — third return slot is `Some(raw_token)` for Planner/Worker
 /// cards. The caller is expected to thread the raw value into the codex
 /// daemon's `NEIGE_MCP_TOKEN` env var immediately and discard it — the
 /// hash is persisted in `card_mcp_tokens`, but the raw form is
@@ -241,7 +241,7 @@ pub async fn card_with_codex_create_tx(
     icon_fg: Option<String>,
     role: CardRole,
     // Issue #229 PR A — required deletable bit. The track-create route
-    // passes `false` (the spec card is kernel-owned, must survive
+    // passes `false` (the planner card is kernel-owned, must survive
     // direct REST / plugin-callback delete attempts). The user-facing
     // `POST /api/tracks/:id/codex-cards` route passes `true`.
     deletable: bool,
@@ -255,8 +255,8 @@ pub async fn card_with_codex_create_tx(
     //    are stamped in step 5 once we have the terminal row.
     //
     // User-facing codex creation and dispatcher paths pass
-    // `CardRole::Worker`. The track-create route passes `CardRole::Spec`
-    // so the auto-minted spec card is recognized by `enforce_role` as a
+    // `CardRole::Worker`. The track-create route passes `CardRole::Planner`
+    // so the auto-minted planner card is recognized by `enforce_role` as a
     // `TrackUpdated`-permitted emitter. The cache write-through
     // inside `card_create_with_id_tx` keeps the role visible to
     // `enforce_role` calls later in the same tx.
@@ -340,18 +340,18 @@ pub async fn card_with_codex_create_tx(
     )
     .await?;
 
-    // 6. PR7a (#136) — when the card is Spec/Worker, mint a fresh per-card
+    // 6. PR7a (#136) — when the card is Planner/Worker, mint a fresh per-card
     //    MCP token, store the hash in `card_mcp_tokens` inside the same tx
     //    (FK enforced — the card row above is the parent), and return the
     //    raw value to the caller so it can be threaded into the codex
     //    daemon's `NEIGE_MCP_TOKEN` env var.
     //
     //    Doing this here (rather than at the route layer) keeps the
-    //    invariant atomic: a committed card row whose role is Spec/Worker
+    //    invariant atomic: a committed card row whose role is Planner/Worker
     //    will *always* have a matching token row, and a rolled-back tx
     //    drops both together.
     let mut mcp_token_hash = None;
-    let mcp_token = if matches!(role, CardRole::Spec | CardRole::Worker) {
+    let mcp_token = if matches!(role, CardRole::Planner | CardRole::Worker) {
         let token = crate::mcp_auth::CardMcpToken::generate();
         let hashed = crate::mcp_auth::hash_token(token.as_str());
         card_mcp_token_set_tx(tx, card.id.as_ref(), &hashed).await?;

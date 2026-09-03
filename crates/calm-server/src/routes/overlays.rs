@@ -53,7 +53,7 @@ pub(crate) async fn overlay_scope(
 ///   * **`entity_kind`** — `view` and `system` hold kernel projections that
 ///     the kernel reads back as fact. A `kernel/view/template` row decides
 ///     whether the scheduler dispatches a track's tasks at all
-///     (`scheduler::…` admission and its in-claim backstop), whether a spec
+///     (`scheduler::…` admission and its in-claim backstop), whether a planner
 ///     harness may start, and whether the track appears in `GET /api/tracks`.
 ///     Before this gate, any client with a session could POST that row onto
 ///     a *running* track and silently strand it — dispatch stops and the track

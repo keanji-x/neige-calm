@@ -302,7 +302,7 @@
           "areas"
         ],
         "summary": "Mint a conversation and deliver its first message.",
-        "description": "# What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)\n\nA standard idempotency key promises \"same key ⇒ same recorded result,\nforever\". This endpoint deliberately promises something weaker and more\nuseful: **same key = the same retryable draft**. Slice 4 binds the key to\nthe draft the user keeps pressing send on, so replaying a failure forever\nwould turn one bad attempt into a permanently dead compose box.\n\nThe full contract, all four arms:\n\n| same key, previous attempt … | answer |\n|---|---|\n| succeeded | replays the same conversation, **does not re-send** the first message (201) |\n| terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |\n| `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |\n| failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |\n\n# Same key, different `text`\n\nThe first message's SHA-256 travels in the operation payload\n(`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part\nof `stable_payload_hash` and therefore part of what\n`OperationRuntime::submit` compares before it does anything else. Reusing a\nkey with a different body is consequently a real 409 `conflict` — no card,\nno message — rather than a silent 201 replaying whatever the key sent the\nfirst time. Only the hash travels: the payload is persisted in\n`operations.payload_json`, and the body has no business being copied there.\n\nThe one arm where a changed body is not rejected for the old hash is the\n`Failed` row above: the retry submits under a fresh `#N` operation key,\nwhich no prior payload hash is bound to. That is the intended behaviour, not\nan oversight — arm (b) exists so an edited draft can be resent after a\nfailure. What it buys is a genuine re-execution, not a guaranteed 201: the\nretry's final status is decided by that execution and can still be a failure\n(a 409 `conflict` if the derived card already exists, say).\n\nA concurrent laggard can also observe the 500 arm: if the predecessor it\nshares an operation with ended terminally failed, the replayed failure is\nwhat it gets while the leader's fresh attempt succeeds.\n\nNone of this can produce a second conversation: the **card id** is a pure\nfunction of `(area_id, Idempotency-Key)` and the `#N` suffix touches only\nthe *operation* key (see `conversation_keys::derive_area_conversation_keys` and its golden test).",
+        "description": "# What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)\n\nA standard idempotency key promises \"same key ⇒ same recorded result,\nforever\". This endpoint deliberately promises something weaker and more\nuseful: **same key = the same retryable draft**. Slice 4 binds the key to\nthe draft the user keeps pressing send on, so replaying a failure forever\nwould turn one bad attempt into a permanently dead compose box.\n\nThe full contract, all four arms:\n\n| same key, previous attempt … | answer |\n|---|---|\n| succeeded | replays the same conversation, **does not re-send** the first message (201) |\n| terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |\n| `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |\n| failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |\n\n# Same key, different `text`\n\nThe first message's SHA-256 travels in the operation payload\n(`PlannerHarnessStartOperationPayload::first_message_sha256`), so it is part\nof `stable_payload_hash` and therefore part of what\n`OperationRuntime::submit` compares before it does anything else. Reusing a\nkey with a different body is consequently a real 409 `conflict` — no card,\nno message — rather than a silent 201 replaying whatever the key sent the\nfirst time. Only the hash travels: the payload is persisted in\n`operations.payload_json`, and the body has no business being copied there.\n\nThe one arm where a changed body is not rejected for the old hash is the\n`Failed` row above: the retry submits under a fresh `#N` operation key,\nwhich no prior payload hash is bound to. That is the intended behaviour, not\nan oversight — arm (b) exists so an edited draft can be resent after a\nfailure. What it buys is a genuine re-execution, not a guaranteed 201: the\nretry's final status is decided by that execution and can still be a failure\n(a 409 `conflict` if the derived card already exists, say).\n\nA concurrent laggard can also observe the 500 arm: if the predecessor it\nshares an operation with ended terminally failed, the replayed failure is\nwhat it gets while the leader's fresh attempt succeeds.\n\nNone of this can produce a second conversation: the **card id** is a pure\nfunction of `(area_id, Idempotency-Key)` and the `#N` suffix touches only\nthe *operation* key (see `conversation_keys::derive_area_conversation_keys` and its golden test).",
         "operationId": "create_area_conversation",
         "parameters": [
           {
@@ -968,7 +968,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Spec card id",
+            "description": "Planner card id",
             "required": true,
             "schema": {
               "type": "string"
@@ -1012,7 +1012,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Persisted spec harness items",
+            "description": "Persisted planner harness items",
             "content": {
               "application/json": {
                 "schema": {
@@ -1025,7 +1025,305 @@
             }
           },
           "403": {
-            "description": "Card is not a spec codex card",
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}/planner/input": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "send_planner_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendPlannerInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "User text queued for next harness turn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendPlannerInputResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card or track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Runtime is shutting down (code `conflict`), or the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}/planner/interrupt": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "Issue #668 — stop the running planner turn.",
+        "description": "Guard chain mirrors `/planner/input` (card → role → kind), but deliberately\nWITHOUT the lazy-recovery path and its per-card lock: a harness that\nneeds recovering has, by construction, no running turn to stop, so a\nregistry miss (or no active runtime row) is the same typed 409\n`planner_harness_dormant` the input route uses — the client steers the user\nto Reset.\n\nIdle is a graceful no-op, not an error: the harness's own\n`issue_interrupt` ignores interrupts when no turn is active, so the route\nreports `stopped: false` (decided from the harness phase just before\ndispatch) and skips the operation entirely. The phase read and the\ndispatch are not atomic — a turn could start in between — but the failure\nmode is benign (the user presses Stop again). `IssuingInterrupt` also\nreports `stopped: false`: an interrupt is already in flight and\nre-dispatching would be ignored by the FSM anyway.\n\n`IssuingTurn` is a best-effort window, so it reports `stopped: false`\ntoo: while the `turn/start` RPC is in flight the shared app-server may\nnot have populated `active_turn_id_for_thread` yet, so the harness's\n`issue_interrupt` can resolve no target and no-op — the turn would then\nkeep running despite a `stopped: true` answer. The route still dispatches\nthe interrupt (it lands when the app-server already knows the turn), but\nonly `TurnRunning` — where an interrupt target is guaranteed — earns\n`stopped: true`. The user can press Stop again once the turn is running.\nNon-goal: teaching the run loop to remember a pending interrupt across\nthe Issuing window and fire it on `turn/start` completion.",
+        "operationId": "interrupt_planner_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptPlannerCardResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No live planner harness session for this card — reset to start a session (code `planner_harness_dormant`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}/planner/reset": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "reset_planner_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Planner session reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetPlannerCardResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}/planner/run": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "Issue #668 fix — read the current planner-harness phase for a card.",
+        "description": "Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike\nthe write routes a dormant harness is a normal answer for a read: no\nactive runtime row, or an active row with no registered harness, is\n`200 {runtime_id: null, phase: null}` rather than a 409.",
+        "operationId": "get_planner_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPlannerRunResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
             "content": {
               "application/json": {
                 "schema": {
@@ -1067,7 +1365,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Spec card id",
+            "description": "Planner card id",
             "required": true,
             "schema": {
               "type": "string"
@@ -1106,7 +1404,7 @@
             }
           },
           "403": {
-            "description": "Card is not a spec codex card, or actor is not the authenticated user",
+            "description": "Card is not a planner codex card, or actor is not the authenticated user",
             "content": {
               "application/json": {
                 "schema": {
@@ -1127,304 +1425,6 @@
           },
           "409": {
             "description": "Track is not awaiting ratification",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/cards/{id}/spec/input": {
-      "post": {
-        "tags": [
-          "cards"
-        ],
-        "operationId": "send_spec_input",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Spec card id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SendSpecInputRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "User text queued for next harness turn",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SendSpecInputResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Empty text",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Card is not a spec codex card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card or track not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/cards/{id}/spec/interrupt": {
-      "post": {
-        "tags": [
-          "cards"
-        ],
-        "summary": "Issue #668 — stop the running spec turn.",
-        "description": "Guard chain mirrors `/spec/input` (card → role → kind), but deliberately\nWITHOUT the lazy-recovery path and its per-card lock: a harness that\nneeds recovering has, by construction, no running turn to stop, so a\nregistry miss (or no active runtime row) is the same typed 409\n`spec_harness_dormant` the input route uses — the client steers the user\nto Reset.\n\nIdle is a graceful no-op, not an error: the harness's own\n`issue_interrupt` ignores interrupts when no turn is active, so the route\nreports `stopped: false` (decided from the harness phase just before\ndispatch) and skips the operation entirely. The phase read and the\ndispatch are not atomic — a turn could start in between — but the failure\nmode is benign (the user presses Stop again). `IssuingInterrupt` also\nreports `stopped: false`: an interrupt is already in flight and\nre-dispatching would be ignored by the FSM anyway.\n\n`IssuingTurn` is a best-effort window, so it reports `stopped: false`\ntoo: while the `turn/start` RPC is in flight the shared app-server may\nnot have populated `active_turn_id_for_thread` yet, so the harness's\n`issue_interrupt` can resolve no target and no-op — the turn would then\nkeep running despite a `stopped: true` answer. The route still dispatches\nthe interrupt (it lands when the app-server already knows the turn), but\nonly `TurnRunning` — where an interrupt target is guaranteed — earns\n`stopped: true`. The user can press Stop again once the turn is running.\nNon-goal: teaching the run loop to remember a pending interrupt across\nthe Issuing window and fire it on `turn/start` completion.",
-        "operationId": "interrupt_spec_card",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Spec card id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InterruptSpecCardResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Card is not a spec codex card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/cards/{id}/spec/reset": {
-      "post": {
-        "tags": [
-          "cards"
-        ],
-        "operationId": "reset_spec_card",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Spec card id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Spec session reset",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResetSpecCardResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Card is not a spec codex card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/cards/{id}/spec/run": {
-      "get": {
-        "tags": [
-          "cards"
-        ],
-        "summary": "Issue #668 fix — read the current spec-harness phase for a card.",
-        "description": "Guard chain mirrors `/spec/interrupt` (card → role → kind), but unlike\nthe write routes a dormant harness is a normal answer for a read: no\nactive runtime row, or an active row with no registered harness, is\n`200 {runtime_id: null, phase: null}` rather than a 409.",
-        "operationId": "get_spec_run",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Spec card id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetSpecRunResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Card is not a spec codex card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2876,7 +2876,7 @@
           "tracks"
         ],
         "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
-        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad track* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad track with no `track-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The track and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
+        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `planner-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad track* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad track with no `track-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The track and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
         "operationId": "resolve_today_launchpad",
         "responses": {
           "200": {
@@ -2969,7 +2969,7 @@
             }
           },
           "409": {
-            "description": "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.",
+            "description": "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `planner_harness_dormant` — from the underlying conversation create or planner input; a dormant harness is retried once automatically before it can reach here.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3643,8 +3643,8 @@
         "tags": [
           "tracks"
         ],
-        "summary": "`POST /api/tracks/:id/report` — user-driven track-report edit. The\nREST-side counterpart of the spec-MCP `calm.report.write` tool;\nboth paths funnel through [`crate::track_report::persist_report`]\nso the dual-event invariant (`CardUpdated` + `TrackReportEdited`)\nand the CRDT write happen identically regardless of who's editing.",
-        "description": "**Auth contract** (issue #247 PR3 acceptance):\n\n  * No session cookie → 401 (`auth::require_session` middleware\n    short-circuits before this handler runs).\n  * Authenticated session BUT non-user actor declared via\n    `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only\n    [`ActorId::User`] is allowed. This closes the \"spec card's\n    own session cookie forwards a User edit\" hole — a future\n    surface that lets the spec card hold a session must not be\n    able to bypass the User-only contract by claiming `ai:codex`.\n  * Track doesn't exist → 404.\n  * Track exists but the track-report card is missing → 500\n    (invariant violation; PR1 backfill guarantees the row).\n\nThe response is the *projected* [`TrackReportPayload`] read back\nfrom the CRDT post-merge — not the request body verbatim — so the\nfrontend sees what every other reader will see (the JSON cache\nmirrors the CRDT projection, which under single-writer is the\nsame bytes as the input, but reading from the doc keeps the\n\"CRDT is source of truth\" contract true by construction).",
+        "summary": "`POST /api/tracks/:id/report` — user-driven track-report edit. The\nREST-side counterpart of the planner-MCP `calm.report.write` tool;\nboth paths funnel through [`crate::track_report::persist_report`]\nso the dual-event invariant (`CardUpdated` + `TrackReportEdited`)\nand the CRDT write happen identically regardless of who's editing.",
+        "description": "**Auth contract** (issue #247 PR3 acceptance):\n\n  * No session cookie → 401 (`auth::require_session` middleware\n    short-circuits before this handler runs).\n  * Authenticated session BUT non-user actor declared via\n    `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only\n    [`ActorId::User`] is allowed. This closes the \"planner card's\n    own session cookie forwards a User edit\" hole — a future\n    surface that lets the planner card hold a session must not be\n    able to bypass the User-only contract by claiming `ai:codex`.\n  * Track doesn't exist → 404.\n  * Track exists but the track-report card is missing → 500\n    (invariant violation; PR1 backfill guarantees the row).\n\nThe response is the *projected* [`TrackReportPayload`] read back\nfrom the CRDT post-merge — not the request body verbatim — so the\nfrontend sees what every other reader will see (the JSON cache\nmirrors the CRDT projection, which under single-writer is the\nsame bytes as the input, but reading from the doc keeps the\n\"CRDT is source of truth\" contract true by construction).",
         "operationId": "update_track_report",
         "parameters": [
           {
@@ -3689,7 +3689,7 @@
             }
           },
           "403": {
-            "description": "Non-user actor (worker / plugin / spec) rejected",
+            "description": "Non-user actor (worker / plugin / planner) rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -4459,7 +4459,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Assistant conversations on this track, newest activity first. The track's spec card, report card and dispatched worker cards are never listed here.",
+            "description": "Assistant conversations on this track, newest activity first. The track's planner card, report card and dispatched worker cards are never listed here.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4498,7 +4498,7 @@
           "tracks"
         ],
         "summary": "Mint a track assistant conversation and deliver its first message.",
-        "description": "The `Idempotency-Key` contract, the first-message claim and both of its\nknown gaps are identical to `create_area_conversation`, whose doc comment is\nthe long-form statement of all of them; this handler differs only in the\nprofile it mints under and the namespace its ids come from. The gaps are\nrestated in brief where they bite:\n\n* the first-message claim asks \"has this CARD ever had a user message\n  enqueued?\", not \"has THIS request's message landed?\", so a foreign\n  `POST /api/cards/{id}/spec/input` between a failed send and its retry\n  satisfies the claim;\n* the evidence is written non-transactionally, so a send whose audit write\n  fails is re-sent on retry.\n\nBoth are tracked on #1098 and deliberately unchanged here: fixing them means\nfolding the first message into the mint operation, which would change both\nendpoints at once and belongs in one dedicated change rather than being\nhalf-done on the newer of the two.",
+        "description": "The `Idempotency-Key` contract, the first-message claim and both of its\nknown gaps are identical to `create_area_conversation`, whose doc comment is\nthe long-form statement of all of them; this handler differs only in the\nprofile it mints under and the namespace its ids come from. The gaps are\nrestated in brief where they bite:\n\n* the first-message claim asks \"has this CARD ever had a user message\n  enqueued?\", not \"has THIS request's message landed?\", so a foreign\n  `POST /api/cards/{id}/planner/input` between a failed send and its retry\n  satisfies the claim;\n* the evidence is written non-transactionally, so a send whose audit write\n  fails is re-sent on retry.\n\nBoth are tracked on #1098 and deliberately unchanged here: fixing them means\nfolding the first message into the mint operation, which would change both\nendpoints at once and belongs in one dedicated change rather than being\nhalf-done on the newer of the two.",
         "operationId": "create_track_conversation",
         "parameters": [
           {
@@ -4542,7 +4542,7 @@
             }
           },
           "400": {
-            "description": "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.",
+            "description": "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4972,7 +4972,7 @@
           },
           "deletable": {
             "type": "boolean",
-            "description": "Issue #229 PR A — system-card guard. `true` for user-facing cards\n(the default; all pre-#229 rows backfill via the column DEFAULT in\nmigration 0013). `false` for kernel-owned cards that the user\ncannot remove via REST / plugin callbacks — currently spec cards\n(retroactively undeletable via the same migration's UPDATE) and\nPR B's track-report cards.\n\n`#[serde(default = \"default_deletable\")]` so wire payloads emitted\nbefore #229 landed (event-log replay fixtures, old test seeds)\nparse as `true` without forcing a fixture rewrite — matches the\nDB DEFAULT (1) in migration 0013. The default-fn lives below\nbecause `bool::default()` would give `false` (the *un*safe\nfallback for a deny-by-omission auth bit)."
+            "description": "Issue #229 PR A — system-card guard. `true` for user-facing cards\n(the default; all pre-#229 rows backfill via the column DEFAULT in\nmigration 0013). `false` for kernel-owned cards that the user\ncannot remove via REST / plugin callbacks — currently planner cards\n(retroactively undeletable via the same migration's UPDATE) and\nPR B's track-report cards.\n\n`#[serde(default = \"default_deletable\")]` so wire payloads emitted\nbefore #229 landed (event-log replay fixtures, old test seeds)\nparse as `true` without forcing a fixture rewrite — matches the\nDB DEFAULT (1) in migration 0013. The default-fn lives below\nbecause `bool::default()` would give `false` (the *un*safe\nfallback for a deny-by-omission auth bit)."
           },
           "id": {
             "type": "string"
@@ -5056,7 +5056,7 @@
         "description": "Authorization role persisted on each card and enforced by `role_gate`.",
         "enum": [
           "worker",
-          "spec",
+          "planner",
           "reportcard",
           "assistant"
         ]
@@ -5208,7 +5208,7 @@
           },
           "as_template": {
             "type": "boolean",
-            "description": "When true, upsert the kernel view/template overlay in the same create\ntransaction as the layout overlay and do not start the spec harness."
+            "description": "When true, upsert the kernel view/template overlay in the same create\ntransaction as the layout overlay and do not start the planner harness."
           },
           "attach_folder": {
             "type": "boolean"
@@ -5251,7 +5251,7 @@
           },
           "title": {
             "type": "string",
-            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe track's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled track` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The spec\nagent then names the track via `calm.track.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
+            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe track's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled track` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The planner\nagent then names the track via `calm.track.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
           }
         },
         "additionalProperties": false
@@ -5342,7 +5342,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`plugin_manifest_unloaded`, `plugin_config_corrupt`,\n`spec_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`plugin_manifest_unloaded`, `plugin_config_corrupt`,\n`planner_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -5384,9 +5384,9 @@
           "descendant"
         ]
       },
-      "GetSpecRunResponse": {
+      "GetPlannerRunResponse": {
         "type": "object",
-        "description": "Issue #668 fix — current spec-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{runtime_id: null, phase: null}` answer.",
+        "description": "Issue #668 fix — current planner-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{runtime_id: null, phase: null}` answer.",
         "required": [
           "card_id"
         ],
@@ -5418,7 +5418,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/SpecRunTokenUsage",
+                "$ref": "#/components/schemas/PlannerRunTokenUsage",
                 "description": "#1255 S3 — latest context-window usage, or null when the harness is\ndormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.\n\nKnown consequence, recorded rather than fixed in this commit: a dormant\nconversation reports `null` here even though the reading IS on disk in\n`worker_sessions.handle_state`. This whole endpoint reads the live\nin-memory harness (registry hit on the active runtime row) and answers\n`phase: null` when there is none — see the handler. Token usage\ninherits that exactly, so a card whose harness has been shut down shows\nno meter until something respawns it. The UI slice decides whether\nthat is acceptable or whether the dormant path should fall back to the\npersisted snapshot; the kernel slice does not pick for it."
               }
             ]
@@ -5652,7 +5652,7 @@
           }
         ]
       },
-      "InterruptSpecCardResponse": {
+      "InterruptPlannerCardResponse": {
         "type": "object",
         "required": [
           "card_id",
@@ -5750,7 +5750,7 @@
         "properties": {
           "text": {
             "type": "string",
-            "description": "The first message. Validated exactly like `POST /api/cards/{id}/spec/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
+            "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
           }
         }
       },
@@ -5993,7 +5993,7 @@
           },
           "cwd": {
             "type": "string",
-            "description": "Issue #250 PR 2 — absolute filesystem path the spec daemon will\nspawn under. Required (no `Option`): every track-creating path\nmust declare a cwd or the spec daemon has no defensible\nworking directory. The `POST /api/tracks` route enforces\nabsolute-path shape and the area-folder claim check; the\ninner `track_create_tx` writes whatever the route lands here\nverbatim."
+            "description": "Issue #250 PR 2 — absolute filesystem path the planner daemon will\nspawn under. Required (no `Option`): every track-creating path\nmust declare a cwd or the planner daemon has no defensible\nworking directory. The `POST /api/tracks` route enforces\nabsolute-path shape and the area-folder claim check; the\ninner `track_create_tx` writes whatever the route lands here\nverbatim."
           },
           "plugin_scope": {
             "type": [
@@ -6020,11 +6020,11 @@
               "object",
               "null"
             ],
-            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the planner harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted spec card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every track-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::track_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::tracks::create_track`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
+            "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted planner card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe planner card is invisible to the user and a silent fallback\nwould mean every track-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::track_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — planner-card\nspawning is owned by `routes::tracks::create_track`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
           },
           "title": {
             "type": "string"
@@ -6041,7 +6041,7 @@
         "properties": {
           "text": {
             "type": "string",
-            "description": "The first message. Validated exactly like `POST /api/cards/{id}/spec/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
+            "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
           }
         }
       },
@@ -6122,6 +6122,42 @@
           },
           "entity_kind": {
             "type": "string"
+          }
+        }
+      },
+      "PlannerRunTokenUsage": {
+        "type": "object",
+        "description": "#1255 S3 — the context-usage half of [`GetPlannerRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
+        "required": [
+          "used_tokens",
+          "at_ms"
+        ],
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock ms of the codex frame this reading came from.\n\nShipped because the reading survives a reboot: it rides the runtime\nsnapshot, so a harness respawned by boot recovery or by lazy recovery\nserves whatever number was last observed — possibly months ago — and\nwithout this field a rehydrated reading is indistinguishable on the\nwire from a live one. A UI that draws a meter needs to be able to say\n\"as of then\", or to stop drawing it. The kernel does not pick a\nstaleness threshold; it ships the timestamp so a reader can."
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The model's context window, or null when codex has never reported one."
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Context occupancy as a whole percentage, `0.0..=100.0`.\n\nNull means \"no percentage can honestly be stated\": no known window, a\nwindow at or below the 12000-token baseline, or `used_tokens` above\nthe window. That last case is deliberately NOT clamped to 100 — see\n`TokenUsage::percent`. Render the raw count with no meter."
+          },
+          "used_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens in the model's context as of the most recent response\n(`tokenUsage.last.totalTokens` upstream). Always present — this is the\nraw evidence, and it ships even when `percent` does not."
           }
         }
       },
@@ -6449,7 +6485,7 @@
         },
         "additionalProperties": false
       },
-      "ResetSpecCardResponse": {
+      "ResetPlannerCardResponse": {
         "type": "object",
         "required": [
           "card_id",
@@ -6490,7 +6526,7 @@
           }
         }
       },
-      "SendSpecInputRequest": {
+      "SendPlannerInputRequest": {
         "type": "object",
         "required": [
           "text"
@@ -6501,7 +6537,7 @@
           }
         }
       },
-      "SendSpecInputResponse": {
+      "SendPlannerInputResponse": {
         "type": "object",
         "required": [
           "card_id",
@@ -6549,42 +6585,6 @@
             "propertyNames": {
               "type": "string"
             }
-          }
-        }
-      },
-      "SpecRunTokenUsage": {
-        "type": "object",
-        "description": "#1255 S3 — the context-usage half of [`GetSpecRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
-        "required": [
-          "used_tokens",
-          "at_ms"
-        ],
-        "properties": {
-          "at_ms": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Wall-clock ms of the codex frame this reading came from.\n\nShipped because the reading survives a reboot: it rides the runtime\nsnapshot, so a harness respawned by boot recovery or by lazy recovery\nserves whatever number was last observed — possibly months ago — and\nwithout this field a rehydrated reading is indistinguishable on the\nwire from a live one. A UI that draws a meter needs to be able to say\n\"as of then\", or to stop drawing it. The kernel does not pick a\nstaleness threshold; it ships the timestamp so a reader can."
-          },
-          "context_window": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "The model's context window, or null when codex has never reported one."
-          },
-          "percent": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "double",
-            "description": "Context occupancy as a whole percentage, `0.0..=100.0`.\n\nNull means \"no percentage can honestly be stated\": no known window, a\nwindow at or below the 12000-token baseline, or `used_tokens` above\nthe window. That last case is deliberately NOT clamped to 100 — see\n`TokenUsage::percent`. Render the raw count with no meter."
-          },
-          "used_tokens": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Tokens in the model's context as of the most recent response\n(`tokenUsage.last.totalTokens` upstream). Always present — this is the\nraw evidence, and it ships even when `percent` does not."
           }
         }
       },
@@ -6681,12 +6681,12 @@
         "type": "object",
         "required": [
           "track_id",
-          "spec_card_id",
+          "planner_card_id",
           "terminal_card_id",
           "terminal_id"
         ],
         "properties": {
-          "spec_card_id": {
+          "planner_card_id": {
             "type": "string"
           },
           "terminal_card_id": {
@@ -6926,7 +6926,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The assistant card's id. This is the conversation's identity everywhere,\nand it is also the card the CARDS panel and `/api/cards/{id}/spec/*`\naddress."
+            "description": "The assistant card's id. This is the conversation's identity everywhere,\nand it is also the card the CARDS panel and `/api/cards/{id}/planner/*`\naddress."
           },
           "kind": {
             "type": "string",
@@ -7357,7 +7357,7 @@
       },
       "TrackLifecycle": {
         "type": "string",
-        "description": "Issue #145 — Track lifecycle state machine.\n\nOne explicit state per track, advanced through a typed state machine\n(see `crate::track_lifecycle`). The Spec Agent drives the happy path\n(`draft → planning → dispatching → working → reviewing → done`);\nthe user can cancel any non-terminal state and reopen terminals;\nworker cards have no authority to touch this field at all.\n\n**`archived` is intentionally NOT a lifecycle state.** Archive is\nvisibility / history management, orthogonal to execution semantics —\na `done`/`failed`/`canceled` track can also be archived without\ndestroying the lifecycle truth. Archival continues to live on the\nexisting `archived_at: Option<i64>` field.\n\nPersisted as a lowercase string in `tracks.lifecycle` (migration\n0012). The serde + sqlx `rename_all = \"lowercase\"` keeps the wire\nand storage shape stable; ts-rs exports the matching TS union into\n`fe/core/api/generated/wire.ts` so the frontend can render the\nbadge against the same vocabulary.",
+        "description": "Issue #145 — Track lifecycle state machine.\n\nOne explicit state per track, advanced through a typed state machine\n(see `crate::track_lifecycle`). The Planner Agent drives the happy path\n(`draft → planning → dispatching → working → reviewing → done`);\nthe user can cancel any non-terminal state and reopen terminals;\nworker cards have no authority to touch this field at all.\n\n**`archived` is intentionally NOT a lifecycle state.** Archive is\nvisibility / history management, orthogonal to execution semantics —\na `done`/`failed`/`canceled` track can also be archived without\ndestroying the lifecycle truth. Archival continues to live on the\nexisting `archived_at: Option<i64>` field.\n\nPersisted as a lowercase string in `tracks.lifecycle` (migration\n0012). The serde + sqlx `rename_all = \"lowercase\"` keeps the wire\nand storage shape stable; ts-rs exports the matching TS union into\n`fe/core/api/generated/wire.ts` so the frontend can render the\nbadge against the same vocabulary.",
         "enum": [
           "draft",
           "planning",
@@ -7408,6 +7408,14 @@
             "format": "int64",
             "description": "Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,\nor omit (`None`) to leave alone."
           },
+          "planner_task_ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #985 — maximum admitted planner-declared task inventory. A\npresent null resets to the kernel default."
+          },
           "require_task_gates": {
             "type": [
               "boolean",
@@ -7421,14 +7429,6 @@
               "null"
             ],
             "format": "double"
-          },
-          "spec_task_ceiling": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Issue #985 — maximum admitted spec-declared task inventory. A\npresent null resets to the kernel default."
           },
           "task_budget": {
             "type": [
@@ -7450,7 +7450,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a\ntrack with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+            "description": "Issue #985 slice 6 PR-B — budget for the non-terminal planner inventory of\nthe WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a\ntrack with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
           },
           "workspace": {
             "oneOf": [
@@ -7503,7 +7503,7 @@
           },
           "summary": {
             "type": "string",
-            "description": "One-line summary used by sidebars / track-list previews. Empty\nstring is valid (means \"spec agent has not produced a summary\nyet\"); the field stays a required `String` per the\n[[required-over-option]] rule."
+            "description": "One-line summary used by sidebars / track-list previews. Empty\nstring is valid (means \"planner agent has not produced a summary\nyet\"); the field stays a required `String` per the\n[[required-over-option]] rule."
           }
         }
       },
@@ -7706,7 +7706,7 @@
       },
       "UpdateTrackReportBody": {
         "type": "object",
-        "description": "Request body for `POST /api/tracks/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`TrackReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`TrackReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
+        "description": "Request body for `POST /api/tracks/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`TrackReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Planner` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`TrackReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
         "required": [
           "ifDocRev",
           "summary",

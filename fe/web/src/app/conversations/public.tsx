@@ -57,14 +57,14 @@ export type ConversationRegistry = Readonly<{
   requestedOpenFocusesComposer: boolean;
   requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
-  /* There is deliberately no "open the spec conversation of track W" slot here
+  /* There is deliberately no "open the planner conversation of track W" slot here
      (#1211 S2). It was one, and a global slot cannot own that intent: the track
      the reader is leaving is still mounted when a create states it, and every
      track route body can read and clear a slot addressed to a different one.
      The intent now travels in the history entry the create navigates to —
-     `app/router/navigation.ts`, `useSpecOpenIntent` — and reaches this
+     `app/router/navigation.ts`, `usePlannerOpenIntent` — and reaches this
      registry only as the ordinary `requestOpen` the target route issues once
-     it knows its own spec card. */
+     it knows its own planner card. */
 }>;
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);

@@ -21,7 +21,7 @@ use super::manifest::View;
 use super::mcp::{ResourceContent, ResourceContents};
 use super::registry::PluginRegistry;
 
-/// MIME type the MCP Apps spec stipulates for HTML resources backing an iframe.
+/// MIME type the MCP Apps planner stipulates for HTML resources backing an iframe.
 /// The `profile=mcp-app` parameter is the discriminator AppBridge uses to
 /// decide whether to wrap the body in a sandboxed double-iframe versus
 /// rendering inline.
@@ -57,7 +57,7 @@ pub enum ResourceError {
 
 /// Parse `ui://<plugin>/<view>` (no trailing slash, no scheme variations).
 ///
-/// We're strict on shape: the spec leaves the URI authority component open
+/// We're strict on shape: the planner leaves the URI authority component open
 /// per host, and we picked `<plugin_id>` per the M3 design doc §7.6 row 1.
 /// A `/` after the view_id is rejected for now — multi-asset views land in
 /// a later slice if we need them.

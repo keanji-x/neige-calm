@@ -14,7 +14,7 @@ function textArg(diagnostic: Diagnostic, key: string): string {
 }
 
 function RelatedBlocks({ diagnostic, trackId }: { diagnostic: Diagnostic; trackId?: string }) {
-  const actionLabel = diagnostic.action === 'raise_spec_task_ceiling' || diagnostic.action === 'raise_tree_task_budget'
+  const actionLabel = diagnostic.action === 'raise_planner_task_ceiling' || diagnostic.action === 'raise_tree_task_budget'
     ? 'Review capacity'
     : 'Open related item';
   if (diagnostic.relatedBlockIds.length === 0 && !diagnostic.relatedTrackId) return null;
@@ -64,9 +64,9 @@ const taskDiagnosticCopy = Object.freeze({
   dependency_cycle: (d: Diagnostic) => `These tasks wait on each other: ${textArg(d, 'keys')}. Break one dependency to continue.`,
   unknown_dependency: (d: Diagnostic) => `“${textArg(d, 'dependency')}” is not a task card here. It may only exist as an older task row; link this card to a current task key.`,
   gate_required: () => 'This track requires checks. Add a check, or explain why this task does not need one.',
-  spec_task_ceiling: (d: Diagnostic) => {
-    const minimum = typeof d.messageArgs.minimum_spec_task_ceiling === 'number'
-      ? d.messageArgs.minimum_spec_task_ceiling
+  planner_task_ceiling: (d: Diagnostic) => {
+    const minimum = typeof d.messageArgs.minimum_planner_task_ceiling === 'number'
+      ? d.messageArgs.minimum_planner_task_ceiling
       : undefined;
     const exactRaise = minimum === undefined
       ? 'Raise the limit in track settings'

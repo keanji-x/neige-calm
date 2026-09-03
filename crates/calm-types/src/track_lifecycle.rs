@@ -1,12 +1,12 @@
 //! Issue #145 — Track lifecycle state machine.
 //!
 //! Single source of truth for which `(from, to, actor)` triples are
-//! permitted. The Spec Agent drives the happy path, the user owns
+//! permitted. The Planner Agent drives the happy path, the user owns
 //! kickoff / cancel / reopen, worker cards have no authority at all.
 //!
 //! ## Why this lives in the kernel
 //!
-//! The Spec Agent's job in the user's framing is to **manage Track state
+//! The Planner Agent's job in the user's framing is to **manage Track state
 //! correctly** — that's only meaningful if "correct" is enforced by the
 //! kernel rather than asked of the LLM as a vibe. Every track-state
 //! change funnels through `validate_transition` *before* the
@@ -27,7 +27,7 @@
 //!
 //! ## Rules at a glance
 //!
-//! | Edge                                       | User | SpecAgent | Worker |
+//! | Edge                                       | User | PlannerAgent | Worker |
 //! |--------------------------------------------|------|-----------|--------|
 //! | `draft → planning`  (kickoff)              | yes  | yes       | no     |
 //! | `planning → dispatching`                   | no   | yes       | no     |
@@ -45,7 +45,7 @@
 //! | (no-op) `state → same state`               | yes\*| yes\*     | no     |
 //!
 //! \* Same-state transitions are an **idempotent silent success** for
-//! actors that have any lifecycle authority at all (User, SpecAgent /
+//! actors that have any lifecycle authority at all (User, PlannerAgent /
 //! Kernel). The validator returns `Ok(())` early after the actor-
 //! authority check; the caller is expected to skip emitting
 //! `TrackLifecycleChanged` (nothing changed) and to leave the row's
@@ -56,10 +56,10 @@
 //! Anything not on this table is rejected. Worker cards (the
 //! `ActorId::AiCodex` / `ActorId::AiClaude` whose `CardRole` is `Worker`)
 //! **never** drive a lifecycle transition — they emit task-level events
-//! only and the Spec Agent reacts. The Dispatcher
+//! only and the Planner Agent reacts. The Dispatcher
 //! (`ActorId::KernelDispatcher`) is
 //! likewise out of the lifecycle business; it reports dispatch results
-//! and the Spec Agent decides what state follows.
+//! and the Planner Agent decides what state follows.
 //!
 //! ## Scope vs role gate
 //!
@@ -77,27 +77,27 @@ use thiserror::Error;
 /// `ActorId` via [`actor_kind`]:
 ///
 ///   * `User` → the human via REST.
-///   * `SpecAgent` → an `ActorId::AiSpec(_)` (the track's spec card).
+///   * `PlannerAgent` → an `ActorId::AiPlanner(_)` (the track's planner card).
 ///     Also catches `ActorId::Kernel` and `ActorId::KernelDispatcher`
 ///     as a defense-in-depth — they're server-internal kernel writes
-///     and can drive any spec-permitted transition.
+///     and can drive any planner-permitted transition.
 ///   * `Worker` → an `ActorId::AiCodex(_)` / `ActorId::AiClaude(_)`.
 ///     Always rejected.
 ///   * `Other` → plugins, etc. Rejected; lifecycle is not theirs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActorKind {
     User,
-    SpecAgent,
+    PlannerAgent,
     Worker,
     Other,
 }
 
 /// Classify an `ActorId` into the lifecycle authority label.
 ///
-/// Notes on the AiSpec / worker split:
-///   * `ActorId::AiSpec(_)` is always treated as `SpecAgent`. The
+/// Notes on the AiPlanner / worker split:
+///   * `ActorId::AiPlanner(_)` is always treated as `PlannerAgent`. The
 ///     in-tx `role_gate` already confirms the bound card's role is
-///     actually `Spec` (a misnamed AiSpec carrying a non-Spec card is
+///     actually `Planner` (a misnamed AiPlanner carrying a non-Planner card is
 ///     refused upstream before this function runs).
 ///   * `ActorId::AiCodex(_)` / `ActorId::AiClaude(_)` is `Worker`
 ///     regardless of cached role and has no lifecycle authority by
@@ -107,8 +107,8 @@ pub fn actor_kind(actor: &ActorId) -> ActorKind {
         ActorId::User => ActorKind::User,
         ActorId::Kernel
         | ActorId::KernelDispatcher
-        | ActorId::AiSpec(_)
-        | ActorId::AiSpecSession(_) => ActorKind::SpecAgent,
+        | ActorId::AiPlanner(_)
+        | ActorId::AiPlannerSession(_) => ActorKind::PlannerAgent,
         ActorId::AiCodex(_)
         | ActorId::AiClaude(_)
         | ActorId::AiCodexSession(_)
@@ -117,10 +117,10 @@ pub fn actor_kind(actor: &ActorId) -> ActorKind {
     }
 }
 
-/// True when the actor represents the spec author identity, independent of
+/// True when the actor represents the planner author identity, independent of
 /// whether the actor is still card-keyed or already session-keyed.
-pub fn actor_is_spec_author(actor: &ActorId) -> bool {
-    matches!(actor, ActorId::AiSpec(_) | ActorId::AiSpecSession(_))
+pub fn actor_is_planner_author(actor: &ActorId) -> bool {
+    matches!(actor, ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_))
 }
 
 /// What the validator returns when a transition is denied. Mapped at
@@ -147,9 +147,9 @@ pub enum TransitionError {
     },
 
     /// The (from → to) edge exists, but this actor isn't authorized
-    /// to drive it. E.g. a Spec Agent trying to cancel (cancel is
+    /// to drive it. E.g. a Planner Agent trying to cancel (cancel is
     /// user-only), or a User trying to perform `planning →
-    /// dispatching` (spec-only). Worker cards and plugins fall into
+    /// dispatching` (planner-only). Worker cards and plugins fall into
     /// this bucket for *any* transition — including same-state — since
     /// they have zero lifecycle authority.
     #[error(
@@ -187,7 +187,7 @@ pub fn validate_transition(
     let kind = actor_kind(actor);
 
     // Worker cards never drive lifecycle. Reject up front so the
-    // edge-permission table below stays focused on the User/SpecAgent
+    // edge-permission table below stays focused on the User/PlannerAgent
     // split — and so even a same-state `lifecycle: X` from a worker
     // hits `NotAuthorized` rather than the idempotency shortcut.
     if kind == ActorKind::Worker {
@@ -217,7 +217,7 @@ pub fn validate_transition(
     }
 
     // Cancel is user-only and goes from any non-terminal state. The
-    // user can always cancel; the Spec Agent never can (giving up is
+    // user can always cancel; the Planner Agent never can (giving up is
     // a human decision in Neige's product model).
     if to == TrackLifecycle::Canceled {
         if from.is_terminal() {
@@ -236,7 +236,7 @@ pub fn validate_transition(
     // Reopen: terminal (done/canceled/failed) → planning is the
     // user-only escape hatch. Picking `planning` keeps the reopened
     // track on the happy path's first non-draft state — the user
-    // doesn't have to re-do goal entry, but the Spec Agent gets a
+    // doesn't have to re-do goal entry, but the Planner Agent gets a
     // clean start when it next picks up the track.
     if from.is_terminal() {
         if to == TrackLifecycle::Planning {
@@ -253,30 +253,30 @@ pub fn validate_transition(
     }
 
     // Happy-path edges. The (from, to) tuple must be in this table;
-    // the per-edge authority list narrows down to User vs SpecAgent.
+    // the per-edge authority list narrows down to User vs PlannerAgent.
     // `to == Canceled` and the reopen branch were handled above; this
     // table is for the non-cancel, non-reopen edges.
-    let (allow_user, allow_spec) = match (from, to) {
-        // Kickoff. Both User (manual start) and SpecAgent (auto-
-        // start) can drive draft → planning. The spec-driven path lets
-        // harness-backed spec sessions advance themselves; the user-driven
+    let (allow_user, allow_planner) = match (from, to) {
+        // Kickoff. Both User (manual start) and PlannerAgent (auto-
+        // start) can drive draft → planning. The planner-driven path lets
+        // harness-backed planner sessions advance themselves; the user-driven
         // path is the "Start" button in the UI.
         (TrackLifecycle::Draft, TrackLifecycle::Planning) => (true, true),
 
         // #741-4 (DR-1) — kernel dead-root convergence terminal edges.
-        // A failed-start root stalls inert in `Draft` (the spec-harness
-        // start-op failed; `create_track_with_spec_harness` only warns) and a
+        // A failed-start root stalls inert in `Draft` (the planner-harness
+        // start-op failed; `create_track_with_planner_harness` only warns) and a
         // root that dies mid-plan stalls in `Planning`. The reaper's dead-root
         // scan drives these to `Failed` on a POSITIVE dead signal only.
-        // Spec-authority (`allow_user=false, allow_spec=true`): authored by
-        // `ActorId::KernelDispatcher`, which classifies `SpecAgent` — the
+        // Planner-authority (`allow_user=false, allow_planner=true`): authored by
+        // `ActorId::KernelDispatcher`, which classifies `PlannerAgent` — the
         // kernel can drive them, but a user cannot skip a live track to Failed.
-        // This mirrors the existing `Reviewing→Failed` precedent (spec cards
+        // This mirrors the existing `Reviewing→Failed` precedent (planner cards
         // share the authority; accepted, not "kernel-only").
         (TrackLifecycle::Draft, TrackLifecycle::Failed) => (false, true),
         (TrackLifecycle::Planning, TrackLifecycle::Failed) => (false, true),
 
-        // Spec-only progressions through the happy path.
+        // Planner-only progressions through the happy path.
         (TrackLifecycle::Planning, TrackLifecycle::Dispatching) => (false, true),
         (TrackLifecycle::Dispatching, TrackLifecycle::Working) => (false, true),
         (TrackLifecycle::Working, TrackLifecycle::Blocked) => (false, true),
@@ -286,7 +286,7 @@ pub fn validate_transition(
         (TrackLifecycle::Reviewing, TrackLifecycle::Failed) => (false, true),
 
         // Unblock. Both User (manual unblock after providing input)
-        // and SpecAgent (auto-recovery) can drive blocked → working.
+        // and PlannerAgent (auto-recovery) can drive blocked → working.
         (TrackLifecycle::Blocked, TrackLifecycle::Working) => (true, true),
 
         // Everything else is structurally illegal regardless of
@@ -297,7 +297,7 @@ pub fn validate_transition(
 
     match kind {
         ActorKind::User if allow_user => Ok(()),
-        ActorKind::SpecAgent if allow_spec => Ok(()),
+        ActorKind::PlannerAgent if allow_planner => Ok(()),
         _ => Err(TransitionError::NotAuthorized {
             from,
             to,
@@ -328,8 +328,8 @@ mod tests {
         ActorId::User
     }
 
-    fn spec() -> ActorId {
-        ActorId::AiSpec(CardId::from("spec-1"))
+    fn planner() -> ActorId {
+        ActorId::AiPlanner(CardId::from("planner-1"))
     }
 
     fn worker() -> ActorId {
@@ -354,21 +354,21 @@ mod tests {
         let mut edges = vec![
             // kickoff (both)
             (L::Draft, L::Planning, ActorKind::User),
-            (L::Draft, L::Planning, ActorKind::SpecAgent),
-            // spec-only happy path
-            (L::Planning, L::Dispatching, ActorKind::SpecAgent),
-            (L::Dispatching, L::Working, ActorKind::SpecAgent),
-            (L::Working, L::Blocked, ActorKind::SpecAgent),
-            (L::Working, L::Reviewing, ActorKind::SpecAgent),
-            (L::Reviewing, L::Working, ActorKind::SpecAgent),
-            (L::Reviewing, L::Done, ActorKind::SpecAgent),
-            (L::Reviewing, L::Failed, ActorKind::SpecAgent),
-            // #741-4 (DR-1) — kernel dead-root convergence (spec-authority)
-            (L::Draft, L::Failed, ActorKind::SpecAgent),
-            (L::Planning, L::Failed, ActorKind::SpecAgent),
+            (L::Draft, L::Planning, ActorKind::PlannerAgent),
+            // planner-only happy path
+            (L::Planning, L::Dispatching, ActorKind::PlannerAgent),
+            (L::Dispatching, L::Working, ActorKind::PlannerAgent),
+            (L::Working, L::Blocked, ActorKind::PlannerAgent),
+            (L::Working, L::Reviewing, ActorKind::PlannerAgent),
+            (L::Reviewing, L::Working, ActorKind::PlannerAgent),
+            (L::Reviewing, L::Done, ActorKind::PlannerAgent),
+            (L::Reviewing, L::Failed, ActorKind::PlannerAgent),
+            // #741-4 (DR-1) — kernel dead-root convergence (planner-authority)
+            (L::Draft, L::Failed, ActorKind::PlannerAgent),
+            (L::Planning, L::Failed, ActorKind::PlannerAgent),
             // unblock (both)
             (L::Blocked, L::Working, ActorKind::User),
-            (L::Blocked, L::Working, ActorKind::SpecAgent),
+            (L::Blocked, L::Working, ActorKind::PlannerAgent),
             // user-only: cancel from any non-terminal
             (L::Draft, L::Canceled, ActorKind::User),
             (L::Planning, L::Canceled, ActorKind::User),
@@ -382,12 +382,12 @@ mod tests {
             (L::Failed, L::Planning, ActorKind::User),
         ];
         // Idempotent same-state shortcut: any authorized actor
-        // (User, SpecAgent) gets `Ok(())` for `state → same state`.
+        // (User, PlannerAgent) gets `Ok(())` for `state → same state`.
         // Workers and plugins still hit `NotAuthorized`; that's
         // covered by the per-actor prohibition tests below.
         for state in ALL_STATES {
             edges.push((state, state, ActorKind::User));
-            edges.push((state, state, ActorKind::SpecAgent));
+            edges.push((state, state, ActorKind::PlannerAgent));
         }
         edges
     }
@@ -395,7 +395,7 @@ mod tests {
     fn actor_for_kind(kind: ActorKind) -> ActorId {
         match kind {
             ActorKind::User => user(),
-            ActorKind::SpecAgent => spec(),
+            ActorKind::PlannerAgent => planner(),
             ActorKind::Worker => worker(),
             ActorKind::Other => plugin(),
         }
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn exhaustive_transition_table_matches_rule_set() {
         // For every (from, to, actor) triple in
-        // {9 states} × {9 states} × {User, SpecAgent, Worker, Other},
+        // {9 states} × {9 states} × {User, PlannerAgent, Worker, Other},
         // assert validate_transition's answer matches the rule table.
         let legal: std::collections::HashSet<_> = legal_edges().into_iter().collect();
 
@@ -414,7 +414,7 @@ mod tests {
             for to in ALL_STATES {
                 for kind in [
                     ActorKind::User,
-                    ActorKind::SpecAgent,
+                    ActorKind::PlannerAgent,
                     ActorKind::Worker,
                     ActorKind::Other,
                 ] {
@@ -485,7 +485,7 @@ mod tests {
             if from == TrackLifecycle::Reviewing || from == TrackLifecycle::Done {
                 continue;
             }
-            for actor in [user(), spec()] {
+            for actor in [user(), planner()] {
                 let res = validate_transition(from, TrackLifecycle::Done, &actor);
                 assert!(
                     res.is_err(),
@@ -513,7 +513,7 @@ mod tests {
                 if from == to {
                     continue; // same-state idempotency — covered separately
                 }
-                for actor in [user(), spec(), worker(), plugin()] {
+                for actor in [user(), planner(), worker(), plugin()] {
                     let res = validate_transition(from, to, &actor);
                     assert!(
                         res.is_err(),
@@ -528,12 +528,17 @@ mod tests {
 
     #[test]
     fn same_state_is_idempotent_for_authorized_actors() {
-        // An authorized actor (User, SpecAgent / Kernel) asking for
+        // An authorized actor (User, PlannerAgent / Kernel) asking for
         // the state the track is already in is a silent success. The
         // caller is then expected to skip the `TrackLifecycleChanged`
         // emit; call-site integration tests cover the no-event path.
         for state in ALL_STATES {
-            for actor in [user(), spec(), ActorId::Kernel, ActorId::KernelDispatcher] {
+            for actor in [
+                user(),
+                planner(),
+                ActorId::Kernel,
+                ActorId::KernelDispatcher,
+            ] {
                 let res = validate_transition(state, state, &actor);
                 assert!(
                     res.is_ok(),
@@ -564,8 +569,8 @@ mod tests {
     // ----- Authority split ------------------------------------------------
 
     #[test]
-    fn spec_cannot_cancel() {
-        // The user is the only actor that can cancel — the Spec
+    fn planner_cannot_cancel() {
+        // The user is the only actor that can cancel — the Planner
         // Agent giving up is a human decision in Neige's product
         // model. Pin so a future refactor can't silently widen this.
         for from in [
@@ -576,21 +581,21 @@ mod tests {
             TrackLifecycle::Blocked,
             TrackLifecycle::Reviewing,
         ] {
-            let res = validate_transition(from, TrackLifecycle::Canceled, &spec());
+            let res = validate_transition(from, TrackLifecycle::Canceled, &planner());
             assert!(
                 matches!(res, Err(TransitionError::NotAuthorized { .. })),
-                "spec should not cancel {from:?}: {res:?}"
+                "planner should not cancel {from:?}: {res:?}"
             );
         }
     }
 
     #[test]
-    fn user_cannot_drive_spec_only_progressions() {
-        // The user is not allowed to skip ahead on the spec-driven
+    fn user_cannot_drive_planner_only_progressions() {
+        // The user is not allowed to skip ahead on the planner-driven
         // happy path. Each of these edges is `(false, true)` in the
         // implementation; we re-assert here so an accidental flip to
         // `(true, true)` surfaces as a test diff.
-        let spec_only = [
+        let planner_only = [
             (TrackLifecycle::Planning, TrackLifecycle::Dispatching),
             (TrackLifecycle::Dispatching, TrackLifecycle::Working),
             (TrackLifecycle::Working, TrackLifecycle::Blocked),
@@ -598,29 +603,29 @@ mod tests {
             (TrackLifecycle::Reviewing, TrackLifecycle::Working),
             (TrackLifecycle::Reviewing, TrackLifecycle::Done),
             (TrackLifecycle::Reviewing, TrackLifecycle::Failed),
-            // #741-4 (DR-1) — dead-root convergence edges are spec-authority:
+            // #741-4 (DR-1) — dead-root convergence edges are planner-authority:
             // a user must NOT be able to skip a live Draft/Planning track to
             // Failed (that's the kernel reaper's job, on a positive dead
             // signal). An accidental flip to (true, true) surfaces here.
             (TrackLifecycle::Draft, TrackLifecycle::Failed),
             (TrackLifecycle::Planning, TrackLifecycle::Failed),
         ];
-        for (from, to) in spec_only {
+        for (from, to) in planner_only {
             let res = validate_transition(from, to, &user());
             assert!(
                 matches!(res, Err(TransitionError::NotAuthorized { .. })),
-                "user should not drive spec-only edge {from:?} -> {to:?}: {res:?}"
+                "user should not drive planner-only edge {from:?} -> {to:?}: {res:?}"
             );
         }
     }
 
     #[test]
-    fn kernel_and_kernel_dispatcher_treated_as_spec_for_lifecycle() {
+    fn kernel_and_kernel_dispatcher_treated_as_planner_for_lifecycle() {
         // Server-internal kernel actors are allowed to drive
-        // spec-permitted edges. This is defense-in-depth: nothing in
+        // planner-permitted edges. This is defense-in-depth: nothing in
         // the codebase emits lifecycle events as Kernel today, but
         // when (say) a recovery task does, the gate should treat it
-        // like a Spec Agent rather than refusing outright.
+        // like a Planner Agent rather than refusing outright.
         for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
             assert!(
                 validate_transition(
@@ -629,7 +634,7 @@ mod tests {
                     &actor
                 )
                 .is_ok(),
-                "kernel-class actor should be allowed to drive spec edges (actor={actor:?})"
+                "kernel-class actor should be allowed to drive planner edges (actor={actor:?})"
             );
         }
     }

@@ -9,7 +9,7 @@ import { FILE_VIEWER_CARD_ENTRY } from './file-viewer.tsx';
 import { partitionTrackCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
-import { SPEC_CARD_ENTRY } from './spec.js';
+import { PLANNER_CARD_ENTRY } from './planner.js';
 import { TERMINAL_CARD_ENTRY } from './terminal.js';
 import { TRACK_REPORT_CARD_ENTRY } from './track-report.js';
 
@@ -20,7 +20,7 @@ declare module '../registry.js' {
 }
 
 const LANDED = [
-  'terminal', 'codex', 'spec', 'assistant', 'claude', 'track-report', 'file-viewer',
+  'terminal', 'codex', 'planner', 'assistant', 'claude', 'track-report', 'file-viewer',
 ] as const;
 
 describe('builtin card composition contract', () => {
@@ -29,7 +29,7 @@ describe('builtin card composition contract', () => {
     // order, so this literal *is* the resolution semantics. Changing an entry
     // or dropping one changes which adapter claims a shared kernel kind.
     expect([...BUILTIN_CARD_ORDER]).toEqual([
-      'terminal', 'codex', 'spec', 'assistant', 'claude', 'track-report',
+      'terminal', 'codex', 'planner', 'assistant', 'claude', 'track-report',
       'file-viewer', 'iframe', 'plugin-iframe',
     ]);
     expect(BUILTIN_CARD_ORDER).toHaveLength(9);
@@ -48,7 +48,7 @@ describe('builtin card composition contract', () => {
     }
     expect(registry.get('terminal')).toBe(TERMINAL_CARD_ENTRY);
     expect(registry.get('codex')).toBe(CODEX_CARD_ENTRY);
-    expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
+    expect(registry.get('planner')).toBe(PLANNER_CARD_ENTRY);
     expect(registry.get('assistant')).toBe(ASSISTANT_CARD_ENTRY);
     expect(registry.get('claude')).toBe(CLAUDE_CARD_ENTRY);
     expect(registry.get('track-report')).toBe(TRACK_REPORT_CARD_ENTRY);
@@ -78,28 +78,28 @@ describe('builtin card composition contract', () => {
     expect(Math.min(...skipped.map(({ index }) => index))).toBeGreaterThan(Math.max(...tupleIndexes));
   });
 
-  it('[INV-CARD-180] leaves the shared codex kind to the codex adapter first, then falls back to spec', () => {
+  it('[INV-CARD-180] leaves the shared codex kind to the codex adapter first, then falls back to planner', () => {
     // Both halves are the real production entries, registered in
-    // `BUILTIN_CARD_ORDER`'s relative order (codex before spec).
+    // `BUILTIN_CARD_ORDER`'s relative order (codex before planner).
     //
-    // What can actually fail here is codex's *refusal* of `spec_harness`: drop
+    // What can actually fail here is codex's *refusal* of `planner_harness`: drop
     // it and the first assertion goes red. The order and the absent `claim` are
     // belt-and-braces given `resolve`'s fall-through — it continues past any
     // entry returning `null` — so swapping the two registrations below leaves
     // both assertions green. Do not read this test as proving the order; the
     // no-claim rule is pinned directly, by assertion, in `codex.test.ts` and
-    // `spec.test.ts`.
+    // `planner.test.ts`.
     const registry = createCardRegistry();
     registry.register(CODEX_CARD_ENTRY);
-    registry.register(SPEC_CARD_ENTRY);
+    registry.register(PLANNER_CARD_ENTRY);
 
     expect(
-      registry.resolve({ id: 'spec', kind: 'codex', payload: { spec_harness: true } })?.type,
-      'spec_harness must fall through the earlier codex adapter and resolve as spec',
-    ).toBe('spec');
+      registry.resolve({ id: 'planner', kind: 'codex', payload: { planner_harness: true } })?.type,
+      'planner_harness must fall through the earlier codex adapter and resolve as planner',
+    ).toBe('planner');
     expect(
       registry.resolve({ id: 'codex', kind: 'codex', payload: {} })?.type,
-      'ordinary codex payload must resolve through codex before the shared-kind spec fallback',
+      'ordinary codex payload must resolve through codex before the shared-kind planner fallback',
     ).toBe('codex');
   });
 
@@ -153,12 +153,12 @@ describe('builtin card composition contract', () => {
    * component outside a renderer would throw for any entry that uses a hook.
    */
   describe('headless is declared on the entry, and the declaration is what filters', () => {
-    // Source of truth: `INV-CARD-181` (spec), `INV-CARD-201` (track-report) and
+    // Source of truth: `INV-CARD-181` (planner), `INV-CARD-201` (track-report) and
     // the track assistant (#1189 §5.4) are headless — all three are read in the
     // conversation drawer or the report column and draw no card of their own;
     // every other built-in owns a surface.
     const HEADLESS_BY_TYPE: Readonly<Record<BuiltinCardType, boolean>> = Object.freeze({
-      terminal: false, codex: false, spec: true, assistant: true, claude: false,
+      terminal: false, codex: false, planner: true, assistant: true, claude: false,
       'track-report': true, 'file-viewer': false, iframe: false, 'plugin-iframe': false,
     });
     const bootedProductionRegistry = () => {
@@ -235,7 +235,7 @@ describe('builtin card composition contract', () => {
     const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED)[number], KernelCardInput>> = Object.freeze({
       terminal: { id: 'probe-term', kind: 'terminal', payload: { terminal_id: 't1' } },
       codex: { id: 'probe-codex', kind: 'codex', payload: { terminal_id: 't3' } },
-      spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
+      planner: { id: 'probe-planner', kind: 'codex', payload: { planner_harness: true } },
       assistant: { id: 'probe-assistant', kind: 'codex', payload: { harness_profile: 'assistant' } },
       claude: { id: 'probe-claude', kind: 'claude', payload: { terminal_id: 't2' } },
       'track-report': { id: 'probe-report', kind: 'track-report', payload: null },

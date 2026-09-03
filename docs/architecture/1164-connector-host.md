@@ -263,7 +263,7 @@ pub fn set_exposes_tools(&self, id: &str, tools: Vec<ExposedTool>) -> bool
 ## 4. 验收（怎么算「场景跑通」）
 
 1. 两个 connector 目录（位于 `plugins_dir` 内）各自 `install` + `enable` 后达 Running；**完整重启服务后仍 Running**。
-2. **未绑定 workflow** 的 track 里，spec/worker 的 `tools/list` 能看到 `plugin.mcp-wisburg_list-institutional-reports` 与 `plugin.cli-longbridge_quote`，且看不到 `tools_allow` 之外的 wisburg 工具。
+2. **未绑定 workflow** 的 track 里，planner/worker 的 `tools/list` 能看到 `plugin.mcp-wisburg_list-institutional-reports` 与 `plugin.cli-longbridge_quote`，且看不到 `tools_allow` 之外的 wisburg 工具。
 3. 两个工具各调用一次，返回真实数据。
 4. 断言 `cli-query` 子进程环境**不含** `GH_TOKEN` / `GITHUB_TOKEN` / `SSH_AUTH_SOCK`。
 5. 断言 `secrets.json` 的值不出现在 `GET /api/plugins/{id}` 的任何字段。

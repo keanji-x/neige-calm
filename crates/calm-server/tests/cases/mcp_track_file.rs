@@ -31,7 +31,7 @@ use calm_server::track_report::TrackReportPayload;
 use calm_server::track_vcs;
 use serde_json::{Value, json};
 
-const SPEC_SESSION_ID: &str = "spec-session";
+const PLANNER_SESSION_ID: &str = "planner-session";
 
 struct Boot {
     ctx: Arc<AppContext>,
@@ -46,25 +46,25 @@ struct Boot {
     track_id: TrackId,
     other_area_id: AreaId,
     other_track_id: TrackId,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     worker_card_id: CardId,
     report_card_id: CardId,
-    other_spec_card_id: CardId,
+    other_planner_card_id: CardId,
     other_track_card_id: CardId,
 }
 
-async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
+async fn seed_planner_root_runtime(repo: &SqlxRepo, planner_card_id: &CardId) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: SPEC_SESSION_ID.to_string(),
-            card_id: spec_card_id.as_str().to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            id: PLANNER_SESSION_ID.to_string(),
+            card_id: planner_card_id.as_str().to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
-            thread_id: Some("spec-thread".into()),
+            thread_id: Some("planner-thread".into()),
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
@@ -73,7 +73,7 @@ async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
         },
     )
     .await
-    .expect("seed spec root runtime");
+    .expect("seed planner root runtime");
     tx.commit().await.unwrap();
 }
 
@@ -106,13 +106,13 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: Some(0.0),
-            payload: json!({ "role": "spec" }),
+            payload: json!({ "role": "planner" }),
         })
         .await
         .unwrap();
@@ -136,7 +136,7 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    seed_spec_root_runtime(sqlx_repo.as_ref(), &spec_card.id).await;
+    seed_planner_root_runtime(sqlx_repo.as_ref(), &planner_card.id).await;
 
     let area2 = repo
         .area_create(NewArea {
@@ -170,20 +170,20 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let other_spec_card = repo
+    let other_planner_card = repo
         .card_create(NewCard {
             track_id: track2.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: Some(-1.0),
-            payload: json!({ "role": "spec" }),
+            payload: json!({ "role": "planner" }),
         })
         .await
         .unwrap();
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
     card_role_cache.insert(
         report_card.id.clone(),
@@ -196,16 +196,20 @@ async fn boot() -> Boot {
         track2.id.clone(),
     );
     card_role_cache.insert(
-        other_spec_card.id.clone(),
-        CardRole::Spec,
+        other_planner_card.id.clone(),
+        CardRole::Planner,
         track2.id.clone(),
     );
     // #1189 §3.6 — the recorder gate reads `cards.role` in-tx, so the two
-    // spec cards must be persisted as such and not merely cached that way
+    // planner cards must be persisted as such and not merely cached that way
     // (`Repo::card_create` mints non-report cards as Worker).
-    for card in [&spec_card.id, &other_spec_card.id] {
-        crate::support::mcp::set_persisted_card_role(repo.as_ref(), card.as_str(), CardRole::Spec)
-            .await;
+    for card in [&planner_card.id, &other_planner_card.id] {
+        crate::support::mcp::set_persisted_card_role(
+            repo.as_ref(),
+            card.as_str(),
+            CardRole::Planner,
+        )
+        .await;
     }
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
@@ -243,10 +247,10 @@ async fn boot() -> Boot {
         track_id: track.id,
         other_area_id: area2.id,
         other_track_id: track2.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         worker_card_id: worker_card.id,
         report_card_id: report_card.id,
-        other_spec_card_id: other_spec_card.id,
+        other_planner_card_id: other_planner_card.id,
         other_track_card_id: other_track_card.id,
     }
 }
@@ -264,15 +268,15 @@ async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: SPEC_SESSION_ID.to_string(),
+        session_id: PLANNER_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".to_string(),
+        thread_id: "planner-thread".to_string(),
     }
 }
 
@@ -288,15 +292,15 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-fn other_spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn other_planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.other_spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.other_planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "other-spec-session".to_string(),
+        session_id: "other-planner-session".to_string(),
         track_id: Some(boot.other_track_id.as_str().to_string()),
         area_id: boot.other_area_id.as_str().to_string(),
-        thread_id: "other-spec-thread".to_string(),
+        thread_id: "other-planner-thread".to_string(),
     }
 }
 
@@ -447,7 +451,7 @@ async fn accept_run(boot: &Boot, key: &str, reason: &str) {
     call_tool(
         boot,
         TOOL_TASK_VERDICT,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "idempotency_key": key,
             "status": "accepted",
@@ -456,14 +460,14 @@ async fn accept_run(boot: &Boot, key: &str, reason: &str) {
         }),
     )
     .await
-    .expect("spec can accept run");
+    .expect("planner can accept run");
 }
 
 async fn reject_run(boot: &Boot, key: &str, reason: &str) {
     call_tool(
         boot,
         TOOL_TASK_VERDICT,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "idempotency_key": key,
             "status": "rejected",
@@ -472,7 +476,7 @@ async fn reject_run(boot: &Boot, key: &str, reason: &str) {
         }),
     )
     .await
-    .expect("spec can reject run");
+    .expect("planner can reject run");
 }
 
 async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
@@ -546,11 +550,11 @@ async fn ls_root_returns_top_level_entries() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "/" }),
     )
     .await
-    .expect("spec can list root");
+    .expect("planner can list root");
     let entries = out.as_array().expect("ls returns array");
     let names: Vec<&str> = entries
         .iter()
@@ -579,11 +583,11 @@ async fn cards_index_lists_only_bound_track_cards_without_payload() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "cards/index.json" }),
     )
     .await
-    .expect("spec can read card index");
+    .expect("planner can read card index");
     assert_eq!(out["content_type"], json!("application/json"));
     let cards = content_json(&out);
     let cards = cards.as_array().expect("card index is array");
@@ -591,7 +595,7 @@ async fn cards_index_lists_only_bound_track_cards_without_payload() {
         .iter()
         .map(|card| card["id"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&boot.spec_card_id.as_str()));
+    assert!(ids.contains(&boot.planner_card_id.as_str()));
     assert!(ids.contains(&boot.worker_card_id.as_str()));
     assert!(ids.contains(&boot.report_card_id.as_str()));
     assert!(!ids.contains(&boot.other_track_card_id.as_str()));
@@ -643,11 +647,11 @@ async fn card_events_json_returns_hook_events_in_event_order() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/events.json", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read card hook events");
+    .expect("planner can read card hook events");
     assert_eq!(out["content_type"], json!("application/json"));
     assert_eq!(
         content_json(&out),
@@ -719,11 +723,11 @@ async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read conversation projection");
+    .expect("planner can read conversation projection");
     assert_eq!(out["content_type"], json!("text/markdown"));
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.starts_with(
@@ -761,11 +765,11 @@ async fn card_conversation_md_ignores_subagent_stop_assistant_message() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read conversation projection");
+    .expect("planner can read conversation projection");
     assert_eq!(out["content_type"], json!("text/markdown"));
     let md = out["content"].as_str().expect("markdown content");
     assert!(!md.contains("## Assistant"), "md = {md}");
@@ -781,11 +785,11 @@ async fn card_conversation_md_reports_no_hook_events() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", boot.worker_card_id.as_str()) }),
     )
     .await
-    .expect("spec can read empty conversation projection");
+    .expect("planner can read empty conversation projection");
     assert_eq!(out["content_type"], json!("text/markdown"));
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.contains("_No hook events recorded._"), "md = {md}");
@@ -849,11 +853,11 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read worker-flow projection");
+    .expect("planner can read worker-flow projection");
     assert_eq!(out["content_type"], json!("text/markdown"));
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.starts_with(
@@ -888,11 +892,11 @@ async fn card_conversation_md_falls_back_to_hooks_when_no_flow_rows() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read hook projection fallback");
+    .expect("planner can read hook projection fallback");
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.contains("## User\n\nFrom the hook path."), "md = {md}");
     // Worker-flow-only sentinel must NOT appear on the hook path.
@@ -926,11 +930,11 @@ async fn ls_card_directory_includes_hook_event_views() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}", card_id.as_str()) }),
     )
     .await
-    .expect("spec can list card directory");
+    .expect("planner can list card directory");
     let entries = out.as_array().expect("ls returns array");
     let names: Vec<&str> = entries
         .iter()
@@ -966,7 +970,7 @@ async fn old_card_lens_paths_are_not_available() {
         let err = call_tool(
             &boot,
             TOOL_TRACK_CAT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "path": path }),
         )
         .await
@@ -988,22 +992,22 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let listing = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}", card_id.as_str()) }),
     )
     .await
-    .expect("spec can list card directory before runtime exists");
+    .expect("planner can list card directory before runtime exists");
     let entries = listing.as_array().expect("ls returns array");
     assert_eq!(entry_updated_at(entries, "runtime.json"), 100);
 
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/runtime.json", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read runtime projection");
+    .expect("planner can read runtime projection");
     assert_eq!(out["content_type"], json!("application/json"));
     let runtime: Option<CardRuntimeView> =
         serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
@@ -1013,11 +1017,11 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let listing = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}", card_id.as_str()) }),
     )
     .await
-    .expect("spec can list card directory after runtime exists");
+    .expect("planner can list card directory after runtime exists");
     let entries = listing.as_array().expect("ls returns array");
     let listed_updated_at = entry_updated_at(entries, "runtime.json");
     assert!(
@@ -1030,11 +1034,11 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/runtime.json", card_id.as_str()) }),
     )
     .await
-    .expect("spec can read typed runtime projection");
+    .expect("planner can read typed runtime projection");
     let runtime: Option<CardRuntimeView> =
         serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
     let runtime = runtime.expect("runtime row is projected");
@@ -1052,7 +1056,7 @@ async fn card_hook_events_from_other_track_are_forbidden() {
     let err = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        other_spec_identity(&boot),
+        other_planner_identity(&boot),
         json!({ "path": path }),
     )
     .await
@@ -1098,11 +1102,11 @@ async fn card_events_json_filters_out_sibling_card_hooks() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": format!("cards/{}/events.json", target_id.as_str()) }),
     )
     .await
-    .expect("spec can read target events");
+    .expect("planner can read target events");
     let events = content_json(&out);
     let events = events.as_array().expect("events array");
     assert_eq!(events.len(), 1, "events = {events:?}");
@@ -1122,11 +1126,11 @@ async fn ls_runs_returns_projected_runs_for_bound_track() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/" }),
     )
     .await
-    .expect("spec can list runs");
+    .expect("planner can list runs");
     let runs = out.as_array().expect("runs ls returns array");
     let names = runs
         .iter()
@@ -1153,7 +1157,7 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
         .card_create(NewCard {
             track_id: boot.track_id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: Some(2.0),
             payload: json!({ "idempotency_key": "decoy" }),
         })
@@ -1162,7 +1166,7 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
     boot.ctx
         .write
         .role_cache()
-        .insert(decoy.id, CardRole::Spec, boot.track_id.clone());
+        .insert(decoy.id, CardRole::Planner, boot.track_id.clone());
 
     request_codex(&boot, "real-run").await;
     materialize_worker(&boot, "real-run").await;
@@ -1170,11 +1174,11 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
     .await
-    .expect("spec can read runs index");
+    .expect("planner can read runs index");
     let runs = content_json(&out);
     let runs = runs.as_array().expect("runs index is array");
     let keys: Vec<&str> = runs
@@ -1194,11 +1198,11 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
     let ls = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs" }),
     )
     .await
-    .expect("spec can list runs");
+    .expect("planner can list runs");
     let ls_keys: Vec<&str> = ls
         .as_array()
         .unwrap()
@@ -1214,11 +1218,11 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
     .await
-    .expect("spec can read runs index");
+    .expect("planner can read runs index");
     assert_eq!(out["content_type"], json!("application/json"));
     let runs = content_json(&out);
     let runs = runs.as_array().expect("runs index is array");
@@ -1246,11 +1250,11 @@ async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/done-md.md" }),
     )
     .await
-    .expect("spec can read run markdown");
+    .expect("planner can read run markdown");
     assert_eq!(out["content_type"], json!("text/markdown"));
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.contains("READ-ONLY PROJECTION"), "md = {md}");
@@ -1277,11 +1281,11 @@ async fn completed_run_json_returns_structured_projection() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/done-json.json" }),
     )
     .await
-    .expect("spec can read run json");
+    .expect("planner can read run json");
     assert_eq!(out["content_type"], json!("application/json"));
     let run = content_json(&out);
     assert_eq!(run["idempotency_key"], json!("done-json"));
@@ -1316,7 +1320,7 @@ async fn completed_run_json_returns_structured_projection() {
 }
 
 #[tokio::test]
-async fn worker_completion_result_status_accepted_is_not_spec_verdict() {
+async fn worker_completion_result_status_accepted_is_not_planner_verdict() {
     let boot = boot().await;
     request_codex(&boot, "worker-accepted-payload").await;
     materialize_worker(&boot, "worker-accepted-payload").await;
@@ -1330,11 +1334,11 @@ async fn worker_completion_result_status_accepted_is_not_spec_verdict() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/worker-accepted-payload.json" }),
     )
     .await
-    .expect("spec can read run json");
+    .expect("planner can read run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1356,11 +1360,11 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/accepted-run.json" }),
     )
     .await
-    .expect("spec can read accepted run json");
+    .expect("planner can read accepted run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1377,11 +1381,11 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
     .await
-    .expect("spec can read runs index");
+    .expect("planner can read runs index");
     let runs = content_json(&out);
     let entry = runs
         .as_array()
@@ -1399,15 +1403,15 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/accepted-run.md" }),
     )
     .await
-    .expect("spec can read accepted run markdown");
+    .expect("planner can read accepted run markdown");
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.contains("## Verdict"), "md = {md}");
     assert!(
-        md.contains("accepted by spec at") && md.contains(": LGTM"),
+        md.contains("accepted by planner at") && md.contains(": LGTM"),
         "md = {md}"
     );
     assert!(md.contains("did the thing"), "md = {md}");
@@ -1439,11 +1443,11 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/" }),
     )
     .await
-    .expect("spec can list runs");
+    .expect("planner can list runs");
     let runs = out.as_array().expect("runs ls returns array");
     let entry = runs
         .iter()
@@ -1465,11 +1469,11 @@ async fn rejected_verdict_does_not_overwrite_worker_completion() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/rejected-run.json" }),
     )
     .await
-    .expect("spec can read rejected run json");
+    .expect("planner can read rejected run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1487,20 +1491,20 @@ async fn rejected_verdict_does_not_overwrite_worker_completion() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/rejected-run.md" }),
     )
     .await
-    .expect("spec can read rejected run markdown");
+    .expect("planner can read rejected run markdown");
     let md = out["content"].as_str().expect("markdown content");
     assert!(
-        md.contains("Verdict: rejected by spec at") && md.contains(": not enough detail"),
+        md.contains("Verdict: rejected by planner at") && md.contains(": not enough detail"),
         "md = {md}"
     );
 }
 
 #[tokio::test]
-async fn worker_failure_without_spec_verdict_stays_failed() {
+async fn worker_failure_without_planner_verdict_stays_failed() {
     let boot = boot().await;
     request_codex(&boot, "worker-failed").await;
     materialize_worker(&boot, "worker-failed").await;
@@ -1509,11 +1513,11 @@ async fn worker_failure_without_spec_verdict_stays_failed() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/worker-failed.json" }),
     )
     .await
-    .expect("spec can read worker-failed run json");
+    .expect("planner can read worker-failed run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("failed"));
     assert_eq!(
@@ -1525,7 +1529,7 @@ async fn worker_failure_without_spec_verdict_stays_failed() {
 }
 
 #[tokio::test]
-async fn track_scoped_dispatcher_failure_is_not_spec_verdict() {
+async fn track_scoped_dispatcher_failure_is_not_planner_verdict() {
     let boot = boot().await;
     log_track_event_as(
         &boot,
@@ -1557,11 +1561,11 @@ async fn track_scoped_dispatcher_failure_is_not_spec_verdict() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/dispatcher-track-failed.json" }),
     )
     .await
-    .expect("spec can read dispatcher-track-failed run json");
+    .expect("planner can read dispatcher-track-failed run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("failed"));
     assert_eq!(
@@ -1590,11 +1594,11 @@ async fn retry_recovery_uses_later_worker_completion_as_status() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/retry-recovered.json" }),
     )
     .await
-    .expect("spec can read retry-recovered run json");
+    .expect("planner can read retry-recovered run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1637,11 +1641,11 @@ async fn dispatcher_retry_completion_overrides_earlier_completion() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/dispatcher-retry-recovered.json" }),
     )
     .await
-    .expect("spec can read dispatcher-retry-recovered run json");
+    .expect("planner can read dispatcher-retry-recovered run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1663,11 +1667,11 @@ async fn retry_regression_uses_later_worker_failure_as_status() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/retry-regressed.json" }),
     )
     .await
-    .expect("spec can read retry-regressed run json");
+    .expect("planner can read retry-regressed run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("failed"));
     assert_eq!(
@@ -1694,11 +1698,11 @@ async fn final_event_order_uses_event_id_not_wall_clock_at() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/retry-regressed-skew.json" }),
     )
     .await
-    .expect("spec can read retry-regressed-skew run json");
+    .expect("planner can read retry-regressed-skew run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("failed"));
     assert_eq!(run["finished_at"], json!(500));
@@ -1726,11 +1730,11 @@ async fn final_event_same_timestamp_uses_event_id() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/retry-tie.json" }),
     )
     .await
-    .expect("spec can read retry-tie run json");
+    .expect("planner can read retry-tie run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1751,11 +1755,11 @@ async fn worker_card_without_request_is_unknown_even_when_materialized() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/orphan-worker.json" }),
     )
     .await
-    .expect("spec can read orphan-worker run json");
+    .expect("planner can read orphan-worker run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("unknown"));
     assert_eq!(run["worker_card_id"], json!(worker_id.as_str()));
@@ -1763,7 +1767,7 @@ async fn worker_card_without_request_is_unknown_even_when_materialized() {
 }
 
 #[tokio::test]
-async fn spec_rejection_without_worker_failure_stays_out_of_failed_pool() {
+async fn planner_rejection_without_worker_failure_stays_out_of_failed_pool() {
     let boot = boot().await;
     request_codex(&boot, "reject-only").await;
     reject_run(&boot, "reject-only", "not started").await;
@@ -1771,11 +1775,11 @@ async fn spec_rejection_without_worker_failure_stays_out_of_failed_pool() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/reject-only.json" }),
     )
     .await
-    .expect("spec can read reject-only run json");
+    .expect("planner can read reject-only run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("requested"));
     assert!(run["events"]["failed"].is_null(), "run = {run:?}");
@@ -1794,11 +1798,11 @@ async fn rejected_verdict_before_worker_completion_preserves_worker_output() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/reject-out-of-order.json" }),
     )
     .await
-    .expect("spec can read reject-out-of-order run json");
+    .expect("planner can read reject-out-of-order run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1832,11 +1836,11 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/out-of-order.json" }),
     )
     .await
-    .expect("spec can read out-of-order run json");
+    .expect("planner can read out-of-order run json");
     let run = content_json(&out);
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(
@@ -1851,9 +1855,14 @@ async fn assert_reserved_run_key_error(tool: &str, path: &str, expect: &str) {
     let boot = boot().await;
     request_codex(&boot, "index").await;
 
-    let err = call_tool(&boot, tool, spec_identity(&boot), json!({ "path": path }))
-        .await
-        .unwrap_err();
+    let err = call_tool(
+        &boot,
+        tool,
+        planner_identity(&boot),
+        json!({ "path": path }),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.code, RpcError::INTERNAL_ERROR);
     assert!(
         err.message
@@ -1895,7 +1904,7 @@ async fn runs_do_not_leak_across_tracks() {
     let err = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        other_spec_identity(&boot),
+        other_planner_identity(&boot),
         json!({ "path": "runs/private-run.md" }),
     )
     .await
@@ -1913,7 +1922,7 @@ async fn unknown_run_key_matches_unknown_card_error_shape() {
     let card_err = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "cards/not-a-card/.payload.json" }),
     )
     .await
@@ -1921,7 +1930,7 @@ async fn unknown_run_key_matches_unknown_card_error_shape() {
     let run_err = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/not-a-run.md" }),
     )
     .await
@@ -1945,11 +1954,11 @@ async fn run_status_derivation_follows_projection_rules() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
     .await
-    .expect("spec can read runs index");
+    .expect("planner can read runs index");
     let runs = content_json(&out);
     let runs = runs.as_array().expect("runs index array");
     let status = |key: &str| {
@@ -1973,11 +1982,11 @@ async fn empty_track_has_empty_runs_projection() {
     let ls = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/" }),
     )
     .await
-    .expect("spec can list runs");
+    .expect("planner can list runs");
     let runs = ls.as_array().expect("runs ls returns array");
     assert_eq!(runs.len(), 1, "runs = {runs:?}");
     assert_eq!(runs[0]["name"], json!("index.json"));
@@ -1986,11 +1995,11 @@ async fn empty_track_has_empty_runs_projection() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
     .await
-    .expect("spec can read empty runs index");
+    .expect("planner can read empty runs index");
     assert_eq!(content_json(&out), json!([]));
 }
 
@@ -2002,7 +2011,7 @@ async fn card_payload_from_other_track_is_forbidden() {
         let err = call_tool(
             &boot,
             TOOL_TRACK_CAT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "path": path }),
         )
         .await
@@ -2027,7 +2036,7 @@ async fn card_payload_from_other_track_is_forbidden() {
     let err = call_tool(
         &boot,
         TOOL_TRACK_LS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": path }),
     )
     .await
@@ -2078,7 +2087,7 @@ async fn unknown_paths_return_clean_errors() {
         let err = call_tool(
             &boot,
             TOOL_TRACK_CAT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "path": path }),
         )
         .await
@@ -2097,7 +2106,7 @@ async fn index_md_uses_bound_track_title_and_id() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "index.md" }),
     )
     .await
@@ -2117,7 +2126,7 @@ async fn index_md_uses_bound_track_title_and_id() {
 #[tokio::test]
 async fn report_md_matches_report_read_body() {
     let boot = boot().await;
-    let report = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+    let report = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("report read works");
     let report_body = report["body"].as_str().expect("report body");
@@ -2125,7 +2134,7 @@ async fn report_md_matches_report_read_body() {
     let file = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "report.md" }),
     )
     .await
@@ -2148,7 +2157,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# Report\n\n- visible change\n",
             "summary": "changed",
@@ -2167,7 +2176,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
     let diff = call_tool(
         &boot,
         TOOL_TRACK_DIFF,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "from": before.clone(), "to": after.clone(), "path": "report.md" }),
     )
     .await
@@ -2185,7 +2194,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
     let cat = call_tool(
         &boot,
         TOOL_TRACK_CAT_AT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "commit": after.clone(), "path": "report.md" }),
     )
     .await
@@ -2196,7 +2205,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
     let log = call_tool(
         &boot,
         TOOL_TRACK_LOG,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "report.md", "limit": 5 }),
     )
     .await
@@ -2219,7 +2228,7 @@ async fn track_json_uses_bound_track_metadata() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "track.json" }),
     )
     .await
@@ -2237,7 +2246,7 @@ async fn track_json_uses_bound_track_metadata() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #644 PR-C — plan/<key>/gate.log (spec-role-gated, file-backed)
+// Issue #644 PR-C — plan/<key>/gate.log (planner-role-gated, file-backed)
 // ---------------------------------------------------------------------------
 
 async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
@@ -2282,7 +2291,7 @@ async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
 }
 
 #[tokio::test]
-async fn gate_log_view_is_spec_only_and_file_backed() {
+async fn gate_log_view_is_planner_only_and_file_backed() {
     use calm_server::track_fs_view::{TrackFsError, TrackFsView};
 
     let boot = boot().await;
@@ -2306,9 +2315,9 @@ async fn gate_log_view_is_spec_only_and_file_backed() {
         .unwrap();
     let write = boot.ctx.write.clone();
 
-    // Spec role with access wired: reads the CURRENT attempt's log.
+    // Planner role with access wired: reads the CURRENT attempt's log.
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
-        .with_gate_log_access(CardRole::Spec, dir.clone());
+        .with_gate_log_access(CardRole::Planner, dir.clone());
     let content = view.cat(&track, "plan/gated/gate.log").await.expect("read");
     assert_eq!(content.content_type, "text/plain");
     assert!(content.content.contains("gate-log-body"), "{content:?}");
@@ -2333,7 +2342,7 @@ async fn gate_log_view_is_spec_only_and_file_backed() {
     // No such task / no attempt yet: path not available, not an error
     // leak.
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
-        .with_gate_log_access(CardRole::Spec, dir.clone());
+        .with_gate_log_access(CardRole::Planner, dir.clone());
     let err = view
         .cat(&track, "plan/missing/gate.log")
         .await
@@ -2361,7 +2370,7 @@ async fn gate_log_view_is_spec_only_and_file_backed() {
     // PR #685 F3 — the MCP read serves the CONFIGURED gate-logs dir
     // threaded through `AppContext` (a stand-in for `--data-dir`
     // without `CALM_DATA_DIR`), never an env-recomputed default: the
-    // log written into `boot.gate_logs_dir` is what the spec reads.
+    // log written into `boot.gate_logs_dir` is what the planner reads.
     std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
     std::fs::write(
         boot.gate_logs_dir.join(format!("{task_id}-g2.log")),
@@ -2371,11 +2380,11 @@ async fn gate_log_view_is_spec_only_and_file_backed() {
     let content = call_tool(
         &boot,
         TOOL_TRACK_CAT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "path": "plan/gated/gate.log" }),
     )
     .await
-    .expect("spec reads the gate log over MCP");
+    .expect("planner reads the gate log over MCP");
     assert!(
         content["content"]
             .as_str()

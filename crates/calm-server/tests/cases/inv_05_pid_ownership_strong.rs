@@ -16,7 +16,7 @@
 //!
 //! Background: the create-track / takeover path used to gate
 //! `signal_process_group(pgid, …)` on
-//! [`spec_appserver::socket_owned_by_appserver`] — a
+//! [`planner_appserver::socket_owned_by_appserver`] — a
 //! `UnixStream::connect` to the per-card socket path. That's better
 //! than a bare `kill(pid, 0)` liveness probe but TOCTOU-racy against
 //! the subsequent ~400 ms SIGTERM → grace → SIGKILL sequence: the

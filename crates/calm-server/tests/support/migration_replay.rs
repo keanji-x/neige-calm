@@ -270,7 +270,7 @@ pub async fn seed(pool: &SqlitePool, fixture: &Fixture, staged_version: i64) -> 
 
 /// Assert every seeded row whose table still exists at head is still
 /// present (by primary key). Tables retired by later migrations (e.g.
-/// `spec_push_queue` at 0033, `card_codex_threads` at 0034) are skipped —
+/// `planner_push_queue` at 0033, `card_codex_threads` at 0034) are skipped —
 /// the schema diff already proves they were dropped.
 pub async fn assert_rows_survive(pool: &SqlitePool, report: &SeedReport, context: &str) {
     let mut checked = 0usize;

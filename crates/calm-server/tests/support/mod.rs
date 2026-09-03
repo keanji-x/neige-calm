@@ -27,7 +27,7 @@ pub mod migration_replay;
 pub mod oracle;
 #[cfg(feature = "codex-e2e")]
 #[allow(dead_code)]
-pub mod spec_turn;
+pub mod planner_turn;
 #[allow(dead_code)]
 pub mod task;
 #[allow(dead_code)]

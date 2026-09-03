@@ -199,31 +199,31 @@ async fn concurrent_ensure_creates_one_inert_structurally_complete_track() {
             .await
             .unwrap();
     assert_eq!(track_count, 1);
-    let spec_card_id: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='spec'")
+    let planner_card_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(track_id)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
     let harness_items: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM harness_items WHERE card_id=?1")
-            .bind(&spec_card_id)
+            .bind(&planner_card_id)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
     let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id=?1")
-        .bind(&spec_card_id)
+        .bind(&planner_card_id)
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
     assert_eq!(harness_items, 0);
     assert_eq!(sessions, 0);
-    let spec_start_operations: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind='spec-harness-start'")
+    let planner_start_operations: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind='planner-harness-start'")
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    assert_eq!(spec_start_operations, 0);
+    assert_eq!(planner_start_operations, 0);
     assert_eq!(
         get(b.app, format!("/api/tracks/{track_id}/report")).await,
         StatusCode::OK

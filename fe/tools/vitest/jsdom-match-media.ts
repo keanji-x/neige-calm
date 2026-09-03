@@ -53,11 +53,11 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
     onchange: null,
     addEventListener: () => {},
     removeEventListener: () => {},
-    /* Deprecated in the spec, still called by older libraries. */
+    /* Deprecated in the planner, still called by older libraries. */
     addListener: () => {},
     removeListener: () => {},
     /* A list nothing dispatches to: no listener was kept, so nothing is
-       cancelled and the spec's return value for that is `true`. */
+       cancelled and the planner's return value for that is `true`. */
     dispatchEvent: () => true,
   });
 }

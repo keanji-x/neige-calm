@@ -1,4 +1,4 @@
-//! Sync engine phase 1 (Scope A) server-side tests. Spec: design doc §6.1.
+//! Sync engine phase 1 (Scope A) server-side tests. Planner: design doc §6.1.
 //!
 //! Coverage:
 //!

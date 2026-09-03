@@ -495,7 +495,8 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
     async fn session_projection_recover_harnesses_on_boot(
         &self,
     ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
-        let (provider, _mode, contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
+        let (provider, _mode, contract) =
+            derive_session_identity(&WorkerSessionKind::SharedPlanner);
         let sql = format!(
             r#"{WS_BACKED_CARD_RUNTIME_SELECT}
                JOIN tracks w ON w.id = c.track_id
@@ -515,16 +516,16 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                        -- `role = 'worker'` nor the `plain_chat` marker, so
                        -- without this arm a kernel restart mid-turn leaves the
                        -- `worker_sessions` row running with no harness in
-                       -- memory: `GET /spec/run` answers dormant, and the reply
+                       -- memory: `GET /planner/run` answers dormant, and the reply
                        -- to the in-flight turn is lost for good because no run
                        -- loop is behind it any more. The conversation itself is
-                       -- not permanently stranded — the next `POST /spec/input`
-                       -- goes through `ensure_live_spec_harness`, which does not
+                       -- not permanently stranded — the next `POST /planner/input`
+                       -- goes through `ensure_live_planner_harness`, which does not
                        -- consult this selector and lazily rebuilds the harness —
                        -- so the damage is one silently dropped turn plus a
                        -- dormant-looking card until the user pokes it again.
                        -- The literals below are pinned from the Rust side by
-                       -- `spec_harness_start_adapter::tests::
+                       -- `planner_harness_start_adapter::tests::
                        -- boot_recovery_sql_literals_track_the_minted_card_shape`.
                        OR (ws.contract = 'executor'
                            AND c.role = 'assistant'

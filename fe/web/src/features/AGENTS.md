@@ -2,7 +2,7 @@
 
 ## 放什么
 
-Track、Area、Today、Report、Spec、Settings、Auth 等页面业务行为与端侧业务组合。
+Track、Area、Today、Report、Planner、Settings、Auth 等页面业务行为与端侧业务组合。
 
 ## 不放什么
 

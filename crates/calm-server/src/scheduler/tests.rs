@@ -89,7 +89,7 @@ fn ready_set_requires_all_deps_done() {
 #[test]
 fn canceled_and_failed_deps_never_satisfy() {
     // §3.1 — deps require `done`; canceled/failed block successors
-    // forever (plan-revision authority belongs to the spec).
+    // forever (plan-revision authority belongs to the planner).
     let tasks = vec![
         task("a", TaskStatus::Canceled, &[], 0),
         task("b", TaskStatus::Failed, &[], 0),

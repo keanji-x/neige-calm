@@ -97,9 +97,9 @@ pub struct NewTrack {
     pub area_id: AreaId,
     pub title: String,
     pub sort: Option<f64>,
-    /// Issue #250 PR 2 — absolute filesystem path the spec daemon will
+    /// Issue #250 PR 2 — absolute filesystem path the planner daemon will
     /// spawn under. Required (no `Option`): every track-creating path
-    /// must declare a cwd or the spec daemon has no defensible
+    /// must declare a cwd or the planner daemon has no defensible
     /// working directory. The `POST /api/tracks` route enforces
     /// absolute-path shape and the area-folder claim check; the
     /// inner `track_create_tx` writes whatever the route lands here
@@ -118,7 +118,7 @@ pub struct NewTrack {
     /// binds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`
     /// route validates the value against that schema before any DB write. The
     /// kernel never interprets the blob — it is persisted verbatim and injected
-    /// into the spec harness developer instructions at thread-mint time.
+    /// into the planner harness developer instructions at thread-mint time.
     /// `#[serde(default)]` keeps the field purely additive under
     /// `deny_unknown_fields`.
     #[serde(default)]
@@ -138,16 +138,16 @@ pub struct NewTrack {
     #[serde(default)]
     pub attach_folder: bool,
     /// Host browser's current theme RGB (#177). Required end-to-end so
-    /// the auto-minted spec card's terminal renderer answers codex's
+    /// the auto-minted planner card's terminal renderer answers codex's
     /// OSC 10/11 startup probe with matching colors. A body
     /// missing this field is rejected at the deserialize layer (422):
-    /// the spec card is invisible to the user and a silent fallback
+    /// the planner card is invisible to the user and a silent fallback
     /// would mean every track-from-the-UI spawned with a mis-tinted
     /// composer (the bug that motivated this refactor).
     ///
     /// Direct repo callers (`db::sqlite::track_create_tx`, used by tests
     /// and a couple of non-route helpers) still pass a value here even
-    /// though the txn-level helper does not consume it — spec-card
+    /// though the txn-level helper does not consume it — planner-card
     /// spawning is owned by `routes::tracks::create_track`. Tests can
     /// use `RequestTheme::default_dark()` as a no-op sentinel.
     pub theme: RequestTheme,
@@ -180,15 +180,15 @@ pub struct TrackPatch {
     /// alone. Inert until the PR-B scheduler reads it.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub task_budget: Option<Option<i64>>,
-    /// Issue #985 — maximum admitted spec-declared task inventory. A
+    /// Issue #985 — maximum admitted planner-declared task inventory. A
     /// present null resets to the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub spec_task_ceiling: Option<Option<i64>>,
+    pub planner_task_ceiling: Option<Option<i64>>,
     /// Issue #985 — per-track declaration policy. A present null resets to
     /// the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub automation_policy: Option<Option<String>>,
-    /// Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
+    /// Issue #985 slice 6 PR-B — budget for the non-terminal planner inventory of
     /// the WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a
     /// track with a parent, since a per-child budget would make the tree bound
     /// vacuous. A present null resets to the kernel default (32).

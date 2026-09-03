@@ -177,7 +177,7 @@ async function ensureTodayTrack(areaId: string) {
   // #1147 S3 — `cwd` is OMITTED, and that is the fix, not a shortcut.
   //
   // This used to send `cwd: '/'` as a placeholder, on the reasoning that a
-  // kernel-internal track's spec daemon "doesn't need a meaningful project
+  // kernel-internal track's planner daemon "doesn't need a meaningful project
   // cwd". Two things have changed since:
   //
   //  * Since #1131/S2 an omitted `cwd` is the *managed* branch: the kernel
@@ -200,7 +200,7 @@ async function ensureTodayTrack(areaId: string) {
     area_id: areaId,
     title: TODAY_TRACK_TITLE,
     // #177 — same `readHostThemeRgb()` source as the terminal-card
-    // create below. The spec daemon that the track-create txn spawns
+    // create below. The planner daemon that the track-create txn spawns
     // gets matching colors on its first paint.
     theme: readHostThemeRgb(),
   });
