@@ -5016,7 +5016,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/router/public.tsx:1841-1848
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/router/public.tsx:1849-1857
   authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:367
   owner_slice: features/wave/create
   intentional_omission: false
