@@ -442,8 +442,9 @@ pub(crate) fn apply_report_op(
                 // is that the op stops depending on them to do so. The
                 // REST block *delete* does arrive carrying content
                 // neither of those built: `normalize_report_op` rewrites
-                // a user's task delete into a `kind: "task"` upsert
-                // whose fence comes from bare `render_fence`. Which rule each
+                // a user's delete of a *live* task into a `kind: "task"`
+                // upsert whose fence comes from bare `render_fence`.
+                // Which rule each
                 // `kind` gets, which production caller is *not* covered
                 // upstream, and what is left to `upsert_block` (and so
                 // still surfaces as a 500 rather than a 400), is written
