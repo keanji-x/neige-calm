@@ -86,6 +86,9 @@ pub use card_composite::{
     card_with_codex_create_tx, card_with_terminal_create_tx, card_with_terminal_rollback_tx,
 };
 pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
+/// #1252 S3′ negative nail — see [`events::append_probe`].
+#[cfg(any(test, feature = "test-helpers"))]
+pub use events::append_probe;
 pub use infra::{begin_immediate_tx, is_sqlite_busy};
 pub use out_of_domain::{
     HarnessTranscriptMeasure, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,

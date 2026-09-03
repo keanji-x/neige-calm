@@ -44,7 +44,6 @@ use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParam
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
-use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -365,30 +364,11 @@ impl ProviderAdapter for CodexAdapter {
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
         };
-        if let Err(violation) = crate::role_gate::enforce_role(
-            &payload.actor,
-            &event,
-            &scope,
-            &self.card_role_cache,
-            &self.track_area_cache,
-        ) {
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
-        if let Err(violation) = crate::role_gate::enforce_role(
-            &payload.actor,
-            &runtime_event,
-            &scope,
-            &self.card_role_cache,
-            &self.track_area_cache,
-        ) {
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
         let event_id =
-            append_decision_event_in_tx(tx, &PermissiveGate, &payload.actor, &scope, None, &event)
+            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &event)
                 .await?;
         let runtime_event_id = append_decision_event_in_tx(
             tx,
-            &PermissiveGate,
             &payload.actor,
             &scope,
             None,

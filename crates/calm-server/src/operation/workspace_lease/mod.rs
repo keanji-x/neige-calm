@@ -14,7 +14,6 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{TrackWorkspaceKind, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
-use calm_truth::decision_gate::PermissiveGate;
 
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};
@@ -251,7 +250,6 @@ async fn acquire_workspace_lease_at_path_tx(
     };
     let event_id = append_decision_event_in_tx(
         tx,
-        &PermissiveGate,
         &ActorId::KernelDispatcher,
         &scope,
         None,
@@ -487,7 +485,6 @@ async fn complete_workspace_lease_release(
     };
     let event_id = append_decision_event_in_tx(
         &mut tx,
-        &PermissiveGate,
         &ActorId::KernelDispatcher,
         &scope,
         None,
@@ -1005,7 +1002,6 @@ async fn persist_worktree_removed_for_lease(
     };
     let event_id = append_decision_event_in_tx(
         &mut tx,
-        &PermissiveGate,
         &ActorId::KernelDispatcher,
         &scope,
         None,
@@ -1030,7 +1026,7 @@ async fn append_workspace_events_tx(
     let mut envelopes = Vec::with_capacity(events.len());
     for (actor, scope, event) in events {
         let event_id =
-            append_decision_event_in_tx(tx, &PermissiveGate, &actor, &scope, None, &event).await?;
+            append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
         envelopes.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,

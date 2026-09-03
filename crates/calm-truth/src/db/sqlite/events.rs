@@ -13,13 +13,160 @@ use crate::db::{
     RepoEventWrite, TrackEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
     WriteWithEventsFn,
 };
-use crate::decision_gate::DecisionGate;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, TrackId};
 use crate::model::*;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
+
+/// The gate seam (#1252 S3′).
+///
+/// Everything that reaches the `events` table goes through here, because
+/// [`SqlxRepo::event_append_in_tx`] no longer takes an `(actor, scope, event)`
+/// triple — it takes an [`Authorized`](gated::Authorized), and the only way to
+/// obtain one is [`authorize`](gated::authorize) (or, under `cfg(test)`, the
+/// loudly-named fixture bypass next to it).
+///
+/// Three properties hold *by construction*, not by review:
+///
+///   * `Authorized`'s private `_seal` field means no module outside `gated` —
+///     including this file's parent module — can literally construct one.
+///   * `Authorized` is only ever returned by a function that has just run the
+///     role gate on the exact triple it carries, so "appended without a gate
+///     decision" is not expressible.
+///   * `Authorized<'a>` *borrows* the actor, scope and event. Authorizing one
+///     event and appending a different one is a lifetime/borrow error, not a
+///     review finding. Do not change these fields to owned values — that
+///     property is the point.
+///
+/// **This is plumbing, not a new gate.** Every triple that reaches the two
+/// public appenders today is one the role gate already accepts (see the PR
+/// body); turning the seam on rejects nothing that is accepted now. What it
+/// buys is that the *next* `role_gate` rule applies here without anyone
+/// re-auditing fifteen call sites.
+mod gated {
+    use super::{ActorId, Event, EventScope};
+    use crate::error::{CalmError, Result};
+
+    /// Proof that the role gate allowed this one `(actor, scope, event)`
+    /// triple. Constructible only inside this module.
+    pub(in crate::db::sqlite::events) struct Authorized<'a> {
+        pub actor: &'a ActorId,
+        pub scope: &'a EventScope,
+        pub event: &'a Event,
+        /// Private field: this is what makes `Authorized { .. }` unbuildable
+        /// from the parent module (E0451).
+        _seal: (),
+    }
+
+    /// Run the role gate with `card → {role, home track}` and `track → area`
+    /// read live from `tx`, and mint the capability on success.
+    pub(in crate::db::sqlite::events) async fn authorize<'a, T>(
+        tx: &mut T,
+        actor: &'a ActorId,
+        scope: &'a EventScope,
+        event: &'a Event,
+    ) -> Result<Authorized<'a>>
+    where
+        T: crate::decision_gate::WriteTx + ?Sized + Send,
+    {
+        crate::decision_gate::enforce_role_resolving_session_from_tx(tx, actor, event, scope)
+            .await
+            .map_err(|violation| CalmError::Forbidden(violation.to_string()))?;
+        Ok(Authorized {
+            actor,
+            scope,
+            event,
+            _seal: (),
+        })
+    }
+
+    /// Run the role gate against the caller's write-through caches, and mint
+    /// the capability on success.
+    ///
+    /// This is the entrance used by the four `RepoEventWrite` wrappers, which
+    /// already hold a `WriteContext` and have always gated on its caches. It
+    /// exists so those four keep their exact previous behaviour — same
+    /// function, same caches — while still being unable to append without a
+    /// decision.
+    pub(in crate::db::sqlite::events) async fn authorize_with_caches<'a, T>(
+        tx: &mut T,
+        actor: &'a ActorId,
+        scope: &'a EventScope,
+        event: &'a Event,
+        card_role_cache: &crate::card_role_cache::CardRoleCache,
+        track_area_cache: &crate::track_area_cache::TrackAreaCache,
+    ) -> Result<Authorized<'a>>
+    where
+        T: crate::decision_gate::WriteTx + ?Sized + Send,
+    {
+        crate::decision_gate::enforce_role_resolving_session(
+            tx,
+            actor,
+            event,
+            scope,
+            card_role_cache,
+            track_area_cache,
+        )
+        .await
+        .map_err(|violation| CalmError::Forbidden(violation.to_string()))?;
+        Ok(Authorized {
+            actor,
+            scope,
+            event,
+            _seal: (),
+        })
+    }
+
+    /// **Deliberate bypass, `#[cfg(test)]` only.** Backs
+    /// `SqlxRepo::event_append_fixture`, whose whole job is to reconstruct an
+    /// event stream verbatim without driving the handler stack. It has been
+    /// ungated since it was written; this keeps that unchanged rather than
+    /// silently tightening a replay loader. There is no non-test build in
+    /// which this function exists.
+    #[cfg(test)]
+    pub(in crate::db::sqlite::events) fn ungated_fixture_replay<'a>(
+        actor: &'a ActorId,
+        scope: &'a EventScope,
+        event: &'a Event,
+    ) -> Authorized<'a> {
+        Authorized {
+            actor,
+            scope,
+            event,
+            _seal: (),
+        }
+    }
+}
+
+/// #1252 S3′ negative nail. Counts every append that goes through the two
+/// public `append_decision_event*_in_tx` entrances, so a test can assert that
+/// a given write path does **not** flow through them.
+///
+/// The live use is `crates/calm-server/tests/cases/`: the design of #1252 S2
+/// claimed fork / template / recipe creation would start flowing through this
+/// seam. It does not — those paths go through `write_with_actor_events_typed`,
+/// one of the four `RepoEventWrite` wrappers. This probe turns that claim into
+/// a test that goes red the day it stops being true.
+///
+/// A process-global counter is correct here only because the gate command runs
+/// tests with `cargo nextest`, which gives every test its own process.
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod append_probe {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static APPENDS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn record() {
+        APPENDS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Number of `append_decision_event*_in_tx` appends in this process.
+    pub fn count() -> u64 {
+        APPENDS.load(Ordering::Relaxed)
+    }
+}
 
 impl SqlxRepo {
     /// **Private.** The raw events-table insert. Lives off the trait per
@@ -38,13 +185,19 @@ impl SqlxRepo {
     ///     in migration 0007. `EventScope::System` writes `scope_kind='system'`
     ///     with NULL ancestor cols; the other variants populate whatever
     ///     prefix of the area → track → card chain they carry.
+    ///
+    /// #1252 S3′: the `(actor, scope, event)` triple arrives as an
+    /// [`Authorized`](gated::Authorized) capability rather than as three loose
+    /// arguments, so there is no way to reach this insert without a gate
+    /// decision on exactly the triple being inserted.
     async fn event_append_in_tx(
         tx: &mut Transaction<'_, Sqlite>,
-        actor: &ActorId,
-        scope: &EventScope,
+        authorized: &gated::Authorized<'_>,
         correlation: Option<&str>,
-        event: &Event,
     ) -> Result<i64> {
+        let actor = authorized.actor;
+        let scope = authorized.scope;
+        let event = authorized.event;
         let kind = event.kind_tag();
         let payload = event.payload_value();
         let payload_text = serde_json::to_string(&payload)?;
@@ -91,22 +244,29 @@ impl SqlxRepo {
         event: &Event,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
-        let id = Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, event).await?;
+        let authorized = gated::ungated_fixture_replay(&actor, &scope, event);
+        let id = Self::event_append_in_tx(&mut tx, &authorized, correlation).await?;
         tx.commit().await?;
         Ok(id)
     }
 }
 
-pub async fn append_decision_event_in_tx<G: DecisionGate + ?Sized>(
+/// Append one event inside the caller's transaction, gated on the live
+/// `cards` / `tracks` rows in that same transaction.
+///
+/// #1252 S3′ removed the `gate: &G` parameter: there is no policy to inject
+/// any more. See the [`gated`] module for what replaced it.
+pub async fn append_decision_event_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    gate: &G,
     actor: &ActorId,
     scope: &EventScope,
     correlation: Option<&str>,
     event: &Event,
 ) -> Result<i64> {
-    gate.decide(tx, actor, scope, event).await?.into_result()?;
-    let event_id = SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?;
+    #[cfg(any(test, feature = "test-helpers"))]
+    append_probe::record();
+    let authorized = gated::authorize(tx, actor, scope, event).await?;
+    let event_id = SqlxRepo::event_append_in_tx(tx, &authorized, correlation).await?;
     if let Some(track_id) = scope.track_id() {
         track_vcs::commit_in_tx(
             tx,
@@ -121,9 +281,10 @@ pub async fn append_decision_event_in_tx<G: DecisionGate + ?Sized>(
     Ok(event_id)
 }
 
-pub async fn append_decision_events_in_tx<G: DecisionGate + ?Sized>(
+/// Batch form of [`append_decision_event_in_tx`], same seam, same removal of
+/// the injected policy.
+pub async fn append_decision_events_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    gate: &G,
     actor: &ActorId,
     scope: &EventScope,
     correlation: Option<&str>,
@@ -131,8 +292,10 @@ pub async fn append_decision_events_in_tx<G: DecisionGate + ?Sized>(
 ) -> Result<Vec<i64>> {
     let mut event_ids = Vec::with_capacity(events.len());
     for event in events {
-        gate.decide(tx, actor, scope, event).await?.into_result()?;
-        event_ids.push(SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?);
+        #[cfg(any(test, feature = "test-helpers"))]
+        append_probe::record();
+        let authorized = gated::authorize(tx, actor, scope, event).await?;
+        event_ids.push(SqlxRepo::event_append_in_tx(tx, &authorized, correlation).await?);
     }
     if let (Some(track_id), Some(event_id)) = (scope.track_id(), event_ids.last()) {
         track_vcs::commit_events_in_tx(
@@ -185,28 +348,30 @@ impl RepoEventWrite for SqlxRepo {
         // (e.g. `card_create_with_id_tx` writes through the cache)
         // before the gate checks them. Violations roll back: no
         // entity write, no event row, no broadcast.
-        if let Err(violation) = crate::decision_gate::enforce_role_resolving_session(
+        let authorized = match gated::authorize_with_caches(
             &mut tx,
             &actor,
-            &event,
             &scope,
+            &event,
             write.role_cache(),
             write.area_cache(),
         )
         .await
         {
-            let _ = tx.rollback().await;
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
+            Ok(authorized) => authorized,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
         // Persist the event in the same txn.
-        let event_id =
-            match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
-                Ok(id) => id,
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            };
+        let event_id = match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
         if let Some(track_id) = scope.track_id()
             && let Err(e) = track_vcs::commit_in_tx(
                 &mut tx,
@@ -268,25 +433,29 @@ impl RepoEventWrite for SqlxRepo {
         // performed, so a track-create-with-planner-card batch can mint
         // the planner card in the closure and immediately have its
         // role visible to the `TrackUpdated` enforce_role call below.
+        let mut authorized_batch = Vec::with_capacity(events.len());
         for (scope, event) in &events {
-            if let Err(violation) = crate::decision_gate::enforce_role_resolving_session(
+            match gated::authorize_with_caches(
                 &mut tx,
                 &actor,
-                event,
                 scope,
+                event,
                 write.role_cache(),
                 write.area_cache(),
             )
             .await
             {
-                let _ = tx.rollback().await;
-                return Err(CalmError::Forbidden(violation.to_string()));
+                Ok(authorized) => authorized_batch.push(authorized),
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
             }
         }
         // Persist every event in the same txn, in order.
         let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
-        for (scope, event) in &events {
-            match Self::event_append_in_tx(&mut tx, &actor, scope, correlation, event).await {
+        for authorized in &authorized_batch {
+            match Self::event_append_in_tx(&mut tx, authorized, correlation).await {
                 Ok(id) => event_ids.push(id),
                 Err(e) => {
                     let _ = tx.rollback().await;
@@ -294,6 +463,7 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
+        drop(authorized_batch);
         let mut track_events = HashMap::<TrackId, (i64, Vec<Event>)>::new();
         for ((scope, event), event_id) in events.iter().zip(event_ids.iter()) {
             if let Some(track_id) = scope.track_id() {
@@ -358,24 +528,28 @@ impl RepoEventWrite for SqlxRepo {
                 "write_with_actor_events: closure returned an empty event batch".into(),
             ));
         }
+        let mut authorized_batch = Vec::with_capacity(events.len());
         for (actor, scope, event) in &events {
-            if let Err(violation) = crate::decision_gate::enforce_role_resolving_session(
+            match gated::authorize_with_caches(
                 &mut tx,
                 actor,
-                event,
                 scope,
+                event,
                 write.role_cache(),
                 write.area_cache(),
             )
             .await
             {
-                let _ = tx.rollback().await;
-                return Err(CalmError::Forbidden(violation.to_string()));
+                Ok(authorized) => authorized_batch.push(authorized),
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
             }
         }
         let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
-        for (actor, scope, event) in &events {
-            match Self::event_append_in_tx(&mut tx, actor, scope, correlation, event).await {
+        for authorized in &authorized_batch {
+            match Self::event_append_in_tx(&mut tx, authorized, correlation).await {
                 Ok(id) => event_ids.push(id),
                 Err(e) => {
                     let _ = tx.rollback().await;
@@ -383,6 +557,7 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
+        drop(authorized_batch);
         let mut track_events = HashMap::<TrackId, (i64, Option<ActorId>, Vec<Event>)>::new();
         for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
             if let Some(track_id) = scope.track_id() {
@@ -444,27 +619,29 @@ impl RepoEventWrite for SqlxRepo {
         // ingest, plugin state transitions) always supply a real actor
         // identity; the gate's defense-in-depth checks (empty
         // CardId, unknown card) still apply.
-        if let Err(violation) = crate::decision_gate::enforce_role_resolving_session(
+        let authorized = match gated::authorize_with_caches(
             &mut tx,
             &actor,
-            &event,
             &scope,
+            &event,
             card_role_cache,
             track_area_cache,
         )
         .await
         {
-            let _ = tx.rollback().await;
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
-        let event_id =
-            match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
-                Ok(id) => id,
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            };
+            Ok(authorized) => authorized,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        let event_id = match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
         if let Some(track_id) = scope.track_id()
             && let Err(e) = track_vcs::commit_in_tx(
                 &mut tx,

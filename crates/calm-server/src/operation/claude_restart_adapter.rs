@@ -26,7 +26,6 @@ use crate::session_projection_repo::{
 };
 use crate::state::{CodexClient, WriteContext};
 use crate::track_area_cache::TrackAreaCache;
-use calm_truth::decision_gate::PermissiveGate;
 use calm_truth::model::NewTerminal;
 
 use super::{
@@ -246,18 +245,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Starting,
         };
-        if let Err(violation) = crate::role_gate::enforce_role(
-            &payload.actor,
-            &runtime_event,
-            &scope,
-            &self.card_role_cache,
-            &self.track_area_cache,
-        ) {
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
         let runtime_event_id = append_decision_event_in_tx(
             tx,
-            &PermissiveGate,
             &payload.actor,
             &scope,
             None,

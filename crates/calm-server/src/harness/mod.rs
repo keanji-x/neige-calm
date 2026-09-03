@@ -607,7 +607,6 @@ mod tests {
     };
     use crate::shared_codex_appserver::SharedCodexAppServer;
     use crate::track_area_cache::TrackAreaCache;
-    use calm_truth::decision_gate::PermissiveGate;
     use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
     use serde_json::json;
 
@@ -691,7 +690,6 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let event_id = append_decision_event_in_tx(
             &mut tx,
-            &PermissiveGate,
             &ActorId::KernelDispatcher,
             &scope,
             None,
@@ -885,7 +883,6 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let event_id = append_decision_event_in_tx(
             &mut tx,
-            &PermissiveGate,
             &ActorId::AiPlanner(planner_card.id.clone()),
             &scope,
             None,

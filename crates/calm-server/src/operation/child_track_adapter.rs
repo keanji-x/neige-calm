@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use calm_truth::decision_gate::PermissiveGate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -430,7 +429,6 @@ impl ProviderAdapter for ChildTrackAdapter {
         for (event_actor, scope, event) in entries {
             let id = append_decision_event_in_tx(
                 tx,
-                &PermissiveGate,
                 &event_actor,
                 &scope,
                 None,
