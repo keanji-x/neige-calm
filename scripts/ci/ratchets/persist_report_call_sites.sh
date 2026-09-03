@@ -3,8 +3,14 @@
 set -euo pipefail
 
 # #1300 — a census of every `persist_report` / `persist_report_with_shadow`
-# mention that appears on a **code line** anywhere in the repository's compiled
-# Rust sources, pinned per file.
+# mention that appears on a **code line** of a `*.rs` file anywhere in the
+# repository (minus the two exclusions below), pinned per file.
+#
+# "`*.rs` file", not "compiled Rust source", is the exact set: the scan is
+# `rg --type=rust`, which selects by extension. That is narrower than what
+# `rustc` compiles in one direction (a module pulled in from a differently-named
+# file — `#[path = "writer.inc"]` — is real Rust that this never reads; see G6)
+# and wider in another (a `*.rs` file no target includes is scanned anyway).
 #
 # ---------------------------------------------------------------------------
 # WHAT THIS IS, STATED HONESTLY
@@ -13,7 +19,7 @@ set -euo pipefail
 # This is a **drift detector over an enumeration**, not a semantic gate. Its
 # whole promise is one sentence:
 #
-#   A code line in a compiled Rust source that names one of these two symbols
+#   A code line in a scanned `*.rs` file that names one of these two symbols
 #   is counted, so adding or removing one — while writing ordinary Rust, with
 #   no attempt to dodge a text scanner — changes a count here, fails the gate,
 #   and puts the new call site in front of a reviewer.
@@ -56,10 +62,22 @@ set -euo pipefail
 #      decision points actually writes is pinned by
 #      `crates/calm-server/tests/cases/report_write_characterization.rs`, which
 #      drives them through the real router / tool registry and asserts the
-#      persisted `events.actor` and `WaveReportEdited.author`. That is the
-#      carrier for "three sites, each honest"; this census is not, and an
-#      earlier revision of it that tried to be — a hand-written `Role=N` column
-#      — was defeated three separate ways by a reviewer and has been deleted.
+#      persisted `events.actor` and `WaveReportEdited.author`.
+#
+#      Read that split precisely, because "three sites, each honest" is two
+#      claims with two different backings:
+#
+#        * *each honest* — the per-site half. Carried by the characterization
+#          suite, which drives all three decision points for real.
+#        * *three* — the only-three half. Nothing strong carries it. The
+#          characterization suite says so in its own header: it pins the three
+#          it drives and is "a description, not a guard". The only carrier is
+#          this text census, and what a text census cannot see is the KNOWN
+#          GAPS list below.
+#
+#      An earlier revision of this census tried to carry attribution too — a
+#      hand-written `Role=N` column — and was defeated three separate ways by a
+#      reviewer; it has been deleted.
 #
 # What turns "who is writing" into a mechanical fact is #1252 S1 step 2's
 # origin-only constructors. This file is the interim, and it is a review aid.
@@ -77,7 +95,8 @@ set -euo pipefail
 # be invisible again. So the default is "everything", and exclusions have to earn
 # themselves one at a time.
 #
-# There are exactly two exclusions:
+# There are exactly two *path* exclusions (the `*.rs` extension filter above is
+# a separate narrowing, and G6 is where it leaks):
 #
 #   * `**/target/**` — build output, not source.
 #   * `/tests/fixtures/ci-ratchets/**` — deliberately-malformed miniature
@@ -201,14 +220,37 @@ set -euo pipefail
 #       site changing its `EditAuthor`, a new wrapper's later callers, a raw
 #       `UPDATE cards SET ...`.
 #
+#   G6. **A module compiled from a file that is not named `*.rs`.**
+#       `#[path = "writer.inc"] mod writer;` is ordinary, non-adversarial Rust:
+#       `writer.inc` is compiled, is not hidden, is not ignored, and is not
+#       under an excluded path — so no other gap here covers it — yet
+#       `rg --type=rust` selects by extension and never opens it. Both passes
+#       miss it, counting and reverse discovery alike, exactly as in G2.
+#
+#   G7. **An equal-count swap inside one already-censused file.** The census
+#       pins a *number per file*, so any edit that keeps a file's occurrence
+#       count while changing what the occurrences are stays green. Concretely:
+#       turn `routes/waves.rs`'s named `use ..::persist_report;` into a glob
+#       import and add a second production call in the same file — two
+#       occurrences before, two after. The `why` column would then be wrong,
+#       but it is prose and nothing checks it (see "THE CENSUS" below). This
+#       needs no intent; one ordinary refactor does it.
+#
 # Why these are accepted rather than patched: every one of them is a variation
 # on the same fact — a text scan cannot decide what `rustc` compiles, so each
 # patch buys one construction and the next reviewer finds another. Three rounds
-# of this issue's review went that way. What would actually close the set is a
-# compile-time visibility boundary — `persist_report*` not `pub` outside the
-# crate, gated behind `#[cfg(feature = "fixtures")]` for the test callers, so
-# the compiler enumerates the callers instead of `rg`. That is a build/behaviour
-# change and belongs to its own issue, not to this file.
+# of this issue's review went that way.
+#
+# What it would take to actually close the set is a compile-time boundary
+# narrow enough that the compiler enumerates the callers. Crate visibility is
+# not that boundary and must not be described as one:
+# `persist_report_with_shadow` is already `pub(crate)`, and every sibling module
+# in `calm-server` can still add a call the compiler will happily accept. A
+# closing shape has to be narrower than the crate — a private module with a
+# single forwarding entry point, or an origin-carrying token only that entry
+# point can mint — so that "who may call this" is a type/visibility fact rather
+# than a text census. Designing it is not this file's job; the point here is
+# only that "make it non-`pub`" is not by itself a closure.
 #
 # ---------------------------------------------------------------------------
 # THE CENSUS
@@ -257,7 +299,7 @@ crates/calm-server/src/decision_sink.rs	2	production · the single MCP agent fun
 crates/calm-server/src/report_backlinks.rs	2	#[cfg(test)] · a fixture inside `mod tests` (the attribute is at :228, the call at :291 — see the note above on why this is not filtered) · plus its `use` import
 crates/calm-server/src/wave_report_read.rs	2	#[cfg(test)] · same shape
 crates/calm-server/tests/cases/rest_wave_report.rs	3	integration test · REST report writes · import + two fixture calls
-crates/calm-server/tests/cases/wave_template_waves.rs	6	integration test · import + five fixture writes: two_waves_from_one_template_are_independent_and_identical (three edits — append, same-length rewrite, template-minted block — each making a different fan-out shape falsifiable), explicit_fork_report_from_is_not_overwritten, a_forged_template_key_cannot_influence_what_a_template_creates
+crates/calm-server/tests/cases/wave_template_waves.rs	7	integration test · import + six fixture writes: two_waves_from_one_template_are_independent_and_identical (four edits — append, same-length rewrite, template-minted block, deletion that shortens the body — each making a different fan-out shape falsifiable), explicit_fork_report_from_is_not_overwritten, a_forged_template_key_cannot_influence_what_a_template_creates
 crates/calm-server/tests/cases/wave_vcs.rs	3	integration test · import + two fixture calls
 crates/calm-server/tests/cases/mcp_report_links.rs	2	integration test · import + one fixture call
 crates/calm-server/tests/cases/task_projection_acceptance.rs	2	integration test · import + one fixture call

@@ -3178,9 +3178,16 @@ pub(crate) async fn delete_wave(
     // (`routes::today_summary::write_today_summary`). So a permitted delete
     // would survive page loads — loading Today runs only the read-only resolve
     // and never POSTs either endpoint (INV-TODAYDOC-001) — but the next Today
-    // summary a user asks for would rebuild the launchpad underneath them. The
-    // ruling does not rest on the deletion being hard to undo, or on it being
-    // harmless; it rests on where the ownership boundary is drawn.
+    // summary that gets far enough to write would rebuild the launchpad
+    // underneath the user. "Far enough" is literal: `write_today_summary`
+    // computes the local day's activity window first and returns 409
+    // `TodaySummaryNoActivity` when it is empty, and only past that check does
+    // it call `ensure_today_launchpad`. On a day with no workspace activity
+    // every summary POST stops at the 409 and rebuilds nothing, however many
+    // times it is repeated; the explicit `POST /api/today/launchpad/ensure`
+    // has no such precondition and rebuilds on any day. The ruling does not
+    // rest on the deletion being hard to undo, or on it being harmless; it
+    // rests on where the ownership boundary is drawn.
     //
     // #1300 — this paragraph used to justify itself by the *other* residents
     // of the system cove, the three hidden template waves `ensure_templates`

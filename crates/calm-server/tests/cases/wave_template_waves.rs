@@ -426,36 +426,50 @@ async fn creating_from_a_template_mints_no_hidden_wave() {
 /// held at their original values and the case stayed green while a real user
 /// edit would clobber the other wave's document.
 ///
-/// The first body edit is an appended prose paragraph rather than a rewrite,
-/// and that shape is deliberate: `guard_non_prose_stomp` refuses a
-/// prose-channel write that modifies or deletes a non-prose block, and the
-/// recipe body is almost entirely `task` fences. Appending after the last fence
-/// carries every fence through verbatim, so the write fails on independence if
-/// it fails at all — never on the guard, whose repair would be to weaken the
-/// case.
-///
 /// ## Which fan-out shapes this case can see, and which it cannot
 ///
-/// An append-only edit is not enough on its own: it grows the body and adds
-/// text that was not there before, so a fan-out that only fires on an
-/// *equal-length* body (`next.body.len() == current.body.len()`) would never
-/// run. Hence the second leg, which rewrites the appended paragraph in place at
-/// exactly the same byte length. Between the two legs, a fan-out keyed on
-/// "length grew", "new text appeared", "length is unchanged", or on nothing at
-/// all is caught.
+/// Every leg goes through the same door — `persist_report` — and what varies
+/// between them is the *shape of the edit*, because a conditional fan-out only
+/// betrays itself on an edit that enters its branch. Four legs, each chosen for
+/// one branch predicate:
 ///
-/// The remaining shape is a fan-out keyed on the *block identity* of the edited
-/// block — one that copies across same-`template_id` waves only for block ids
-/// the template itself minted, and so never fires for a paragraph leg one
-/// introduced. Leg three closes it by editing the recipe's own intro prose
-/// block (`SMALL_CHANGE_INTRO`) in place. That block is prose, so
-/// `guard_non_prose_stomp` permits the edit; every `task` fence still travels
-/// through verbatim.
+/// 1. **Append a prose paragraph.** The body grows and gains text that was not
+///    there before. Catches a fan-out with no guard at all, and one keyed on
+///    "new text appeared". It is an append rather than a rewrite because
+///    `guard_non_prose_stomp` refuses a prose-channel write that modifies or
+///    deletes a non-prose block and the recipe body is almost entirely `task`
+///    fences: appending after the last fence carries every fence through
+///    verbatim, so the write fails on independence if it fails at all — never
+///    on the guard, whose repair would be to weaken the case.
+/// 2. **Rewrite that paragraph in place at exactly the same byte length.**
+///    Leg one never enters a branch guarded on `next.body.len() ==
+///    current.body.len()`; this one does.
+/// 3. **Edit a block the template itself minted** — the recipe's own intro
+///    prose (`SMALL_CHANGE_INTRO`), rewritten in place. Legs one and two only
+///    ever touch a paragraph leg one introduced, so a fan-out keyed on the
+///    *block identity* of the edited block — firing only for block ids the
+///    recipe minted — would never run. This block is prose, so the guard does
+///    execute here and does check every `task` fence: it permits the edit
+///    because the fences travel through byte-identical, not because it is
+///    bypassed.
+/// 4. **Delete that paragraph, shortening the body.** Legs one to three leave
+///    the body longer, equal, and equal, so an implementation that fans out
+///    only when `body_after.len() < body_before.len()` passes all three. This
+///    leg is the one that enters that branch. Deleting the appended prose is
+///    the only shrinking edit available that leaves every `task` fence intact.
 ///
-/// What no leg here covers: a fan-out that fires only on writes arriving
-/// through a *different* door than `persist_report` — this case drives the
-/// document leg only. `report_write_characterization` is where the per-door
-/// behaviour lives.
+/// So the covered set is: no guard, "text appeared", "length unchanged",
+/// "template-minted block id", "length shrank". What is **not** covered, and
+/// these are real gaps rather than a rounding error:
+///
+/// * a fan-out that fires only on writes arriving through a *different* door
+///   than `persist_report` — this case drives the document leg only;
+///   `report_write_characterization` is where the per-door behaviour lives;
+/// * a fan-out keyed on a predicate no leg happens to satisfy — an edit that
+///   touches a `task` fence (which this case deliberately never does, since
+///   the guard would reject it on the prose path), a summary-only write, a
+///   specific byte pattern, the Nth write, or the wave's age. Four legs are
+///   four branch predicates, not a proof that the branch space is exhausted.
 #[tokio::test]
 async fn two_waves_from_one_template_are_independent_and_identical() {
     let boot = boot().await;
@@ -678,6 +692,86 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
         second_recipe_edited.body, second.body,
         "editing a template-minted block of one wave changed the other's body: \
          the two waves share a document"
+    );
+
+    // ---- fourth edit: the body gets shorter ----
+    //
+    // Legs one to three make the body grow, stay the same length, and stay the
+    // same length again. So a fan-out guarded on `next.body.len() <
+    // current.body.len()` — an ordinary "the user deleted something, propagate
+    // it" shape — never enters its own branch, and all three legs pass while a
+    // real deleting edit clobbers the other wave. This leg deletes the prose
+    // paragraph legs one and two added, which is the only shrinking edit
+    // available that touches nothing but prose: every `task` fence still
+    // travels through verbatim, so `guard_non_prose_stomp` permits it.
+    let appended_suffix = format!("\n\n{REPLACED}\n");
+    let shortened_body = first_recipe_edited
+        .body
+        .strip_suffix(&appended_suffix)
+        .unwrap_or_else(|| {
+            panic!(
+                "the appended paragraph is not the body's suffix, so this leg \
+                 would not be the shrinking one; body={}",
+                first_recipe_edited.body
+            )
+        })
+        .to_string();
+    assert!(
+        shortened_body.len() < first_recipe_edited.body.len(),
+        "this leg is the shrinking one; if it stops shrinking it silently \
+         degrades into a repeat of leg three"
+    );
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report, fourth time");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, shortened_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("delete a prose paragraph from the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_shortened = report_card_payload(&first_detail);
+    assert!(
+        !first_shortened.body.contains(REPLACED),
+        "the deleting edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_shortened.body
+    );
+    assert!(
+        first_shortened.body.len() < first_recipe_edited.body.len(),
+        "the deleting edit did not shorten the document, so this leg no longer \
+         exercises the shrink branch; body={}",
+        first_shortened.body
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_shortened = report_card_payload(&second_detail);
+    assert_eq!(
+        second_shortened.body, second.body,
+        "a deleting edit to one template-created wave changed the other's body: \
+         the two waves share a document"
+    );
+    assert_eq!(
+        second_shortened.summary, second.summary,
+        "a deleting edit to one template-created wave changed the other's \
+         summary: the two waves share a document"
     );
 }
 
