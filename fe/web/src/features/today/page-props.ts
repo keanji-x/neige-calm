@@ -154,37 +154,44 @@ export type Disposition =
   | Readonly<{ render: false; why: string }>;
 
 /**
- * Every `TodayPageProps` key, and whether the compact viewport draws it.
+ * Every `TodayPageProps` key, and whether `TodayCompact` — the only thing the
+ * compact viewport renders — may receive it.
  *
- * `Object.freeze(… as const satisfies Record<keyof TodayPageProps, Disposition>)`
- * is the **only** legal shape here, and each of the three pieces is
- * load-bearing:
+ * **What carries the weight, precisely.** Two things, and the rest is hygiene:
  *
- * - `satisfies Record<keyof TodayPageProps, …>` is the exhaustiveness check. A
- *   prop added to `TodayPageProps` and not to this object stops the build, and
- *   the diagnostic names the missing keys. This is the #1253 catch.
- * - `as const` keeps the literal `render` values, which is what lets
- *   `CompactRenderedKeys` below be computed. A type **annotation**
- *   (`const … : Record<…, Disposition>`) would widen every entry to
- *   `Disposition`, `CompactRenderedKeys` would collapse to `never`, and the
- *   compact renderer would silently lose its only prop — measured, see the PR.
- * - `Object.freeze` is `fe/AGENTS.md`'s rule for module-level static data:
- *   `as const` is a type-level claim and changes nothing at runtime. It is
- *   applied to each entry as well as to the whole, because freezing is shallow
- *   — `architecture/no-module-runtime-state` rejects the outer freeze alone —
- *   and each entry keeps its own `as const`, since `Object.freeze` on a bare
- *   literal widens `render: false` to `boolean` and destroys the discriminant.
+ * - `satisfies Record<keyof TodayPageProps, Disposition>` is the exhaustiveness
+ *   check. A prop added to `TodayPageProps` and not to this object stops the
+ *   build, and the diagnostic names the missing keys. This is the #1253 catch.
+ * - **The absence of a widening type annotation.** The declaration must keep
+ *   its precisely-inferred type: annotate it `: Record<keyof TodayPageProps,
+ *   Disposition>` (or `Readonly<…>` of the same) and every entry widens,
+ *   `CompactRenderedKeys` collapses to `never`, and the compact renderer loses
+ *   even `nowMs` — measured. `satisfies` checks without widening; an
+ *   annotation widens.
  *
- * The dispositions below were each read off the compact branch of `TodayPage`
- * as it stands: that branch draws a `MobileHeader` and an `AstryxCalendar`,
- * and the only value reaching either of them is the day, which comes from
- * `nowMs`.
+ * The `as const`s are **not** in that list, and an earlier version of this
+ * comment wrongly said they were. Measured on TypeScript 5.9.3: removing the
+ * inner ones, or the outer one, leaves everything green, because
+ * `Object.freeze`'s overload plus `satisfies`'s contextual typing already keep
+ * the literals. They are kept as belt-and-braces against a future inference
+ * change, not because anything here depends on them today.
+ *
+ * The `Object.freeze` calls **are** required, and by a lint rule rather than by
+ * the type system: `fe/AGENTS.md` mandates freezing module-level static data,
+ * freezing is shallow, and `architecture/no-module-runtime-state` rejects the
+ * outer freeze on its own (measured by removing one inner call).
+ *
+ * The dispositions below were each read off the compact renderer as it stands:
+ * `TodayCompact` draws a `MobileHeader` and an `AstryxCalendar`, and the only
+ * value reaching either of them is the day, which comes from `nowMs`.
  *
  * **What this does not claim.** `render: true` is enforced as far as "the
  * compact renderer may name this prop"; nothing here proves a rendered prop
  * reaches the DOM, which is a liveness property the type system does not carry.
  * `render: false` is the strong half: the key is absent from the compact
- * renderer's props type, so touching it does not compile.
+ * renderer's props type, so touching it does not compile — and since
+ * `ViewportDispatch` holds the viewport bit, there is no other place the phone
+ * gets rendered from.
  */
 export const TODAY_VIEWPORT_LEDGER = Object.freeze({
   tracks: Object.freeze({
@@ -243,7 +250,21 @@ export const TODAY_VIEWPORT_LEDGER = Object.freeze({
 
 type Ledger = typeof TODAY_VIEWPORT_LEDGER;
 
-type Assert<T extends true> = T;
+/** Fails to compile, showing what it got instead, unless `T` is exactly `true`. */
+export type Assert<T extends true> = T;
+
+/**
+ * Type *identity*, not assignability.
+ *
+ * The two-conditional trick compares the types as the checker's internal
+ * identity relation does, so widening is visible: `A & { extra?: x }` is
+ * mutually assignable to `A` when `extra` is optional, and one-directional
+ * `extends` therefore cannot see the bypasses review measured — a page entry
+ * annotated `TodayPageProps & { reviewProbe?: string }` passed an assignability
+ * check while carrying a prop no ledger knows about.
+ */
+export type Exactly<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 
 type EmptyWhyKeys = {
   [K in keyof Ledger]: Ledger[K] extends Readonly<{ render: false; why: '' }> ? K : never;
@@ -271,3 +292,25 @@ export type CompactRenderedKeys = {
  * compile error rather than something a reviewer has to notice.
  */
 export type TodayCompactProps = Pick<TodayPageProps, CompactRenderedKeys>;
+
+/*
+ * ── Binding the ledger to the type it claims to be about ────────────────────
+ *
+ * `satisfies` alone only closes the ledger against the props type *as written
+ * on that one line*. Review measured the cheap ways around it, all green
+ * before these three: weakening the constraint to `Partial<Record<…>>` or
+ * `Record<string, Disposition>`, and giving `TodayPageProps` a string index
+ * signature so that "every key" becomes trivially satisfiable.
+ *
+ * The two sets are asserted equal in both directions, and both sides are
+ * required to have literal keys. Each assertion is exported so `noUnusedLocals`
+ * cannot quietly delete it, and each was mutation-checked: removing it turns
+ * its own bypass back to green.
+ */
+
+/** Neither side may grow an index signature: `string extends keyof X` means it has one. */
+export type PropsKeysAreLiteral = Assert<string extends keyof TodayPageProps ? false : true>;
+export type LedgerKeysAreLiteral = Assert<string extends keyof Ledger ? false : true>;
+
+/** …and, both being literal, they must be the same set — in both directions. */
+export type LedgerCoversTheProps = Assert<Exactly<keyof Ledger, keyof TodayPageProps>>;

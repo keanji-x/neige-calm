@@ -5,7 +5,33 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type {
+  Assert, Exactly, TodayCompactProps, TodayPageProps,
+} from './page-props.ts';
 import { TODAY_VIEWPORT_LEDGER } from './page-props.ts';
+import type { TodayCompactSignature, TodayPageSignature } from './public.tsx';
+
+/*
+ * ── The ledger is about *these two functions*, and this is where that is said ─
+ *
+ * Everything in `page-props.ts` is a statement about `TodayPageProps`. It
+ * becomes a statement about the page only if the page's entry really takes
+ * that type and the compact renderer really takes the derived one, and review
+ * measured both bypasses as green: `TodayPage(props: TodayPageProps & { … })`,
+ * and a `TodayCompact` re-typed with an inline props literal that renders
+ * `launchpadDocument`. Neither changes the ledger, and neither was red.
+ *
+ * The assertions live *here*, not in `public.tsx`, and that is the point of the
+ * file boundary: a local `type TodayPageProps = …` shadowing the import
+ * satisfies any assertion written inside that module — the third bypass review
+ * measured. This module imports the signatures from `public.tsx` and the
+ * canonical types from `page-props.ts`, so the two names cannot both be
+ * captured by editing one file. They are types, so what enforces them is
+ * `tsc -b` (which compiles `web/src` including this file), not the test run —
+ * a suite file is simply the honest home for a contract nothing imports.
+ */
+export type PageEntryTakesTheLedgeredProps = Assert<Exactly<TodayPageSignature, TodayPageProps>>;
+export type CompactEntryTakesTheRenderedProps = Assert<Exactly<TodayCompactSignature, TodayCompactProps>>;
 
 describe('the Today viewport ledger', () => {
   it('is frozen, not merely `as const`', () => {

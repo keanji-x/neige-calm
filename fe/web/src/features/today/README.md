@@ -73,13 +73,34 @@ things follow mechanically from `tsc -b`:
   (`Pick<TodayPageProps, …>` over the rendered keys), so `TodayCompact` cannot
   read it even by accident.
 
+Two more things hold it up, and both were added after review found the ledger
+easy to walk around:
+
+- **`TodayPage` does not know which viewport it is on.** `ViewportDispatch`
+  (`viewport-dispatch.tsx`) owns `useCompactViewport` and is generic in both
+  prop packs, so it has no name for any Today field; `TodayPage` names fields
+  but cannot tell the viewports apart. While one function held both, an
+  `if (compact) return <>{props.launchpadDocument}…</>` compiled clean and the
+  ledger had nothing to say about it.
+- **The ledger is bound to the real signatures, in types.** `page-props.ts`
+  asserts that the ledger's keys and `keyof TodayPageProps` are the *same set*
+  and that neither side has an index signature; `page-props.test.ts` asserts
+  that `TodayPage` and `TodayCompact` take exactly the canonical and derived
+  types. Both use type identity, not `extends`: `TodayPageProps & { x?: … }` is
+  mutually assignable to `TodayPageProps`, so an assignability check sees no
+  problem with an entry that has quietly grown a prop. The signature assertions
+  live in the *test* module on purpose — a local type of the same name shadows
+  any assertion written inside `public.tsx` itself.
+
 Consequences for whoever touches this next: the props type lives in
 `page-props.ts` rather than `public.tsx` (which re-exports it) because a ledger
 that names `keyof TodayPageProps` and a page that consumes the derived keys
 would otherwise import each other, and `no-circular` counts type-only edges.
-`TodayPage` is a two-line dispatch on purpose — props read *there* are outside
-the ledger's reach. And `render: true` only guarantees the phone renderer *may*
-name the prop; that it reaches the DOM is a liveness property no type carries.
+`render: true` only guarantees the phone renderer *may* name the prop; that it
+reaches the DOM is a liveness property no type carries. And the clock is
+sampled per renderer, so crossing the breakpoint reseeds `now` and restarts the
+15s interval — identical behaviour whenever `nowMs` is pinned, and a fresher
+clock when it is not.
 
 ## Test contract
 

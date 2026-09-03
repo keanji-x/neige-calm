@@ -33,7 +33,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { useCompactViewport } from '../../ui/viewport/public.ts';
+import { ViewportDispatch } from './viewport-dispatch.tsx';
 import styles from './today.module.css';
 
 // `ScheduledEvent`, `TrackRowRenderer` and `TodayPageProps` are declared in
@@ -129,6 +129,17 @@ function isoDate(day: Date): ISODateString {
  * copies: a pinned `nowMs` freezes it (tests assert across midnight and DST
  * without waiting), and an unpinned one ticks slowly — 15s is enough for a
  * minute-resolution clock and for the day to roll over on its own.
+ *
+ * It is held by each renderer rather than above them, so **crossing the
+ * breakpoint resamples the clock**: the outgoing renderer unmounts, its
+ * interval is cleared, and the incoming one seeds from `new Date()` and starts
+ * a fresh one. That is a real change from the single-component version, where
+ * the state sat above the branch and survived the switch. It is not a
+ * regression — an unpinned clock that was up to 15s stale becomes current the
+ * moment you resize, and a pinned `nowMs` behaves identically either way — but
+ * it is a change, and the alternative costs the guarantee: hoisting the state
+ * means hoisting it into the one function that must not hold both the viewport
+ * bit and the props.
  */
 function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }> {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
@@ -152,7 +163,7 @@ function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }>
 }
 
 /**
- * Today, picking a renderer per viewport — and that is all it does.
+ * Today, as two renderers and the ledger that says which props reach which.
  *
  * The compact renderer takes `TodayCompactProps`, which is `Pick<TodayPageProps,
  * …>` over the keys `TODAY_VIEWPORT_LEDGER` marks as rendered. That is the
@@ -162,15 +173,41 @@ function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }>
  * inside this function with all thirteen props in scope, and #1253 added six
  * of them that the phone never drew, with nobody the wiser.
  *
- * Keep this body a dispatch and nothing else: props read *here* are outside the
- * ledger's reach, so drawing anything in the compact arm other than
- * `<TodayCompact />` would step around it.
+ * **This function does not know which viewport it is on**, and that is the
+ * second half of the guarantee rather than a stylistic choice. While it held
+ * both the viewport bit and the full props, an `if (compact) return <>{
+ * props.launchpadDocument}…</>` compiled clean — the ledger said the phone
+ * does not draw that prop and the compiler had no opinion, because the read
+ * happened out here rather than inside `TodayCompact`. `ViewportDispatch` now
+ * holds the bit and is generic in both prop packs, so it cannot name a field;
+ * this function can name fields but cannot tell the viewports apart. The prop
+ * packs it builds are the only channel, and `compactProps` is typed
+ * `TodayCompactProps`, so anything the ledger excludes is an excess property.
  */
 export function TodayPage(props: TodayPageProps) {
-  const compact = useCompactViewport();
-  if (compact) return <TodayCompact nowMs={props.nowMs} />;
-  return <TodayDesktop {...props} />;
+  return (
+    <ViewportDispatch<TodayCompactProps, TodayPageProps>
+      compact={TodayCompact}
+      compactProps={{ nowMs: props.nowMs }}
+      desktop={TodayDesktop}
+      desktopProps={props}
+    />
+  );
 }
+
+/*
+ * The two renderers' real parameter types, exported so the ledger's contract
+ * test can pin them from *outside* this file.
+ *
+ * Asserting it in here would be worth less than it looks: a local
+ * `type TodayPageProps = …` shadowing the import satisfies any assertion
+ * written against the bare name, which is one of the bypasses review measured
+ * as green. These aliases are derived from the functions themselves, so the
+ * comparison against the canonical types happens in a module where the names
+ * cannot be shadowed. See `page-props.test.ts`.
+ */
+export type TodayPageSignature = Parameters<typeof TodayPage>[0];
+export type TodayCompactSignature = Parameters<typeof TodayCompact>[0];
 
 /**
  * The phone: a header and the month calendar.
