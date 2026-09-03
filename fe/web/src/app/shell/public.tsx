@@ -7,10 +7,8 @@
 // session passes it in.
 //
 // It no longer owns a New track dialog (#1211). Starting a track is a route now
-// (`/area/{id}/new`, owned by `app/router`), so the two `+` surfaces — every
-// area row's in the rail, and the area page's TRACKS module head — both just
-// navigate. What the shell kept is the *seam*: `RequestNewTrackContext`, because
-// the area page renders inside `<Outlet />` and has no prop path to `go`.
+// (`/area/{id}/new`, owned by `app/router`), and each Area group exposes the
+// route through its own `+`.
 
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Outlet } from '@tanstack/react-router';
@@ -42,22 +40,10 @@ export type AppShellProps = Readonly<{
 }>;
 
 /**
- * The one escape a route has into "start a track here".
- *
- * A context and not a prop because the area route renders inside `<Outlet />`:
- * there is no prop path from here to it. It carries a single callback, so a
- * consumer cannot come to depend on the shell's internals — and since #1211
- * that callback is a plain navigation, which is why the shell no longer holds
- * any create state of its own.
- */
-const RequestNewTrackContext = createContext<((areaId: string) => void) | null>(null);
-
-/**
  * The workspace sheet a route asks the shell to open, and — for Areas — the
  * area it should already be drilled into.
  *
- * A context and not a prop for the reason {@link RequestNewTrackContext} gives:
- * the track route renders inside `<Outlet />`. It replaces `MobileReportNavigationContext`
+ * A context because the track route renders inside `<Outlet />`. It replaces `MobileReportNavigationContext`
  * (#1191 §2.3), which carried a *label* and a *closure over shell state* —
  * `mobileReportSource` — so the shell and the report each held half of one
  * decision. The return surface now rides in the URL as `?from=`, the label is
@@ -67,17 +53,6 @@ const RequestNewTrackContext = createContext<((areaId: string) => void) | null>(
 type OpenMobileSection = (section: MobileSection, areaId?: string | null) => void;
 
 const MobileSectionContext = createContext<OpenMobileSection | null>(null);
-
-/** Goes to the new-track page for `areaId` (#1211). */
-export function useRequestNewTrack(): (areaId: string) => void {
-  const request = useContext(RequestNewTrackContext);
-  // Outside the shell there is nowhere to go. Routes always render inside it;
-  // a no-op keeps a stray consumer (a test rendering a page bare) from throwing
-  // on a control it is not exercising.
-  return request ?? noRequestNewTrack;
-}
-
-function noRequestNewTrack(): void { /* no shell above this consumer */ }
 
 function noOpenMobileSection(): void { /* no shell above this consumer */ }
 
@@ -304,6 +279,7 @@ export function AppShell({
             }}
             onGo={navigateFromRail}
             onCreateArea={async (name, color) => { await areaMutations.create({ name, color }); }}
+            onRenameArea={async (areaId, name) => { await areaMutations.rename(areaId, { name }); }}
             onDeleteArea={(areaId, signal) => areaMutations.remove(areaId, signal)}
             onNewTrack={requestNewTrack}
             onSetPinned={async (trackId, pinned) => {
@@ -323,17 +299,12 @@ export function AppShell({
           />}
         </div>
       </div>
-      {/* The provider wraps the outlet only. The rail takes the same callback as
-          a plain prop, so `Sidebar` stays presentational and its tests keep
-          driving it with no context above them. */}
       <main className={styles.main} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage}>
           <MobileSectionContext.Provider value={openMobileSection}>
-            <RequestNewTrackContext.Provider value={requestNewTrack}>
-              <Outlet />
-            </RequestNewTrackContext.Provider>
+            <Outlet />
           </MobileSectionContext.Provider>
         </div>
       </main>

@@ -9,12 +9,12 @@ QueryClient are injected so a test can drive a real tree.
 | path | state |
 |---|---|
 | `/` | Today, fully wired |
-| `/area/$areaId` | registered, renders `PendingRoute` (owner `features/area`) |
+| `/area/$areaId/new` | creates a Track inside the selected Area |
 | `/track/$trackId` | registered, renders `PendingRoute` (owner `features/track`) |
 | `/settings` | registered, renders `PendingRoute` (owner `features/settings`) |
 
-The three pending routes exist so navigation from the rail commits a real URL and
-the active-row highlight works. Replace one by swapping its `component`.
+Area itself has no route: it is a disclosure group in the rail. Track and
+Settings remain page destinations.
 
 ## Deliberate gaps
 

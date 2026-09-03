@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Behaviour of the workspace rail: disclosure, badges, create/delete, menu.
-import { cleanup, render, screen } from '@testing-library/react';
+// Behaviour of the workspace rail: disclosure, badges, create/delete, account menu.
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -45,6 +45,7 @@ function renderSidebar(props: Partial<Props> = {}) {
           currentPath={merged.currentPath ?? '/'}
           onGo={merged.onGo ?? vi.fn()}
           onCreateArea={merged.onCreateArea ?? vi.fn()}
+          onRenameArea={merged.onRenameArea ?? vi.fn()}
           onDeleteArea={merged.onDeleteArea ?? vi.fn()}
           onNewTrack={merged.onNewTrack ?? vi.fn()}
           onSetPinned={merged.onSetPinned ?? vi.fn()}
@@ -88,7 +89,7 @@ describe('workspace read feedback', () => {
 });
 
 describe('area disclosure', () => {
-  it('collapses and re-expands an area track list from its chevron', async () => {
+  it('collapses and re-expands an area track list from its group row', async () => {
     renderSidebar({ tracks: [track({ title: 'Inside' })] });
     expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
 
@@ -107,6 +108,16 @@ describe('area disclosure', () => {
 
     update({ tracks, currentPath: '/track/w9' });
     expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
+  });
+
+  it('re-expands when navigation moves between two Tracks in the same Area', async () => {
+    const tracks = [track({ id: 'w1', title: 'First' }), track({ id: 'w2', title: 'Second' })];
+    const { update } = renderSidebar({ tracks, currentPath: '/track/w1' });
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
+    expect(screen.queryByRole('button', { name: /^Track Second/ })).toBeNull();
+
+    update({ tracks, currentPath: '/track/w2' });
+    expect(screen.getByRole('button', { name: /^Track Second/ })).toBeTruthy();
   });
 });
 
@@ -132,24 +143,23 @@ describe('area row', () => {
       track({ id: 'c', lifecycle: 'draft' }),
     ];
     renderSidebar({ tracks, tracksByArea: new Map([['c1', tracks]]) });
-    const row = screen.getByRole('button', { name: 'Work' });
+    const row = screen.getByRole('button', { name: 'Collapse area Work' });
     expect(row.textContent).toBe('Work');
     expect(row.querySelectorAll('[style]').length).toBe(0);
   });
 
-  // The disclosure control is a *sibling* of the row, not a child: a button
-  // inside a button is invalid HTML and trips axe's `nested-interactive`.
-  it('exposes disclosure as its own control outside the navigation button', () => {
-    renderSidebar({ tracks: [track()] });
-    const row = screen.getByRole('button', { name: 'Work' });
-    const chevron = screen.getByRole('button', { name: 'Collapse area Work' });
-    expect(row.contains(chevron)).toBe(false);
-    expect(chevron.getAttribute('aria-expanded')).toBe('true');
+  it('makes the Area row one disclosure control and not a navigation target', async () => {
+    const onGo = vi.fn();
+    renderSidebar({ tracks: [track()], onGo });
+    const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    expect(disclosure.querySelector('svg')).toBeTruthy();
+    await userEvent.click(disclosure);
+    expect(onGo).not.toHaveBeenCalled();
   });
 
   /* The rail does not own the new-track surface — since #1211 it is a route,
-     and the rail only navigates. `AppShell` owns the seam, because the
-     area page's `+` opens the same one. All the row reports is which area. */
+     and the group reports which Area that route belongs to. */
   it('starts a track in its own area from the row, without navigating into it', async () => {
     const onNewTrack = vi.fn();
     const onGo = vi.fn();
@@ -187,8 +197,40 @@ describe('new area', () => {
     renderSidebar({ onCreateArea });
     await userEvent.click(screen.getByRole('button', { name: 'New area' }));
     await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Later');
-    await userEvent.click(screen.getByRole('button', { name: 'Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
     expect(onCreateArea.mock.calls.map((call) => (call as string[])[0])).toEqual(['Later']);
+  });
+});
+
+describe('rename area', () => {
+  it('renames inline on double-click without navigating', async () => {
+    const onRenameArea = vi.fn();
+    const onGo = vi.fn();
+    renderSidebar({ onRenameArea, onGo });
+    await userEvent.dblClick(screen.getByRole('button', { name: 'Collapse area Work' }));
+    const input = screen.getByRole('textbox', { name: 'Rename area Work' });
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Studio{Enter}');
+    expect(onRenameArea).toHaveBeenCalledWith('c1', 'Studio');
+    expect(onGo).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
+  });
+
+  it('uses F2 as the keyboard equivalent and restores focus after commit or cancel', async () => {
+    const onRenameArea = vi.fn();
+    renderSidebar({ onRenameArea });
+    const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
+    disclosure.focus();
+    await userEvent.keyboard('{F2}');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rename area Work' }), '{Enter}');
+    await waitFor(() => expect(document.activeElement)
+      .toBe(screen.getByRole('button', { name: 'Collapse area Work' })));
+
+    await userEvent.keyboard('{F2}');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rename area Work' }), 'discarded{Escape}');
+    await waitFor(() => expect(document.activeElement)
+      .toBe(screen.getByRole('button', { name: 'Collapse area Work' })));
+    expect(onRenameArea).not.toHaveBeenCalled();
   });
 });
 
@@ -216,7 +258,7 @@ describe('destructive confirms', () => {
     // §6.13 / CR-5a — the title names the area, and Confirm stays blocked until
     // the name is reproduced. Deleting an area cascades to every track inside it;
     // it is the one operation in the product that earns a typed confirm, and
-    // this rail entry shares that dialog with the area page's header button.
+    // the destructive action is intentionally kept behind a typed confirm.
     expect(screen.getByRole('dialog', { name: 'Delete Work?' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     expect(onDeleteArea).not.toHaveBeenCalled();
@@ -367,7 +409,7 @@ describe('collapse toggle', () => {
     // The area is still reachable, named for assistive tech and initialled for
     // sighted users — a letter, not one of eight area hues, because §7.5 keeps
     // this surface greyscale apart from the current location and "waiting".
-    const item = screen.getByRole('button', { name: 'Work' });
+    const item = screen.getByRole('button', { name: 'Show area Work' });
     expect(item.textContent).toBe('W');
     expect(screen.getByRole('button', { name: 'Account menu for You' })).toBeTruthy();
     const expand = screen.getByRole('button', { name: 'Expand sidebar' });
@@ -376,6 +418,51 @@ describe('collapse toggle', () => {
 
     update({ collapsed: false });
     expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+  });
+
+  it('uses a collapsed Area initial to reveal its group, never to navigate', async () => {
+    const onToggleCollapsed = vi.fn();
+    const onGo = vi.fn();
+    renderSidebar({ collapsed: true, onToggleCollapsed, onGo });
+    await userEvent.click(screen.getByRole('button', { name: 'Show area Work' }));
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+    expect(onGo).not.toHaveBeenCalled();
+  });
+
+  it('leaves focus and the final scroll on the chosen Area, not the active Track elsewhere', async () => {
+    const scrolled: HTMLElement[] = [];
+    const scrollIntoView = vi.fn(function recordScroll(this: HTMLElement) {
+      scrolled.push(this);
+    });
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype, 'scrollIntoView',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const active = track({ id: 'w1', areaId: 'c1', title: 'Active' });
+    const reading = area({ id: 'c2', name: 'Reading', sort: 2 });
+    const { update } = renderSidebar({
+      collapsed: true,
+      currentPath: '/track/w1',
+      areas: [area(), reading],
+      tracks: [active],
+      tracksByArea: new Map([['c1', [active]], ['c2', []]]),
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Show area Reading' }));
+    update({ collapsed: false });
+
+    const disclosure = screen.getByRole('button', { name: 'Collapse area Reading' });
+    await waitFor(() => expect(document.activeElement).toBe(disclosure));
+    await waitFor(() => expect(scrolled.at(-1)).toBe(disclosure));
+    expect(scrolled.some((element) => element.getAttribute('aria-current') === 'page')).toBe(true);
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+    if (originalScrollIntoView === undefined) {
+      Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    } else {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+    }
   });
 
   it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {

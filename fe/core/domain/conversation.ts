@@ -1,8 +1,6 @@
 import { z } from 'zod';
 
-import type {
-  AreaConversationSummary, HarnessItem, TrackConversationSummary,
-} from '../api/generated/wire.js';
+import type { HarnessItem, TrackConversationSummary } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
@@ -14,21 +12,12 @@ import { sha256Hex } from './sha256.js';
  * What kind of thing the conversation is, from the reader's point of view.
  *
  * The first four spellings match `WorkerSessionKind` in
- * `core/api/generated/wire.ts`; `'shared-chat'` deliberately does **not**. A
- * area chat runs on an ordinary codex-card session, so the session kind says
- * nothing about it — the server derives `'shared-chat'` from the card's own
- * persisted marker (`AreaConversationSummary.kind`). Do not "fix" this union
- * back into a mirror of `WorkerSessionKind` by deleting the last members.
- *
- * `'track-assistant'` (#1189) is the same arrangement one layer over: an
- * assistant conversation is also an ordinary codex-card session, and the server
- * derives the value from that card's own marker. It is a value distinct from
- * `'shared-chat'` on purpose — the two lists have different contracts, and
- * collapsing them would route assistant rows through the area chat's
- * presentation.
+ * `core/api/generated/wire.ts`. A `'track-assistant'` (#1189) is an ordinary
+ * codex-card session, and the server derives this reader-facing value from the
+ * card's own marker rather than from its worker session kind.
  */
 export type ConversationKind =
-  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'shared-chat' | 'track-assistant';
+  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant';
 
 /** Mirrors `WorkerSessionState` — the session state machine (#679 §1). */
 export type ConversationState =
@@ -41,11 +30,10 @@ export type Conversation = Readonly<{
    * The track's title, resolved by whoever knows about tracks — absent when
    * nobody does.
    *
-   * Optional because an area conversation lives on the area's hidden chat track:
-   * the server withholds that track's title on purpose
-   * (`AreaConversationSummary`), so there is no title to resolve rather than an
-   * empty one. A surface that names tracks must therefore handle its absence;
-   * `undefined` is what makes that a type error instead of `", on undefined"`.
+   * Optional because a per-Track conversation list does not repeat the Track
+   * title already named by its request path. A surface that names Tracks must
+   * resolve it from the surrounding Track; `undefined` makes that obligation
+   * visible instead of rendering `", on undefined"`.
    */
   trackTitle?: string;
   /**
@@ -60,7 +48,7 @@ export type Conversation = Readonly<{
   /**
    * The live session's state, or `null` when there is no live session to read.
    *
-   * `null` is a fact, not a gap: the area list is a LEFT JOIN restricted to the
+   * `null` is a fact, not a gap: the conversation list is a LEFT JOIN restricted to the
    * four live states, so a card whose session exited, failed or was superseded
    * — and a card minted seconds ago that has none yet — both arrive as `null`.
    * Rendering it must therefore say only "nothing is happening in it right
@@ -74,9 +62,9 @@ export type Conversation = Readonly<{
   /**
    * Turn count, or absent when the surface that produced the row cannot count.
    *
-   * Optional because the area list will not: counting turns means re-parsing
+   * Optional because the conversation list will not: counting turns means re-parsing
    * every `harness_items.params` blob, and a count that silently disagrees with
-   * the drawer is worse than no count (`AreaConversationSummary`). Zero is
+   * the drawer is worse than no count (`TrackConversationSummary`). Zero is
    * still legal and still means zero.
    */
   turns?: number;
@@ -89,11 +77,8 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   codex: 'Codex',
   claude: 'Claude',
   'shared-spec': 'Planner',
-  /* Every area conversation reads "Chat" until one is named: the server mints
-     the card with no title and nothing writes one yet (#1098 §7). */
-  'shared-chat': 'Chat',
-  /* Same, on a track. "Assistant" rather than "Chat" because a track already
-     holds other conversations and the name has to say which one this is. */
+  /* A track can hold several conversations, so the fallback names which kind
+     this is rather than repeating the Track title. */
   'track-assistant': 'Assistant',
 });
 
@@ -112,7 +97,7 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
  * answer.
  *
  * It is a total `Record` on purpose. The branch this replaces was written
- * `scopeKind === 'shared-chat' ? … : …`, and a new kind falling into that
+ * `scopeKind === 'track-assistant' ? … : …`, and a new kind falling into that
  * `else` **silently** dropped the server's state — no compile error, no failing
  * type. A missing row here is a compile error instead, which is the only reason
  * this table exists rather than a two-armed conditional.
@@ -122,7 +107,6 @@ export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'serve
   codex: 'route',
   claude: 'route',
   'shared-spec': 'route',
-  'shared-chat': 'server',
   'track-assistant': 'server',
 });
 
@@ -256,86 +240,13 @@ export function interruptPlannerOperation(cardId: string): ApiOperation<{ stoppe
  * "this one" is all you get.
  */
 
-/* ── Area conversations (#1098) ─────────────────────────────────────────────
- *
- * An area's conversations are ordinary plain-chat harness cards on a hidden chat
- * track. Everything *inside* one is the planner-harness surface unchanged — items,
- * phase, input, interrupt all take a card id and do not care how the
- * card was made. Only two things are new: where the list comes from, and how
- * the first message creates the card it is sent to.
- *
- * The schemas live here rather than in `core/api/schemas.ts` because that
- * module mirrors the kernel's wire vocabulary, and `kind: 'shared-chat'` is not
- * in it: the wire spells this field as a bare string and the server derives the
- * value from a card marker. Narrowing it is this layer's job.
- */
-
 const conversationStateSchema = z.enum([
   'starting', 'running', 'idle', 'turn_pending', 'exited', 'failed', 'superseded',
 ]);
 
-const areaConversationSummarySchema: z.ZodType<AreaConversationSummary> = z.object({
-  id: z.string(),
-  trackId: z.string(),
-  title: z.string().nullable(),
-  kind: z.string(),
-  state: conversationStateSchema.nullable(),
-  updatedAt: z.number(),
-});
-
-/**
- * The wire row as this app's own `Conversation`.
- *
- * `trackTitle` and `turns` are left absent rather than filled with `''` and `0`:
- * the server does not send them (and says why it will not), so any value here
- * would be this function's invention. `kind` is pinned to `'shared-chat'`
- * because that is the only value this endpoint produces — the wire's `string`
- * is a ts-rs artefact, not a variation point.
- */
-export function toAreaConversation(row: AreaConversationSummary): Conversation {
-  return {
-    id: row.id,
-    trackId: row.trackId,
-    title: row.title,
-    kind: 'shared-chat',
-    state: row.state,
-    updatedAt: row.updatedAt,
-  };
-}
-
-export function areaConversationsOperation(areaId: string): ApiOperation<Conversation[]> {
-  return {
-    method: 'GET',
-    path: `/api/areas/${encodeURIComponent(areaId)}/conversations`,
-    responseSchema: z.array(areaConversationSummarySchema).transform((rows) => rows.map(toAreaConversation)),
-  };
-}
-
-/**
- * Mint a conversation and deliver its first message, in one call.
- *
- * `Idempotency-Key` is required by the server (a missing one is 400) and is
- * what makes a retry return the same conversation instead of a second one. It
- * is a parameter rather than something minted in here on purpose: the key
- * belongs to the *draft* the user keeps pressing send on, and a key minted per
- * call would be a new key per attempt, which is exactly the guarantee it
- * exists to provide.
- */
-export function createAreaConversationOperation(
-  areaId: string, text: string, idempotencyKey: string,
-): ApiOperation<Conversation> {
-  return {
-    method: 'POST',
-    path: `/api/areas/${encodeURIComponent(areaId)}/conversations`,
-    headers: { 'Idempotency-Key': idempotencyKey },
-    body: { text },
-    responseSchema: areaConversationSummarySchema.transform(toAreaConversation),
-  };
-}
-
-/** The longest first message the server accepts, checked before it is sent so a
- *  rejected message costs no round trip (`NewAreaConversationBody`). */
-export const AREA_CONVERSATION_TEXT_MAX = 32768;
+/** The longest first message the server accepts, checked before it is sent so
+ * a rejected message costs no round trip. */
+export const CONVERSATION_TEXT_MAX = 32768;
 
 /* ── Track conversations (#1189) ─────────────────────────────────────────────
  *
@@ -365,12 +276,11 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
 /**
  * The wire row as this app's own `Conversation`.
  *
- * `trackTitle` is absent for a different reason than the area list's: the track
- * is real and does have a title, but this endpoint does not send it (every row
+ * `trackTitle` is absent because this endpoint does not send it (every row
  * belongs to the track in the request path, so whoever asked already knows it).
  * Inventing one here would be this function's fiction; a caller that names
  * tracks resolves it from the track it asked about. `turns` is absent because the
- * server will not count them, as on the area list.
+ * server will not count them.
  *
  * `kind` is pinned to `'track-assistant'` because that is the only value this
  * endpoint produces — the wire's `string` is a ts-rs artefact, not a variation
@@ -396,40 +306,10 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
 }
 
 /**
- * The card id a create under `(areaId, idempotencyKey)` will have — computed
- * here, before the server answers.
- *
- * It is a pure, **public** function of those two strings, and the server says
- * so in as many words: `derive_conversation_keys`
- * (`crates/calm-server/src/routes/area_conversations.rs`) is
- * `"conv-" + sha256("area-chat-conversation:{area_id}:{idempotency_key}")[..32]`,
- * with a doc comment stating that anyone holding both inputs can compute it and
- * that nothing may be built on it being secret. Nothing here is: this recomputes
- * a *name*, so a draft can recognise **its own** row.
- *
- * That is the whole reason it exists. "A row that was not in the list before"
- * is not this draft's row — during the seconds a create is failing, another
- * client (or another tab) creating a conversation adds one too, and adopting it
- * would open somebody else's chat as if it were the words you just typed. The
- * id answers the question that was actually being asked.
- *
- * The `#N` operation-key suffix the server may use when retrying a failed
- * operation touches only the *operation* key, never this one — a fact of the
- * server function's signature, which takes no such parameter.
- */
-export function areaConversationCardId(areaId: string, idempotencyKey: string): string {
-  return `conv-${sha256Hex(`cove-chat-conversation:${areaId}:${idempotencyKey}`).slice(0, 32)}`;
-}
-
-/**
  * Mint a track assistant conversation and deliver its first message (#1189 §4.1).
  *
- * The area twin's contract holds verbatim, including the four retry arms the
- * server documents on the endpoint, so the reason `idempotencyKey` is a
- * parameter is the same: it identifies the *draft*, and a key minted per call
- * would be a new key per attempt.
- *
- * What is not shared is the derived namespace — see `trackConversationCardId`.
+ * `idempotencyKey` identifies the draft, so a key minted per call would be a
+ * new key per attempt and could create a second conversation after a timeout.
  */
 export function createTrackConversationOperation(
   trackId: string, text: string, idempotencyKey: string,
@@ -444,9 +324,8 @@ export function createTrackConversationOperation(
 }
 
 /**
- * The track flavour of `areaConversationCardId`, and it exists for exactly the
- * same reason: a failed create has to be able to ask "is **my** row there?"
- * rather than "did the list grow?".
+ * A failed create has to be able to ask "is **my** row there?" rather than
+ * "did the list grow?".
  *
  * `derive_track_conversation_keys` (`crates/calm-server/src/conversation_keys.rs`)
  * is `"conv-" + sha256("wave-conversation:{track_id}:{idempotency_key}")[..32]`,
@@ -455,12 +334,6 @@ export function createTrackConversationOperation(
  * (`conversation.test.ts`), because two implementations of one formula that
  * agree only by inspection agree until one of them is edited.
  *
- * **The namespace is the load-bearing difference.** An area id and a track id are
- * drawn from the same id space, so sharing the `area-chat-conversation:` prefix
- * would let one `(id, key)` pair name one card from two endpoints — a track
- * draft could adopt an area chat's row and open somebody else's conversation.
- * The visible `conv-` prefix is deliberately identical; the separation lives
- * inside the hashed string.
  */
 export function trackConversationCardId(trackId: string, idempotencyKey: string): string {
   return `conv-${sha256Hex(`wave-conversation:${trackId}:${idempotencyKey}`).slice(0, 32)}`;
@@ -474,7 +347,7 @@ export function trackConversationCardId(trackId: string, idempotencyKey: string)
  * here is four distinguishable situations and three of them still have no
  * conversation behind them.
  */
-export type AreaConversationFailure = Readonly<
+export type ConversationCreateFailure = Readonly<
   | {
     /** Ambiguous: the attempt may have committed. Keep the key and the text,
      *  re-read the list, and adopt a row if one appeared. */
@@ -503,7 +376,7 @@ export type AreaConversationFailure = Readonly<
      * say the request never committed, and on this endpoint it usually means
      * the opposite.
      *
-     * `create_area_conversation` mints the card through the operation runtime
+     * The conversation endpoint mints the card through the operation runtime
      * first and only then delivers the first message; every 503 the route can
      * raise comes from that second half (`send_planner_input` → "planner harness is
      * starting", "app-server not running", "observation queue full"), by which
@@ -531,16 +404,15 @@ export type AreaConversationFailure = Readonly<
     message: string;
   }
   | {
-    /** The area is gone; there is nowhere to put the draft. */
+    /** The Track is gone; there is nowhere to put the draft. */
     kind: 'gone';
     message: string;
   }
 >;
 
-const NO_CLAIMED_FOLDER = 'has no claimed folder';
 const DIFFERENT_PAYLOAD = 'already used with different payload';
 
-export function areaConversationFailure(failure: ApiFailure): AreaConversationFailure {
+export function conversationCreateFailure(failure: ApiFailure): ConversationCreateFailure {
   if (failure.kind === 'transport' || failure.kind === 'decode') {
     // The request may have been served and the answer lost on the way back.
     return { kind: 'retry', message: failure.message };
@@ -554,7 +426,6 @@ export function areaConversationFailure(failure: ApiFailure): AreaConversationFa
   if (failure.status === 503) return { kind: 'unavailable', message };
   if (failure.status === 400) return { kind: 'blocked', message };
   if (failure.status === 409) {
-    if (message.includes(NO_CLAIMED_FOLDER)) return { kind: 'blocked', message };
     if (message.includes(DIFFERENT_PAYLOAD)) return { kind: 'stale-payload', message };
     return { kind: 'exists', message };
   }

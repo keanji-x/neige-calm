@@ -3,10 +3,6 @@ use super::*;
 use std::{path::Path, process::Command};
 
 use crate::card_role_cache::CardRoleCache;
-use axum::extract::FromRef;
-use axum::extract::{Path as AxumPath, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use calm_exec::WorkerProvider;
 use calm_truth::db::RepoEventWrite;
 use calm_truth::db::RepoSyncDomainRaw;
@@ -174,36 +170,6 @@ async fn write_context(repo: &SqlxRepo) -> WriteContext {
         .await
         .expect("seed track area cache");
     WriteContext::new(role_cache, track_area_cache)
-}
-
-async fn route_state(repo: Arc<SqlxRepo>) -> crate::state::RouteState {
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let events = EventBus::new();
-    let roles = CardRoleCache::new();
-    let tracks = TrackAreaCache::new();
-    repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_track_area_cache(&tracks).await.unwrap();
-    let state = crate::state::AppState::from_parts(
-        repo_dyn.clone(),
-        events.clone(),
-        Arc::new(crate::state::DaemonClient {
-            data_dir: std::env::temp_dir().join("calm-reaper-ensure-test"),
-            proc_supervisor_sock: None,
-        }),
-        Arc::new(crate::plugin_host::PluginHost::new_full(
-            Arc::new(crate::plugin_host::PluginRegistry::empty()),
-            repo_dyn,
-            Path::new("").to_path_buf(),
-            std::env::temp_dir().join("calm-reaper-ensure-plugin-test"),
-            Vec::new(),
-            events,
-            WriteContext::new(roles.clone(), tracks.clone()),
-        )),
-        Arc::new(crate::state::CodexClient::new_stub()),
-        Some(roles),
-        Some(tracks),
-    );
-    crate::state::RouteState::from_ref(&state)
 }
 
 async fn set_track_lifecycle(repo: &SqlxRepo, track_id: &TrackId, lifecycle: TrackLifecycle) {
@@ -625,11 +591,10 @@ async fn sweep_dead_roots_failed_worker_start_stays_draft() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// INV-CHAT-017(a,c): the purpose fence independently protects a chat track
-/// whose failed start points at its own real planner card. The production ensure
-/// endpoint must then return that same usable Draft track.
+/// INV-CHAT-017(a,c): the compatibility fence still protects a retired Area
+/// chat track whose failed start points at its own real planner card.
 #[tokio::test]
-async fn sweep_dead_roots_chat_failed_true_planner_stays_draft_and_ensure_returns_same_track() {
+async fn sweep_dead_roots_legacy_area_chat_failed_true_planner_stays_draft() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
@@ -652,34 +617,11 @@ async fn sweep_dead_roots_chat_failed_true_planner_stays_draft_and_ensure_return
         track_lifecycle_now(&repo, &track_id).await,
         TrackLifecycle::Draft
     );
-    let area_id = repo
-        .track_get(track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap()
-        .area_id;
-    let state = route_state(repo.clone()).await;
-    let response = crate::routes::tracks::ensure_area_chat_track(
-        State(state),
-        crate::actor::Actor(crate::actor::Actor::DEFAULT.into()),
-        AxumPath(area_id.to_string()),
-    )
-    .await
-    .expect("ensure existing chat track")
-    .into_response();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = http_body_util::BodyExt::collect(response.into_body())
-        .await
-        .unwrap()
-        .to_bytes();
-    let ensured: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ensured["id"], track_id.as_str());
-    assert_eq!(ensured["lifecycle"], "draft");
     reset_reaper_boot_gate_for_test();
 }
 
 /// INV-CHAT-017(b,c): the lost-root Planning arm independently excludes the
-/// chat container, which remains discoverable by ensure semantics.
+/// legacy chat container so old rows do not get terminalized on boot.
 #[tokio::test]
 async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
     let _guard = REAPER_TEST_LOCK.lock().await;

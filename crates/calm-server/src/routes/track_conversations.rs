@@ -7,18 +7,8 @@
 //! all; the card, its session and its codex thread are all minted by the first
 //! message, which is what this module's POST does in one operation.
 //!
-//! # How this differs from `area_conversations`
-//!
-//! The retry contract is shared verbatim (`conversations_shared`), the derived
-//! ids live in separate namespaces (`conversation_keys`), and the two things
-//! that are genuinely different are:
-//!
-//! * **the card that gets minted** — `CardRole::Assistant` with an MCP token and
-//!   the block-channel tool surface, versus a `CardRole::Worker` plain chat with
-//!   no MCP at all;
-//! * **the list predicate** — this track carries a planner card, a report card and
-//!   however many dispatched worker cards (#1149), so the predicate has to be
-//!   exact about the role rather than merely "a codex card with a marker".
+//! The list predicate is intentionally exact: a Track also carries a planner card,
+//! a report card and dispatched worker cards, none of which are conversations.
 
 use axum::{
     Json, Router,
@@ -50,8 +40,7 @@ use crate::routes::terminal_cards::{
 use crate::session_projection_repo::WorkerSessionState;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
-/// The `kind` every row of this list carries. Distinct from the area list's
-/// `"shared-chat"`: see [`TrackConversationSummary::kind`].
+/// The `kind` every row of this list carries.
 const TRACK_CONVERSATION_KIND: &str = "track-assistant";
 
 pub fn router() -> Router<AppState> {
@@ -99,13 +88,13 @@ pub(crate) async fn list_track_conversations(
     tag = "tracks",
     params(
         ("track_id" = String, Path, description = "Track id"),
-        ("Idempotency-Key" = String, Header, description = "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**, with the same four arms as `POST /api/areas/{area_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation."),
+        ("Idempotency-Key" = String, Header, description = "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**: a success replays without re-sending; a terminal failure retries under a `#N` operation key; a stuck attempt stays failed closed; 64 failed attempts exhaust the key; and the same key with different text is a conflict. The derived card id never carries the retry suffix."),
     ),
     request_body = NewTrackConversationBody,
     responses(
         (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = TrackConversationSummary),
         (status = 400, description = "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
-        (status = 403, description = "The track is an area chat track; its conversations are created through the area endpoint.", body = ErrorBody),
+        (status = 403, description = "The track is retired hidden Area-chat scaffolding and cannot accept Track conversations.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
         (status = 500, description = "Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it.", body = ErrorBody),
@@ -114,11 +103,7 @@ pub(crate) async fn list_track_conversations(
 )]
 /// Mint a track assistant conversation and deliver its first message.
 ///
-/// The `Idempotency-Key` contract, the first-message claim and both of its
-/// known gaps are identical to `create_area_conversation`, whose doc comment is
-/// the long-form statement of all of them; this handler differs only in the
-/// profile it mints under and the namespace its ids come from. The gaps are
-/// restated in brief where they bite:
+/// The `Idempotency-Key` contract has two known gaps, restated where they bite:
 ///
 /// * the first-message claim asks "has this CARD ever had a user message
 ///   enqueued?", not "has THIS request's message landed?", so a foreign
@@ -129,8 +114,7 @@ pub(crate) async fn list_track_conversations(
 ///
 /// Both are tracked on #1098 and deliberately unchanged here: fixing them means
 /// folding the first message into the mint operation, which would change both
-/// endpoints at once and belongs in one dedicated change rather than being
-/// half-done on the newer of the two.
+/// sides of this endpoint and belongs in one dedicated change.
 pub(crate) async fn create_track_conversation(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
@@ -160,15 +144,14 @@ pub(crate) async fn create_track_conversation(
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    // An area chat track is hidden scaffolding whose conversations are the area
-    // endpoint's plain chats. Narrowing, not the guard `validate` relies on:
+    // Retired Area-chat tracks are hidden legacy scaffolding. Narrowing, not
+    // the guard `validate` relies on:
     // the mint's actual wall is the derived-id recomputation, which does not
-    // care what kind of track this is. This exists so the two endpoints cannot
-    // both plant conversations on one track and produce a list the UI has no
-    // place to show.
+    // care what kind of track this is. This keeps new Track conversations off
+    // rows that no user-visible Track list can reach.
     if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
-            "track {} is an area chat track; create its conversations through the area endpoint",
+            "track {} is retired area-chat scaffolding and cannot accept conversations",
             track.id
         )));
     }
@@ -273,22 +256,16 @@ pub(crate) async fn create_track_conversation(
 
 /// Read the assistant conversation rows of one track.
 ///
-/// **Not** a reuse of `area_conversations::load_conversation_summaries`, and
-/// the difference is the whole point of G3. That query selects
-/// `role = 'worker' AND kind = 'codex' AND harness_profile = 'plain_chat'`,
-/// which on an area chat track is exact because nothing else lives there. An
-/// ordinary track is populated: a planner card, a report card, and every codex
+/// An ordinary track is populated with a planner card, a report card, and every codex
 /// worker card the dispatcher has spawned for the plan (#1149). Widen this
 /// predicate to "a codex card" and the conversation list fills up with the
 /// track's workers.
 ///
-/// `role = 'assistant'` is the primary discriminator and, unlike the area
-/// query's `role` conjunct, it is exact rather than defence in depth: the role
+/// `role = 'assistant'` is the primary discriminator: the role
 /// column is what the authorization gate reads, so a row that is listed here is
 /// by construction a row that holds the assistant tool surface.
 ///
-/// The marker conjunct is kept as the second half for the same reason the area
-/// query keeps `kind`: nothing stops a future card from being created with the
+/// The marker conjunct is kept as the second half because nothing stops a future card from being created with the
 /// assistant role by some other path, and a conversation the user can open must
 /// be one this endpoint knows how to mint.
 ///

@@ -5,8 +5,6 @@ mod support;
 mod actor;
 #[path = "cases/admin_maintenance.rs"]
 mod admin_maintenance;
-#[path = "cases/area_conversations.rs"]
-mod area_conversations;
 #[path = "cases/area_folders.rs"]
 mod area_folders;
 #[path = "cases/area_system_endpoint.rs"]
@@ -17,8 +15,6 @@ mod auth;
 mod card_cascade_semantics;
 #[path = "cases/cards_deletable.rs"]
 mod cards_deletable;
-#[path = "cases/chat_track_ensure.rs"]
-mod chat_track_ensure;
 #[path = "cases/claude_fsm_overlay.rs"]
 mod claude_fsm_overlay;
 #[path = "cases/claude_ingest.rs"]

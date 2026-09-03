@@ -105,7 +105,6 @@ function setup(reply?: Reply) {
       }
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, BARE_TRACK]);
-      if (request.path === '/api/areas/c1/conversations') return ok([]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') {
         return ok({ track: TRACK, cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [] });
@@ -611,23 +610,6 @@ describe('track conversations', () => {
   });
 
   /*
-   * The other half of the same decision, and the reason it is a track id rather
-   * than a flag: an area's rows stay out of the registry. They live on the
-   * area's hidden chat track, and Today navigates to `conversation.trackId` when
-   * a row is opened.
-   */
-  it('[G5] still keeps an area\'s own conversations off Today', async () => {
-    const { router } = setup((request) => request.path === '/api/areas/c1/conversations'
-      ? ok([{ id: 'chat-1', trackId: 'chat-track-hidden', title: 'Area chat', kind: 'shared-chat', state: 'idle', updatedAt: 40 }])
-      : undefined);
-    await act(async () => { await router.navigate({ to: '/area/c1' }); });
-    await screen.findByRole('button', { name: 'Conversation Area chat' });
-    await act(async () => { await router.navigate({ to: '/' }); });
-    await screen.findByText('No conversations yet.');
-    expect(screen.queryByRole('button', { name: /Conversation Area chat/ })).toBeNull();
-  });
-
-  /*
    * ── G6 ─────────────────────────────────────────────────────────────────────
    *
    * Today can only navigate; the track has to finish the job. Two things had to
@@ -724,60 +706,6 @@ describe('track conversations', () => {
     await act(async () => { await router.navigate({ to: '/track/w1' }); });
     await screen.findByRole('button', { name: 'Conversation Assistant' });
     expect(screen.queryByRole('complementary', { name: 'Assistant' })).toBeNull();
-  });
-
-  /*
-   * ── G7 ─────────────────────────────────────────────────────────────────────
-   *
-   * A draft belongs to what it was written on, and each route posts to its own
-   * scope: the track's key and words never reach the area endpoint, and the
-   * area's `+` opens a blank draft rather than the track's failed one.
-   *
-   * **Where the mutation lands is not here**, and the first half of this test
-   * in particular is not a gate on the `scopeId` guard: track and area are two
-   * sibling route components, so the walk between them unmounts the panel and
-   * the track's draft is gone before the area's `+` is ever pressed — dropping
-   * the `scopeId` comparison from `heldIs` leaves that assertion green (the
-   * area's `held` is null on arrival either way). What survives one panel
-   * *instance* serving two scopes is the area → area walk, where `AreaRoute` is
-   * not remounted across a param change: `area-conversation.test.tsx` holds it with
-   * `keeps a failed draft to the area it belongs to` and `leaves another area's
-   * draft alone when a late create finally succeeds`, and both go red when the
-   * `scopeId` comparison is dropped. Track and area are two different route
-   * components, so what this test pins is the layer above — that the two `+`s,
-   * the two derivations and the two endpoints are wired to their own scope, and
-   * a draft written on one does not surface on the other. Neither claim is
-   * covered by the area pair, and neither is idle: they are what a shared panel
-   * or a copy-pasted `create` would break.
-   */
-  it('[G7] keeps a track draft off an area, and posts each to its own scope', async () => {
-    const { requests, router } = setup((request) => request.method === 'POST'
-      && request.path.endsWith('/conversations')
-      ? { status: 500, statusText: 'Error', body: { code: 'internal', error: 'boom' } }
-      : undefined);
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    await openDraft();
-    await write('words for the track');
-    /* Failed, so the draft is kept with its key and its words — which is the
-       only state in which it could leak onto another route. */
-    await screen.findByRole('button', { name: 'Try again' });
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-
-    await act(async () => { await router.navigate({ to: '/area/c1' }); });
-    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c1`));
-    await openDraft();
-    expect(screen.queryByText('words for the track')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-
-    await write('words for the area');
-    const everyCreate = () => requests.filter((request) => request.method === 'POST'
-      && request.path.endsWith('/conversations'));
-    await waitFor(() => expect(everyCreate()).toHaveLength(2));
-    const [first, second] = everyCreate();
-    expect(first?.path).toBe(CONVERSATIONS);
-    expect(second?.path).toBe('/api/areas/c1/conversations');
-    expect(second?.body).toEqual({ text: 'words for the area' });
-    expect(second?.headers?.['Idempotency-Key']).not.toBe(first?.headers?.['Idempotency-Key']);
   });
 
   /*

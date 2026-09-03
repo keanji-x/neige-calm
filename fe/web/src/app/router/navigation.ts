@@ -36,7 +36,6 @@ export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
-  | Readonly<{ name: 'area'; areaId: string }>
   /**
    * #1211 — starting a track is a **place**, not a dialog.
    *
@@ -99,7 +98,6 @@ export type TrackSearch = Readonly<{ card?: string; panel?: MobilePanel; from?: 
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
-    case 'area': return `/area/${encodeURIComponent(target.areaId)}`;
     case 'new-track': return `/area/${encodeURIComponent(target.areaId)}/new`;
     case 'track': return `/track/${encodeURIComponent(target.trackId)}`;
     case 'settings': return '/settings';

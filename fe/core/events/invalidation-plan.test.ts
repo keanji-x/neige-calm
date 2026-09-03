@@ -22,7 +22,7 @@ import { invalidationPlanFor } from './invalidation-plan.js';
  * `harness.item.added` is a KNOWN and DELIBERATE gap, not an omission. It does
  * change what these lists show: the event's producer records the item and then
  * calls `persist_snapshot` (`harness/run_loop.rs`), which bumps
- * `worker_sessions.updated_at_ms` — and both lists are ordered by that column
+ * `worker_sessions.updated_at_ms` — and the list is ordered by that column
  * (`routes/track_conversations.rs`, mirrored by `conversation.ts`'s sort on
  * `updatedAt`). So two concurrent sessions where the older one keeps producing
  * items without a phase change will have server-side order that the cache does
@@ -77,7 +77,7 @@ describe('invalidation plan behavior', () => {
   it('invalidates card mutations immediately without suppression or debounce state', () => {
     expect(invalidationPlanFor(event({ ev: 'card.added', data: { track_id: 'w1' } }))).toEqual({
       invalidate: [
-        ['track', 'w1'], ['track-files', 'w1'], ['area-conversations'], ['track-conversations', 'w1'],
+        ['track', 'w1'], ['track-files', 'w1'], ['track-conversations', 'w1'],
       ],
       remove: [],
       writeThrough: [],
@@ -90,11 +90,10 @@ describe('invalidation plan behavior', () => {
    *
    * `GET /api/tracks/{track_id}/conversations` is per-track (#1189 §4.1), so the
    * query it backs is `['track-conversations', trackId]`. Dropping the id here to
-   * copy the area list's bare prefix would still invalidate the right query, by
-   * prefix match, and every "contains the key" assertion would stay green while
+   * use the bare prefix would still invalidate the right query, by prefix
+   * match, and every "contains the key" assertion would stay green while
    * every open track refetched its list on every runtime tick of every other
-   * track. The area list is a prefix because its id is genuinely unrecoverable;
-   * this one's is right there in the event.
+   * track. This one's id is right there in the event.
    */
   it.each([
     ['card.added', { track_id: 'track-1' }],
@@ -117,7 +116,7 @@ describe('invalidation plan behavior', () => {
     )).toEqual({
       invalidate: [
         ['track', 'track-1'], ['overlays', 'card'], ['track-files', 'track-1'], ['track-report', 'track-1'],
-        ['area-conversations'], ['track-conversations', 'track-1'],
+        ['track-conversations', 'track-1'],
       ],
       remove: [],
       writeThrough: [],
@@ -137,7 +136,7 @@ describe('invalidation plan behavior', () => {
     )).toEqual({
       invalidate: [
         ['overlays', 'card'], ['track-files'], ['track-report'],
-        ['area-conversations'], ['track-conversations'],
+        ['track-conversations'],
       ],
       remove: [],
       writeThrough: [],
@@ -196,14 +195,14 @@ describe('invalidation plan behavior', () => {
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
     expect(planned('harness.phase.changed')).toEqual([
-      ['planner-run', 'card-1'], ['area-conversations'], ['track-conversations', 'track-1'],
+      ['planner-run', 'card-1'], ['track-conversations', 'track-1'],
     ]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
-      ['area-conversations'], ['track-conversations', 'track-1'],
+      ['track-conversations', 'track-1'],
     ]);
   });
 
@@ -215,16 +214,13 @@ describe('invalidation plan behavior', () => {
    * `expected` side is the hand-kept list above, and the point is that the two
    * are maintained separately.
    */
-  it.each(['area-conversations', 'track-conversations'] as const)(
-    'refetches the %s list from exactly the seven session-writing kinds',
-    (root) => {
-      const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
-      const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
-        .invalidate.some((key) => key[0] === root));
-      expect(new Set(actual)).toEqual(new Set(CONVERSATION_LIST_KINDS));
-      expect(actual).toHaveLength(CONVERSATION_LIST_KINDS.length);
-    },
-  );
+  it('refetches the track conversation list from exactly the seven session-writing kinds', () => {
+    const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
+    const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
+      .invalidate.some((key) => key[0] === 'track-conversations'));
+    expect(new Set(actual)).toEqual(new Set(CONVERSATION_LIST_KINDS));
+    expect(actual).toHaveLength(CONVERSATION_LIST_KINDS.length);
+  });
 
   it('returns an empty plan for explicit no-op policies', () => {
     const empty = { invalidate: [], remove: [], writeThrough: [] };

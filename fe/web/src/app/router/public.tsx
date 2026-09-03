@@ -5,9 +5,7 @@
 // the QueryClient is what lets a test drive a real router without touching a
 // module singleton.
 //
-// This module is also the composition point the layering forbids anywhere
-// else: `features/area` may not import `features/track`, so the area route is
-// where `<AreaPage>` and `<TrackList>` are put together.
+// This module is also the composition point for route-owned feature surfaces.
 
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
@@ -17,7 +15,7 @@ import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-qu
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { areaOf, folderConflictMessage, type Area } from '../../../../core/domain/area.ts';
+import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import {
   toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackDetailWire,
@@ -29,10 +27,8 @@ import {
   cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, partitionTrackCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
-import { AreaPage } from '../../features/area/page/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { todaySummaryFailure } from '../../../../core/domain/today.ts';
-import { TrackList } from '../../features/track/list/public.tsx';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
@@ -51,8 +47,8 @@ import {
 } from '../../../../core/domain/report.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
-  areaConversationFailure, AREA_CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
-  trackConversationCardId, areaConversationCardId,
+  conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
+  trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
@@ -65,15 +61,15 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
-  ApiError, areaConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
+  ApiError, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
-  useAreaConversationMutations, useAreaMutations, usePlannerMutations, useTodaySummaryMutation,
+  usePlannerMutations, useTodaySummaryMutation,
   useTrackConversationMutations, useTrackMutations, useTrackTemplates, useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewTrackForm, type NewTrackDraft } from '../../features/area/new-track/public.tsx';
-import { AppShell, useOpenMobileSection, useRequestNewTrack } from '../shell/public.tsx';
+import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -99,63 +95,21 @@ type ConversationStore = Readonly<{
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
-  start: () => Conversation | null;
   send: (conversationId: string, text: string) => void;
   interrupt: () => void;
   loadEarlier: () => void;
 }>;
 
-/**
- * Where a route's conversation list comes from.
- *
- * `'all'` and `'tracks'` read the session registry — conversations this tab has
- * opened. `'rows'` is the opposite: the server sends the list, so the registry
- * is not consulted for it.
- *
- * `'tracks'` has no construction site left: the area route filtered the registry
- * by its tracks before it listed conversations from the server (#1098), and
- * Today is the only registry-backed surface now, with `'all'`. It is left
- * standing rather than deleted here because deleting it is not one line — the
- * same sweep takes `ConversationPanelSource`'s `'card'` arm, `store.start` and
- * the `scope` arm of the open-request consume with it, which is a wider edit
- * than a review fix should carry.
- *
- * What that sweep would **not** change is behaviour, and an earlier version of
- * this note claimed otherwise. The live Today → track path runs through the
- * `rows !== null` branch of that consume (`useConversationPanel`); the `scope`
- * branch below it is only reachable when the source is `'card'`, which nothing
- * selects. So the reason to defer is size and blast radius, not risk to the
- * path this slice is about. Recorded here so nobody reads a live decision into
- * an arm nothing selects (#1189 review).
- */
-type ConversationListIntent = Readonly<
-  { kind: 'all' } | { kind: 'tracks'; trackIds: readonly string[] }
->;
+/** Today reads the tab-wide registry; a Track route reads server rows. */
+type ConversationListIntent = Readonly<{ kind: 'all' }>;
 
 type ConversationRouteIntent =
   | ConversationListIntent
   | Readonly<{
     kind: 'rows';
     rows: readonly Conversation[];
-    /**
-     * The track these rows may be *sent to*, or null when there is none.
-     *
-     * This is what decides whether a `'rows'` route writes its list back into
-     * the session registry, and it is a track id rather than a boolean so the
-     * decision can be enforced here rather than trusted (§5.1).
-     *
-     * An area route passes null: its rows live on the area's hidden chat track,
-     * Today navigates to `conversation.trackId` when a row is opened, and
-     * remembering them would walk the reader into a track that is deliberately
-     * on no list. A track route passes its own track id: its rows are on a real,
-     * navigable track, and they are the *only* place an assistant conversation
-     * exists — without this they could never reach Today at all.
-     *
-     * It lives on the route intent and not on `ConversationPanelSource` because
-     * the store is where the decision is made and the store is handed only
-     * `scope` and this value; a field on the source would be invisible here.
-     */
-    rememberOn: string | null;
+    /** The real, navigable Track whose rows may enter the tab registry. */
+    rememberOn: string;
   }>;
 
 export function pendingConversationIds(
@@ -201,8 +155,8 @@ function describeConversation(
 ): Conversation {
   return {
     id: facts.cardId, trackId: facts.trackId,
-    /* Absent, not `''`: an area conversation's track is hidden and has no title
-       to show. `ChatList` renders the difference; `''` would render a blank. */
+    /* Absent, not `''`: list rows do not repeat the surrounding Track title.
+       `ChatList` renders the difference; `''` would render a blank. */
     ...(facts.trackTitle === undefined ? {} : { trackTitle: facts.trackTitle }),
     title: facts.cardTitle
       ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
@@ -213,7 +167,7 @@ function describeConversation(
        The local phase still wins while a turn is in flight, because the list
        would otherwise sit on the state the last fetch happened to catch.
        Which kinds those are is a total table (`CONVERSATION_STATE_SOURCE`) and
-       not a `=== 'shared-chat'` test: this branch is silent, and a new kind
+       not a one-off kind test: this branch is silent, and a new kind
        falling into the `else` would swap the server's reading for an invented
        `'idle'` with nothing to notice it. */
     state: CONVERSATION_STATE_SOURCE[facts.kind] === 'server'
@@ -415,21 +369,8 @@ export function useConversationStore(
   );
   useEffect(() => {
     if (durableConversation === null) return;
-    /*
-     * A server-listed conversation is not remembered *here*.
-     *
-     * The registry exists so a conversation stays visible on routes that cannot
-     * fetch it — which is exactly what a `'rows'` route can do for itself. What
-     * remembering would add on an area route is a leak: those rows live on the
-     * area's hidden chat track, and Today lists everything the registry holds and
-     * navigates to `conversation.trackId` when a row is opened, which would walk
-     * the reader into the hidden track. Today has no second filter.
-     *
-     * A `'rows'` route that named a track (`rememberOn`) is the exception, and
-     * it carries that defence itself: only the named track's rows are written,
-     * here and in the effect below.
-     */
-    if (serverRows !== null && (rememberOn === null || durableConversation.trackId !== rememberOn)) return;
+    /* Server rows enter the registry only under the Track that supplied them. */
+    if (serverRows !== null && durableConversation.trackId !== rememberOn) return;
     /* Remember the transcript so reopening the conversation preserves its
        activity lines and looks identical to the route the user just left — the
        confirmed one, for the reason `durableConversation` gives: a message that
@@ -456,7 +397,7 @@ export function useConversationStore(
      * reset: the open row is remembered with its full transcript by the effect
      * above, and writing `[]` here would erase it on the next render.
      */
-    if (serverRows === null || rememberOn === null) return;
+    if (serverRows === null) return;
     for (const row of serverRows) {
       if (row.trackId !== rememberOn) continue;
       /* The open row belongs to the effect above, which knows its transcript
@@ -479,9 +420,9 @@ export function useConversationStore(
          drawer closes — or opens on another row — this effect stops skipping
          that row, and a plain `{...row}` would put the null back: Today would
          fall from the derived name to the bare kind label `Assistant`. Only
-         the absent direction is carried — a title the server *does* send (the
-         area list's, and any future backfill) is the server's to change and
-         wins, exactly as `turns` does. */
+         the absent direction is carried — a title the server does send in a
+         future backfill is the server's to change and wins, exactly as `turns`
+         does. */
       /* `updatedAt` never goes backwards, which is the same rule once more.
          A row's time is whatever column produced it — the listed rows read
          `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, the
@@ -507,7 +448,6 @@ export function useConversationStore(
   const allConversations = conversation === null
     ? registry.conversations
     : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
-  const trackIds = routeIntent.kind === 'tracks' ? new Set(routeIntent.trackIds) : null;
   const conversations = serverRows !== null
     /* The open row is replaced in place by the live one: same id, but with the
        turns and the name this route can only know from the transcript it is
@@ -515,9 +455,7 @@ export function useConversationStore(
     ? (conversation === null
       ? serverRows
       : serverRows.map((row) => row.id === conversation.id ? conversation : row))
-    : trackIds === null
-      ? allConversations
-      : allConversations.filter((candidate) => trackIds.has(candidate.trackId));
+    : allConversations;
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -572,12 +510,9 @@ export function useConversationStore(
        * newer transcript, turn count or state in this entry first: merging into
        * `registry.conversations` and `registry.turnsOf` as captured here would
        * put the pre-send entry back and drop what just arrived. The
-       * "only into an entry that already exists" check is the same story —
-       * that is what keeps this on the right side of the `rememberOn` defence
-       * above (on an area route the open conversation is never remembered, so
-       * there is nothing to find), and a decision made off a captured list is
-       * a decision made about a list that may no longer be the one being
-       * written to.
+       * "only into an entry that already exists" check is the same story: a
+       * decision made off a captured list is a decision made about a list that
+       * may no longer be the one being written to.
        *
        * Only the absent direction of the name, exactly as the batch remember
        * below does it — a title the server sends is the server's.
@@ -665,7 +600,6 @@ export function useConversationStore(
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error instanceof Error ? history.error.message : null,
     actionError,
-    start: () => conversation,
     send,
     interrupt,
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
@@ -675,10 +609,9 @@ export function useConversationStore(
 /**
  * The one conversation whose transcript is being read.
  *
- * `id` is the track the card hangs off; `title` is that track's title *when the
- * surface knows one*, which an area route does not — its chat track is hidden on
- * purpose. `kind` carries what the list row already knew, so opening a chat row
- * cannot make it read as a planner one. `state` carries the row's server state as
+ * `id` is the Track the card hangs off; `title` is that Track's title when the
+ * surface knows it. `kind` carries what the list row already knew, so opening
+ * an assistant row cannot make it read as a planner one. `state` carries the row's server state as
  * the *baseline*; the open row is the only one this route can watch live, so it
  * — and only it — also picks up the local phase (`turn_pending` while a turn is
  * in flight) and the name derived from its first message, which is why the open
@@ -694,46 +627,18 @@ type PlannerConversationScope = Readonly<{
   state?: ConversationState | null;
 }>;
 
-/**
- * What the panel is looking at — which is three different things, and they were
- * previously told apart by whether `scope` was null.
- *
- * That conflated "there is a card open" with two facts that have nothing to do
- * with a card: whether this route can *hold* a drawer at all, and where a new
- * conversation would go. Today cannot hold one (it has no track and no area), so
- * opening a row there navigates; an area route can hold one for every row it
- * lists, so opening one must not navigate — the track it would navigate to is
- * hidden.
- *
- * Two routes select two of the three: Today is `'elsewhere'` and both the area
- * and the track route are `'rows'`. **`'card'` is selected by nothing** since the
- * track route stopped forking on its planner card (#1189 §5.3) — it is dead, and it
- * is left standing for the reason given on `ConversationListIntent`: removing it
- * also removes `store.start`, the `scope` arm of the open-request consume, and
- * the `/new` parity argument below, none of which belongs in a review fix. Read
- * every `source.kind === 'card'` branch below as unreachable today.
- */
+/** Today navigates elsewhere; a Track route owns its rows and drawer. */
 type ConversationPanelSource =
   | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
-  | Readonly<{ kind: 'card'; intent: ConversationListIntent; scope: PlannerConversationScope }>
   | Readonly<{
     kind: 'rows';
-    /**
-     * What a draft on this route belongs to — an area id on an area route, a track
-     * id on a track route. Two routes, one drawer, and the reducer tells their
-     * drafts apart by this value alone (`ConversationDraft`).
-     */
+    /** The Track this draft belongs to. */
     scopeId: string;
     rows: readonly Conversation[];
-    /** See `ConversationRouteIntent`: the track these rows may be sent to, or
-     *  null when there is none and nothing may be remembered. */
-    rememberOn: string | null;
+    /** See `ConversationRouteIntent`: the Track these rows may be sent to. */
+    rememberOn: string;
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
-    /**
-     * The id the card minted under this key *will* have, derived rather than
-     * observed — the two endpoints derive it from different namespaces, so this
-     * cannot be one shared function of `(scopeId, key)`.
-     */
+    /** The id the card minted under this key will have, derived before the POST. */
     derivedCardId: (idempotencyKey: string) => string;
     create: (text: string, idempotencyKey: string) => Promise<Conversation>;
     refresh: () => Promise<readonly Conversation[]>;
@@ -752,30 +657,12 @@ type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
  * fields make each such rule a thing to remember at every branch, and the two
  * bugs this shape replaces were both one field moving without its partner.
  *
- * `scopeId` is in here for one concrete reason, and it is worth stating exactly
- * because a looser version of it was written here first and was false. The
- * panel is **not** remounted when the reader walks from one area to another:
- * `/area/$areaId` is one route component across a param change, so the reducer
- * survives and a draft that did not name its area would be a draft area B's `+`
- * picks up — posting area A's key and words to area B. That is what
- * `area-conversation.test.tsx`'s `keeps a failed draft to the area it belongs
- * to` holds down, and it is the whole of what the guard is *proved* to do.
- *
- * Area → track is a different walk and has no twin test, because it cannot: the
- * area and track routes are two sibling components under `rootRoute`, so that
- * walk unmounts the panel and takes the reducer — draft and all — with it.
- * Nothing can leak across it, and nothing survives it either (#1225 is the
- * second half of that sentence: an unsent draft, and the idempotency key that
- * makes a retry a retry, are simply lost).
- *
- * #1189 is still why the field is `scopeId` and not `areaId`: a track route now
- * holds drafts too, and one field carrying values from two id spaces is what
- * keeps the guard total should a future route ever hold both — a generalisation
- * that costs nothing and closes the shape rather than a claim about today's
- * routing.
+ * `scopeId` keeps every asynchronous reducer move tied to the Track and draft
+ * key it was computed for. A late answer may adopt or edit that draft only if
+ * both still match what the drawer holds now.
  */
 type ConversationDraft = Readonly<{
-  /** The area or track this draft belongs to. It is only ever visible there. */
+  /** The Track this draft belongs to. It is only ever visible there. */
   scopeId: string;
   /** Identifies the draft to the server for as long as it exists; minted when
    *  the drawer opens and *never* per send. */
@@ -834,14 +721,6 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <TodayRoute transport={transport} unauthorized={unauthorized} />,
   });
 
-  const areaRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/area/$areaId',
-    component: () => <AreaRoute transport={transport} unauthorized={unauthorized} />,
-  });
-
-  /* Declared after `areaRoute` and matched by its own literal segment: `/new`
-     is not an area id, and TanStack prefers the more specific path. */
   const newTrackRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/area/$areaId/new',
@@ -890,7 +769,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, areaRoute, newTrackRoute, trackRoute, settingsRoute,
+    indexRoute, newTrackRoute, trackRoute, settingsRoute,
     pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
@@ -1025,9 +904,9 @@ function useConversationPanel(
 
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
-  const scope: PlannerConversationScope | null = source.kind === 'card'
-    ? source.scope
-    : source.kind === 'rows' && openRowId !== null ? source.scopeOf(openRowId) : null;
+  const scope: PlannerConversationScope | null = source.kind === 'rows' && openRowId !== null
+    ? source.scopeOf(openRowId)
+    : null;
   const routeIntent: ConversationRouteIntent = source.kind === 'rows'
     ? { kind: 'rows', rows: source.rows, rememberOn: source.rememberOn }
     : source.intent;
@@ -1041,17 +920,8 @@ function useConversationPanel(
   /*
    * The draft, if it belongs *here*.
    *
-   * A held draft from another area is not visible, not reopenable and not
-   * sendable here; it is simply not this route's business. It is kept rather
-   * than dropped so that walking back to that area still finds it; the one
-   * thing that discards it is starting a draft somewhere else, because only one
-   * is held at a time.
-   *
-   * "Walking back" means within one route component — area → area. A draft
-   * written on a track is never seen by an area for a blunter reason: the two are
-   * separate route components, so the walk unmounted this hook and there is no
-   * held draft left to filter (see `ConversationDraft`, and #1225). The test is
-   * the same either way, and being the same is the point.
+   * A held draft from another scope is not visible, reopenable or sendable
+   * here. Starting another draft is the one action that replaces it.
    */
   const draft = held !== null && source.kind === 'rows' && held.scopeId === source.scopeId ? held : null;
 
@@ -1062,12 +932,9 @@ function useConversationPanel(
    *
    * All three are no-ops when the draft they were computed from is no longer
    * the one held. Note what that does and does not cover, because an earlier
-   * version of this comment claimed too much: walking to another area does
-   * **not** by itself discard the draft — it stays held, just invisible here,
-   * so a late write from its own area still lands on it, which is right. What
-   * makes a write a no-op is the draft actually being gone: adopted, closed,
-   * or replaced by a `+` pressed somewhere else. `adopt` is guarded the same
-   * way and by the same identity, in the same reducer.
+   * version of this comment claimed too much. A write becomes a no-op when the
+   * draft was adopted, closed or replaced. `adopt` is guarded by the same
+   * identity in the same reducer.
    */
   const withDraft = (from: DraftId, next: (current: ConversationDraft) => ConversationDraft) => {
     moveDrawerTo({ kind: 'edit-draft', from, next });
@@ -1096,15 +963,9 @@ function useConversationPanel(
   };
 
   /*
-   * Today asked for a conversation to be opened, and this route is where it
-   * lives. Two shapes, because the two sources answer "which conversation is
-   * this route holding?" at different times.
-   *
-   * A `'card'` route knows its one card before anything is fetched, so `scope`
-   * is the whole answer. A `'rows'` route has no scope at all until a row is
-   * *already* open (`scope` is computed from `openRowId`), so asking `scope`
-   * there is asking whether the drawer is open — which it is not, that being
-   * the entire request. It has to consume the request against the rows.
+   * Today asked for a conversation to be opened, and this Track route is where
+   * it lives. The request is consumed against the loaded rows because `scope`
+   * does not exist until one of those rows is already open.
    *
    * The condition is "the rows are loaded **and** contain this id", never
    * "the rows do not contain it, so clear". The list arrives a round trip
@@ -1122,18 +983,11 @@ function useConversationPanel(
        same commit that opens the row, so by the time the composer mounts the
        registry no longer remembers what was asked for. */
     const focusComposer = registry.requestedOpenFocusesComposer;
-    if (rows !== null) {
-      if (!rows.some((row) => row.id === requestedOpenId)) return;
-      moveDrawerTo({ kind: 'open-row', id: requestedOpenId });
-      if (focusComposer) setComposerFocusFor(requestedOpenId);
-      registry.clearOpenRequest();
-      return;
-    }
-    if (scope === null || requestedOpenId !== scope.cardId) return;
-    moveDrawerTo({ kind: 'open-row', id: scope.cardId });
-    if (focusComposer) setComposerFocusFor(scope.cardId);
+    if (rows === null || !rows.some((row) => row.id === requestedOpenId)) return;
+    moveDrawerTo({ kind: 'open-row', id: requestedOpenId });
+    if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
-  }, [registry, rows, scope]);
+  }, [registry, rows]);
 
   useEffect(() => {
     if (open === null) return;
@@ -1173,11 +1027,6 @@ function useConversationPanel(
    * offered rather than offered and refused.
    */
   const start = () => {
-    if (source.kind === 'card') {
-      const conversation = store.start();
-      if (conversation !== null) moveDrawerTo({ kind: 'open-row', id: conversation.id });
-      return;
-    }
     if (source.kind !== 'rows') return;
     /*
      * A draft that was sent and failed is still open business, and `+` is the
@@ -1200,9 +1049,8 @@ function useConversationPanel(
      * leave two conversations holding the same message. Binding it to the
      * draft is the whole reason the server requires the header.
      *
-     * `draft` is null here whenever the held draft belongs to another area, so
-     * this branch — not the restore above — is what a `+` in a second area
-     * gets, and the key it mints is that area's.
+     * `draft` is null whenever the held draft belongs to another scope, so this
+     * branch mints a key for the current Track.
      */
     moveDrawerTo({
       kind: 'start-draft',
@@ -1214,40 +1062,17 @@ function useConversationPanel(
     });
   };
 
-  /*
-   * `/new` in the composer runs `start` — the very callback the `+` runs — and
-   * it is offered on exactly one of the three sources.
-   *
-   * `'elsewhere'` (Today): no `+` either. There is no track and no area to
-   * attach a conversation to, so the action is not offered rather than offered
-   * and refused. Strict parity, and it is what `action:` below already decides.
-   *
-   * `'card'` (a track route): the `+` is offered, and `/new` is **not**. This is
-   * the one place the two differ, deliberately. On a track there is exactly one
-   * planner card, so `start()` there does not create anything — it opens the row,
-   * and from inside the drawer that row is the one already open, which makes
-   * the command a no-op. A menu entry named `New conversation` that reopens the
-   * conversation you are reading is a lie told by a control, and the honest
-   * `+` gets away with it only because it is pressed from *outside* the drawer,
-   * where "bring that one up" is a real outcome. Nothing is lost by omitting
-   * it: the track route has no second conversation to start.
-   *
-   * `'rows'` (an area route): offered, and this is the case the whole thing
-   * exists for — the `+` mints a draft, the drawer hides the panel column the
-   * `+` lives on, and the reader inside a conversation would otherwise have to
-   * close it first.
-   */
+  /* `/new` inside a Track conversation runs the same draft start as the panel
+     action. Today has no Track scope, so it offers neither. */
   const startAnother = source.kind === 'rows' ? start : undefined;
 
   /*
    * The attempt `from` became row `row`: forget the draft and open the row.
    *
    * `from` is not decoration. This runs after an `await`, and by then the
-   * reader may be in another area with another draft in hand; the reducer
+   * reader may hold another draft; the reducer
    * applies both halves only if `from` is still what is held, and otherwise
-   * applies neither — see `DrawerState`. Before that guard existed, area A's
-   * late success deleted area B's draft and pointed the drawer at a row area B
-   * does not have.
+   * applies neither — see `DrawerState`.
    */
   const adopt = (from: DraftId, row: Conversation) => {
     moveDrawerTo({ kind: 'adopt', from, id: row.id });
@@ -1262,17 +1087,15 @@ function useConversationPanel(
    * card can exist with the message already queued behind it. What is not
    * allowed is answering that question with "the list grew". During the seconds
    * an attempt is failing, another tab or another reader can add a conversation
-   * to the same area, and adopting *that* row opens somebody else's chat as if
+   * to the same Track, and adopting *that* row opens somebody else's chat as if
    * it were the words just typed — while this draft's real card, if it exists,
    * goes unclaimed.
    *
-   * So the question asked is the exact one: the card id is a pure public
-   * function of `(scopeId, key)` — `areaConversationCardId` on an area and
-   * `trackConversationCardId` on a track, each golden-tested against the server's
-   * own golden and each hashing its **own namespace**, which is what stops one
-   * `(id, key)` pair naming one card from two endpoints. The route supplies the
-   * derivation (`source.derivedCardId`); this asks it. So the row this attempt
-   * would have created can be named before looking, and only that id counts.
+   * So the question asked is the exact one: `trackConversationCardId` is a pure
+   * public function of `(scopeId, key)`, golden-tested against the server. The
+   * route supplies that derivation (`source.derivedCardId`); this asks it. The
+   * row this attempt would have created can be named before looking, and only
+   * that id counts.
    *
    * Three answers, not two. `'unknown'` is the re-read *itself* failing, which
    * is the likeliest thing to happen while the network is the reason we are
@@ -1302,7 +1125,7 @@ function useConversationPanel(
      * Two different questions, and they are asked of two different strings —
      * because the server asks them that way.
      *
-     * `create_area_conversation` refuses `text.trim().is_empty()` and then
+     * `create_track_conversation` refuses `text.trim().is_empty()` and then
      * counts `text.chars().count()` on the **untrimmed** text. So the blank
      * check trims and the length check does not; a message padded to the limit
      * with spaces is over the limit there, and letting it through here would
@@ -1314,12 +1137,12 @@ function useConversationPanel(
      * refused legal astral-plane messages at half the real limit.
      */
     if (text.trim() === '') return;
-    if (Array.from(text).length > AREA_CONVERSATION_TEXT_MAX) {
+    if (Array.from(text).length > CONVERSATION_TEXT_MAX) {
       /* Shown back, but never recorded as sent: no request left the browser, so
          the key is untouched and the next press is not "the text changed". */
       amendDraft(draft, {
         text,
-        error: `This message is too long — the limit is ${AREA_CONVERSATION_TEXT_MAX} characters.`,
+        error: `This message is too long — the limit is ${CONVERSATION_TEXT_MAX} characters.`,
         remedy: null,
       });
       return;
@@ -1327,7 +1150,7 @@ function useConversationPanel(
     const previousText = draft.sentText;
     /* The draft this send is *for*, fixed here. Everything below writes through
        it, so a send that outlives its draft — adopted, closed, or left behind by
-       an area switch — changes nothing rather than writing into whatever is held
+       a scope switch — changes nothing rather than writing into whatever is held
        by then. */
     let attempt = draft;
     setCreating(true);
@@ -1369,7 +1192,7 @@ function useConversationPanel(
     attempt: ConversationDraft,
   ): Promise<void> {
     const failure = error instanceof ApiError
-      ? areaConversationFailure(error.failure)
+      ? conversationCreateFailure(error.failure)
       : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
     const message = failure.message;
     switch (failure.kind) {
@@ -1512,7 +1335,7 @@ function useConversationPanel(
         /* A draft has no name yet, and naming it after the words being typed
            would rename the drawer on every keystroke. */
         title={open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
-        mobileBackLabel={source.kind === 'card' ? 'Report' : 'Conversations'}
+        mobileBackLabel="Conversations"
         onClose={closeDrawer}
         footer={draftOpen ? (
           <>
@@ -1774,8 +1597,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       tracks={workspace.tracks}
       areas={workspace.areas}
       // The row belongs to features/track and Today may not import a sibling
-      // domain, so the composition layer injects it — the same reason AreaPage
-      // takes its list as a prop. One TrackRow still, per INV-DUP-009.
+      // domain, so the composition layer injects it. One TrackRow still, per
+      // INV-DUP-009.
       renderTrackRow={(track, options) => (
         <TrackRow
           track={track}
@@ -1828,9 +1651,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  *
  * It owns the whole create, which used to be split between the shell (the POST,
  * the 409, the navigation) and a dialog inside it. There is no reason for the
- * shell to hold any of it now that the surface is a route: the rail's `+` and
- * the area page's `+` both just navigate here, and one route owning one
- * operation is the shape every other write in this file already has.
+ * shell to hold any of it now that the surface is a route: an Area group's `+`
+ * navigates here, and one route owning one operation is the shape every other
+ * write in this file already has.
  *
  * ## What it does NOT do yet: deliver the first message (#1299)
  *
@@ -1987,143 +1810,6 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
   );
 }
 
-function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const areaId = useRouteParam('/area/');
-  const workspace = useWorkspace(transport, unauthorized);
-  const areaMutations = useAreaMutations(transport, unauthorized);
-  const trackMutations = useTrackMutations(transport, unauthorized);
-  const trackDeletion = useDeleteConfirm((trackId, signal) => trackMutations.remove(trackId, areaId ?? '', signal));
-  const go = useGo();
-  /* #1211 — the `+` navigates to `/area/{id}/new`; there is no dialog. Two
-     surfaces reach it — every area row's `+` in the rail and this page's TRACKS
-     module head — and the rail is a sibling of the outlet, so the callback is
-     a context rather than a prop. This route only names the area whose id the
-     new-track page will post. */
-  const requestNewTrack = useRequestNewTrack();
-  /*
-   * An area's conversations are its own, listed by the server (#1098). They are
-   * plain-chat cards on the area's hidden chat track, so nothing here reads the
-   * session registry and nothing here is written back into it: the track they
-   * belong to is not a place the reader can be sent.
-   *
-   * The list is intentionally not the tracks' planner conversations any more. Those
-   * belong to a track and are read on that track's page; mixing them in would put
-   * rows in this panel whose drawer this route cannot open.
-   */
-  const conversationsQuery = useQuery({
-    ...areaConversationsQueryOptions(transport, areaId ?? '', unauthorized),
-    enabled: areaId !== undefined,
-  });
-  const areaConversations = conversationsQuery.data ?? [];
-  const conversationMutations = useAreaConversationMutations(transport, areaId ?? '', unauthorized);
-  const chat = useConversationPanel(transport, unauthorized, {
-    kind: 'rows',
-    scopeId: areaId ?? '',
-    rows: areaConversations,
-    /* Null, and this is the one gate on this route: every row here lives on the
-       area's hidden chat track, and Today navigates to `conversation.trackId`
-       when a row is opened. */
-    rememberOn: null,
-    derivedCardId: (idempotencyKey) => areaConversationCardId(areaId ?? '', idempotencyKey),
-    scopeOf: (conversationId) => {
-      const row = areaConversations.find((candidate) => candidate.id === conversationId);
-      /* No `title`: the chat track is hidden, so there is no track name to pass
-         down, and `showTrack: false` below is what keeps the rows honest. */
-      return row === undefined ? null : {
-        id: row.trackId, cardId: row.id, cardTitle: row.title,
-        updatedAt: row.updatedAt, kind: row.kind, state: row.state,
-      };
-    },
-    create: conversationMutations.create,
-    refresh: conversationMutations.refresh,
-  }, { showTrack: false });
-
-  const area = areaId === undefined ? undefined : areaOf(areaId, workspace.areas);
-  if (area === undefined) {
-    // While the areas list is still loading we do not know whether the area
-    // exists; showing "missing" first and the real page a moment later reads
-    // as a flash of a wrong answer.
-    if (workspace.areasLoading) return null;
-    if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
-    return <PendingRoute label="Area" owner="features/area" missing />;
-  }
-  const trackError = workspace.trackErrorsByArea.get(area.id);
-  if (trackError !== null && trackError !== undefined && !workspace.tracksByArea.has(area.id)) return <ErrorBox
-    message={trackError.message}
-    onRetry={() => { workspace.retryTracks(area.id); workspace.retryOverlays(); }}
-  />;
-  if (workspace.tracksLoadingByArea.get(area.id) || !workspace.tracksByArea.has(area.id)) return null;
-  const tracks = workspace.tracksByArea.get(area.id) ?? [];
-
-  return (
-    <>
-      {trackError !== null && trackError !== undefined && <ErrorBox
-        message={trackError.message}
-        onRetry={() => { workspace.retryTracks(area.id); workspace.retryOverlays(); }}
-      />}
-      {workspace.overlaysError !== null && <ErrorBox message={`Track activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
-      {/* Without this the panel would render "No conversations yet." over a
-          failed read, which is a different sentence from "we could not look". */}
-      {conversationsQuery.error instanceof Error && <ErrorBox
-        message={`Conversations are unavailable: ${conversationsQuery.error.message}`}
-        onRetry={() => { void conversationsQuery.refetch(); }}
-      />}
-      <AreaPage
-        area={area}
-        trackCount={tracks.length}
-        /*
-         * Always empty, and honestly so: the kernel has no area-level document.
-         * `track-report` is a card, and cards belong to tracks — there is no
-         * area-report card kind, no column, no writer. Rendering the empty
-         * state here is not a placeholder for a feature being built; it is this
-         * column saying what it would hold, which is what the reader needs
-         * either way.
-         */
-        report={<ReportEmpty
-          lead="This area has no document yet."
-          hints={[
-            'An area document is written by hand — notes, decisions, links you want on the way in.',
-            'Each track keeps its own report, which the agent writes as it works.',
-          ]}
-        />}
-        onRenameArea={(name) => areaMutations.rename(area.id, { name }).then(() => undefined)}
-        onDeleteArea={(signal) => areaMutations.remove(area.id, signal).then(() => {
-          if (!signal.aborted) go({ name: 'today' });
-        })}
-        onRequestNewTrack={() => requestNewTrack(area.id)}
-        conversationList={chat.list}
-        conversationAction={chat.action}
-        trackList={(
-          <TrackList
-            tracks={tracks}
-            areas={workspace.areas}
-            variant="panel"
-            emptyMessage="This area is quiet. Start a track."
-            onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-            /* No pin here. The trailing column in a panel row holds exactly one
-               thing at a time — the status dot, becoming the delete on hover —
-               and pinning already has a permanent home in the rail, which is
-               also the only place a pinned track surfaces. */
-            onDeleteTrack={trackDeletion.request}
-          />
-        )}
-      />
-      <ConfirmDialog
-        open={trackDeletion.open}
-        title={DELETE_TRACK_COPY.title}
-        description={DELETE_TRACK_COPY.description}
-        confirmLabel={DELETE_TRACK_COPY.confirmLabel}
-        confirmBusyLabel="Deleting…"
-        confirmState={trackDeletion.pending ? 'busy' : 'ready'}
-        onConfirm={trackDeletion.confirm}
-        onCancel={trackDeletion.cancel}
-      />
-      <OperationFeedback feedback={trackDeletion.feedback} />
-      {chat.drawer}
-    </>
-  );
-}
-
 /*
  * Split in two on purpose. The conversation panel's `+` needs the track in
  * scope, and the track is only known after the detail query resolves and three
@@ -2135,7 +1821,6 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; cardRuntime: CardRuntime;
 }) {
   const trackId = useRouteParam('/track/');
-  const workspace = useWorkspace(transport, unauthorized);
   const registry = useConversationRegistry();
   const detail = useQuery({
     ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized),
@@ -2182,18 +1867,16 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
       transport={transport}
       unauthorized={unauthorized}
       track={track}
-      area={areaOf(track.areaId, workspace.areas)}
       cards={detail.data.cards}
       cardRuntime={cardRuntime}
     />
   );
 }
 
-function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRuntime }: {
+function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
-  area: Area | undefined;
   cards: TrackDetailWire['cards'];
   cardRuntime: CardRuntime;
 }) {
@@ -2769,8 +2452,7 @@ function TrackRouteBody({ transport, unauthorized, track, area, cards, cardRunti
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {
         if (signal.aborted) return;
-        if (area !== undefined) go({ name: 'area', areaId: area.id });
-        else go({ name: 'today' });
+        go({ name: 'today' });
       })}
     />
     </TrackStage>

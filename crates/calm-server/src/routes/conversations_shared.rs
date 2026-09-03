@@ -1,17 +1,5 @@
-//! The parts of "mint a conversation on its first message" that are identical
-//! for an area chat (`area_conversations`) and a track assistant
-//! (`track_conversations`).
-//!
-//! Shared rather than copied because these are the four-arm retry contract's
-//! moving parts. Two divergent copies of `retryable_operation_key` would mean
-//! two different answers to "what does the same `Idempotency-Key` mean after a
-//! failure", which is exactly the sort of drift the documented contract exists
-//! to prevent.
-//!
-//! What is deliberately NOT here: the derived ids (`crate::conversation_keys`,
-//! one namespace per flavour) and the list predicates (an area chat is a
-//! `worker`/`plain_chat` card, a track assistant is an `assistant` card, and
-//! collapsing those would be the bug G3 is about).
+//! Shared mechanics for lazily minting a Track assistant conversation on its
+//! first message: validation, retryable operation keys and first-message dedup.
 
 use sha2::{Digest, Sha256};
 

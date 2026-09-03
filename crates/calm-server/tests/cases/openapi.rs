@@ -16,8 +16,6 @@ fn document_contains_every_annotated_path() {
         "/api/areas",
         "/api/areas/{id}",
         "/api/areas/{area_id}/tracks",
-        "/api/areas/{area_id}/chat-track/ensure",
-        "/api/areas/{area_id}/conversations",
         "/api/tracks",
         "/api/tracks/{id}",
         "/api/tracks/{track_id}/cards",
@@ -47,6 +45,20 @@ fn document_contains_every_annotated_path() {
             doc.paths.paths.contains_key(path),
             "expected path `{path}` in OpenAPI document; got: {:?}",
             doc.paths.paths.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn document_does_not_advertise_retired_area_conversation_routes() {
+    let doc = ApiDoc::openapi();
+    for path in [
+        "/api/areas/{area_id}/conversations",
+        "/api/areas/{area_id}/chat-track/ensure",
+    ] {
+        assert!(
+            !doc.paths.paths.contains_key(path),
+            "retired path `{path}` is still advertised"
         );
     }
 }
@@ -83,8 +95,6 @@ fn document_contains_every_wire_model() {
         "CreateCardBody",
         "ViaToolCall",
         "NewTerminalCardBody",
-        "AreaConversationSummary",
-        "NewAreaConversationBody",
         "NewCodexCardBody",
         "OverlayQuery",
         "OverlayDeleteBody",

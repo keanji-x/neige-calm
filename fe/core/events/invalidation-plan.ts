@@ -71,33 +71,12 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
 ] as const);
 
 /**
- * The area conversation list, invalidated without an area id (#1098 §5.5).
- *
- * The id is not omitted for convenience — it is not derivable here.
- * `InvalidationContext` can resolve a card to its track and nothing further, and
- * an area chat track's detail is never fetched (the track is hidden), so there is
- * no cached row to read an area id out of either. A prefix key is the honest
- * shape for "some area's list may have changed"; it also costs nothing when no
- * area route is mounted, because an invalidated key with no active query only
- * marks cache entries stale.
- *
- * Deliberately *not* invalidated from `harness.item.added` — it writes only
- * `harness_items`, never `worker_sessions`, so it cannot change a row of this
- * list, and it is the highest-frequency event the kernel emits. Nor from
- * `harness.transcript.cleared`: a reset always emits `harness.phase.changed`
- * too, so a second trigger would only make the first impossible to disprove.
- */
-export const AREA_CONVERSATIONS: QueryKey = Object.freeze(['area-conversations']);
-
-/**
  * The track conversation list (#1189 §5.5), keyed by the track it belongs to.
  *
- * Unlike the area list above, the id is NOT omitted, because here it *is*
- * derivable: every event this key hangs off carries either a `track_id` or a
+ * The id is derivable: every event this key hangs off carries either a `track_id` or a
  * `card_id` an `InvalidationContext` can resolve, and the endpoint itself is
- * per-track (`GET /api/tracks/{track_id}/conversations`, §4.1). The area list's
- * prefix shape is a concession to an area id that cannot be recovered, not a
- * house style to copy — invalidating `['track-conversations']` wholesale on
+ * per-track (`GET /api/tracks/{track_id}/conversations`, §4.1). Invalidating
+ * `['track-conversations']` wholesale on
  * every runtime tick would refetch the list of every track the user has open.
  *
  * The prefix is still what comes back when the track genuinely cannot be
@@ -111,12 +90,8 @@ function trackConversations(trackId: string | null): QueryKey {
 }
 
 /**
- * Both conversation lists, which are invalidated together and never apart.
- *
- * They are one key set because they were one defect (#1189 §5.5). A row's
- * `state` in either list is read from `worker_sessions.state` — the area query
- * in `area_conversations.rs`, the track one mirroring it — and until this slice
- * both lists hung off card and harness events only. The three `runtime.*`
+ * The conversation list's `state` is read from `worker_sessions.state`. The
+ * three `runtime.*`
  * kinds are what actually move that column, `runtime.started` being the
  * `null → starting` transition that turns the dot on at all, so a session
  * could start, change status and be superseded with the list still showing
@@ -129,7 +104,7 @@ function trackConversations(trackId: string | null): QueryKey {
  * already here. A second trigger for one change buys a duplicate refetch of a
  * wholesale list and makes it impossible to prove either one does the work.
  *
- * `card.deleted` is knowingly absent from both lists and is not this slice's to
+ * `card.deleted` is knowingly absent from the list and is not this slice's to
  * fix: nothing drops a deleted conversation's row today (#1140).
  *
  * The exact caller set is pinned from both sides in `invalidation-plan.test.ts`
@@ -137,7 +112,7 @@ function trackConversations(trackId: string | null): QueryKey {
  * can land silently.
  */
 function conversationLists(trackId: string | null): readonly QueryKey[] {
-  return [AREA_CONVERSATIONS, trackConversations(trackId)];
+  return [trackConversations(trackId)];
 }
 
 function derivedTrackId(data: unknown, context: InvalidationContext): string | null {
@@ -230,7 +205,7 @@ function policies(): PolicyMap {
     ['track', event.data.track_id], ['track-files', event.data.track_id],
     ...conversationLists(event.data.track_id),
   ])),
-  /* No conversation key, on either list, and not an oversight — see the note on
+  /* No conversation key, and not an oversight — see the note on
      `conversationLists`. Dropping the deleted row is #1140's. */
   'card.deleted': plan((event) => result([['track', event.data.track_id], ['track-files', event.data.track_id]])),
   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),

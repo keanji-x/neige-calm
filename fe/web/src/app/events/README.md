@@ -72,7 +72,6 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['track-files', …]` | — | **no-op**: no track-files query is built yet (stub) |
 | `['track-report', id]` | `queryKeys.trackReport(id)` | the track's task verdicts (TASKS panel) |
 | `['track-report']` | `queryKeys.trackReportPrefix()` | prefix; the four `task.*` events carry no track-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
-| `['area-conversations']` | `queryKeys.areaConversationsPrefix()` | prefix only; no conversation-writing event carries a `area_id` and no cached row can supply one, which is why `queryKeys.areaConversations(id)` keeps the id in second position |
 | `['track-conversations', id]` | `queryKeys.trackConversations(id)` | the endpoint is per-track (#1189 §4.1) and the plan names the track whenever `derivedTrackId` resolves one |
 | `['track-conversations']` | `queryKeys.trackConversationsPrefix()` | fallback for a `runtime.*` event whose card belongs to no cached track detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
 | `['tracks-range']` | — | **no-op**: the calendar range query is not built yet (stub) |

@@ -10,48 +10,6 @@ export type AgentProvider = "codex" | "claude";
 export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, created_at: number, updated_at: number, };
 
 /**
- * One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
- *
- * Deliberately absent:
- * * `trackTitle` — every row belongs to the same hidden area chat track, so
- *   returning its title would leak an object the user is never shown.
- * * `turns` — the server cannot produce a turn count that agrees with the
- *   drawer without re-parsing every `harness_items.params` blob; a number
- *   that silently disagrees is worse than no number.
- */
-export type AreaConversationSummary = { 
-/**
- * The chat card's id. This is the conversation's identity everywhere.
- */
-id: string, trackId: string, 
-/**
- * The conversation's own name, or null before it has one. Never the
- * track's title.
- */
-title: string | null, 
-/**
- * Always `"shared-chat"`, derived from the card's persisted marker rather
- * than from the session kind (the session is an ordinary codex-card
- * session and says nothing about the conversation being an area chat).
- */
-kind: string, 
-/**
- * The live session's state, or **null when the card has no session row**.
- *
- * This must stay nullable and must never be filled with an invented
- * value. The list is a LEFT JOIN precisely so a card whose session is
- * gone (failed start, superseded runtime, shut-down harness) stays
- * visible; substituting `idle` or `exited` here would report a session
- * state that was never read.
- */
-state: WorkerSessionState | null, 
-/**
- * The session's last update, falling back to the card's own — a card
- * minted seconds ago with no session yet still sorts sensibly.
- */
-updatedAt: number, };
-
-/**
  * One row per claimed directory; `path` is absolute and globally
  * unique across the table. A folder transparently covers every
  * descendant path — the kernel resolves a `cwd` to its owning area by
@@ -430,13 +388,6 @@ terminal_at: number | null, workspace: TrackWorkspace, created_at: number, updat
 
 /**
  * One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
- *
- * Its own type rather than a reuse of [`AreaConversationSummary`], which is
- * what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
- * the area type's contract says "`trackTitle` is absent because every row lives
- * on one hidden track", and on a track that reasoning is simply not true. Two
- * lists with different contracts should not share one name just because their
- * current fields coincide.
  */
 export type TrackConversationSummary = { 
 /**
@@ -457,17 +408,14 @@ trackId: string,
 title: string | null, 
 /**
  * Always `"track-assistant"`, derived from the card's persisted marker.
- * A distinct value from the area list's `"shared-chat"` on purpose: the
- * frontend branches on it, and a shared value would route assistant rows
- * through the area chat's presentation.
  */
 kind: string, 
 /**
  * The live session's state, or **null when the card has no session row**.
  *
- * Nullable for the same reason as the area list's: the query LEFT JOINs so
- * a card whose session is gone (failed start, superseded runtime, shut
- * down harness) stays visible. Never fill it with an invented value.
+ * The query LEFT JOINs so a card whose session is gone (failed start,
+ * superseded runtime, shut down harness) stays visible. Never fill it with
+ * an invented value.
  */
 state: WorkerSessionState | null, 
 /**

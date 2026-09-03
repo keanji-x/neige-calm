@@ -71,102 +71,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/areas/{area_id}/chat-track/ensure": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Ensure the area's single chat track exists.
-         * @description The workspace is selected only while creating the track. When the area has
-         *     folder claims it is the claimed path with the fewest path components,
-         *     breaking ties lexicographically (attached semantics: the user pointed at
-         *     that directory). Area folder claims cannot be equal, ancestors, or
-         *     descendants of one another, so "closest to the area root" is defined here as
-         *     this deterministic shallow path ordering rather than containment.
-         *
-         *     #1147 D10 — an area with **no** claim gets a managed default instead of the
-         *     409 this used to return. Since #1109 made areas pure namespaces, "no claim"
-         *     is the normal state of a new area, so that 409 made
-         *     `POST /api/areas/{id}/conversations` fail by definition for every new area.
-         *
-         *     Once created, later folder claims or changes deliberately do not update the
-         *     track's workspace, so an existing conversation cannot drift between working
-         *     directories from one message to the next.
-         */
-        post: operations["ensure_area_chat_track"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/areas/{area_id}/conversations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_area_conversations"];
-        put?: never;
-        /**
-         * Mint a conversation and deliver its first message.
-         * @description # What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)
-         *
-         *     A standard idempotency key promises "same key ⇒ same recorded result,
-         *     forever". This endpoint deliberately promises something weaker and more
-         *     useful: **same key = the same retryable draft**. Slice 4 binds the key to
-         *     the draft the user keeps pressing send on, so replaying a failure forever
-         *     would turn one bad attempt into a permanently dead compose box.
-         *
-         *     The full contract, all four arms:
-         *
-         *     | same key, previous attempt … | answer |
-         *     |---|---|
-         *     | succeeded | replays the same conversation, **does not re-send** the first message (201) |
-         *     | terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |
-         *     | `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |
-         *     | failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |
-         *
-         *     # Same key, different `text`
-         *
-         *     The first message's SHA-256 travels in the operation payload
-         *     (`PlannerHarnessStartOperationPayload::first_message_sha256`), so it is part
-         *     of `stable_payload_hash` and therefore part of what
-         *     `OperationRuntime::submit` compares before it does anything else. Reusing a
-         *     key with a different body is consequently a real 409 `conflict` — no card,
-         *     no message — rather than a silent 201 replaying whatever the key sent the
-         *     first time. Only the hash travels: the payload is persisted in
-         *     `operations.payload_json`, and the body has no business being copied there.
-         *
-         *     The one arm where a changed body is not rejected for the old hash is the
-         *     `Failed` row above: the retry submits under a fresh `#N` operation key,
-         *     which no prior payload hash is bound to. That is the intended behaviour, not
-         *     an oversight — arm (b) exists so an edited draft can be resent after a
-         *     failure. What it buys is a genuine re-execution, not a guaranteed 201: the
-         *     retry's final status is decided by that execution and can still be a failure
-         *     (a 409 `conflict` if the derived card already exists, say).
-         *
-         *     A concurrent laggard can also observe the 500 arm: if the predecessor it
-         *     shares an operation with ended terminally failed, the replayed failure is
-         *     what it gets while the leader's fresh attempt succeeds.
-         *
-         *     None of this can produce a second conversation: the **card id** is a pure
-         *     function of `(area_id, Idempotency-Key)` and the `#N` suffix touches only
-         *     the *operation* key (see `conversation_keys::derive_area_conversation_keys` and its golden test).
-         */
-        post: operations["create_area_conversation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/areas/{area_id}/folders": {
         parameters: {
             query?: never;
@@ -1270,11 +1174,7 @@ export interface paths {
         put?: never;
         /**
          * Mint a track assistant conversation and deliver its first message.
-         * @description The `Idempotency-Key` contract, the first-message claim and both of its
-         *     known gaps are identical to `create_area_conversation`, whose doc comment is
-         *     the long-form statement of all of them; this handler differs only in the
-         *     profile it mints under and the namespace its ids come from. The gaps are
-         *     restated in brief where they bite:
+         * @description The `Idempotency-Key` contract has two known gaps, restated where they bite:
          *
          *     * the first-message claim asks "has this CARD ever had a user message
          *       enqueued?", not "has THIS request's message landed?", so a foreign
@@ -1285,8 +1185,7 @@ export interface paths {
          *
          *     Both are tracked on #1098 and deliberately unchanged here: fixing them means
          *     folding the first message into the mint operation, which would change both
-         *     endpoints at once and belongs in one dedicated change rather than being
-         *     half-done on the newer of the two.
+         *     sides of this endpoint and belongs in one dedicated change.
          */
         post: operations["create_track_conversation"];
         delete?: never;
@@ -1344,39 +1243,6 @@ export interface components {
             sort: number;
             /** Format: int64 */
             updated_at: number;
-        };
-        /**
-         * @description One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
-         *
-         *     Deliberately absent:
-         *     * `trackTitle` — every row belongs to the same hidden area chat track, so
-         *       returning its title would leak an object the user is never shown.
-         *     * `turns` — the server cannot produce a turn count that agrees with the
-         *       drawer without re-parsing every `harness_items.params` blob; a number
-         *       that silently disagrees is worse than no number.
-         */
-        AreaConversationSummary: {
-            /** @description The chat card's id. This is the conversation's identity everywhere. */
-            id: string;
-            /**
-             * @description Always `"shared-chat"`, derived from the card's persisted marker rather
-             *     than from the session kind (the session is an ordinary codex-card
-             *     session and says nothing about the conversation being an area chat).
-             */
-            kind: string;
-            state?: null | components["schemas"]["WorkerSessionState"];
-            /**
-             * @description The conversation's own name, or null before it has one. Never the
-             *     track's title.
-             */
-            title?: string | null;
-            trackId: string;
-            /**
-             * Format: int64
-             * @description The session's last update, falling back to the card's own — a card
-             *     minted seconds ago with no session yet still sorts sensibly.
-             */
-            updatedAt: number;
         };
         /**
          * @description One row per claimed directory; `path` is absolute and globally
@@ -1807,15 +1673,6 @@ export interface components {
              * @description If absent, server appends to end.
              */
             sort?: number | null;
-        };
-        /** @description Body of `POST /api/areas/{area_id}/conversations`: the first message. */
-        NewAreaConversationBody: {
-            /**
-             * @description The first message. Validated exactly like `POST /api/cards/{id}/planner/input`
-             *     (non-blank after trim, at most 32768 chars) and validated *before*
-             *     anything is minted, so a rejected message leaves no card behind.
-             */
-            text: string;
         };
         NewAreaFolder: {
             /**
@@ -2585,16 +2442,7 @@ export interface components {
             skipped_sources: number;
             truncated: boolean;
         };
-        /**
-         * @description One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
-         *
-         *     Its own type rather than a reuse of [`AreaConversationSummary`], which is
-         *     what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
-         *     the area type's contract says "`trackTitle` is absent because every row lives
-         *     on one hidden track", and on a track that reasoning is simply not true. Two
-         *     lists with different contracts should not share one name just because their
-         *     current fields coincide.
-         */
+        /** @description One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1). */
         TrackConversationSummary: {
             /**
              * @description The assistant card's id. This is the conversation's identity everywhere,
@@ -2602,12 +2450,7 @@ export interface components {
              *     address.
              */
             id: string;
-            /**
-             * @description Always `"track-assistant"`, derived from the card's persisted marker.
-             *     A distinct value from the area list's `"shared-chat"` on purpose: the
-             *     frontend branches on it, and a shared value would route assistant rows
-             *     through the area chat's presentation.
-             */
+            /** @description Always `"track-assistant"`, derived from the card's persisted marker. */
             kind: string;
             state?: null | components["schemas"]["WorkerSessionState"];
             /**
@@ -3346,172 +3189,6 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    ensure_area_chat_track: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Area id */
-                area_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Existing chat track */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Track"];
-                };
-            };
-            /** @description Chat track created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Track"];
-                };
-            };
-            /** @description Area not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    list_area_conversations: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Area id */
-                area_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Conversations on this area's chat track, newest activity first. Empty when the area has no chat track yet — this endpoint never creates one. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AreaConversationSummary"][];
-                };
-            };
-            /** @description Area not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    create_area_conversation: {
-        parameters: {
-            query?: never;
-            header: {
-                /**
-                 * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400: INV-CHAT-013(b) has to hold unconditionally, not only for callers who remember to opt in.
-                 *
-                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft".** Precisely: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES (the failed attempt was fully compensated, so replaying its failure would make the key a dead end) and may therefore return a different result, e.g. 201 where the first call gave 500 — a standard idempotency key would replay the failure instead; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed: compensation did not finish, so the card may still exist); (d) after 64 failed attempts under one key the key is exhausted and answers 409 `idempotency_key_exhausted` forever — use a new key; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited draft is no longer rejected *for the old hash* — the attempt genuinely re-executes and its final status is whatever that execution produces (201 on success). The derived card id never carries the retry suffix, so none of this can mint a second conversation.
-                 */
-                "Idempotency-Key": string;
-            };
-            path: {
-                /** @description Area id */
-                area_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewAreaConversationBody"];
-            };
-        };
-        responses: {
-            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AreaConversationSummary"];
-                };
-            };
-            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Area not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /**
-             * @description Distinguished by the body's `code`:
-             *     * `conflict` — the area has no claimed folder (no cwd for the chat track), or the derived card already exists.
-             *     * `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).
-             *     * `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as "server broke" rather than "this key is used up").
-             */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. Note the conversation is not necessarily empty: if `harness.observe` succeeded and only the audit write failed, the message is already in the harness queue even though no audit event records it. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Shared codex app-server not running — retry shortly */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6963,7 +6640,7 @@ export interface operations {
                 /**
                  * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.
                  *
-                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, with the same four arms as `POST /api/areas/{area_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation.
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**: a success replays without re-sending; a terminal failure retries under a `#N` operation key; a stuck attempt stays failed closed; 64 failed attempts exhaust the key; and the same key with different text is a conflict. The derived card id never carries the retry suffix.
                  */
                 "Idempotency-Key": string;
             };
@@ -6997,7 +6674,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The track is an area chat track; its conversations are created through the area endpoint. */
+            /** @description The track is retired hidden Area-chat scaffolding and cannot accept Track conversations. */
             403: {
                 headers: {
                     [name: string]: unknown;

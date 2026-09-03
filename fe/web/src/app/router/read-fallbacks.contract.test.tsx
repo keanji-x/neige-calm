@@ -50,8 +50,8 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('degraded workspace reads stay usable', () => {
-  it.each([['Today', '/'], ['Area', '/area/c1']])('%s warns when activity is unavailable', async (_name, path) => {
-    renderRoute(path, (request) => {
+  it('warns on Today when activity is unavailable', async () => {
+    renderRoute('/', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
@@ -71,19 +71,6 @@ describe('degraded workspace reads stay usable', () => {
     expect((await screen.findAllByText('Reliable')).length).toBeGreaterThan(1);
     expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('area two down'))).toBe(true);
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
-  });
-
-  it('keeps Area content when a refetch fails after usable track data', async () => {
-    let trackReads = 0;
-    const view = renderRoute('/area/c1', (request) => {
-      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/tracks') return ++trackReads === 1 ? ok([track]) : fail('tracks stale');
-      return ok([]);
-    });
-    expect(await screen.findByRole('button', { name: 'New track' })).toBeTruthy();
-    await view.client.invalidateQueries({ queryKey: ['tracks', 'c1'] });
-    expect(await within(screen.getByRole('main')).findByText('tracks stale')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'New track' })).toBeTruthy();
   });
 
   it('prefers track-detail overlays to the neutral workspace fallback', async () => {

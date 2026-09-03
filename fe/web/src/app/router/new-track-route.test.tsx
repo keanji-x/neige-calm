@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The new-track page: `/area/{id}/new`, reached from two `+` entry points.
+// The new-track page: `/area/{id}/new`, reached from each Area group's `+`.
 // `area_id` is the opener's area; the folder is optional and decides the whole
 // request shape — no folder omits `cwd` *and* `attach_folder` (the kernel's
 // managed default), a chosen folder sends both (#1147 S3).
@@ -156,7 +156,7 @@ function harness(options: {
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
   };
-  window.history.pushState({}, '', `${APP_BASEPATH}/area/c1`);
+  window.history.pushState({}, '', `${APP_BASEPATH}/`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
@@ -224,8 +224,8 @@ function createdTrackBodies(sent: readonly ApiRequest[]): unknown[] {
     .map((request) => request.body);
 }
 
-describe('the new-track page is a route, and both `+` entry points navigate to it', () => {
-  it('lands on the same page from the rail and from the area page', async () => {
+describe('the new-track page is a route reached from Area groups', () => {
+  it('carries the selected group into one shared create route', async () => {
     harness();
     // The rail's `+`, on an area the user is not currently inside: the whole
     // point of the row control is starting a track without navigating first.
@@ -239,10 +239,9 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
        assertion that would catch a quiet return to a dialog. */
     expect(screen.queryByRole('dialog')).toBeNull();
 
-    // The area page's TRACKS module head reaches the same route for the area
-    // the reader is inside — one page, one set of strings, two openers.
+    // Another group reaches the same route with its own Area id.
     window.history.back();
-    await userEvent.click(await screen.findByRole('button', { name: 'New track' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c1/new`);
   });
@@ -366,7 +365,7 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
    */
   it('posts the picked folder as cwd with attach_folder: true', async () => {
     const { sent } = harness({ templates: TEMPLATES });
-    await userEvent.click(await screen.findByRole('button', { name: 'New track' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
 
@@ -402,7 +401,7 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
    */
   it('carries a chosen folder and a chosen template on the same POST', async () => {
     const { sent } = harness({ templates: TEMPLATES });
-    await userEvent.click(await screen.findByRole('button', { name: 'New track' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));

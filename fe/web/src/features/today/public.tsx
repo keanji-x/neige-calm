@@ -54,7 +54,7 @@ export type ScheduledEvent = Readonly<{ track: Track; date: Date; hour: number }
 /**
  * How Today draws one track. It is injected rather than imported because the row
  * belongs to `features/track` and a feature domain may not import a sibling;
- * `app/router` supplies it, the same way it composes the area page's list. The
+ * `app/router` supplies it so Today does not import a sibling feature. The
  * variant vocabulary is §6.3's, so every surface still renders the one row.
  */
 export type TrackRowRenderer = (

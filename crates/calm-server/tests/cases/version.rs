@@ -129,8 +129,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
-    // #1300 S1: "2" -> "3" when `PUT /api/track-templates/{id}` was deleted.
-    assert_eq!(v["apiVersion"].as_str().unwrap(), "3");
+    // #1354: "3" -> "4" when the Area conversation endpoints were deleted.
+    assert_eq!(v["apiVersion"].as_str().unwrap(), "4");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
@@ -146,9 +146,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    // #1300 S1: 17 -> 18 so a cached bundle still rendering the deleted
-    // Settings > Templates editor gets the refresh curtain instead of a 404 on
-    // Save.
+    // #1354: 20 -> 21 so a cached bundle still rendering the deleted Area page
+    // gets the refresh curtain before it can call a retired endpoint.
     assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 21);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),

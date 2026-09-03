@@ -14,7 +14,7 @@ describe('dockSelection', () => {
     [null, '/settings', 'me'],
     [null, '/settings/appearance', 'me'],
     [null, '/track/w1', 'pages'],
-    [null, '/area/c1', 'pages'],
+    [null, '/track/w1', 'pages'],
     // A path the dock has no tab for still lights exactly one: Pages is the
     // index the reader is inside, not a fifth "nothing" state.
     [null, '/anything-else', 'pages'],

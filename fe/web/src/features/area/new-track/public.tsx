@@ -34,7 +34,7 @@
 // asks you to fill in fields; you have to know what each one wants before you
 // can start. A composer asks you to say something, which is the only thing
 // this product ever asks anywhere else — the track page's planner drawer is a
-// composer, the area conversation is a composer. Creating a track was the one
+// composer, and Track conversations use a composer. Creating a track was the one
 // place with a different grammar, and there was no reason for it.
 //
 // So: `ChatComposer` from astryx, the same component the chat thread uses, with

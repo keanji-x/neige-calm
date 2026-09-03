@@ -54,7 +54,7 @@ pub enum CalmError {
     IdempotencyCollision(String),
 
     /// 409 — an `Idempotency-Key` has used up its bounded number of retry
-    /// slots (`POST /api/areas/{area_id}/conversations`, #1098 slice 3).
+    /// slots (`POST /api/tracks/{track_id}/conversations`).
     ///
     /// Distinct from the generic [`CalmError::Conflict`] because the client
     /// action differs and cannot be derived from the status: the other 409s on

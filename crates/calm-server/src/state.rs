@@ -116,8 +116,8 @@ pub struct RouteState {
     /// path taking them in the reverse order would close a deadlock cycle
     /// against it.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
-    /// #1098 §5.6 — per-card claim serializing the "send the conversation's
-    /// first message" step of `POST /api/areas/{id}/conversations`. Two
+    /// Per-card claim serializing the "send the conversation's first message"
+    /// step of `POST /api/tracks/{id}/conversations`. Two
     /// concurrent POSTs under one `Idempotency-Key` share one operation, so
     /// without this both would observe "no user message yet" and send the same
     /// instruction twice.
@@ -143,7 +143,7 @@ pub struct RouteState {
     ///    map.
     /// 2. *One permitted lock order:* `conversation_first_message_locks` →
     ///    `planner_recovery_locks`, and never the reverse. The only nesting in
-    ///    the tree is `create_area_conversation` holding this claim across
+    ///    the tree is `create_track_conversation` holding this claim across
     ///    `send_planner_input` → `ensure_live_planner_harness`. Two distinct facts,
     ///    kept apart because round 3 caught them conflated:
     ///    * *Sharing ONE map* for both purposes self-deadlocks a single
@@ -151,10 +151,9 @@ pub struct RouteState {
     ///      for the same card while still holding its guard, and
     ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
     ///      maps.
-    ///    * *There are now THREE forward-order nestings, not one.*
-    ///      `create_area_conversation` was the first; `create_track_conversation`
-    ///      (#1189) and `routes::today_summary`'s bootstrap recovery (#1253 PR2)
-    ///      are the others, and all three hold this claim across
+    ///    * *There are two forward-order nestings.*
+    ///      `create_track_conversation` (#1189) and `routes::today_summary`'s
+    ///      bootstrap recovery (#1253 PR2) both hold this claim across
     ///      `send_planner_input` → `ensure_live_planner_harness`. The Today path also
     ///      holds it across a `planner-harness-start` operation on its dormant
     ///      branch, which blocks on a codex RPC; that submits no per-card lock

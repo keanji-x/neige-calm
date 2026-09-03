@@ -73,7 +73,7 @@ struct TrackWorkspace {
 5. 物化后对 **canonical 路径**断言仍在 workspace root 之内。
 6. 任一步失败都让 track 创建返回错误，不能留下一个稍后才以 `spawn-failed` 暴露的坏 track。
 
-所有 track 创建入口必须走同一物化契约，包括普通 REST、workflow/template、area chat、Today/launchpad 和 child track。这个集合不应长期靠调用点清单维持，应收敛到统一创建边界。
+所有现行 track 创建入口必须走同一物化契约，包括普通 REST、Today/launchpad 和 child track。这个集合不应长期靠调用点清单维持，应收敛到统一创建边界。Area chat 与 workflow/template 创建入口已经退役。
 
 Attached 创建只做校验：绝对路径、目录存在、是 Git 仓库，并完成 `area_folders` 的唯一归属检查。
 
@@ -396,9 +396,9 @@ N17 那条「同时钉住无害前提」的测试
 - **GC 只在回收动作上触发**，所以一个之后再不删任何 track / area 的实例，最后那批 trash 条目会无限期留着。这是磁盘上的一条明确边界，不是 bug：上界是「最后一次删除时窗口内的那批工作区」，有界且可预期。要拿掉它得引入定时任务或 boot 清扫，本片不做。
 - 缺口 N4/N5/N7/N9/N10 保持钉住。
 
-## Area 对话与执行器
+## Area 对话与执行器（已退役）
 
-没有 attached folder 的 area 仍可创建对话；它使用默认 managed 工作区。已有 folder claim 的 area 可以继续采用 attached 语义。
+Area 现在只是 Track 的分组，不再拥有对话作用域；`/api/areas/{id}/conversations` 与 chat-track ensure 入口均已移除。历史数据库里的 `purpose = 'area-chat'` Track 继续被公共列表隐藏并保留运行时兼容，但不会再创建新行。
 
 Managed 仓库保证 Codex 能获得 Git 工作区。Claude 当前不读取 track workspace，迁移到同等 worktree 租约是独立工作，不属于本设计。
 
@@ -487,7 +487,7 @@ S5 新增的三条按同一标准登记，但状态不同，别混：**N14 有�
 | N15 | 回收**不取**物化用的那把 per-path 进程内互斥锁 | 一次回收与同一路径上的一次物化并发时，物化可能在刚被 rename 走的路径上重建目录，或回收撞上物化的中间态。后果是泄漏（trash 里一个目录 + 原路径一个新空仓库），不是数据丢失——rename 是原子的，两边都不会删东西 | 与 N9 同源（真解是跨进程文件锁），归同一片 |
 | N16 | canonicalize trash root 与 `rename` 之间的 TOCTOU：`.trash` 被换成符号链接 | 工作区被 rename 到托管根之外。**已由 rename 后的复验兜住**——检测得到、报硬错误、尽力移回，所以后果是「一次失败的 DELETE」而不是静默泄漏；未做的是防御（`openat(O_NOFOLLOW)` + `renameat`） | 独立 issue；威胁模型不高（能造这个符号链接的人本来就能直接删目录） |
 | N19 | `normalize_path("/a//")` 得到 `"/a/"`，而 `is_descendant_of` 用 `format!("{parent}/")` 探测 ⇒ 存成 `"/a/"` 的 claim **谁也覆盖不到** | 两层后果，第二层更重。**① 两条 claim 覆盖同一棵子树**：可达的第二条是 **`/a/b`** 而不是 `/a` —— `/a` 会被创建路由的反向 Ancestor 检查挡下（`is_descendant_of("/a","/a/")` 为真），而 `/a/b` 两个方向都不匹配，于是两行并存，正是 #275 要护住的不变量。**② `overlapping_pairs` 看不见这一对** —— 那是 `assert_area_folders_disjoint` 这道 **boot 时 fail-closed** 围栏的全表扫描，于是一道「表有重叠就拒绝启动」的围栏，恰好在这个 gap 造出的唯一一种重叠上照常启动。**先于本片存在**，且可达（文件系统到处接受 `/a//`，路由的 `starts_with('/')` 与 S3 的 `validate_attached_workspace` 都不拦） | 认领规则的归属者；**三条测试钉住**（`a_doubled_trailing_slash_produces_a_claim_that_covers_nothing`、`n19_lets_two_claims_cover_one_subtree`、`n19_is_invisible_to_the_boot_disjointness_fence`，最后一条同时断言「没有双斜杠时围栏照样抓得到」，免得把围栏整体判成坏的）。没有顺手修，因为修法是一个「规范化到底是什么意思」的裁决（折叠连续斜杠？canonicalize？），不属于工作区片 |
-| N18 | attached 目标校验只在**用户指定目录**的两条路上（`POST /api/tracks` 的 attached 分支、`PATCH /api/tracks/{id}`）；内核派生的 attached 路径（area chat track 沿用既有 `area_folders` claim、子 track 继承 attached 父）**不校验** | 那些路径上一个不存在 / 非 git 的目录仍然会拖到 worker 起不来才暴露。今天可达性低（路径来自一条已经存在的 claim），但不是封闭的 | 独立一片：**实测把校验放进 `materialize_workspace` 的共用契约点会让 202 条测试变红**，因为全树的 attached fixture 指的都不是真仓库；关掉它等于把那些 fixture 全部改成建真仓库 |
+| N18 | attached 目标校验只在**用户指定目录**的两条路上（`POST /api/tracks` 的 attached 分支、`PATCH /api/tracks/{id}`）；内核派生的 attached 路径（历史 area chat track、子 track 继承 attached 父）**不校验** | 那些路径上一个不存在 / 非 git 的目录仍然会拖到 worker 起不来才暴露。新 Area chat 已不可创建，剩余可达路径主要是历史行与子 Track | 独立一片：**实测把校验放进 `materialize_workspace` 的共用契约点会让 202 条测试变红**，因为全树的 attached fixture 指的都不是真仓库；关掉它等于把那些 fixture 全部改成建真仓库 |
 | N20 | `workspace_path` 为空的 track 开不了 terminal，且**没有自救路径**：S6 硬失败（`Internal`），而该 track 若已冻结就再也改不了工作区 | 那种 track 上任何 terminal / codex / claude 卡都建不起来。**但这个状态在任何现存库里都不存在**——实测：`:4040` 停在 migration 75，**根本没有 `workspace_path` 列**；`:4140` 在 78，空路径行数 **0**。且按§前提二（老数据不迁移、含 `:4040` 一并按大版本 refresh）本就出范围，与 S4 砍掉 N11 迁移是同一条理由 | 若将来前提变了：修法是「空路径时允许解冻重指」或一次性回填。**没有测试钉住这条缺口**（要构造它得先造一个生产路由造不出的行）；能红的是它的**反面**——`terminal_worker_refuses_to_default_to_an_empty_workspace` 钉住「空路径宁可硬失败也不继承服务端 cwd」 |
 | ~~N17~~ | 冻结点 2（terminal 持久化）没做 | 建了 terminal 卡的 track 仍可更换工作区 | **S6 已关闭**（`terminal_create_tx` 冻结 + `card_scope_tx`）。原测试如约变红并被反转替换；N17 记的死锁诊断也在那里订正——见「冻结（S3）」下的 N17 段 |
 

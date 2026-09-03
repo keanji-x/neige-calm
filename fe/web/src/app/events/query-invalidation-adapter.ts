@@ -48,11 +48,6 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
      change it. */
   if (head === 'track-report' && key.length === 1) return queryKeys.trackReportPrefix();
   if (head === 'track-report' && typeof first === 'string' && key.length === 2) return queryKeys.trackReport(first);
-  /* The area drawer's conversation list. Only the bare form exists: no
-     conversation-writing event carries a `area_id` and no cached row can supply
-     one, so the plan emits the prefix and `queryKeys.areaConversations` keeps
-     the area id in second position precisely so this prefix reaches it. */
-  if (head === 'area-conversations' && key.length === 1) return queryKeys.areaConversationsPrefix();
   /* One track's conversation list. Both arities are mapped, same as
      `track-report` above: the plan names the track whenever `derivedTrackId`
      resolves one and falls back to the prefix when a `runtime.*` event's card

@@ -59,7 +59,7 @@ describe('INV-APP-084 the index loader primes areas and nothing else', () => {
   it('gives the other routes no loader at all', () => {
     const { transport } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    for (const path of ['/area/$areaId', '/track/$trackId', '/settings']) {
+    for (const path of ['/area/$areaId/new', '/track/$trackId', '/settings']) {
       expect(routeByPath(tree, path).options.loader).toBeUndefined();
     }
   });
@@ -102,7 +102,7 @@ describe('route registration', () => {
 
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
-      '/', '/area/$areaId', '/area/$areaId/new', '/track/$trackId',
+      '/', '/area/$areaId/new', '/track/$trackId',
       '/settings', '/settings/plugins', '/settings/appearance', '/settings/about',
     ]);
   });
@@ -136,7 +136,6 @@ describe('route registration', () => {
      */
     const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
       'today': { name: 'today' },
-      'area': { name: 'area', areaId: 'c1' },
       'new-track': { name: 'new-track', areaId: 'c1' },
       'track': { name: 'track', trackId: 'w1' },
       'settings': { name: 'settings' },
@@ -191,9 +190,9 @@ describe('conversation pending accounting', () => {
   });
 
   /* Pending is what *this* tab is doing, so it cannot depend on the session
-     state the server last reported — including its absence on a chat row. */
+     state the server last reported — including its absence on a listed row. */
   it('accounts a conversation with no reported session the same way', () => {
-    const stateless = { ...conversation, kind: 'shared-chat' as const, state: null };
+    const stateless = { ...conversation, kind: 'track-assistant' as const, state: null };
     expect(pendingConversationIds(stateless, false, true).has('c1')).toBe(true);
     expect(pendingConversationIds(stateless, false, false).has('c1')).toBe(false);
   });

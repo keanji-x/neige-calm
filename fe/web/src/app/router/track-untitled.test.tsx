@@ -90,7 +90,6 @@ function setup(options: Options = {}) {
       if (request.path === '/api/areas/c1/tracks') {
         return Promise.resolve(ok(created.id === track.id ? [track] : [track, created]));
       }
-      if (request.path === '/api/areas/c1/conversations') return Promise.resolve(ok([]));
       if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok([]));
       if (request.path === '/api/track-templates') return Promise.resolve(ok([]));
       if (request.method === 'POST' && request.path === '/api/tracks') return Promise.resolve(ok(created));
@@ -160,9 +159,7 @@ async function composerOnScreen() {
 }
 
 async function createATrack() {
-  /* Exact: the rail's per-area opener is `New track in Work`, which a substring
-     match would also find — the area page's own `+` is the one this drives. */
-  await userEvent.click(await screen.findByRole('button', { name: /^New track$/ }));
+  await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
   await composerOnScreen();
   await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
 }
@@ -180,7 +177,7 @@ async function goToTrack(router: ReturnType<typeof setup>['router'], trackId: st
 }
 
 beforeEach(() => {
-  window.history.pushState({}, '', `${APP_BASEPATH}/area/c1`);
+  window.history.pushState({}, '', `${APP_BASEPATH}/`);
   /* The drawer, the composer and `EditableTitle` all move focus inside a frame.
      Running frames synchronously is what makes "who ended up with the focus"
      a question this tier can answer at all. */
@@ -249,8 +246,8 @@ describe('creating a track lands in its planner conversation', () => {
    * ── A fresh visit to the track carries no intent ──────────────────────────
    *
    * The detail read fails, so `TrackRoute` returns the error box and the body
-   * that would redeem the intent never mounts. The reader gives up, walks back
-   * to the area, and later opens the track again — a *new* navigation, so a new
+   * that would redeem the intent never mounts. The reader gives up, returns to
+   * Today, and later opens the track again — a *new* navigation, so a new
    * history entry, and the mark is not on it. An ordinary visit does not spring
    * the drawer open and take the caret.
    *
@@ -267,8 +264,8 @@ describe('creating a track lands in its planner conversation', () => {
     await createATrack();
     await screen.findByRole('button', { name: 'Retry' });
 
-    await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
-    await screen.findByRole('button', { name: 'Rename area' });
+    await act(async () => { await router.navigate({ to: '/' }); });
+    expect(router.state.location.pathname).toBe('/');
 
     gate.createdDetailFails = false;
     await goToTrack(router, 'w2');
@@ -305,8 +302,8 @@ describe('creating a track lands in its planner conversation', () => {
     await screen.findByRole('button', { name: 'Retry' });
 
     /* A push, so the failed entry stays underneath rather than being replaced. */
-    await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
-    await screen.findByRole('button', { name: 'Rename area' });
+    await act(async () => { await router.navigate({ to: '/' }); });
+    expect(router.state.location.pathname).toBe('/');
 
     gate.createdDetailFails = false;
     await act(async () => {
@@ -334,8 +331,8 @@ describe('creating a track lands in its planner conversation', () => {
     /* Leaving the route takes the drawer with it — that is the "closed" state
        this case needs, and it is one the reader reaches every time they walk
        away. Coming back is then an ordinary visit, and it must stay one. */
-    await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
-    await screen.findByRole('button', { name: 'Rename area' });
+    await act(async () => { await router.navigate({ to: '/' }); });
+    expect(router.state.location.pathname).toBe('/');
     expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
 
     await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' } }); });

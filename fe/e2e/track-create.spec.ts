@@ -40,13 +40,12 @@ test.afterEach(async ({ request }) => {
  * became (S3). It is not delivered yet — the absence is asserted at the end of
  * this case, under #1299.
  */
-test('creates a track from the area page with no title, and persists it', async ({ page, request }) => {
+test('creates a track from an Area group with no title, and persists it', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const area = await createArea(request);
   createdAreaIds.push(area.id);
-  await page.goto(`/next/area/${area.id}`);
-  // exact: the rail's per-area `+` is `New track in …`, a substring match.
-  await page.getByRole('button', { name: 'New track', exact: true }).click();
+  await page.goto('/next/');
+  await page.getByRole('button', { name: `New track in ${area.name}` }).click();
 
   /* #1211 — a route, not a modal. `waitForURL` is the surface being ready;
      the composer being visible is the surface being *usable*, and both are
@@ -166,8 +165,8 @@ test('creates a track from a template and seeds its report', async ({ page, requ
   const ids = (await templates.json() as { id: string }[]).map((template) => template.id);
   expect(ids).toContain('small-change');
 
-  await page.goto(`/next/area/${area.id}`);
-  await page.getByRole('button', { name: 'New track', exact: true }).click();
+  await page.goto('/next/');
+  await page.getByRole('button', { name: `New track in ${area.name}` }).click();
   await page.waitForURL(/\/area\/[^/]+\/new$/);
   const message = `FE e2e template track ${Date.now()}`;
   await page.getByLabel(TASK_LABEL).fill(message);

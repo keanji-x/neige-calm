@@ -1,8 +1,8 @@
 /**
  * INV-DUP-010 — the destructive-confirm copy, declared once.
  *
- * Delete affordances live in three places (sidebar row, area page, track page)
- * and a user must read the same sentence in all three; a track delete is not
+ * Delete affordances live in the sidebar and Track page, and a user must read
+ * the same sentence in both; a track delete is not
  * recoverable from the UI. Keeping the strings here is what stops one surface
  * from drifting into a softer wording than the others.
  */

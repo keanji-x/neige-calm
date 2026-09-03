@@ -46,8 +46,8 @@ export const DOCK_ITEMS: readonly DockItem[] = Object.freeze([
  *
  * Pages is the fallback rather than a fifth "nothing selected" state, which is
  * the behaviour the four inline `aria-current` expressions added up to: on a
- * track or an area route with no sheet open, the reader is inside the Pages
- * index. A sheet always wins over the route underneath it, because the sheet is
+ * Track route with no sheet open, the reader is inside the Pages index. A sheet
+ * always wins over the route underneath it, because the sheet is
  * what they are looking at.
  */
 export function dockSelection(section: MobileSection | null, path: string): DockKey {
