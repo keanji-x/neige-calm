@@ -367,9 +367,8 @@ impl Boot {
     /// text behind it held four `User says:` blocks and said exactly which
     /// extra message had arrived and where it came from.
     ///
-    /// Occurrences, not messages: the harness joins adjacent user messages into
-    /// one turn text, so two bootstraps folded into a single turn still read as
-    /// two.
+    /// The counts are occurrences rather than messages — see [`count_needles`],
+    /// which is where that behaviour and its consequence live.
     async fn delivered(
         &self,
         card_id: &str,
@@ -417,6 +416,16 @@ impl Boot {
     /// message the harness was given, which for the concurrency case is the
     /// bootstrap, and "the bootstrap really reached the app-server" is the
     /// claim that case needs.
+    ///
+    /// **The count is sampled at first sighting, not settled globally.** This
+    /// returns the instant `count > 0`, so it answers "how many occurrences
+    /// were visible the moment the needle first appeared". That is the number
+    /// the concurrency case wants — the fake completes no turn, and a turn's
+    /// items are pushed under one mutex, so the first turn's contents are final
+    /// — but it is not a global total: a second bootstrap arriving in a *later*
+    /// turn would still read 1 here. What catches that one is the
+    /// [`Boot::delivered`] assertion below the call site, which sums queued and
+    /// delivered across the whole card.
     ///
     /// The deadline failure prints the turn texts and the queue in full.
     async fn await_reached_appserver(&self, card_id: &str, needle: &str) -> usize {
@@ -490,9 +499,39 @@ impl Boot {
         texts
     }
 
+    /// Every observation still sitting in **any** of this card's persisted
+    /// harness queues, paired with the `worker_sessions` row it came from.
+    ///
+    /// Deliberately wider than [`Boot::queued_texts`], which reads the newest
+    /// row and `user_message` entries only. This is the shape
+    /// [`Boot::quiesce_and_clear_queue`] actually rewrites — every row, every
+    /// `Observation` variant (`calm-types/src/observation.rs`) — so its guard
+    /// and its read-back are taken over this rather than over the texts.
+    async fn pending_observations(&self, card_id: &str) -> Vec<(String, Value)> {
+        let states: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, handle_state_json FROM worker_sessions WHERE card_id = ?1")
+                .bind(card_id)
+                .fetch_all(self.repo.pool())
+                .await
+                .unwrap();
+        let mut out = Vec::new();
+        for (id, state) in states {
+            let Some(state) = state else { continue };
+            let parsed: Value = serde_json::from_str(&state).unwrap();
+            for obs in parsed["pending_queue"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+            {
+                out.push((id.clone(), obs));
+            }
+        }
+        out
+    }
+
     /// Shut this server's harnesses down and clear whatever they left in
     /// `card_id`'s persisted queue, so a server booted *next* over the same
-    /// database inherits nothing. Returns the texts that were cleared.
+    /// database inherits nothing.
     ///
     /// Only the concurrency case needs this, and it needs it because a second
     /// server is about to recover a harness from this card's persisted
@@ -511,27 +550,63 @@ impl Boot {
     /// before the run loop ticks.
     ///
     /// So the coupling is closed instead of waited on, and both halves are
-    /// needed. The shutdown removes the only remaining writer of the row —
-    /// `SpecHarness::shutdown` persists a final snapshot and then aborts the
-    /// run loop, so nothing can re-queue behind this clear. The clear then
-    /// empties `pending_queue` and `pending_envelope_ids` together, which is
-    /// the same kind of surgical staging as the case's own `DELETE` of the
-    /// enqueued rows: this card's state is being set to "nothing pending".
+    /// needed.
     ///
-    /// `expected` names the messages this server is known to have sent; a
-    /// queued text matching none of them is a message the fixture did not
-    /// account for, and this panics rather than silently deleting it.
-    async fn quiesce_and_clear_queue(&self, card_id: &str, expected: &[&str]) -> Vec<String> {
+    /// **The shutdown fences the row's only remaining writer; it does not
+    /// leave a final snapshot behind.** `SpecHarness::shutdown`
+    /// (`harness/run_loop.rs`) stores `shutting_down = true` as its *first*
+    /// action, and `persist_snapshot_inner` early-returns `Ok(())` whenever
+    /// that flag is set — so every persist from that harness from then on is a
+    /// permanent no-op, including `shutdown`'s own `persist_snapshot()` call,
+    /// which writes nothing. That permanent fence, plus the `abort()` that
+    /// stops the run loop, is what makes the clear safe. An earlier version of
+    /// this doc credited "a final snapshot and then an abort"; the final
+    /// snapshot does not exist.
+    ///
+    /// **The abort is not a join, so the read-back polls.** `abort()` takes
+    /// effect at the aborted task's next await, so a persist that passed the
+    /// `shutting_down` check *before* the flag was stored can still be inside
+    /// `write_in_tx_typed`. A transaction dropped on cancel commits nothing and
+    /// is harmless; a COMMIT that lands after the clear would reinstate exactly
+    /// the queue this staging removes, which is the original #1309 inheritance
+    /// flake. So the read-back below is a short poll rather than a single read:
+    /// it fails here, by name, on any commit that lands inside its window,
+    /// instead of letting `b` silently inherit the row. What it does **not**
+    /// prove is that no commit ever lands after the window closes — only
+    /// joining the aborted task could, and the harness exposes no join. It
+    /// bounds the window; the 144-run starvation repro is the evidence that the
+    /// bound holds in practice.
+    ///
+    /// **The guard is taken over what the clear destroys.** The clear rewrites
+    /// `pending_queue` and `pending_envelope_ids` to `[]` on *every*
+    /// `worker_sessions` row for the card, which discards every `Observation`
+    /// variant — `ReportEdited`, `TaskCompleted`, `WorkerHookStop`, … — not
+    /// just the newest row's `user_message`s that [`Boot::queued_texts`] can
+    /// see. So the check runs over [`Boot::pending_observations`]: `expected`
+    /// names the messages this server is known to have sent, and anything that
+    /// is not a `user_message` matching one of them panics rather than being
+    /// silently deleted. Nothing else is reachable in this fixture today (the
+    /// derived card is `CardRole::Assistant`, and boot-recovery replay in
+    /// `harness/mod.rs` is gated on `CardRole::Spec`), but the guard no longer
+    /// depends on that staying true.
+    ///
+    /// The clear itself is the same kind of surgical staging as the case's own
+    /// `DELETE` of the enqueued rows: this card's state is being set to
+    /// "nothing pending".
+    async fn quiesce_and_clear_queue(&self, card_id: &str, expected: &[&str]) {
         for harness in self.state.harness.drain_all_for_dev() {
             harness.shutdown().await.unwrap();
         }
-        let cleared = self.queued_texts(card_id).await;
-        for text in &cleared {
+        for (session_id, obs) in self.pending_observations(card_id).await {
+            let text = obs["text"].as_str().unwrap_or_default();
             assert!(
-                expected.iter().any(|needle| text.contains(needle)),
-                "a message this fixture did not send is queued on {card_id}; \
-                 clearing it would be deleting evidence, not staging state. \
-                 Queued text: {text:?}\nexpected one of: {expected:?}"
+                obs["type"] == json!("user_message")
+                    && expected.iter().any(|needle| text.contains(needle)),
+                "an observation this fixture did not send is queued on \
+                 {card_id} (worker_sessions row {session_id}); clearing it \
+                 would be deleting evidence, not staging state. \
+                 Observation: {obs:#?}\nexpected a user_message containing one \
+                 of: {expected:?}"
             );
         }
         let states: Vec<(String, Option<String>)> =
@@ -552,14 +627,21 @@ impl Boot {
                 .await
                 .unwrap();
         }
-        let left = self.queued_texts(card_id).await;
-        assert!(
-            left.is_empty(),
-            "the persisted queue for {card_id} still holds {} message(s) after \
-             the clear: {left:#?}",
-            left.len()
-        );
-        cleared
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        loop {
+            let left = self.pending_observations(card_id).await;
+            assert!(
+                left.is_empty(),
+                "the persisted queue for {card_id} holds {} observation(s) \
+                 after the clear, so a write from this server's shut-down \
+                 harness landed behind it: {left:#?}",
+                left.len()
+            );
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     async fn launchpad_wave_id(&self) -> Option<String> {
@@ -1422,13 +1504,25 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
     // than a weakening: the fake never completes a turn, so whatever is not in
     // the first turn is never delivered at all. The bootstrap is in it — it is
     // the first message the harness is given.
+    //
+    // With the claim in place the bootstrap is provably first: request B blocks
+    // at `lock_card` until A's bootstrap `send_summary` has been awaited inside
+    // the lock. Removing the claim removes that ordering too, so the mutation
+    // can go red here by DEADLINE rather than by count — a summary is observed
+    // first, the next tick issues a turn holding only it (`UserMessage` is
+    // hard-fire, so debounce does not hold it back), and the bootstrap sits
+    // behind a turn the fake never completes. Both failures are legible (the
+    // deadline dumps turns and queue), but "red by count" is a property of the
+    // runs that were measured, not a guarantee of the mutation.
     let bootstraps_reaching_the_agent = b
         .await_reached_appserver(&card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
         .await;
     assert_eq!(
         bootstraps_reaching_the_agent, 1,
-        "the standing instruction reached the agent exactly once. Two here is \
-         the race delivered rather than merely enqueued"
+        "the standing instruction reached the agent exactly once as of the \
+         moment it first appeared there — see `await_reached_appserver` for why \
+         that is the final count here and what it does not cover. Two is the \
+         race delivered rather than merely enqueued"
     );
     let enqueued = b.enqueued_char_counts(&card_id).await.len();
     assert_eq!(
