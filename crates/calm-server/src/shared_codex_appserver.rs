@@ -1059,6 +1059,28 @@ impl SharedCodexAppServer {
         CalmError::Internal(self.not_running_message())
     }
 
+    /// The daemon-availability preflight, as **one** callable rather than a
+    /// two-line idiom each caller re-spells.
+    ///
+    /// Not `ensure_running`, which is taken and means the opposite kind of
+    /// thing: that one is the supervisor entry point that *starts* the daemon.
+    /// This one only reports; it never spawns.
+    ///
+    /// It exists because #1299 S1 needs a caller *outside* the operation layer
+    /// to run the very check `PlannerHarnessStartAdapter::validate` runs, and a
+    /// second hand-written copy of a refusal criterion is the shape that
+    /// drifts: the route would keep minting while the adapter had started
+    /// refusing (or the reverse), and the two disagreeing is exactly the state
+    /// that leaves a track behind with no operation row. Every site that used
+    /// to spell `if !is_running() { return Err(not_running_error()) }` calls
+    /// this instead.
+    pub fn require_running(&self) -> Result<()> {
+        if self.is_running() {
+            return Ok(());
+        }
+        Err(self.not_running_error())
+    }
+
     pub async fn thread_start_for_card(
         self: &Arc<Self>,
         card_id: &str,

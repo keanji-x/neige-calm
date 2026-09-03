@@ -558,9 +558,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     payload.planner_card_id
                 )));
             }
-            if !self.daemon.is_running() {
-                return Err(self.daemon.not_running_error());
-            }
+            self.daemon.require_running()?;
             return Ok(());
         }
         let Some(card) = self.repo.card_get(payload.planner_card_id.as_str()).await? else {
@@ -631,11 +629,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 track.id
             )));
         }
-        if !self.daemon.is_running() {
-            // #953 — same variant/status; message carries the live failure
-            // and the background-retry fact. Preflights stay non-blocking.
-            return Err(self.daemon.not_running_error());
-        }
+        // #953 — same variant/status; message carries the live failure and the
+        // background-retry fact. Preflights stay non-blocking. #1299 S1 — the
+        // create route calls this same `require_running`, before it mints,
+        // rather than restating the criterion.
+        self.daemon.require_running()?;
         Ok(())
     }
 

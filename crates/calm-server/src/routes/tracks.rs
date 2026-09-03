@@ -626,6 +626,10 @@ pub(crate) async fn get_track_detail(
 #[allow(deprecated)]
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
+    // #1299 S1 adjudication — only the `first_message` mint arm reads it, for
+    // the pre-mint daemon preflight. A `first_message`-free create never
+    // touches it, which is what keeps the legacy path unchanged.
+    State(cs): State<CodexShellState>,
     actor: Actor,
     headers: HeaderMap,
     Json(mut request): Json<CreateTrackRequest>,
@@ -906,7 +910,17 @@ pub(crate) async fn create_track(
     // byte-identical to what older binaries wrote).
     let created = match plan {
         None => create_track_with_planner_harness(s, actor, p, options).await,
-        Some(plan) => create::create_track_with_first_message(s, actor, p, options, plan).await,
+        Some(plan) => {
+            create::create_track_with_first_message(
+                s,
+                actor,
+                &cs.shared_codex_appserver,
+                p,
+                options,
+                plan,
+            )
+            .await
+        }
     };
     match created {
         Err(error) => match conflict.take() {

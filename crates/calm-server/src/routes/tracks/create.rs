@@ -116,7 +116,11 @@
 //! effect" remains false for it (`routes/tracks.rs` says so in its own words).
 //! What this slice does guarantee is the narrower thing it can: the
 //! `first_message` validation runs before **any** mint, so a rejected message
-//! never leaves a track behind.
+//! never leaves a track behind — and so does the daemon-availability preflight
+//! (`require_running` in [`create_track_with_first_message`]), because the one
+//! failure that used to leave a track behind *repeatedly* was a refusal raised
+//! inside `submit`'s `validate`, i.e. before the operation row that records
+//! which track this key created ever exists.
 
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -129,6 +133,7 @@ use crate::model::{NewTrack, Track};
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
 };
@@ -496,10 +501,38 @@ pub(super) async fn plan_first_message(
 pub(super) async fn create_track_with_first_message(
     s: RouteState,
     actor: Actor,
+    daemon: &SharedCodexAppServer,
     p: NewTrack,
     options: CreateTrackOptions,
     plan: FirstMessagePlan,
 ) -> Result<Response> {
+    // #1299 S1 adjudication — the daemon-availability preflight, run BEFORE the
+    // mint instead of only inside `submit`.
+    //
+    // `OperationRuntime::submit` calls `adapter.validate` *before*
+    // `insert_operation`, so a refusal there writes no operation row at all.
+    // On this arm the track, its cards and its folder claim are already
+    // committed by then, and the operation row is the ONLY record of which
+    // track an `Idempotency-Key` created. So a daemon outage used to leave a
+    // track with nothing pointing at it, and the next request under the same
+    // key read `PriorSelection::FreshKey` again and minted another one — one
+    // fresh track per retry, for as long as the outage lasted. Measured on the
+    // fixture: two requests, one key, two tracks, four cards, zero operations.
+    // That is not the declared "this handler does not compensate" exemption
+    // (one failed create MAY leave one track); it contradicts the header's own
+    // contract that a retried create lands on the track the key already names.
+    //
+    // `require_running` is the adapter's own criterion, called — not restated:
+    // a second copy would drift, and the two disagreeing is precisely the state
+    // that produces the orphan.
+    //
+    // Residual window, stated rather than papered over: the daemon can still
+    // stop between this call and `submit`'s `validate`, which re-runs it. That
+    // window is one `create_track_structure` wide (one transaction plus
+    // `materialize_workspace`), and inside it the old behaviour returns. What
+    // changes is that a *steady-state* outage — the reachable case, where every
+    // attempt fails for minutes — no longer mints anything at all.
+    daemon.require_running()?;
     let (track, _created, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
     let cwd = track.workspace.path.clone();

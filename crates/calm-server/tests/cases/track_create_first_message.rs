@@ -97,6 +97,18 @@ struct Boot {
 }
 
 async fn boot() -> Boot {
+    boot_with_daemon(true).await
+}
+
+/// Same fixture, but with the shared codex app-server **not running** —
+/// `SharedCodexAppServer::is_running()` is false, which is what
+/// `PlannerHarnessStartAdapter::validate` refuses on. This is the production
+/// state during a daemon outage / restart window.
+async fn boot_without_daemon() -> Boot {
+    boot_with_daemon(false).await
+}
+
+async fn boot_with_daemon(daemon_running: bool) -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
@@ -133,9 +145,11 @@ async fn boot() -> Boot {
         Some(tracks),
     )
     .with_workspace_root(tmp.path().join("workspaces"))
-    .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-        repo_dyn, None,
-    ));
+    .with_shared_codex_appserver(if daemon_running {
+        SharedCodexAppServer::new_fake_running_with_pending(repo_dyn, None)
+    } else {
+        SharedCodexAppServer::new_stub_with_pending(repo_dyn, None)
+    });
     let app = routes::router()
         .layer(Extension(Principal {
             user_id: "owner".into(),
@@ -1402,6 +1416,59 @@ async fn a_template_create_refuses_a_first_message() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(b.track_count().await, 0);
+}
+
+/// A daemon outage must not turn one `Idempotency-Key` into a track farm.
+///
+/// The construction, and why it is not covered by "this handler does not
+/// compensate": `OperationRuntime::submit` runs `adapter.validate` **before**
+/// `insert_operation`, and `PlannerHarnessStartAdapter::validate` refuses while
+/// the shared app-server is down. So the refusal writes no operation row — and
+/// the operation row is the only record of which track a key created. Before
+/// the fix this measured, on exactly this fixture: two requests under one key,
+/// both 500, **2** tracks, **4** cards, **0** operations. The declared
+/// exemption allows a failed create to leave *a* track; it does not allow the
+/// next retry under the same key to mint another one, which is the opposite of
+/// what the `Idempotency-Key` header documents.
+///
+/// The fix runs the adapter's own `ensure_running` before
+/// `create_track_structure`, so nothing is minted at all.
+#[tokio::test]
+async fn a_daemon_outage_does_not_mint_a_track_per_retry_under_one_key() {
+    let b = boot_without_daemon().await;
+    let (first, first_body) = b.create_track(Some("idem-out"), Some("do the thing")).await;
+    let (second, second_body) = b.create_track(Some("idem-out"), Some("do the thing")).await;
+    assert_eq!(
+        first,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "body={first_body}"
+    );
+    assert_eq!(
+        second,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "body={second_body}"
+    );
+    // The load-bearing number. `1` would still be a regression: it would mean
+    // the first attempt minted and the second adopted nothing.
+    assert_eq!(b.track_count().await, 0, "tracks minted during the outage");
+    assert_eq!(b.card_count().await, 0, "cards minted during the outage");
+    assert_eq!(b.user_message_event_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+/// The counterweight to the case above: the preflight is on the
+/// `first_message` **mint** arm only, so a create that carries no
+/// `first_message` still succeeds during the same outage — `start_planner_harness`
+/// is deliberately best-effort there (the track is the whole deliverable and an
+/// inert planner agent is recoverable). Moving the preflight anywhere that the
+/// legacy path can reach turns this 201 into a 500.
+#[tokio::test]
+async fn a_create_without_a_first_message_still_succeeds_during_a_daemon_outage() {
+    let b = boot_without_daemon().await;
+    let (status, body) = b.create_track(None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(b.track_count().await, 1);
+    b.shutdown_harnesses().await;
 }
 
 // ---------------------------------------------------------------------------

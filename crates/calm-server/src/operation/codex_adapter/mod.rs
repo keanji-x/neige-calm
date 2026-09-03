@@ -311,11 +311,9 @@ impl ProviderAdapter for CodexAdapter {
                 payload.request.track_id
             )));
         }
-        if !self.shared_codex_appserver.is_running() {
-            // #953 — same variant/status; message carries the live failure
-            // and the background-retry fact. Preflights stay non-blocking.
-            return Err(self.shared_codex_appserver.not_running_error());
-        }
+        // #953 — same variant/status; message carries the live failure and the
+        // background-retry fact. Preflights stay non-blocking.
+        self.shared_codex_appserver.require_running()?;
         Ok(())
     }
 
@@ -962,10 +960,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
 
-        if !self.shared_codex_appserver.is_running() {
-            // #953 — message-only enrichment; see prepare-side preflight.
-            return Err(self.shared_codex_appserver.not_running_error());
-        }
+        // #953 — message-only enrichment; see prepare-side preflight.
+        self.shared_codex_appserver.require_running()?;
 
         let card = ctx
             .repo
