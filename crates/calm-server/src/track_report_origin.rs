@@ -237,8 +237,9 @@ pub struct AgentOrigin {
 /// runs on the batch the write closure returned
 /// (`write_with_actor_events`, `calm-truth/src/db/sqlite/events.rs`), and the
 /// fork's report copy — `track_report::write::structural_init_report_tx`, the
-/// write boundary's structural door since #1252 S2 — sits inside that closure. Under `ai:codex` the copy therefore **does
-/// execute**, and the whole transaction is then rolled back. The conclusion
+/// write boundary's structural door since #1252 S2 — sits inside that closure.
+/// Under `ai:codex` the copy therefore **does execute**, and the whole
+/// transaction is then rolled back. The conclusion
 /// holds (a non-`User` initiator cannot complete a fork and leaves nothing
 /// behind), but anyone adding a side effect to the copy stage that is not
 /// covered by the transaction — a file write, an outbound request, a metric —

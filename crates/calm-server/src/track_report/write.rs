@@ -73,7 +73,7 @@
 //! | [`rest_user_replace`] | `routes::tracks::update_track_report` | `User`, fixed |
 //! | [`rest_user_block_op`] | `routes::track_report_blocks::commit` | `User`, fixed |
 //! | [`agent_report_op`] | `decision_sink::CardDecisionSink::commit_report_op` | caller-supplied; that caller derives it from `identity.role` |
-//! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — the signature has no way to name one** |
+//! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — no parameter of it names one, pinned by name *and* written type in `fork_guard_exemption_invariant`** |
 //!
 //! The fourth row is a different kind of entry from the first three and the
 //! table would mislead without this sentence: it does not reach [`persist`],
@@ -446,9 +446,19 @@ pub(crate) async fn agent_report_op(
 ///   `card_create_with_id_tx` earlier in *this same transaction*, so there is no
 ///   prior version for a compare-and-swap to be against. A CAS input here could
 ///   only ever compare a value with the one this transaction just wrote.
-/// * **No `TrackLifecycle`, and no `auto_promote_draft`.** A track being created
-///   has no lifecycle to transition and no draft state to promote out of; both
-///   of [`persist`]'s lifecycle legs are about a track that already exists.
+/// * **No `TrackLifecycle`, and no `auto_promote_draft`.** Not because the
+///   state does not exist — #1252 R1/F5 corrects an earlier claim here that it
+///   does not. It does: `create_track_structure` calls `track_create_tx`
+///   *before* this door, and that writer stamps `TrackLifecycle::Draft`
+///   explicitly (#145). The reason is the source semantics. Both of
+///   [`persist`]'s lifecycle legs act on a *request to transition* a track —
+///   an edit that says "and also promote this out of draft", or one that
+///   carries an explicit target lifecycle. Structural initialization is not
+///   such a request: it is the same transaction that just decided the seed
+///   lifecycle, so a lifecycle argument here could only re-decide, one
+///   statement later, something this transaction has already written. That is
+///   a second writer of the same field inside one transaction, which is the
+///   shape #145 stamped the seed explicitly to avoid.
 /// * **No `RecorderShadowProbe`.** The recorder gate decides whether an *agent
 ///   principal* may write. Track creation has no agent principal —
 ///   `create_track_structure` runs on a REST request whose only identity is the
@@ -878,6 +888,17 @@ async fn persist(
 /// structural initialization have in common — everything else about them
 /// differs, which is why they are two functions and not one function with a
 /// mode parameter.
+///
+/// # The one way the create path's behaviour did change (#1252 R1/F7)
+///
+/// Not "bit-identical". The create path used to build its own
+/// `serde_json::to_value` failure as `CalmError::Internal("track_create:
+/// serialize forked track-report payload: …")`; routed through here it is
+/// `"track_report: serialize projected payload: …"` instead. Only a
+/// `serde_json` failure serializing a `TrackReportPayload` reaches either
+/// string, which is unreachable in practice — so the accurate claim is
+/// "identical except for one unreachable `Internal` error string", and that is
+/// the claim to make.
 async fn write_report_row_and_project_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     report_card_id: &str,
