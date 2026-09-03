@@ -424,8 +424,12 @@ impl Boot {
     /// items are pushed under one mutex, so the first turn's contents are final
     /// — but it is not a global total: a second bootstrap arriving in a *later*
     /// turn would still read 1 here. What catches that one is the
-    /// [`Boot::delivered`] assertion below the call site, which sums queued and
-    /// delivered across the whole card.
+    /// [`Boot::delivered`] assertion below the call site, which sums this
+    /// server's turns — all of them, whatever card they belong to — with the
+    /// newest `worker_sessions` row's queue. That queued half is the newest row
+    /// only (see [`Boot::queued_texts`]), so what the pair catches is a second
+    /// bootstrap that reached a turn or is still queued on the newest session —
+    /// not one parked in a superseded row, which neither read can see.
     ///
     /// The deadline failure prints the turn texts and the queue in full.
     async fn await_reached_appserver(&self, card_id: &str, needle: &str) -> usize {
@@ -552,8 +556,8 @@ impl Boot {
     /// So the coupling is closed instead of waited on, and both halves are
     /// needed.
     ///
-    /// **The shutdown fences the row's only remaining writer; it does not
-    /// leave a final snapshot behind.** `SpecHarness::shutdown`
+    /// **The shutdown fences the only writer still live at this point in this
+    /// fixture; it does not leave a final snapshot behind.** `SpecHarness::shutdown`
     /// (`harness/run_loop.rs`) stores `shutting_down = true` as its *first*
     /// action, and `persist_snapshot_inner` early-returns `Ok(())` whenever
     /// that flag is set — so every persist from that harness from then on is a
@@ -563,6 +567,16 @@ impl Boot {
     /// this doc credited "a final snapshot and then an abort"; the final
     /// snapshot does not exist.
     ///
+    /// "Only writer" is a fact about this moment, not a property of the row:
+    /// `handle_state_json` has two other writers that the `shutting_down` flag
+    /// does not fence — the harness-start path
+    /// (`operation/spec_harness_start_adapter.rs`, reached only from a request)
+    /// and `harness::persist_recovered_snapshot`. Neither can run behind the
+    /// clear here: staging's two HTTP requests have already returned, and this
+    /// fixture assembles `AppState::from_parts` without arming deferred harness
+    /// recovery and never calls `recover_harnesses_on_boot`, so no recovery
+    /// task exists to persist one.
+    ///
     /// **The abort is not a join, so the read-back polls.** `abort()` takes
     /// effect at the aborted task's next await, so a persist that passed the
     /// `shutting_down` check *before* the flag was stored can still be inside
@@ -570,14 +584,20 @@ impl Boot {
     /// is harmless; a COMMIT that lands after the clear would reinstate exactly
     /// the queue this staging removes, which is the original #1309 inheritance
     /// flake. So the read-back below is a short poll rather than a single read:
-    /// it fails here, by name, on any commit that lands inside its window,
-    /// instead of letting `b` silently inherit the row. What it does **not**
-    /// prove is that no commit ever lands after the window closes — only
-    /// joining the aborted task could, and the harness exposes no join. It
-    /// bounds the window; the 144-run starvation repro is the evidence that the
-    /// bound holds in practice.
+    /// it fails here, by name, on any commit that lands inside its window
+    /// *and puts an observation back into the queue*, instead of letting `b`
+    /// silently inherit the row. A late persist that commits an already-empty
+    /// queue lands inside the window and passes — correctly, since it leaves
+    /// nothing to inherit. What the poll does **not** prove is that no commit
+    /// ever lands after the window closes — only joining the aborted task
+    /// could, and the harness exposes no join. It bounds the window; the
+    /// evidence that the bound holds in practice is the *post-fix* starvation
+    /// runs recorded on this PR (the same repro: two cores, 12 parallel
+    /// copies, 2 × 144 runs, 0 failures). The `102 of 144` and `105 of 144`
+    /// figures elsewhere in this file are pre-fix run sets and predate this
+    /// poll, so they say nothing about it.
     ///
-    /// **The guard is taken over what the clear destroys.** The clear rewrites
+    /// **The guard is taken over the observations the clear destroys.** The clear rewrites
     /// `pending_queue` and `pending_envelope_ids` to `[]` on *every*
     /// `worker_sessions` row for the card, which discards every `Observation`
     /// variant — `ReportEdited`, `TaskCompleted`, `WorkerHookStop`, … — not
@@ -589,6 +609,13 @@ impl Boot {
     /// derived card is `CardRole::Assistant`, and boot-recovery replay in
     /// `harness/mod.rs` is gated on `CardRole::Spec`), but the guard no longer
     /// depends on that staying true.
+    ///
+    /// Both the guard and the read-back cover the `pending_queue` half only;
+    /// `pending_envelope_ids` is cleared and never read back. That is
+    /// deliberate rather than an oversight: restoring a snapshot resizes the
+    /// ids to `pending_queue`'s length
+    /// (`HarnessSnapshot::align_pending_envelope_ids`), so an id with no
+    /// observation behind it is dropped and can deliver nothing.
     ///
     /// The clear itself is the same kind of surgical staging as the case's own
     /// `DELETE` of the enqueued rows: this card's state is being set to
