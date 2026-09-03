@@ -922,6 +922,25 @@ pub trait RepoSyncDomainRaw: RepoRead {
 /// PID-persist sidecar).
 #[async_trait]
 pub trait RepoOutOfDomain: RepoRead {
+    // ---- wave recipes (#1292) ---------------------------------------
+    //
+    // Out-of-domain rather than event-writing: a recipe is a user's private
+    // authoring artifact, not part of the event-sourced wave domain, and it
+    // emits no `Event`. Cross-window staleness is handled by the `revision`
+    // CAS (the loser gets 409) rather than by live invalidation — see the
+    // #1292 design §3.1b for why that trade was taken rather than minting a
+    // new `Event` variant and its frontend invalidation policy.
+    async fn wave_recipe_create(&self, p: NewWaveRecipe) -> Result<WaveRecipe>;
+    async fn wave_recipe_update(
+        &self,
+        id: &str,
+        p: NewWaveRecipe,
+        if_revision: i64,
+    ) -> Result<WaveRecipe>;
+    async fn wave_recipe_get(&self, id: &str) -> Result<Option<WaveRecipe>>;
+    async fn wave_recipe_delete(&self, id: &str) -> Result<()>;
+    async fn wave_recipe_list(&self) -> Result<Vec<WaveRecipe>>;
+
     // ---- terminals (writes)
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
     /// Persist the child PID captured by the renderer/supervisor path. The

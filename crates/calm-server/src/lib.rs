@@ -617,6 +617,7 @@ pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
 pub mod task_context;
+pub(crate) mod task_privilege;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;

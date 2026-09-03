@@ -80,6 +80,11 @@ use utoipa::OpenApi;
         crate::routes::cove_folders::resolve_path,
         // ---- waves ----
         crate::routes::wave_templates::list_wave_templates,
+        crate::routes::wave_recipes::list_recipes,
+        crate::routes::wave_recipes::get_recipe,
+        crate::routes::wave_recipes::create_recipe,
+        crate::routes::wave_recipes::update_recipe,
+        crate::routes::wave_recipes::delete_recipe,
         // ---- wave conversations (#1189) ----
         crate::routes::wave_conversations::list_wave_conversations,
         crate::routes::wave_conversations::create_wave_conversation,
@@ -182,6 +187,9 @@ use utoipa::OpenApi;
         BacklinkQuote,
         WaveBacklinksResponse,
         crate::routes::wave_templates::WaveTemplate,
+        calm_types::model::WaveRecipe,
+        crate::routes::wave_recipes::CreateRecipeBody,
+        crate::routes::wave_recipes::UpdateRecipeBody,
         crate::routes::wave_templates::WaveTemplateTask,
         WaveFsCardMeta,
         WaveFsRunStatus,

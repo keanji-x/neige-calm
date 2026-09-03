@@ -999,6 +999,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-recipes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_recipes"];
+        put?: never;
+        post: operations["create_recipe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wave-recipes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_recipe"];
+        put: operations["update_recipe"];
+        post?: never;
+        delete: operations["delete_recipe"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/wave-templates": {
         parameters: {
             query?: never;
@@ -1522,6 +1554,10 @@ export interface components {
             sort?: number | null;
             title?: string | null;
             via_tool_call?: null | components["schemas"]["ViaToolCall"];
+        };
+        CreateRecipeBody: {
+            body: string;
+            title: string;
         };
         CreateReportBlockBody: {
             /** Format: int64 */
@@ -2439,6 +2475,16 @@ export interface components {
             call_id?: string | null;
             name: string;
         };
+        UpdateRecipeBody: {
+            body: string;
+            /**
+             * Format: int64
+             * @description The `revision` the caller read. A mismatch is 409 — never a silent
+             *     overwrite.
+             */
+            if_revision: number;
+            title: string;
+        };
         UpdateReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
@@ -2848,6 +2894,53 @@ export interface components {
              */
             tree_task_budget?: number | null;
             workspace?: null | components["schemas"]["WaveWorkspacePatch"];
+        };
+        /**
+         * @description A user-defined starting point for a new wave.
+         *
+         *     A recipe is a saved report: `title` doubles as the report summary, and
+         *     `body`'s `neige-block` fences **are** its tasks. It is deliberately not a
+         *     wave — #1300 removed "template = a hidden wave" because storing recipes
+         *     that way cost seven "this wave is special" exceptions across unrelated
+         *     subsystems plus a kernel report write that impersonated the user. A
+         *     recipe row has neither problem: nothing schedules it, nothing lists it
+         *     among waves, and every byte in one was written by a human.
+         *
+         *     The built-in templates (`calm_server::templates::TEMPLATES`) stay Rust
+         *     constants and are **not** rows here. Both feed the same instantiation
+         *     seam, so "built-in" and "mine" differ only in where the payload came
+         *     from — see `routes::wave_recipes`.
+         */
+        WaveRecipe: {
+            /** @description Report body. Its `neige-block` fences are the tasks. */
+            body: string;
+            /** Format: int64 */
+            created_at: number;
+            id: string;
+            /**
+             * Format: int64
+             * @description Optimistic-lock anchor. Writers pass the revision they read and the
+             *     UPDATE validates + bumps in one statement.
+             *
+             *     Deliberately not `updated_at`: a wall clock is not a version. Two
+             *     writes inside the same millisecond are indistinguishable by
+             *     timestamp, and a clock that steps backwards makes a stale write look
+             *     current.
+             */
+            revision: number;
+            /**
+             * @description Picker label *and* the instantiated report's summary. One field, not
+             *     two: the three built-in templates already write the same string in
+             *     both places (`TEMPLATES[n].title` and the summary passed to
+             *     `report_from_tasks`), so a second column would not preserve an
+             *     existing distinction — it would mint a new way for them to disagree.
+             */
+            title: string;
+            /**
+             * Format: int64
+             * @description Display only — never a lock anchor. See `revision`.
+             */
+            updated_at: number;
         };
         /**
          * @description The payload persisted in a wave-report card's `payload` JSON column.
@@ -5513,6 +5606,208 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VersionInfo"];
+                };
+            };
+        };
+    };
+    list_recipes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every user-defined recipe */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveRecipe"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRecipeBody"];
+            };
+        };
+        responses: {
+            /** @description Recipe created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveRecipe"];
+                };
+            };
+            /** @description Malformed body or empty title */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Only `X-Calm-Actor: user` may write recipes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One recipe */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveRecipe"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRecipeBody"];
+            };
+        };
+        responses: {
+            /** @description Recipe replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveRecipe"];
+                };
+            };
+            /** @description Malformed body or empty title */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Only `X-Calm-Actor: user` may write recipes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `if_revision` is stale */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recipe deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Only `X-Calm-Actor: user` may write recipes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

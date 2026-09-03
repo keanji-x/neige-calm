@@ -26,8 +26,9 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
     Card, CardRole, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
-    CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave,
-    WaveConversationSummary, WaveLifecycle, WaveWorkspace, WaveWorkspaceKind, default_deletable,
+    CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, NewWaveRecipe, Overlay, Wave,
+    WaveConversationSummary, WaveLifecycle, WaveRecipe, WaveWorkspace, WaveWorkspaceKind,
+    default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the

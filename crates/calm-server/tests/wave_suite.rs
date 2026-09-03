@@ -19,6 +19,8 @@ mod wave_delete_forge_fence;
 mod wave_fsm_golden;
 #[path = "cases/wave_pin.rs"]
 mod wave_pin;
+#[path = "cases/wave_recipes.rs"]
+mod wave_recipes;
 #[path = "cases/wave_report_fork.rs"]
 mod wave_report_fork;
 #[path = "cases/wave_report_write_origin.rs"]
@@ -27,6 +29,7 @@ mod wave_report_write_origin;
 mod wave_template_overlay;
 #[path = "cases/wave_template_waves.rs"]
 mod wave_template_waves;
+
 #[path = "cases/wave_templates_read.rs"]
 mod wave_templates_read;
 #[path = "cases/wave_vcs.rs"]

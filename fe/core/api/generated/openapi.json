@@ -3021,6 +3021,246 @@
         }
       }
     },
+    "/api/wave-recipes": {
+      "get": {
+        "tags": [
+          "wave-recipes"
+        ],
+        "operationId": "list_recipes",
+        "responses": {
+          "200": {
+            "description": "Every user-defined recipe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WaveRecipe"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "wave-recipes"
+        ],
+        "operationId": "create_recipe",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecipeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Recipe created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveRecipe"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body or empty title",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only `X-Calm-Actor: user` may write recipes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wave-recipes/{id}": {
+      "get": {
+        "tags": [
+          "wave-recipes"
+        ],
+        "operationId": "get_recipe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One recipe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveRecipe"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recipe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "wave-recipes"
+        ],
+        "operationId": "update_recipe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRecipeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Recipe replaced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveRecipe"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body or empty title",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only `X-Calm-Actor: user` may write recipes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recipe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`if_revision` is stale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "wave-recipes"
+        ],
+        "operationId": "delete_recipe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recipe deleted"
+          },
+          "403": {
+            "description": "Only `X-Calm-Actor: user` may write recipes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recipe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wave-templates": {
       "get": {
         "tags": [
@@ -5164,6 +5404,22 @@
           }
         }
       },
+      "CreateRecipeBody": {
+        "type": "object",
+        "required": [
+          "title",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateReportBlockBody": {
         "type": "object",
         "required": [
@@ -6757,6 +7013,28 @@
           }
         }
       },
+      "UpdateRecipeBody": {
+        "type": "object",
+        "required": [
+          "title",
+          "body",
+          "if_revision"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "if_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The `revision` the caller read. A mismatch is 409 — never a silent\noverwrite."
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateReportBlockBody": {
         "type": "object",
         "required": [
@@ -7664,6 +7942,45 @@
                 "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::waves::update_wave` and **never** by\n`wave_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
               }
             ]
+          }
+        }
+      },
+      "WaveRecipe": {
+        "type": "object",
+        "description": "A user-defined starting point for a new wave.\n\nA recipe is a saved report: `title` doubles as the report summary, and\n`body`'s `neige-block` fences **are** its tasks. It is deliberately not a\nwave — #1300 removed \"template = a hidden wave\" because storing recipes\nthat way cost seven \"this wave is special\" exceptions across unrelated\nsubsystems plus a kernel report write that impersonated the user. A\nrecipe row has neither problem: nothing schedules it, nothing lists it\namong waves, and every byte in one was written by a human.\n\nThe built-in templates (`calm_server::templates::TEMPLATES`) stay Rust\nconstants and are **not** rows here. Both feed the same instantiation\nseam, so \"built-in\" and \"mine\" differ only in where the payload came\nfrom — see `routes::wave_recipes`.",
+        "required": [
+          "id",
+          "title",
+          "body",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "Report body. Its `neige-block` fences are the tasks."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Optimistic-lock anchor. Writers pass the revision they read and the\nUPDATE validates + bumps in one statement.\n\nDeliberately not `updated_at`: a wall clock is not a version. Two\nwrites inside the same millisecond are indistinguishable by\ntimestamp, and a clock that steps backwards makes a stale write look\ncurrent."
+          },
+          "title": {
+            "type": "string",
+            "description": "Picker label *and* the instantiated report's summary. One field, not\ntwo: the three built-in templates already write the same string in\nboth places (`TEMPLATES[n].title` and the summary passed to\n`report_from_tasks`), so a second column would not preserve an\nexisting distinction — it would mint a new way for them to disagree."
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Display only — never a lock anchor. See `revision`."
           }
         }
       },

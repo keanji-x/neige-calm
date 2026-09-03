@@ -114,6 +114,48 @@ pub async fn worker_flow_items_delete_by_card_tx(
 
 #[async_trait]
 impl RepoOutOfDomain for SqlxRepo {
+    async fn wave_recipe_create(&self, p: NewWaveRecipe) -> Result<WaveRecipe> {
+        let mut tx = self.pool.begin().await?;
+        let out = super::wave_recipe::wave_recipe_create_tx(&mut tx, &p.title, &p.body).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn wave_recipe_update(
+        &self,
+        id: &str,
+        p: NewWaveRecipe,
+        if_revision: i64,
+    ) -> Result<WaveRecipe> {
+        let mut tx = self.pool.begin().await?;
+        let out =
+            super::wave_recipe::wave_recipe_update_tx(&mut tx, id, &p.title, &p.body, if_revision)
+                .await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn wave_recipe_get(&self, id: &str) -> Result<Option<WaveRecipe>> {
+        let mut tx = self.pool.begin().await?;
+        let out = super::wave_recipe::wave_recipe_get_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn wave_recipe_delete(&self, id: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        super::wave_recipe::wave_recipe_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn wave_recipe_list(&self) -> Result<Vec<WaveRecipe>> {
+        let mut tx = self.pool.begin().await?;
+        let out = super::wave_recipe::wave_recipe_list_tx(&mut tx).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
     // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.

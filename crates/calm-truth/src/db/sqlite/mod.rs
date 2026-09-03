@@ -69,6 +69,7 @@ mod session_row;
 mod task;
 mod task_projection;
 mod wave;
+mod wave_recipe;
 mod wave_tree;
 mod wave_workspace;
 
