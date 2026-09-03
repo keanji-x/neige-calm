@@ -143,7 +143,14 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
 /// holds one, `AppState::new` allocates another) drifting apart, which a
 /// seam that grabbed whichever cache was nearest would silently suffer.
 ///
-/// Cost: at most three primary-key `SELECT`s per event, inside the write lock.
+/// Cost, inside the write lock: at most nine primary-key `SELECT`s per event.
+/// The bound is `2` session reads (one here to find the hydration key, one
+/// authoritative read in `enforce_role_resolving_session`) + `2 cards × 2`
+/// (`role` and `track_id`, for the actor-or-session card and a distinct
+/// `scope.card`) + `3 tracks × 1` (`scope.track` plus each card's home track).
+/// The common shapes are far cheaper: a cardless actor (`User`, `Kernel`,
+/// `KernelDispatcher`) with a card scope costs at most four, and the same
+/// actor with a system scope costs none.
 ///
 /// ## Why this is a substitution and not a re-implementation
 ///
@@ -226,8 +233,26 @@ fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
 /// which side of a `scope.track` comparison is read from where.
 ///
 /// A row that is absent from the transaction is left absent from the cache,
-/// which is exactly what the write-through caches do for a card that does not
-/// exist — and `enforce_role` denies on that miss for AI worker actors.
+/// and `enforce_role` denies on that miss for AI worker actors.
+///
+/// ## One known divergence from the write-through caches, and its direction
+///
+/// "Absent from the DB ⇒ absent from the cache" is *not* true of the
+/// write-through caches, so this substrate is not equivalent to them on every
+/// possible state. `card_create_with_id_tx` inserts into `CardRoleCache`
+/// inside the caller's transaction and documents that a rollback leaves the
+/// entry behind (see `db/sqlite/card.rs`). After such a rollback the cached
+/// gate can admit an AI actor for a card that no longer exists, while this
+/// hydrator finds no row and `enforce_role` returns `UnknownCard`. The
+/// `events` table carries no entity foreign key (`0004_events.sql`), so
+/// neither verdict is contradicted by the schema.
+///
+/// The divergence is one-directional: **the transaction read is the stricter
+/// side**, denying where the stale cache would allow. That is the fail-closed
+/// direction, which is why substituting it here is safe. The equivalence
+/// matrix in this file's tests cannot see this case at all — both of its
+/// substrates are projected from one consistent `World` — so it is recorded
+/// here rather than asserted there.
 async fn hydrate_role_caches_from_tx<T: WriteTx + ?Sized + Send>(
     tx: &mut T,
     actor: &ActorId,
@@ -1400,15 +1425,24 @@ mod tests {
     // `enforce_role_resolving_session_from_tx` replaces the write-through
     // caches with live reads from the caller's transaction. That swap is only
     // legitimate if the two substrates produce the *same verdict* on every
-    // input, so this matrix walks (actor × event × scope) and asserts the two
-    // functions agree exactly — including on the violation text, so a
-    // same-shape-different-reason divergence is caught too.
+    // input **whose two substrates agree**, so this matrix walks
+    // (actor × event × scope) and asserts the two functions agree exactly —
+    // including on the violation text, so a same-shape-different-reason
+    // divergence is caught too.
     //
     // Both substrates are projected from one `World` description, which is
     // what makes this an equivalence test rather than two hand-written
     // expectations that could drift together. Mutating either substrate — the
     // hydrator's key set, the fake's rows, the cache seeding — must turn this
     // red.
+    //
+    // What it therefore does *not* cover: states where the cache and the DB
+    // disagree. One such state is documented and reachable — a rolled-back
+    // `card_create_with_id_tx` leaves a stale `CardRoleCache` entry — and on
+    // it the two gates genuinely differ, with the transaction read the
+    // stricter (fail-closed) side. See `hydrate_role_caches_from_tx`'s doc
+    // comment. A single consistent `World` cannot express that, so the
+    // divergence lives there as prose, not here as a row.
     // -----------------------------------------------------------------
 
     /// The rows both substrates are built from.

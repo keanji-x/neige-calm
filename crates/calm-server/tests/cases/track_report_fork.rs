@@ -2344,8 +2344,16 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
     /// the seam. `workspace.*` deliberately is not here: track creation leases
     /// a workspace, and the workspace-lease adapter is one of the fifteen
     /// legitimate seam call sites.
-    const REPORT_SHAPED_KINDS: &[&str] =
-        &["card.updated", "card.added", "track.updated", "track.added"];
+    /// `track.report_edited` is the one this nail is really about: it is the
+    /// kind #1252 / #1363 name throughout, and `role_gate` has no rule for it.
+    /// It is named explicitly rather than relied on being caught by the
+    /// `card.updated` it is emitted alongside today.
+    const REPORT_SHAPED_KINDS: &[&str] = &[
+        "card.updated",
+        "card.added",
+        "track.updated",
+        "track.report_edited",
+    ];
 
     let boot = boot().await;
 

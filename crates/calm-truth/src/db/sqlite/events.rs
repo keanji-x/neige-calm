@@ -22,42 +22,93 @@ use crate::track_vcs;
 
 /// The gate seam (#1252 S3′).
 ///
-/// Everything that reaches the `events` table goes through here, because
 /// [`SqlxRepo::event_append_in_tx`] no longer takes an `(actor, scope, event)`
 /// triple — it takes an [`Authorized`](gated::Authorized), and the only way to
-/// obtain one is [`authorize`](gated::authorize) (or, under `cfg(test)`, the
-/// loudly-named fixture bypass next to it).
+/// obtain one is [`authorize`](gated::authorize) / [`authorize_with_caches`]
+/// (or, under `cfg(test)`, the loudly-named fixture bypass next to them).
 ///
-/// Three properties hold *by construction*, not by review:
+/// [`authorize_with_caches`]: gated::authorize_with_caches
 ///
-///   * `Authorized`'s private `_seal` field means no module outside `gated` —
-///     including this file's parent module — can literally construct one.
+/// ## What the compiler guarantees, exactly
+///
+/// **No path can reach this appender without a gate decision on the very
+/// triple it inserts.** Three properties combine to give that:
+///
+///   * every field of `Authorized` is private to `gated`, so no module outside
+///     it — including this file's parent module — can literally construct one
+///     (E0451);
 ///   * `Authorized` is only ever returned by a function that has just run the
-///     role gate on the exact triple it carries, so "appended without a gate
-///     decision" is not expressible.
-///   * `Authorized<'a>` *borrows* the actor, scope and event. Authorizing one
-///     event and appending a different one is a lifetime/borrow error, not a
-///     review finding. Do not change these fields to owned values — that
-///     property is the point.
+///     role gate on the triple it carries, so "appended without a gate
+///     decision" is not expressible;
+///   * those same private fields cannot be reassigned from outside `gated`
+///     (E0616), so a capability earned on one triple cannot be pointed at
+///     another before the insert. This is the load-bearing half: the
+///     *borrows* alone only stop a triple whose values have been dropped
+///     (E0716); they do nothing about swapping in another live value.
 ///
-/// **This is plumbing, not a new gate.** Every triple that reaches the two
-/// public appenders today is one the role gate already accepts (see the PR
-/// body); turning the seam on rejects nothing that is accepted now. What it
-/// buys is that the *next* `role_gate` rule applies here without anyone
-/// re-auditing fifteen call sites.
+/// ## Residual gap: this is not "the events table cannot be written"
+///
+/// The guarantee above is about *this appender*, not about the table.
+/// `RepoEventWrite::write_in_tx` (`db/mod.rs`) and its public wrappers hand a
+/// bare `Transaction<Sqlite>` to callers, and `SqlxRepo::pool` hands out the
+/// pool; either can `INSERT INTO events` directly and commit. No production
+/// code does today — every raw `events` insert outside this file is inside
+/// `tests/` or `#[cfg(test)]` — but nothing here makes that a compile error.
+/// Closing that is the job of #1252 S3′ PR-B's textual ratchet, not of this
+/// type.
+///
+/// ## Plumbing, plus one load-bearing arm
+///
+/// Turning the seam on changed no behaviour: every triple it refuses was
+/// already refused, either by the gate elsewhere on the path or by one of the
+/// eight manual `enforce_role` calls this slice deleted from the line above
+/// the append. But "it refuses nothing" would be false. The
+/// codex / claude / terminal create routes can reach the appenders with
+/// `ActorId::AiCodex(CardId(""))` — `X-Calm-Actor: ai:codex` survives
+/// `validate_header_actor`, becomes that value in `Actor::to_actor_id`, and
+/// travels to the adapter in the operation payload untouched — and the gate's
+/// empty-`CardId` arm denies it. With those eight guards gone this seam is now
+/// that triple's only rejection point. See
+/// `append_seam_gate_tests`'s module header for the full actor inventory.
+///
+/// The rest of the value is forward-looking: the *next* `role_gate` rule
+/// applies here without anyone re-auditing fifteen call sites.
 mod gated {
     use super::{ActorId, Event, EventScope};
     use crate::error::{CalmError, Result};
 
     /// Proof that the role gate allowed this one `(actor, scope, event)`
-    /// triple. Constructible only inside this module.
+    /// triple.
+    ///
+    /// Every field is private to this module, which buys two distinct
+    /// properties. It is **unconstructible** from the parent module
+    /// (`Authorized { .. }` there is E0451), so a capability can only come
+    /// from a function in this module that has just run the gate. And it is
+    /// **un-retargetable**: `authorized.event = &something_else` in the parent
+    /// module is E0616, so the triple that reaches the insert is the same
+    /// triple the gate decided on, not merely *a* triple the gate saw.
+    ///
+    /// The accessors below hand out the borrows read-only. Do not add
+    /// setters, `pub` fields, or a `&mut` accessor — retargeting is exactly
+    /// what they would restore.
     pub(in crate::db::sqlite::events) struct Authorized<'a> {
-        pub actor: &'a ActorId,
-        pub scope: &'a EventScope,
-        pub event: &'a Event,
-        /// Private field: this is what makes `Authorized { .. }` unbuildable
-        /// from the parent module (E0451).
-        _seal: (),
+        actor: &'a ActorId,
+        scope: &'a EventScope,
+        event: &'a Event,
+    }
+
+    impl<'a> Authorized<'a> {
+        pub(in crate::db::sqlite::events) fn actor(&self) -> &'a ActorId {
+            self.actor
+        }
+
+        pub(in crate::db::sqlite::events) fn scope(&self) -> &'a EventScope {
+            self.scope
+        }
+
+        pub(in crate::db::sqlite::events) fn event(&self) -> &'a Event {
+            self.event
+        }
     }
 
     /// Run the role gate with `card → {role, home track}` and `track → area`
@@ -78,7 +129,6 @@ mod gated {
             actor,
             scope,
             event,
-            _seal: (),
         })
     }
 
@@ -115,7 +165,6 @@ mod gated {
             actor,
             scope,
             event,
-            _seal: (),
         })
     }
 
@@ -135,7 +184,6 @@ mod gated {
             actor,
             scope,
             event,
-            _seal: (),
         }
     }
 }
@@ -211,9 +259,9 @@ impl SqlxRepo {
         authorized: &gated::Authorized<'_>,
         correlation: Option<&str>,
     ) -> Result<i64> {
-        let actor = authorized.actor;
-        let scope = authorized.scope;
-        let event = authorized.event;
+        let actor = authorized.actor();
+        let scope = authorized.scope();
+        let event = authorized.event();
         let kind = event.kind_tag();
         let payload = event.payload_value();
         let payload_text = serde_json::to_string(&payload)?;
@@ -299,6 +347,18 @@ pub async fn append_decision_event_in_tx(
 
 /// Batch form of [`append_decision_event_in_tx`], same seam, same removal of
 /// the injected policy.
+///
+/// The gate runs on **every** event before **any** of them is inserted. That
+/// ordering is what makes "a refused batch writes no events row" a property of
+/// this function rather than a property of what the caller does with the
+/// transaction afterwards: on the first refusal we return `Err` having issued
+/// no `INSERT`, so the claim holds even for a caller that goes on to commit.
+/// The interleaved form this replaced left every event before the refused one
+/// already inserted in the transaction.
+///
+/// Splitting the loops is verdict-preserving: the gate reads `cards`,
+/// `tracks` and `worker_sessions`, and `event_append_in_tx` writes only
+/// `events`, so no append can change the verdict of a later `authorize`.
 pub async fn append_decision_events_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &ActorId,
@@ -306,13 +366,17 @@ pub async fn append_decision_events_in_tx(
     correlation: Option<&str>,
     events: &[Event],
 ) -> Result<Vec<i64>> {
-    let mut event_ids = Vec::with_capacity(events.len());
+    let mut authorized_batch = Vec::with_capacity(events.len());
     for event in events {
         #[cfg(any(test, feature = "test-helpers"))]
         append_probe::record(event.kind_tag());
-        let authorized = gated::authorize(tx, actor, scope, event).await?;
-        event_ids.push(SqlxRepo::event_append_in_tx(tx, &authorized, correlation).await?);
+        authorized_batch.push(gated::authorize(tx, actor, scope, event).await?);
     }
+    let mut event_ids = Vec::with_capacity(events.len());
+    for authorized in &authorized_batch {
+        event_ids.push(SqlxRepo::event_append_in_tx(tx, authorized, correlation).await?);
+    }
+    drop(authorized_batch);
     if let (Some(track_id), Some(event_id)) = (scope.track_id(), event_ids.last()) {
         track_vcs::commit_events_in_tx(
             tx,

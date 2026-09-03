@@ -5,41 +5,52 @@
 //! `append_decision_event_in_tx` / `append_decision_events_in_tx` now mint a
 //! `gated::Authorized` capability by running the role gate against the live
 //! `cards` / `tracks` rows in the caller's transaction. If `authorize` ever
-//! swallowed the `RoleViolation` — `Err(_) => Ok(())` — nothing else in the
-//! tree would notice, because **every triple that reaches this seam in
-//! production is one the gate accepts**. That is the whole reason this file
-//! exists: it is the only thing standing between a swallowed violation and a
-//! silently ungated append.
+//! swallowed the `RoleViolation` — `Err(_) => Ok(())` — almost nothing else in
+//! the tree would notice, because nearly every triple that reaches this seam
+//! is one the gate accepts. That is the whole reason this file exists: it is
+//! the only thing standing between a swallowed violation and a silently
+//! ungated append.
 //!
-//! ### The actors below are not production-reachable at this seam
+//! ### Which actor shapes production actually reaches this seam with
 //!
-//! Stated plainly, because a test that implied otherwise would be worse than
-//! no test at all. The fifteen production call sites of these two appenders
-//! reach them with exactly three actor shapes:
+//! The fifteen production call sites of these two appenders reach them with
+//! four actor shapes, not three:
 //!
 //!   * `ActorId::KernelDispatcher` — literal, at seven of them;
 //!   * `ActorId::Kernel` — from `child_track_adapter`'s projected kernel
 //!     events;
-//!   * `ActorId::User` — the only non-degenerate output of
-//!     `calm_server::actor::Actor::to_actor_id`.
+//!   * `ActorId::User` — the ordinary output of
+//!     `calm_server::actor::Actor::to_actor_id`;
+//!   * `ActorId::AiCodex(CardId(""))` — its *degenerate* output. This one is
+//!     reachable: `validate_header_actor` accepts `X-Calm-Actor: ai:codex`,
+//!     `to_actor_id` turns it into `AiCodex(CardId::from(""))`, the
+//!     codex / claude / terminal create routes put that value straight into
+//!     their operation payload, and the adapters hand `payload.actor` to
+//!     `append_decision_event_in_tx` unchanged.
 //!
-//! `enforce_role` lets all three through on every arm those call sites can
-//! reach. So there is no production input that this seam rejects today, and
-//! these tests do not claim there is. They construct actor/event pairs that
-//! the gate *does* reject in order to prove the seam is wired to the gate at
-//! all — the property that makes the *next* `role_gate` rule apply here
-//! without re-auditing fifteen call sites.
+//! `enforce_role` lets the first three through on every arm those call sites
+//! can reach. It **denies** the fourth, on its empty-`CardId` arm. So this
+//! seam is not purely plumbing: since #1252 S3′ deleted the eight manual
+//! `enforce_role` calls that used to sit one line above the append, this seam
+//! is the *only* remaining rejection point for `AiCodex("")` on
+//! codex-create / claude-create / terminal-create. Behaviour is unchanged —
+//! the deleted guards refused the same triple with the same function — but
+//! one arm of this gate is load-bearing today, not merely forward-looking.
+//! Case (a) of `append_seam_refuses_every_triple_the_role_gate_refuses` is
+//! exactly that triple.
 //!
-//! Concretely non-production-reachable here:
+//! The remaining cases below are synthetic: they exist to prove the seam is
+//! wired to the gate on arms production does not exercise, so the *next*
+//! `role_gate` rule applies here without re-auditing fifteen call sites.
+//! Nothing here claims they are production-reachable:
 //!
-//!   * `ActorId::AiCodex(CardId(""))` — `Actor::to_actor_id` can mint this
-//!     from the legacy `X-Calm-Actor: ai:codex` header, but no call site of
-//!     these two appenders passes a header-derived actor through unmodified.
 //!   * `ActorId::User` + `Event::TaskContextFrozen` — `role_gate.rs`'s
 //!     kernel-only arm denies it; the production emitter of that event is the
 //!     scheduler, which is `KernelDispatcher`.
 //!   * `ActorId::AiCodex(worker_card)` with a foreign `scope.track` — the
 //!     #232 scope-spoof shape. No appender call site builds a scope this way.
+//!   * `ActorId::AiCodex(unminted_card)` — the unknown-card deny. No call site
+//!     names a card that was never inserted.
 
 use super::{
     SqlxRepo, append_decision_event_in_tx, append_decision_events_in_tx, area_create_tx,
@@ -163,7 +174,9 @@ async fn append_seam_refuses_every_triple_the_role_gate_refuses() {
     let worker = seed(&repo, "worker", CardRole::Worker).await;
     let foreign = seed(&repo, "foreign", CardRole::Worker).await;
 
-    // (a) empty-CardId AI actor — role_gate.rs section (1).
+    // (a) empty-CardId AI actor — role_gate.rs section (1). The one
+    // production-reachable refusal at this seam (see the module header): this
+    // row is what the eight deleted manual `enforce_role` calls used to catch.
     let cases: Vec<(&str, ActorId, EventScope, Event, &str)> = vec![
         (
             "empty ai card id",
@@ -227,8 +240,18 @@ async fn append_seam_refuses_every_triple_the_role_gate_refuses() {
     }
 }
 
-/// The batch appender runs the gate per event, not once for the batch: a
-/// refused event in the middle stops the batch and leaves no row for it.
+/// The batch appender runs the gate on every event before it inserts any of
+/// them, so a refusal anywhere in the batch leaves no `events` row — including
+/// the rows for the events *before* the refused one, which the accepted arm of
+/// the gate would otherwise have let through.
+///
+/// The assertion is deliberately made **inside the still-open transaction**,
+/// and then again after committing it. Reading the count from outside a live
+/// transaction would prove nothing: an uncommitted insert is invisible there,
+/// so the test would pass just as well if the batch had written the first row.
+/// This is the whole point of the finding this test was rewritten for — the
+/// previous version got its green from `drop(tx)`, i.e. from the caller's
+/// rollback rather than from the appender.
 #[tokio::test]
 async fn batch_append_seam_gates_each_event_and_writes_none_on_refusal() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
@@ -249,16 +272,29 @@ async fn batch_append_seam_gates_each_event_and_writes_none_on_refusal() {
         }
         other => panic!("expected Forbidden, got {other:?}"),
     }
-    // The transaction is dropped without commit, so neither the accepted first
-    // event nor the refused second one survives.
-    drop(tx);
+    // Inside the transaction that the refused batch ran in: the first event
+    // was accepted by the gate, so if the appender interleaved authorize and
+    // insert, its row is sitting right here.
+    let in_tx: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count events inside the tx");
+    assert_eq!(
+        in_tx, before,
+        "the refused batch left an uncommitted events row in the caller's transaction"
+    );
+    // And committing — not rolling back — must still surface nothing. The
+    // caller is entitled to commit whatever else it did in this transaction;
+    // "writes none on refusal" has to survive that.
+    tx.commit().await.expect("commit the refused batch's tx");
     assert_eq!(events_row_count(&repo).await, before);
 }
 
-/// The seam is not a *new* gate: the triples the fifteen production call sites
-/// actually pass still go through. This is the "plumbing, not a gate" claim
-/// stated as a test, so a future tightening of `enforce_role` that would break
-/// a production caller shows up here rather than in production.
+/// The three non-degenerate actor shapes the fifteen production call sites
+/// pass still go through. (The fourth, `AiCodex(CardId(""))`, is refused —
+/// that is case (a) above, and it was refused before this slice too.) So a
+/// future tightening of `enforce_role` that would break a production caller
+/// shows up here rather than in production.
 #[tokio::test]
 async fn append_seam_admits_the_actor_shapes_production_call_sites_use() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
