@@ -2,29 +2,41 @@
 //!
 //! Today `wave_report::persist_report_with_shadow` takes a hand-assembled
 //! quadruple — `(actor, author, auto_promote_draft, recorder_shadow)` — and
-//! **five** production sites assemble it, in two layers. Two call it directly
+//! **three** production sites assemble it, in two layers. Two call it directly
 //! and pass all four: `decision_sink::CardDecisionSink::commit_report_op` and
-//! `routes::wave_report_blocks::commit`. Three go through the
-//! `wave_report::persist_report` wrapper and pass the first three, with the
-//! wrapper's hardcoded `recorder_shadow: None` supplied on their behalf:
-//! `routes::waves::update_wave_report`, `seed_template_wave`, and
-//! `restamp_template_report_if_placeholder`. Four independent arguments, four
+//! `routes::wave_report_blocks::commit`. One goes through the
+//! `wave_report::persist_report` wrapper and passes the first three, with the
+//! wrapper's hardcoded `recorder_shadow: None` supplied on its behalf:
+//! `routes::waves::update_wave_report`. Four independent arguments, four
 //! chances to get one wrong, and no place where the whole set is stated per
 //! caller. This module
 //! introduces the type that names *who is writing* ([`WriteOrigin`]) and the
 //! total function that turns it into the quadruple ([`policy_for`]).
 //!
-//! **#1300 S1 changed this count from six to five.** The sixth was
-//! `routes::wave_templates::update_wave_template`, a direct caller, deleted
-//! with the template editor. S2 removes the two seeding sites and the count
-//! becomes three — all of which have an honest origin, which is the
-//! precondition S1 step 2 was blocked on.
+//! **#1300 brought this count from six to three.** S1 deleted a direct caller,
+//! `routes::wave_templates::update_wave_template`, with the template editor.
+//! S2 deleted the two kernel seeding sites, `seed_template_wave` and
+//! `restamp_template_report_if_placeholder`, by making template instantiation
+//! structural initialization inside the create transaction (see
+//! `routes::waves::prepare_template_report`). What survives is exactly two
+//! `RestUser` sites and one `Agent` site — every one of them with an honest
+//! origin, which is the precondition S1 step 2 was blocked on.
+//!
+//! What backs each half of that: the *behaviour* of all three — which actor and
+//! which `EditAuthor` each one persists — is asserted by
+//! `tests/cases/report_write_characterization.rs`, which drives them through
+//! the real router and tool registry. That there are three and not four is a
+//! weaker claim: the `persist_report_call_sites` CI ratchet is a text census of
+//! per-file occurrences, so it catches a call site added by someone who did not
+//! know about it, and does not claim to catch one hidden on purpose. That
+//! script's "KNOWN GAPS" section enumerates what it misses.
 //!
 //! # Status: not wired into production
 //!
 //! Nothing in this module is called from a production path yet. S1 step 2
-//! threads it through the persist boundary; step 2 is blocked on the removal
-//! of kernel template seeding (hence no `KernelSeed` origin here).
+//! threads it through the persist boundary. Its blocking prerequisite — the
+//! removal of kernel template seeding — is now met, and no `KernelSeed` origin
+//! was ever needed here.
 //!
 //! # What the policy table in this module's tests is, and is not
 //!
@@ -252,8 +264,9 @@ impl TrustedInitiator {
 ///
 /// There is deliberately **no `KernelSeed` variant**: kernel template seeding
 /// (`routes::waves::seed_template_wave` /
-/// `restamp_template_report_if_placeholder`) is being removed, and its removal
-/// is the blocking prerequisite for S1 step 2.
+/// `restamp_template_report_if_placeholder`) was the only thing that would have
+/// needed one, and #1300 S2 removed it rather than naming it. Nothing reaches
+/// `persist_report_with_shadow` on the kernel's behalf any more.
 ///
 /// There is deliberately **no `Plugin` variant** either — see the module docs
 /// for why the shape is wrong and what adding one later has to include.
@@ -306,11 +319,8 @@ pub enum WriteAttribution {
 ///
 /// * `Some(CardDecisionSinkRecorderShadowProbe { principal, wave_id })` — the
 ///   one agent funnel, `decision_sink::CardDecisionSink::commit_report_op`;
-/// * `None` — `routes::wave_report_blocks::commit` and
-///   `routes::wave_templates::update_wave_template`, which call it directly,
-///   plus `routes::waves::update_wave_report` and the two kernel
-///   template-seeding sites (`seed_template_wave`,
-///   `restamp_template_report_if_placeholder`), which go through the
+/// * `None` — `routes::wave_report_blocks::commit`, which calls it directly,
+///   plus `routes::waves::update_wave_report`, which goes through the
 ///   `wave_report::persist_report` wrapper — and that wrapper hardcodes `None`
 ///   with no parameter to vary it.
 ///

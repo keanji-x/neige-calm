@@ -33,12 +33,11 @@ use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
     MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, WaveWorkspacePlan, card_create_with_id_tx,
-    card_update_with_crdt_tx, cove_create_system_tx, cove_folder_create_tx,
-    cove_folders_list_all_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
-    overlay_upsert_tx, project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
-    wave_update_tx,
+    card_update_with_crdt_tx, cove_folder_create_tx, cove_folders_list_all_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
+    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
-use crate::db::{RepoRead, write_with_actor_events_typed, write_with_event_typed};
+use crate::db::{RepoRead, write_with_actor_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
@@ -63,12 +62,12 @@ use crate::routes::cove_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::templates::{TEMPLATES, template_by_key, template_report};
+use crate::templates::{template_by_key, template_report};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{
     CODEX_PAYLOAD_SCHEMA_VERSION, OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND,
-    OVERLAY_TEMPLATE_PLUGIN_ID, is_template_overlay, template_overlay_key,
-    template_overlay_payload, template_overlay_payload_with_key, validate_overlay_payload,
+    OVERLAY_TEMPLATE_PLUGIN_ID, is_template_overlay, template_overlay_payload,
+    validate_overlay_payload,
 };
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::{validate_transition, wave_get_tx};
@@ -445,176 +444,85 @@ async fn template_wave_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
         .collect())
 }
 
-/// Serialize first-use seeding. Production is one process per DB; concurrent
-/// matching creates in that process must not mint duplicate template_keys.
-static TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Lazy get-or-create of the three system-cove template waves. Called from
-/// matching `POST /api/waves`, not from `AppState::new`, so ordinary boots
-/// and tests that never bind a template key stay unchanged.
-pub(crate) async fn ensure_templates(s: &RouteState) -> Result<()> {
-    let _guard = TEMPLATE_SEED_LOCK.lock().await;
-    let system_cove = ensure_system_cove(s).await?;
-    for template in &TEMPLATES {
-        if let Some(wave_id) = lookup_template_wave(s, template.key).await? {
-            restamp_template_report_if_placeholder(s, &wave_id, template.key).await?;
-            continue;
-        }
-        seed_template_wave(s, &system_cove.id, template.key, template.title).await?;
-    }
-    Ok(())
+/// Build the initial report a template instantiates to.
+///
+/// #1300 — this replaces `ensure_templates` / `lookup_template_wave` /
+/// `seed_template_wave` / `restamp_template_report_if_placeholder`. Those
+/// lazily minted three hidden system-cove waves and `POST /api/waves` then
+/// forked one of them, which made a template a kind of wave. It is a read-only
+/// recipe: instantiating it is structural initialization of a new wave, and it
+/// reads nothing.
+///
+/// ## Why this does not go through `persist_report`
+///
+/// The seeding path did, and it had to name an author to do so. It named
+/// `EditAuthor::User` for a write no user made — the last production path on
+/// which the kernel wrote a report as the user, and the reason #1300 exists.
+///
+/// Naming the kernel honestly instead was not available: `guard_task_declarations`
+/// gives `EditAuthor::Kernel` no permission to author task-declaration blocks
+/// at all (`wave_report_edit_guard.rs`), and every template report is a page of
+/// them. That guard is not an obstacle to route around — refusing to let
+/// non-humans declare tasks is its entire purpose.
+///
+/// So this is not a report *edit* with a better-chosen author; it is the same
+/// structural initialization the fork path performs, on the same in-transaction
+/// writer, with no author to name because no one is editing anything. That is
+/// also why the constants can now declare `spec` directly
+/// (`templates::report_from_tasks`) instead of writing `user` and having the
+/// fork rewrite it one step later.
+///
+/// ## The single validation, and why there is not a second one
+///
+/// [`crate::wave_report_guard::validate_body_fences`] is not only a fence-shape
+/// check: it runs `validate_payload` over every parseable fence in the body.
+/// So one call covers both failure modes a bad recipe constant has — a fence
+/// that does not parse (which `split_body` would otherwise demote to prose,
+/// silently dropping the task) and a fence that parses but violates its
+/// schema.
+///
+/// An earlier draft added a per-block check beside it, mirroring the two
+/// call sites inside `prepare_fork_report`. On this path that is a **vacuous
+/// guard**: the blocks come from this same body, so it can reject nothing the
+/// whole-body call has not already rejected. Two reviewers independently failed
+/// to construct an input that reaches it.
+///
+/// `Internal`, not `BadRequest`: every byte here comes from a Rust constant and
+/// no caller can influence it, so a failure is a kernel defect rather than a
+/// bad request. (`prepare_fork_report` answers `BadRequest` for the same checks
+/// because its input is another wave's user content.)
+fn prepare_template_report(key: &str) -> Result<InitialReportSnapshot> {
+    let payload = template_report(key)
+        .ok_or_else(|| CalmError::Internal(format!("wave create: unknown template `{key}`")))?;
+    prepare_initial_report_payload(key, payload)
 }
 
-async fn ensure_system_cove(s: &RouteState) -> Result<crate::model::Cove> {
-    if let Some(existing) = s.repo.cove_get_system().await? {
-        return Ok(existing);
-    }
-    let minted = write_with_event_typed(
-        s.repo.as_ref(),
-        ActorId::Kernel,
-        EventScope::System,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
-            Box::pin(async move {
-                let cove = cove_create_system_tx(tx).await?;
-                Ok((cove.clone(), Event::CoveUpdated(cove)))
-            })
-        },
-    )
-    .await;
-    match minted {
-        Ok((cove, _)) => Ok(cove),
-        Err(error) => match error {
-            CalmError::Db(_) => s.repo.cove_get_system().await?.ok_or(error),
-            other => Err(other),
-        },
-    }
-}
-
-pub(crate) async fn lookup_template_wave(
-    s: &RouteState,
-    template_key: &str,
-) -> Result<Option<String>> {
-    let Some(system) = s.repo.cove_get_system().await? else {
-        return Ok(None);
-    };
-    let mut matches = Vec::new();
-    for overlay in s
-        .repo
-        .overlays_by_kind(OVERLAY_TEMPLATE_ENTITY_KIND)
-        .await?
-        .into_iter()
-        .filter(|overlay| template_overlay_key(overlay) == Some(template_key))
-    {
-        let Some(wave) = s.repo.wave_get(&overlay.entity_id).await? else {
-            continue;
-        };
-        if wave.cove_id == system.id {
-            matches.push(wave);
-        }
-    }
-    matches.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
-    });
-    Ok(matches.into_iter().next().map(|wave| wave.id.to_string()))
-}
-
-async fn seed_template_wave(
-    s: &RouteState,
-    system_cove_id: &crate::ids::CoveId,
-    template_key: &str,
-    title: &str,
-) -> Result<()> {
-    let report = template_report(template_key).ok_or_else(|| {
-        CalmError::Internal(format!("wave create: unknown template `{template_key}`"))
+/// The recipe-to-snapshot core, taking the payload rather than the key.
+///
+/// Production reaches this only through [`prepare_template_report`], so it is
+/// not a test-only entrance: it is where the work happens, and the key lookup
+/// is the thin part. Splitting them this way is what lets the "a corrupt recipe
+/// is refused" cases feed a deliberately broken body — `prepare_template_report`
+/// takes a key, and there is no key for a body that no constant produces.
+fn prepare_initial_report_payload(
+    label: &str,
+    payload: WaveReportPayload,
+) -> Result<InitialReportSnapshot> {
+    crate::wave_report_guard::validate_body_fences(&payload.body).map_err(|error| {
+        CalmError::Internal(format!("wave create: template `{label}` body: {error}"))
     })?;
-    let cwd = default_cwd();
-    let (wave, _, _, _) = create_wave_structure(
-        s.clone(),
-        Actor(Actor::DEFAULT.to_string()),
-        NewWave {
-            cove_id: system_cove_id.clone(),
-            title: title.into(),
-            sort: None,
-            cwd: cwd.clone(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        CreateWaveOptions {
-            folder_claim: FolderClaim::Skip,
-            body_cove_id: system_cove_id.as_str().to_string(),
-            normalized_cwd: cwd,
-            fork_report_from: None,
-            as_template: true,
-            template_key: Some(template_key.to_string()),
-            // #1147 S2 — the seeded templates are ordinary system-cove
-            // waves; they get their own managed workspace like anything else
-            // the server mints. Pre-S2 they landed on `default_cwd()` (`$HOME`),
-            // which is exactly the #1131 defect this slice removes.
-            workspace_plan: WaveWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
-        },
-        None,
-    )
-    .await?;
-    let (wave, report_card, current) =
-        resolve_report_for_wave(s.repo.as_ref(), wave.id.as_str()).await?;
-    let if_doc_rev = current.doc_rev;
-    persist_report(
-        s.repo.as_ref(),
-        &s.events,
-        &s.write,
-        ActorId::User,
-        EditAuthor::User,
-        wave,
-        report_card,
-        current,
-        report,
-        if_doc_rev,
-        None,
-        None,
-        false,
-    )
-    .await?;
-    Ok(())
-}
-
-async fn restamp_template_report_if_placeholder(
-    s: &RouteState,
-    wave_id: &str,
-    template_key: &str,
-) -> Result<()> {
-    let report = template_report(template_key).ok_or_else(|| {
-        CalmError::Internal(format!("wave create: unknown template `{template_key}`"))
+    let doc = ReportDoc::from_payload(&payload);
+    let blocks = doc.blocks_snapshot().map_err(|error| {
+        CalmError::Internal(format!("wave create: template `{label}` blocks: {error}"))
     })?;
-    let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), wave_id).await?;
-    if current.report_startup_read_required() {
-        return Ok(());
-    }
-    let if_doc_rev = current.doc_rev;
-    persist_report(
-        s.repo.as_ref(),
-        &s.events,
-        &s.write,
-        ActorId::User,
-        EditAuthor::User,
-        wave,
-        report_card,
-        current,
-        report,
-        if_doc_rev,
-        None,
-        None,
-        false,
-    )
-    .await?;
-    Ok(())
+    let (summary, body) = doc.project().map_err(|error| {
+        CalmError::Internal(format!("wave create: project template `{label}`: {error}"))
+    })?;
+    let (declarations, diagnostics) =
+        calm_types::report_blocks::tasks::project_task_declarations(&blocks);
+    let mut prepared = WaveReportPayload::new(summary, body);
+    prepared.blocks = Some(blocks);
+    Ok((prepared, doc, declarations, diagnostics))
 }
 
 /// Issue #250 PR 2 — calendar window query parameters for
@@ -737,7 +645,7 @@ pub(crate) async fn create_wave(
     actor: Actor,
     Json(request): Json<CreateWaveRequest>,
 ) -> Result<Response> {
-    let (mut p, mut fork_report_from, cwd_omitted, as_template) = request.into_parts();
+    let (mut p, fork_report_from, cwd_omitted, as_template) = request.into_parts();
     // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
     // codex card alongside the wave row. Both rows commit in one tx
     // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
@@ -767,15 +675,24 @@ pub(crate) async fn create_wave(
     //    Every 4xx this handler can decide *before opening the transaction*
     //    (cwd shape, attached-workspace validation, cove 404, unknown
     //    template, the `template_input` binding matrix) lands before any DB
-    //    write. The ones decided later do not: the in-transaction 400s for an
-    //    explicit `fork_report_from` (source missing / cross-cove), the
-    //    folder-claim 409 and in-transaction 500s all happen after template
-    //    seeding, and seeding commits separately so it does not roll back.
-    //    Nor does a post-commit failure: `materialize_workspace` runs after
-    //    the transaction commits and returns non-2xx with the wave already
-    //    persisted (pinned by `materialize_failure_fails_the_create`).
-    //    "non-201 ⇒ no side effect" is therefore not a property of this
-    //    handler and never was.
+    //    write.
+    //
+    //    #1300 rewrote the rest of this paragraph, which described a world
+    //    with a separately-committing template seed in it. There is no such
+    //    commit any more: template initialization is structural work inside
+    //    the create transaction (`WaveInit::Template` →
+    //    `prepare_template_report`, in the closure `create_wave_structure`
+    //    runs). So the folder-claim 409, the in-transaction 400s for an
+    //    explicit `fork_report_from` (source missing / cross-cove) and the
+    //    in-transaction 500s now all roll the *whole* create back, template
+    //    report included — there is nothing left behind for them to leave.
+    //
+    //    One failure still is not covered by that rollback, and it is the
+    //    reason "non-201 ⇒ no side effect" is not a property of this handler:
+    //    `materialize_workspace` runs *after* the transaction commits (the
+    //    managed path is derived from the wave id) and returns non-2xx with
+    //    the wave already persisted. Pinned by
+    //    `materialize_failure_fails_the_create`.
 
     // #1209 — one lookup. The template is the concept; a plugin binding is an
     // attribute of it, not a second way in. Roster membership is the whole
@@ -885,29 +802,26 @@ pub(crate) async fn create_wave(
         }
     };
 
-    // #1110 S6 — a template id seeds the three template waves in the system
-    // cove (idempotent) and, when the caller omitted `fork_report_from`, forks
-    // that template's report. An explicit `fork_report_from` always wins.
+    // #1300 — the report's source, as one value.
     //
-    // #1209 — deliberately *after* the cwd shape check, the attached-workspace
-    // check and the cove 404, so none of those 4xx leave a freshly minted
-    // system cove and three template waves behind. It used to run first, which
-    // contradicted this handler's own "4xx short-circuits before any DB write"
-    // comment. Everything below this point is either in the transaction or
-    // after it, so this is as late as the seed can go.
-    if let Some(admission) = &admission {
-        ensure_templates(&s).await?;
-        if fork_report_from.is_none() {
-            fork_report_from = Some(lookup_template_wave(&s, admission.key).await?.ok_or_else(
-                || {
-                    CalmError::Internal(format!(
-                        "wave create: seeded template `{}` is missing after ensure",
-                        admission.key
-                    ))
-                },
-            )?);
-        }
-    }
+    // An explicit `fork_report_from` still wins over `template_id`; that
+    // priority is unchanged and pinned by
+    // `explicit_fork_report_from_is_not_overwritten`. What changed is what the
+    // losing branch costs: before #1300 a `template_id` unconditionally seeded
+    // three hidden system-cove waves *first* (`ensure_templates`) and only then
+    // consulted `fork_report_from`, so the combination wrote rows it then did
+    // not use. Instantiating a recipe reads nothing and writes nothing outside
+    // the create transaction.
+    //
+    // #1209 placed the seed here — after the cwd shape check, the
+    // attached-workspace check and the cove 404 — so none of those 4xx left
+    // freshly minted waves behind. Nothing is minted here any more, so that
+    // ordering constraint is gone with the seeding it constrained.
+    let init = match (&admission, fork_report_from) {
+        (_, Some(source_wave_id)) => WaveInit::Fork { source_wave_id },
+        (Some(admission), None) => WaveInit::Template { key: admission.key },
+        (None, None) => WaveInit::Blank,
+    };
 
     let workspace_root = s.workspace_root.clone();
     let created = create_wave_with_spec_harness(
@@ -918,9 +832,8 @@ pub(crate) async fn create_wave(
             folder_claim,
             body_cove_id,
             normalized_cwd,
-            fork_report_from,
+            init,
             as_template,
-            template_key: None,
             // #1147 S2 — omitting `cwd` (the #1131 title-only create, i.e. what
             // the new FE sends) is the managed-default branch: the server picks
             // the directory. An explicit `cwd` is the attached branch and keeps
@@ -946,13 +859,30 @@ pub(crate) async fn create_wave(
 /// plugin binding that comes with it.
 ///
 /// The word *admission* is the point: this answers **admission**, not "what
-/// does the template look like right now". The authority for the latter is the
-/// seeded template report, not this struct — which is why there is no `title`
-/// here.
+/// does the template look like". The authority for the latter is
+/// `templates::template_report`, a Rust constant — which is why there is no
+/// `title` and no report here. (#1300: before S2 the authority was a seeded
+/// system-cove template wave found by a database lookup, and this sentence
+/// named it. Both the wave and the lookup are gone.)
 pub(crate) struct TemplateAdmission {
-    /// The roster's own `&'static` key, not the caller's string. Downstream
-    /// seeding and lookup use this, so a future case-folding or aliasing
-    /// admission rule cannot leak an unnormalized key into the DB.
+    /// The roster's own `&'static` key, not the caller's string.
+    ///
+    /// It reaches exactly one consumer: `WaveInit::Template { key }`, i.e. the
+    /// **recipe lookup** (`templates::template_report`) inside the create
+    /// transaction. That side is what this borrow protects — a future
+    /// case-folding or aliasing admission rule cannot hand an unnormalized key
+    /// to `template_report`, because the value passed on is the roster's, not
+    /// the caller's.
+    ///
+    /// It does **not** reach the wave row. `CreateWaveRequest::into_parts`
+    /// puts the caller's original `template_id` string on `NewWave` (`:247`),
+    /// and that is what `wave_create_tx` binds into `waves.template_id`. The
+    /// two are identical only because `template_by_key` is an exact match
+    /// today; the very rule this field guards against would separate them —
+    /// `"SMALL-CHANGE"` admitted against roster key `"small-change"` would
+    /// instantiate the right recipe and store `"SMALL-CHANGE"` on the row.
+    /// Normalizing the stored id is a behaviour change and deliberately not
+    /// one this field makes.
     pub key: &'static str,
     /// The owning plugin, when a running trusted one claims this id. `None` is
     /// an ordinary template, not a rejection.
@@ -1203,13 +1133,37 @@ async fn enforce_folder_claim_tx(
     }
 }
 
+/// Where a new wave's report comes from.
+///
+/// #1300 — this used to be `fork_report_from: Option<String>`, and "create from
+/// a template" was expressed *through* it: the route lazily seeded three hidden
+/// system-cove waves and then forked one of them. That made a template a kind
+/// of wave, which is the thing #1300 removes. A template is a read-only recipe;
+/// instantiating it is structural initialization of a new wave, not a copy of
+/// an existing one.
+///
+/// The two data-carrying variants deliberately stay distinct rather than
+/// collapsing into "some report snapshot". They share the *mechanism* below —
+/// `prepare_*` produces a snapshot, one in-transaction writer persists it and
+/// projects the tasks — but not the semantics: `Fork` copies a live wave and
+/// must rewrite its links and re-attribute its blocks, while `Template`
+/// constructs from a constant that has no wave to rewrite links against.
+enum WaveInit {
+    /// No report content; the wave keeps the default skeleton.
+    Blank,
+    /// Instantiate a template recipe. The roster's own `&'static` key, never
+    /// the caller's string — see [`TemplateAdmission::key`].
+    Template { key: &'static str },
+    /// Copy an existing wave's report.
+    Fork { source_wave_id: String },
+}
+
 struct CreateWaveOptions {
     folder_claim: FolderClaim,
     body_cove_id: String,
     normalized_cwd: String,
-    fork_report_from: Option<String>,
+    init: WaveInit,
     as_template: bool,
-    template_key: Option<String>,
     /// #1147 S2 — managed (server allocates under the workspace root) vs
     /// attached (the caller pointed at an existing directory). Decided by
     /// each create entry point; `create_wave_structure` materializes the
@@ -1363,9 +1317,8 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
             folder_claim: FolderClaim::Skip,
             body_cove_id: cove_id.clone(),
             normalized_cwd: cwd,
-            fork_report_from: None,
+            init: WaveInit::Blank,
             as_template: false,
-            template_key: None,
             workspace_plan,
         },
         Some(COVE_CHAT_PURPOSE),
@@ -1400,9 +1353,8 @@ async fn create_wave_structure(
         folder_claim,
         body_cove_id,
         normalized_cwd,
-        fork_report_from,
+        init,
         as_template,
-        template_key,
         workspace_plan,
     } = options;
     // #1147 — captured before `s` is moved into the write closure. Only the
@@ -1450,7 +1402,15 @@ async fn create_wave_structure(
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
 
-                let fork_snapshot = if let Some(source_wave_id) = fork_report_from.as_deref() {
+                // #1300 — three initialization sources, one persistence
+                // mechanism. `Template` builds from a constant and needs no
+                // database read; `Fork` reads the source wave inside this same
+                // transaction, exactly as before.
+                let init_snapshot = match &init {
+                    WaveInit::Blank => None,
+                    WaveInit::Template { key } => Some(prepare_template_report(key)?),
+                    WaveInit::Fork { source_wave_id } => {
+                    let source_wave_id = source_wave_id.as_str();
                     let source_id = WaveId::from(source_wave_id.to_string());
                     let source_wave = wave_get_tx(tx, &source_id).await.map_err(|error| {
                         if matches!(error, CalmError::NotFound(_)) {
@@ -1481,8 +1441,7 @@ async fn create_wave_structure(
                         source_wave_id,
                         wave_id.as_str(),
                     )?)
-                } else {
-                    None
+                    }
                 };
 
                 let spec_card = card_create_with_id_tx(
@@ -1531,15 +1490,15 @@ async fn create_wave_structure(
                 )
                 .await?;
 
-                let mut fork_projection = None;
-                if let Some((payload, mut doc, declarations, diagnostics)) = fork_snapshot {
+                let mut init_projection = None;
+                if let Some((payload, mut doc, declarations, diagnostics)) = init_snapshot {
                     let payload = serde_json::to_value(payload).map_err(|error| {
                         CalmError::Internal(format!(
                             "wave_create: serialize forked wave-report payload: {error}"
                         ))
                     })?;
                     let (persisted_report, projection) =
-                        persist_fork_report_and_project_tasks_tx(
+                        persist_initial_report_and_project_tasks_tx(
                         tx,
                         report_card.id.as_str(),
                         wave_id.as_str(),
@@ -1550,7 +1509,7 @@ async fn create_wave_structure(
                         )
                         .await?;
                     report_card = persisted_report;
-                    fork_projection = Some(projection);
+                    init_projection = Some(projection);
                 }
 
                 let wave_scope = EventScope::Wave {
@@ -1582,10 +1541,43 @@ async fn create_wave_structure(
                 )
                 .await?;
                 let template_overlay = if as_template {
-                    let payload = match template_key.as_deref() {
-                        Some(key) => template_overlay_payload_with_key(key),
-                        None => template_overlay_payload(),
-                    };
+                    // #1300 — the `template_key` variant of this payload was
+                    // written only by the deleted seeding path. Two separate
+                    // layers, worth not conflating:
+                    //
+                    //   * **Schema.** `template_key` is still part of the
+                    //     `template` overlay payload schema and is still
+                    //     pinned by `payload_validation.rs`; `validate_overlay_payload`
+                    //     would accept a payload carrying it.
+                    //   * **Route.** The narrow fact, and no wider one: a row
+                    //     that `is_template_overlay` would recognise is by
+                    //     definition `plugin_id = "kernel"` /
+                    //     `entity_kind = "view"`, and since #1297
+                    //     `overlays::ensure_overlay_write_allowed` rejects both
+                    //     of those reserved namespaces with 403 *before*
+                    //     `validate_overlay_payload` runs. So `POST /api/overlays`
+                    //     answers 403 Forbidden for *that* row, not 201 — pinned
+                    //     by `wave_template_overlay::
+                    //     overlay_post_cannot_mark_an_existing_wave_as_template`.
+                    //
+                    //     It is NOT true that a `template_key` payload cannot
+                    //     be stored at all. `entity_kind = "wave"` is
+                    //     externally writable (`OVERLAY_ENTITY_SCOPE_REGISTRY`
+                    //     in `calm-truth::validation`), and payload validation
+                    //     is keyed on `kind`, not on the plugin, so
+                    //     `{plugin_id: "p1", entity_kind: "wave", kind:
+                    //     "template", payload: {schemaVersion: 1, template_key:
+                    //     ".."}}` passes both the 403 guard and
+                    //     `validate_overlay_payload` and lands in the table.
+                    //     That row is a plugin-owned overlay: `is_template_overlay`
+                    //     is false for it, so no kernel reader treats it as a
+                    //     template marker.
+                    //
+                    // Kernel-internal writers like this one call
+                    // `overlay_upsert_tx` directly and never traverse that
+                    // router — but none of them mints a `template_key`, and no
+                    // kernel reader consults one.
+                    let payload = template_overlay_payload();
                     validate_overlay_payload(OVERLAY_TEMPLATE_KIND, &payload)?;
                     Some(
                         overlay_upsert_tx(
@@ -1638,7 +1630,7 @@ async fn create_wave_structure(
                         Event::OverlaySet(template_overlay),
                     ));
                 }
-                if let Some(projection) = fork_projection {
+                if let Some(projection) = init_projection {
                     if !projection.changed_keys.is_empty() {
                         events.push((
                             actor_id_for_tx.clone(),
@@ -1779,14 +1771,14 @@ async fn start_spec_harness(
     Ok(())
 }
 
-type ForkReportSnapshot = (
+type InitialReportSnapshot = (
     WaveReportPayload,
     ReportDoc,
     Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
     Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
 );
 
-async fn persist_fork_report_and_project_tasks_tx(
+async fn persist_initial_report_and_project_tasks_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     report_card_id: &str,
     wave_id: &str,
@@ -1819,7 +1811,7 @@ fn prepare_fork_report(
     mut blocks: Vec<ReportBlock>,
     source_wave_id: &str,
     target_wave_id: &str,
-) -> Result<ForkReportSnapshot> {
+) -> Result<InitialReportSnapshot> {
     use std::collections::HashSet;
 
     use calm_types::report_blocks::{KIND_PROSE, KIND_TASK, flat_text, validate_payload};
@@ -3181,14 +3173,37 @@ pub(crate) async fn delete_wave(
     // retire these rows do not come through this handler.
     //
     // **Scope is the whole system cove, not just the launchpad — deliberately.**
-    // The system cove also holds the template waves
-    // `ensure_templates` seeds, so those become undeletable through
-    // the API too. Accepted, ruled on 2026-09-01: they are kernel-seeded and
-    // rebuilt at boot, deleting one has never been a meaningful user action,
-    // and the alternative — carving out `purpose = launchpad` — puts an
-    // exception into "the system cove is kernel-owned". An invariant with an
-    // exception is the shape this design line keeps getting hurt by; a wide,
-    // boring rule is worth more than the deletability of three seeded rows.
+    // The rule is written over the cove, not over `purpose = launchpad`,
+    // because carving out a purpose puts an exception into "the system cove is
+    // kernel-owned", and an invariant with an exception is the shape this
+    // design line keeps getting hurt by. What the wide rule costs is that the
+    // launchpad wave — which *is* user-visible, on Today — cannot be deleted
+    // through this handler either. That is the accepted price.
+    //
+    // What recreates the row is `routes::today::ensure_today_launchpad`, and it
+    // is reached two ways: the explicit `POST /api/today/launchpad/ensure`, and
+    // `POST /api/today/summary`, which calls it directly
+    // (`routes::today_summary::write_today_summary`). So a permitted delete
+    // would survive page loads — loading Today runs only the read-only resolve
+    // and never POSTs either endpoint (INV-TODAYDOC-001) — but the next Today
+    // summary that gets far enough to write would rebuild the launchpad
+    // underneath the user. "Far enough" is literal: `write_today_summary`
+    // computes the local day's activity window first and returns 409
+    // `TodaySummaryNoActivity` when it is empty, and only past that check does
+    // it call `ensure_today_launchpad`. On a day with no workspace activity
+    // every summary POST stops at the 409 and rebuilds nothing, however many
+    // times it is repeated; the explicit `POST /api/today/launchpad/ensure`
+    // has no such precondition and rebuilds on any day. The ruling does not
+    // rest on the deletion being hard to undo, or on it being harmless; it
+    // rests on where the ownership boundary is drawn.
+    //
+    // #1300 — this paragraph used to justify itself by the *other* residents
+    // of the system cove, the three hidden template waves `ensure_templates`
+    // seeded. Those are gone: a template is a Rust constant
+    // (`crate::templates`) and creating from one mints no hidden wave. The
+    // ruling did not depend on them — it is about where the boundary is drawn,
+    // not about how many rows sit behind it — so it stands unchanged with the
+    // launchpad wave as today's only kernel-seeded resident.
     let owning_cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
     if owning_cove
         .as_ref()
@@ -3516,15 +3531,123 @@ pub(crate) async fn update_wave_report(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_fork_report_and_project_tasks_tx, prepare_fork_report, spec_harness_layout_payload,
+        persist_initial_report_and_project_tasks_tx, prepare_fork_report,
+        prepare_initial_report_payload, prepare_template_report, spec_harness_layout_payload,
     };
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewCard, NewCove, NewWave};
     use crate::routes::theme::RequestTheme;
+    use crate::templates::TEMPLATES;
     use crate::wave_report::{ReportBlock, WaveReportPayload};
     use crate::wave_report_doc::ReportDoc;
     use serde_json::json;
+
+    /// Every built-in recipe instantiates, and its declarations are the tasks
+    /// it advertises.
+    ///
+    /// This is the unit half of #1300's evidence. The integration
+    /// characterization test (`wave_template_waves.rs`) compares the created
+    /// wave's *report* against the recipe; it cannot see the `declarations`
+    /// this returns, because a recipe's tasks are all `ready: false` and
+    /// `task_projection` skips the insert for anything non-schedulable
+    /// (`schedulable = ready && ..`). So the `tasks` table is empty on both
+    /// sides of the switch and proves nothing about the producer.
+    ///
+    /// Which makes this the only place "the declarations are actually
+    /// produced" is observable: replace the `project_task_declarations` call in
+    /// `prepare_initial_report_payload` with an empty vec and only this test
+    /// goes red.
+    #[test]
+    fn every_recipe_instantiates_and_declares_its_tasks() {
+        for template in &TEMPLATES {
+            let key = template.key;
+            let (payload, _doc, declarations, _diagnostics) = prepare_template_report(key)
+                .unwrap_or_else(|error| {
+                    panic!("`{key}` must instantiate: {error}");
+                });
+            assert!(
+                payload.blocks.as_ref().is_some_and(|b| !b.is_empty()),
+                "`{key}`: no blocks"
+            );
+            let declared: Vec<&str> = declarations
+                .iter()
+                .map(|declaration| declaration.key.as_str())
+                .collect();
+            let fenced: Vec<String> = crate::templates::template_task_payloads(key)
+                .expect("known key")
+                .iter()
+                .filter_map(|task| task.get("key").and_then(|k| k.as_str()).map(str::to_string))
+                .collect();
+            assert_eq!(
+                declared,
+                fenced.iter().map(String::as_str).collect::<Vec<_>>(),
+                "`{key}`: declarations must be the recipe's task keys, in order"
+            );
+        }
+    }
+
+    /// A recipe whose body does not parse is refused, not silently thinned.
+    ///
+    /// ## The two shapes, and why one guard covers both
+    ///
+    /// `validate_body_fences` runs `invalid_neige_fences` **and**
+    /// `validate_payload` over every parseable fence, so both a fence that
+    /// fails to parse and a fence that parses but violates its schema are
+    /// caught by the same call. Case A is the first, case B the second.
+    ///
+    /// Case A is the one that would otherwise be invisible: `split_body` treats
+    /// a malformed neige fence as prose, so an indented opener does not error —
+    /// it produces a report with one fewer task and no complaint anywhere.
+    ///
+    /// **The must-red is a single mutation**: delete the `validate_body_fences`
+    /// line in `prepare_initial_report_payload` and *both* cases go red. An
+    /// earlier draft claimed two independent guards with one case each; there
+    /// is only one guard on this path, and writing two must-reds against it
+    /// would have been a claim the code cannot support.
+    ///
+    /// Both feed `prepare_initial_report_payload` rather than
+    /// `prepare_template_report`: the latter takes a key, and there is no key
+    /// for a body no constant produces.
+    #[test]
+    fn a_recipe_that_does_not_parse_is_refused() {
+        let good = crate::templates::template_report("small-change").expect("known key");
+
+        // A: an indented opener. `split_body` demotes it to prose.
+        let indented = good
+            .body
+            .replacen("```neige-block task", " ```neige-block task", 1);
+        assert_ne!(indented, good.body, "the fixture did not change the body");
+        // `match` rather than `expect_err`: the Ok arm carries a `ReportDoc`,
+        // which is deliberately not `Debug` (it wraps an automerge document),
+        // and deriving one on a production type to satisfy a test bound is the
+        // wrong direction.
+        let error = match prepare_initial_report_payload(
+            "small-change",
+            WaveReportPayload::new(good.summary.clone(), indented),
+        ) {
+            Ok(_) => panic!("an indented fence opener must be refused, not demoted to prose"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error}").contains("small-change"),
+            "the error must name the recipe; got {error}"
+        );
+
+        // B: a well-formed fence whose payload violates the task schema.
+        let broken =
+            good.body
+                .replacen("\"kind\": \"codex\"", "\"kind\": \"not-a-worker-kind\"", 1);
+        assert_ne!(broken, good.body, "the fixture did not change the body");
+        if prepare_initial_report_payload(
+            "small-change",
+            WaveReportPayload::new(good.summary, broken),
+        )
+        .is_ok()
+        {
+            panic!("a schema-invalid task payload must be refused");
+        }
+    }
 
     #[test]
     fn fork_revalidates_every_fence_payload() {
@@ -3664,7 +3787,7 @@ mod tests {
 
         let pool = repo.sqlite_pool().unwrap();
         let mut tx = pool.begin().await.unwrap();
-        let (updated, projection) = persist_fork_report_and_project_tasks_tx(
+        let (updated, projection) = persist_initial_report_and_project_tasks_tx(
             &mut tx,
             report.id.as_str(),
             wave.id.as_str(),

@@ -632,7 +632,56 @@ pub mod workspace_repoint;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;
-pub(crate) mod templates;
+/// The template roster and its report recipes.
+///
+/// `pub` for the same reason `routes::waves::spec_harness_card_payload` is: an
+/// integration test that transcribes kilobytes of production prose by hand
+/// stops being a test of that prose and becomes a change detector. #1300 S2's
+/// characterization test (`wave_template_waves::
+/// creating_from_a_template_instantiates_its_recipe`) therefore **derives** the
+/// report a template must instantiate to from this module.
+///
+/// What that oracle can and cannot see, stated exactly, because the derivation
+/// is what limits it:
+///
+///   * **Can see** — any divergence between the *value* this module produces
+///     and what a created wave actually ends up holding: a dropped field, a
+///     lost fence, a missing contract prefix, a normalization applied to the
+///     wrong thing.
+///   * **Cannot see** — anything that moves *both* sides at once, because both
+///     sides go through this module's own `key → recipe` match and its shared
+///     `split_body` / `parse_fence` / `render_fence`. Concretely: swapping two
+///     arms of [`templates::template_report`], rewriting a recipe's content,
+///     retitling a [`templates::TEMPLATES`] entry, or a fence renderer that
+///     drops the same field on both roads.
+///
+/// It compares values, not provenance — which is why the first bullet says
+/// *value* and not "reads these constants". Repoint the instantiation path at
+/// a second source (a database row, a second map) whose bytes happen to equal
+/// these constants today and the comparison still holds; it only goes red once
+/// that other source drifts. "Production reads exactly this module" is not an
+/// oracle-visible property.
+///
+/// Part of the second bullet is closed, and part is accepted. `wave_template_waves::
+/// each_template_key_names_its_own_recipe` holds a small hand-written table of
+/// `(key, title, ordered task keys)` — the one table in that file not derived
+/// from production — and checks it against both the picker read and a real
+/// create. That catches a swapped match arm, a retitled roster entry, and a
+/// reordered or renamed task.
+///
+/// It does **not** catch the rest of the bullet. A recipe rewritten wholesale
+/// into a different workflow that keeps its title and its ordered task keys —
+/// new goals, new acceptance criteria, new `context`, new dependency semantics
+/// — moves the derived oracle with production and passes the anchors too. Nor
+/// does it catch a prose rewrite, or a fence renderer dropping the same field
+/// on both roads. Its roster-size check (`anchors.len() ==
+/// TEMPLATES.len()`) only stops a one-sided add or remove; editing the table
+/// and the roster together passes by construction, because the table is
+/// hand-maintained and nothing but human review reads it. Closing any of this
+/// would mean transcribing the recipes by hand, which is the change detector
+/// this whole arrangement exists to avoid — so the table stays at identities
+/// only, and those gaps are a decision rather than an oversight.
+pub mod templates;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;

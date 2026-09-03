@@ -1,13 +1,16 @@
 //! Issue #1147 S2 — managed workspace allocation + materialization through
 //! `POST /api/waves`.
 //!
-//! Design `docs/1147-workspace-design.md` D2/D3/D5 and §5 test 5. The two
+//! Design `docs/1147-workspace-design.md` D2/D3/D5 and §5 test 5. The
 //! properties this file owns:
 //!
 //!   * a title-only create (the #1131 shape the new FE sends) allocates a
 //!     managed workspace under the configured root and leaves a real git
 //!     repository there — without it, every codex task on that wave dies in
 //!     `git rev-parse --show-toplevel`, which is #1147;
+//!   * the same holds for a create that carries a `template_id` and no `cwd`,
+//!     which is a distinct branch of the request shape and, since #1300 removed
+//!     template seeding, a branch nothing else in the suite drives;
 //!   * a materialization failure is a **non-2xx**, not a 201 with a warning in
 //!     the log. The latter reproduces #1147 one layer down: the wave looks
 //!     fine and the first worker dies.
@@ -135,8 +138,37 @@ async fn workspace_row(repo: &SqlxRepo, wave_id: &str) -> (String, String, Optio
     .unwrap()
 }
 
-/// Entry point 1 of 5: `POST /api/waves` with no `cwd` — the #1131 title-only
+/// Entry point 1 of 4: `POST /api/waves` with no `cwd` — the #1131 title-only
 /// create the new FE sends.
+///
+/// The four wave-create entry points design `docs/1147-workspace-design.md`
+/// line 76 enumerates are, by name rather than by ordinal (an ordinal spread
+/// across three files is what drifted last time — `today.rs` and
+/// `child_wave_adapter.rs` both called themselves "the fifth"):
+///
+///   1. `POST /api/waves` — this case and the two below it;
+///   2. cove chat (`ensure_cove_chat_wave_inner`), which shares
+///      `create_wave_structure` with 1 and therefore its materialize call;
+///   3. Today/launchpad (`routes::today`), which raw-`INSERT`s and carries its
+///      own materialize call;
+///   4. child wave (`operation::child_wave_adapter`), likewise, covered by
+///      `child_allocates_and_materializes_its_own_frozen_managed_workspace`.
+///
+/// #1300 — this enumeration said "of 5" until template seeding was removed.
+/// The one that went was `seed_template_wave` (design line 76 lists it second,
+/// as "workflow/template" — it is named rather than numbered here for the same
+/// reason as the four above), and the case that covered it (`seeded_template_waves_are_materialized`) is
+/// gone with the function: a template is a Rust constant now, so creating from
+/// one mints exactly the wave the caller asked for and there is no second,
+/// hidden workspace to materialize. The count is corrected rather than left at
+/// 5, because an enumeration that claims more coverage than it has is worse
+/// than none.
+///
+/// What did **not** go away with it is that a `template_id` create is still a
+/// create and still needs a workspace —
+/// `template_create_without_cwd_allocates_and_materializes_a_managed_workspace`
+/// below owns that half, which the deleted case had been covering as a
+/// side-effect.
 #[tokio::test]
 async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     let b = boot().await;
@@ -175,6 +207,91 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap();
     assert!(exclude.lines().any(|l| l.trim() == ".claude/worktrees/"));
     assert!(!path.join(".gitignore").exists());
+}
+
+/// Entry point 1, template branch: a `template_id` create that omits `cwd` gets
+/// the same managed workspace, materialized, as a title-only one.
+///
+/// ## Why this is a separate case and not a parameter of the one above
+///
+/// #1300 deleted `seeded_template_waves_are_materialized`, and rightly: its
+/// subject — the three hidden system-cove template waves — no longer exists.
+/// But that case was two properties in one, and only one of them died with the
+/// seeding. The survivor is this: the wave the **user** asked for, when it
+/// carries a `template_id` and no `cwd`, must still come out of create with a
+/// managed directory holding a usable Git repository. Nothing else in the suite
+/// held it — the case above never sends a `template_id`, every Rust template
+/// case in `wave_template_waves.rs` boots without a workspace root and only
+/// reads the report, and the e2e never looks at the workspace at all.
+///
+/// The escape construction that motivated it, and that this case was
+/// mutation-verified against: guard the `materialize_workspace` call in
+/// `create_wave_structure` with `if wave.template_id.is_none()`. Every other
+/// test in the repository stays green; the first codex worker on any
+/// template-created wave then dies in `git rev-parse --show-toplevel`, which is
+/// #1147 verbatim.
+#[tokio::test]
+async fn template_create_without_cwd_allocates_and_materializes_a_managed_workspace() {
+    let b = boot().await;
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": b.cove_id,
+            "title": "from template",
+            "template_id": "small-change",
+            "theme": theme(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        wave["template_id"], "small-change",
+        "the create must actually have taken the template branch, or this case \
+         is a duplicate of the title-only one; body={body}"
+    );
+    let wave_id = wave["id"].as_str().unwrap();
+
+    // Exactly one wave exists: no hidden template wave was minted alongside it
+    // (that property's own home is `creating_from_a_template_mints_no_hidden_wave`;
+    // pinned here too because the loop below would otherwise be satisfiable by a
+    // second, differently-materialized row).
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM waves")
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly the requested wave; {rows:?}"
+    );
+
+    let (kind, path, frozen) = workspace_row(&b.repo, wave_id).await;
+    assert_eq!(
+        kind, "managed",
+        "a template create with no `cwd` is managed"
+    );
+    assert_eq!(
+        PathBuf::from(&path),
+        b.workspace_root.join(&b.cove_id).join(wave_id),
+        "D2 layout is `<root>/<cove_id>/<wave_id>`, ids only"
+    );
+    assert!(
+        frozen.is_none(),
+        "a managed workspace stays re-pointable until work happens (design \
+         §2.3 / D4); a template create is not work"
+    );
+
+    let path = PathBuf::from(path);
+    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
+    assert!(
+        head_resolves(&path),
+        "no init commit — `git worktree add` fails with `not a valid object \
+         name: 'HEAD'` and the first codex worker on this template wave never \
+         starts"
+    );
 }
 
 /// An explicit `cwd` is the attached branch: the user pointed at that
@@ -219,44 +336,6 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
         !target.join(".git").exists(),
         "the server `git init`-ed a directory the user pointed at"
     );
-}
-
-/// Entry point 2 of 5: `seed_template_wave`, reached by creating a
-/// wave against a seeded template key.
-#[tokio::test]
-async fn seeded_template_waves_are_materialized() {
-    let b = boot().await;
-    let (status, body) = post(
-        b.app.clone(),
-        "/api/waves",
-        json!({
-            "cove_id": b.cove_id,
-            "title": "from template",
-            "template_id": "small-change",
-            "theme": theme(),
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-
-    // Every wave now on the DB — the requested one plus the three system-cove
-    // templates the route seeds — must have a live repository behind it.
-    let rows: Vec<(String, String, String)> =
-        sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM waves")
-            .fetch_all(b.repo.pool())
-            .await
-            .unwrap();
-    assert!(
-        rows.len() >= 2,
-        "expected the template seed to have run; got {rows:?}"
-    );
-    for (id, kind, path) in &rows {
-        assert_eq!(kind, "managed", "wave {id} at {path}");
-        assert!(
-            head_resolves(std::path::Path::new(path)),
-            "template-seeded wave {id} was not materialized ({path})"
-        );
-    }
 }
 
 /// §5 test 5 — materialization failure must surface as a non-2xx carrying the
