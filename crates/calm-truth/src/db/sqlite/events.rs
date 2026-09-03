@@ -140,31 +140,47 @@ mod gated {
     }
 }
 
-/// #1252 S3′ negative nail. Counts every append that goes through the two
-/// public `append_decision_event*_in_tx` entrances, so a test can assert that
-/// a given write path does **not** flow through them.
+/// #1252 S3′ negative nail. Records the `kind_tag` of every event that passes
+/// through the two public `append_decision_event*_in_tx` entrances, so a test
+/// can assert which write paths do — and above all do **not** — flow through
+/// this seam.
 ///
-/// The live use is `crates/calm-server/tests/cases/`: the design of #1252 S2
-/// claimed fork / template / recipe creation would start flowing through this
-/// seam. It does not — those paths go through `write_with_actor_events_typed`,
-/// one of the four `RepoEventWrite` wrappers. This probe turns that claim into
-/// a test that goes red the day it stops being true.
+/// Why it exists: #1252's design claimed that once S2 routed fork / template /
+/// recipe creation through a unified apply, those events would start flowing
+/// through this seam, and asked for a test of that intersection. The
+/// intersection does not exist — fork goes through
+/// `write_with_actor_events_typed` → `write_with_actor_events`, one of the four
+/// `RepoEventWrite` wrappers, which was already gated. A test that asserted the
+/// intersection would have been asserting a fiction, so this probe pins the
+/// negative instead: it goes red the day a report/fork write starts arriving
+/// here.
 ///
-/// A process-global counter is correct here only because the gate command runs
-/// tests with `cargo nextest`, which gives every test its own process.
+/// A process-global recorder is correct here only because the gate command
+/// runs tests with `cargo nextest`, which gives every test its own process.
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod append_probe {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
-    static APPENDS: AtomicU64 = AtomicU64::new(0);
+    static KINDS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-    pub(super) fn record() {
-        APPENDS.fetch_add(1, Ordering::Relaxed);
+    pub(super) fn record(kind: &'static str) {
+        if let Ok(mut kinds) = KINDS.lock() {
+            kinds.push(kind);
+        }
     }
 
-    /// Number of `append_decision_event*_in_tx` appends in this process.
-    pub fn count() -> u64 {
-        APPENDS.load(Ordering::Relaxed)
+    /// Forget everything recorded so far. Call this immediately before the
+    /// request under observation.
+    pub fn reset() {
+        if let Ok(mut kinds) = KINDS.lock() {
+            kinds.clear();
+        }
+    }
+
+    /// Every event kind that reached the seam since the last [`reset`], in
+    /// order.
+    pub fn kinds() -> Vec<&'static str> {
+        KINDS.lock().map(|kinds| kinds.clone()).unwrap_or_default()
     }
 }
 
@@ -264,7 +280,7 @@ pub async fn append_decision_event_in_tx(
     event: &Event,
 ) -> Result<i64> {
     #[cfg(any(test, feature = "test-helpers"))]
-    append_probe::record();
+    append_probe::record(event.kind_tag());
     let authorized = gated::authorize(tx, actor, scope, event).await?;
     let event_id = SqlxRepo::event_append_in_tx(tx, &authorized, correlation).await?;
     if let Some(track_id) = scope.track_id() {
@@ -293,7 +309,7 @@ pub async fn append_decision_events_in_tx(
     let mut event_ids = Vec::with_capacity(events.len());
     for event in events {
         #[cfg(any(test, feature = "test-helpers"))]
-        append_probe::record();
+        append_probe::record(event.kind_tag());
         let authorized = gated::authorize(tx, actor, scope, event).await?;
         event_ids.push(SqlxRepo::event_append_in_tx(tx, &authorized, correlation).await?);
     }
