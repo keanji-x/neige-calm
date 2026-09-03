@@ -253,7 +253,7 @@ fn require_tree_budget_postcondition(
 }
 use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::wave_report_guard::{
-    guard_non_prose_stomp, validate_body_fences, validate_prose_block_content,
+    guard_non_prose_stomp, validate_block_content, validate_body_fences,
 };
 use std::sync::Arc;
 
@@ -428,22 +428,24 @@ pub(crate) fn apply_report_op(
                     )
                 })?;
                 check_rev(doc, id, expected)?;
-                // #1269 — defence in depth at the op layer. `ReportDoc::
-                // upsert_block` fence-checks only NON-prose content, so
-                // a direct `apply_report_op` call with `kind: "prose"`
-                // would otherwise carry a ```neige-block fence straight
-                // in. No user request *can* reach this arm carrying one:
-                // the MCP (#971) and REST (#990) block surfaces each run
-                // `check_prose_markdown` on their own argument first;
-                // the point is that the op stops depending on them to do
-                // so. Why the surfaces' rule (`check_prose_markdown`)
-                // rather than the weaker `validate_body_fences`, and how
-                // much of the prose entrance this does and does not
-                // close — a fence carried whole in one block, yes; a
-                // fence split across two adjacent prose blocks, no — is
-                // written up once on `validate_prose_block_content`
-                // rather than restated here.
-                validate_prose_block_content(kind, content)?;
+                // #1269 (+ follow-up) — defence in depth at the op
+                // layer, on both halves of `kind`. All `ReportDoc::
+                // upsert_block` asks of the content is `parse_fence` +
+                // a kind match, so a direct `apply_report_op` call used
+                // to carry a ```neige-block fence straight into a
+                // `kind: "prose"` block, and a schema-invalid payload
+                // straight into a data block. Nothing a user sends
+                // through the MCP (#971) or REST (#990) block surfaces
+                // arrives that way — they run `check_prose_markdown` on
+                // a prose argument and build data content with
+                // `render_data_block` — and the point is that the op
+                // stops depending on them to do so. Which rule each
+                // `kind` gets, which production caller is *not* covered
+                // upstream, and what is left to `upsert_block` (and so
+                // still surfaces as a 500 rather than a 400), is written
+                // up once on `validate_block_content` rather than
+                // restated here.
+                validate_block_content(kind, content)?;
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
@@ -454,9 +456,10 @@ pub(crate) fn apply_report_op(
                     CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                 })?;
                 check_doc_rev(doc, expected)?;
-                // #1269 — same check on the create arm; leaving either
-                // arm unchecked would leave the op-layer gap open.
-                validate_prose_block_content(kind, content)?;
+                // #1269 (+ follow-up) — same check on the create arm;
+                // leaving either arm unchecked would leave the op-layer
+                // gap open.
+                validate_block_content(kind, content)?;
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len
