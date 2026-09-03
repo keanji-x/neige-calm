@@ -59,7 +59,7 @@ import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../..
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
-import { useReducer, useState } from '../../ui/state/public.ts';
+import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
@@ -70,7 +70,10 @@ import {
 } from '../providers/queries.ts';
 import { NewTrackForm, type NewTrackDraft } from '../../features/area/new-track/public.tsx';
 import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
-import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
+import {
+  ConversationProvider, useConversationRegistry,
+  type ConversationDraft, type ConversationDraftId,
+} from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
   useGo, useGoSameTrack, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
@@ -645,45 +648,10 @@ type ConversationPanelSource =
 /** Which row is open, or the draft that has not become a row yet. */
 type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
 
-/**
- * A conversation being written: one value, not five pieces of state.
- *
- * They were five (`draftKey`, `draftText`, `sentText`, `draftError`,
- * `draftRemedy`) and every rule about them was a rule about *pairs* — "a new
- * key means nothing was sent under it yet", "the words on screen are only an
- * edit if a POST was made with different ones". Five independently settable
- * fields make each such rule a thing to remember at every branch, and the two
- * bugs this shape replaces were both one field moving without its partner.
- *
- * `scopeId` keeps every asynchronous reducer move tied to the Track and draft
- * key it was computed for. A late answer may adopt or edit that draft only if
- * both still match what the drawer holds now.
- */
-type ConversationDraft = Readonly<{
-  /** The Track this draft belongs to. It is only ever visible there. */
-  scopeId: string;
-  /** Identifies the draft to the server for as long as it exists; minted when
-   *  the drawer opens and *never* per send. */
-  key: string;
-  /** The words the drawer is holding, kept because `ChatComposer` clears its
-   *  own field on send and returns void: without this the text is gone on any
-   *  failure. Set by anything that reaches the drawer, including a local
-   *  refusal that never became a request. */
-  text: string | null;
-  /** The words a POST was actually made with under `key`, which is a different
-   *  fact from the words on screen: only this one may decide "the reader
-   *  edited the text after a failure", the branch that is allowed to mint a
-   *  second key. Text refused locally (too long) never travelled, so it must
-   *  not count as an edit. */
-  sentText: string | null;
-  error: string | null;
-  remedy: 'retry' | 'new-conversation' | null;
-}>;
-
 /** What a caller may change without touching the draft's identity. `key` and
  *  `sentText` are deliberately absent: they move together or not at all, which
  *  is why `rekeyDraft` and `markDraftSent` are the only doors to them. */
-type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'error' | 'remedy'>>;
+type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'creating' | 'error' | 'remedy'>>;
 
 /**
  * The card runtime, created once at boot and injected like every other
@@ -795,72 +763,8 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
   );
 }
 
-/** Everything needed to say "is this still the draft I was working on?": the
- *  area or track it belongs to and the key that is the identity of its attempt. */
-type DraftId = Readonly<{ scopeId: string; key: string }>;
-
 /**
- * What the drawer is showing and which draft is held — **one** state, moved by
- * one reducer.
- *
- * These were two `useState`s, and the split was the bug. A create is
- * asynchronous, and by the time it answers the reader may have walked to
- * another area and started a draft there. Adopting the answer then meant two
- * independent writes — clear the held draft, point the drawer at a row — with
- * nothing tying either to the draft the request was made *for*: area A's late
- * success deleted area B's brand-new draft and aimed the drawer at a row that
- * is not on area B.
- *
- * Merging them is what makes the guard expressible at all. Every move that a
- * late answer can perform carries the `DraftId` it was computed from, and the
- * reducer compares it against what is held *now*, in the same atomic update
- * that would have applied it. A move whose draft is gone changes nothing —
- * not "changes only the half that has a guard".
- */
-type DrawerState = Readonly<{ open: OpenTarget | null; held: ConversationDraft | null }>;
-
-type DrawerMove = Readonly<
-  /** Point the drawer at an existing row. Touches no draft, so it needs no
-   *  identity: the reader pressed a row, or a card route opened its own one. */
-  | { kind: 'open-row'; id: string }
-  /** Reopen the held draft (`+` on a draft that was sent and failed). */
-  | { kind: 'open-draft' }
-  /** A brand-new draft, which by definition replaces whatever was held. */
-  | { kind: 'start-draft'; draft: ConversationDraft }
-  /** A whole-object edit of the draft `from`, applied only if it is still held. */
-  | { kind: 'edit-draft'; from: DraftId; next: (current: ConversationDraft) => ConversationDraft }
-  /** `from` became row `id`: drop it and open the row, or do neither. */
-  | { kind: 'adopt'; from: DraftId; id: string }
-  /** Close the drawer, discarding `discard` if it is still the held draft. */
-  | { kind: 'close'; discard: DraftId | null }
->;
-
-const heldIs = (held: ConversationDraft | null, id: DraftId): held is ConversationDraft =>
-  held !== null && held.scopeId === id.scopeId && held.key === id.key;
-
-function moveDrawer(state: DrawerState, move: DrawerMove): DrawerState {
-  switch (move.kind) {
-    case 'open-row':
-      return { ...state, open: { kind: 'row', id: move.id } };
-    case 'open-draft':
-      return { ...state, open: { kind: 'draft' } };
-    case 'start-draft':
-      return { open: { kind: 'draft' }, held: move.draft };
-    case 'edit-draft':
-      return heldIs(state.held, move.from) ? { ...state, held: move.next(state.held) } : state;
-    case 'adopt':
-      /* Both halves or neither. This is the whole point of the merge. */
-      return heldIs(state.held, move.from) ? { open: { kind: 'row', id: move.id }, held: null } : state;
-    case 'close':
-      return {
-        open: null,
-        held: move.discard !== null && heldIs(state.held, move.discard) ? null : state.held,
-      };
-  }
-}
-
-/**
- * The conversation module, identical on all three routes: a list, a `+` in the
+ * The conversation module, shared by Today and Track: a list, a `+` in the
  * module head, and the drawer both of them open.
  *
  * A draft is a third open state, not a flag on the second. On a `'rows'` route
@@ -876,19 +780,10 @@ function useConversationPanel(
   source: ConversationPanelSource,
   options?: { showTrack?: boolean },
 ) {
-  /* One draft at a time, and it names the area it belongs to — see
-     `ConversationDraft`. It shares a reducer with the drawer's target because
-     a late create has to move both or neither — see `DrawerState`. */
-  const [{ open: openTarget, held }, moveDrawerTo] = useReducer(
-    moveDrawer, { open: null, held: null } as DrawerState,
-  );
-  /* State, not a ref, unlike `store.send`'s `sendingRef`: `creating` is read by
-     the render (it disables the composer and both remedy buttons) and a ref
-     would not re-render. The double-submit a ref guards against cannot mint a
-     second card here — both posts carry the same draft key, and the server
-     collapses them onto one operation — so the guard a ref would add is one the
-     idempotency key already provides. */
-  const [creating, setCreating] = useState(false);
+  /* The drawer is route-local UI. The unfinished work it can show is not: a
+     failed draft lives in `ConversationProvider`, keyed by Track, so this
+     target can disappear on navigation without taking the retry key with it. */
+  const [openTarget, setOpenTarget] = useState<OpenTarget | null>(null);
   /*
    * The conversation whose composer this route was asked to put the caret in
    * — a just-created track's planner row (#1211 S2), and nothing else.
@@ -916,12 +811,36 @@ function useConversationPanel(
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
 
   /*
-   * The draft, if it belongs *here*.
-   *
-   * A held draft from another scope is not visible, reopenable or sendable
-   * here. Starting another draft is the one action that replaces it.
+   * The provider keeps independent drafts for other Tracks, but only this
+   * route's slot is visible, reopenable or sendable here.
    */
-  const draft = held !== null && source.kind === 'rows' && held.scopeId === source.scopeId ? held : null;
+  const sourceScopeId = source.kind === 'rows' ? source.scopeId : null;
+  const draft = sourceScopeId === null ? null : registry.draftOf(sourceScopeId);
+  const adoptedDraftId = sourceScopeId === null ? null : registry.adoptedDraftIdOf(sourceScopeId);
+  const creating = draft?.creating ?? false;
+  const discardUnsentDraft = registry.discardUnsentDraft;
+
+  /* Route-local drafts used to disappear automatically on unmount. Preserve
+     only work whose request actually left the browser; an untouched or locally
+     refused draft has no server identity that needs to outlive this route. */
+  useEffect(() => {
+    if (sourceScopeId === null) return;
+    return () => { discardUnsentDraft(sourceScopeId); };
+  }, [discardUnsentDraft, sourceScopeId]);
+
+  /*
+   * Adoption is the other half of the provider's draft transition. The
+   * reducer changes a matching `{ scopeId, key }` from `held` to `adopted` in
+   * one step; this route consumes that outcome when its row is available. If
+   * the create settles while the route is unmounted, the outcome waits here
+   * instead of either opening the wrong Track or being lost.
+   */
+  useEffect(() => {
+    if (sourceScopeId === null || adoptedDraftId === null || rows === null) return;
+    if (!rows.some((row) => row.id === adoptedDraftId)) return;
+    setOpenTarget({ kind: 'row', id: adoptedDraftId });
+    registry.finishDraftAdoption(sourceScopeId, adoptedDraftId);
+  }, [adoptedDraftId, registry, rows, sourceScopeId]);
 
   /*
    * Every write to the draft goes through one of these three, and each is a
@@ -929,13 +848,14 @@ function useConversationPanel(
    * a POST was made with; the two that can, move both at once.
    *
    * All three are no-ops when the draft they were computed from is no longer
-   * the one held. Note what that does and does not cover, because an earlier
-   * version of this comment claimed too much. A write becomes a no-op when the
-   * draft was adopted, closed or replaced. `adopt` is guarded by the same
-   * identity in the same reducer.
+   * the one held in that scope. A write becomes a no-op when the draft was
+   * adopted, closed or replaced. `adopt` is guarded by the same identity in
+   * the same provider reducer.
    */
-  const withDraft = (from: DraftId, next: (current: ConversationDraft) => ConversationDraft) => {
-    moveDrawerTo({ kind: 'edit-draft', from, next });
+  const withDraft = (
+    from: ConversationDraftId, next: (current: ConversationDraft) => ConversationDraft,
+  ) => {
+    registry.editDraft(from, next);
   };
   const amendDraft = (from: ConversationDraft, change: DraftEdit) => {
     withDraft(from, (current) => ({ ...current, ...change }));
@@ -982,7 +902,7 @@ function useConversationPanel(
        registry no longer remembers what was asked for. */
     const focusComposer = registry.requestedOpenFocusesComposer;
     if (rows === null || !rows.some((row) => row.id === requestedOpenId)) return;
-    moveDrawerTo({ kind: 'open-row', id: requestedOpenId });
+    setOpenTarget({ kind: 'row', id: requestedOpenId });
     if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
   }, [registry, rows]);
@@ -1035,7 +955,7 @@ function useConversationPanel(
      * committed is the second conversation this whole mechanism exists to stop.
      */
     if (draft !== null && draft.sentText !== null) {
-      moveDrawerTo({ kind: 'open-draft' });
+      setOpenTarget({ kind: 'draft' });
       return;
     }
     /*
@@ -1047,17 +967,15 @@ function useConversationPanel(
      * leave two conversations holding the same message. Binding it to the
      * draft is the whole reason the server requires the header.
      *
-     * `draft` is null whenever the held draft belongs to another scope, so this
-     * branch mints a key for the current Track.
+     * A draft held for another scope has another provider slot, so this branch
+     * can mint for the current Track without replacing it.
      */
-    moveDrawerTo({
-      kind: 'start-draft',
-      draft: {
-        scopeId: source.scopeId,
-        key: mintIdempotencyKey(),
-        text: null, sentText: null, error: null, remedy: null,
-      },
+    registry.startDraft({
+      scopeId: source.scopeId,
+      key: mintIdempotencyKey(),
+      text: null, sentText: null, creating: false, error: null, remedy: null,
     });
+    setOpenTarget({ kind: 'draft' });
   };
 
   /* `/new` inside a Track conversation runs the same draft start as the panel
@@ -1068,12 +986,11 @@ function useConversationPanel(
    * The attempt `from` became row `row`: forget the draft and open the row.
    *
    * `from` is not decoration. This runs after an `await`, and by then the
-   * reader may hold another draft; the reducer
-   * applies both halves only if `from` is still what is held, and otherwise
-   * applies neither — see `DrawerState`.
+   * reader may hold another draft. The provider reducer records the row only
+   * if `from` is still held; this route opens only that recorded adoption.
    */
-  const adopt = (from: DraftId, row: Conversation) => {
-    moveDrawerTo({ kind: 'adopt', from, id: row.id });
+  const adopt = (from: ConversationDraftId, row: Conversation) => {
+    registry.adoptDraft(from, row.id);
   };
 
   const UNCONFIRMED = 'Could not check whether the last attempt went through. Try again in a moment.';
@@ -1148,11 +1065,10 @@ function useConversationPanel(
     const previousText = draft.sentText;
     /* The draft this send is *for*, fixed here. Everything below writes through
        it, so a send that outlives its draft — adopted, closed, or left behind by
-       a scope switch — changes nothing rather than writing into whatever is held
-       by then. */
+       a scope switch — changes nothing rather than writing into whatever that
+       scope holds by then. */
     let attempt = draft;
-    setCreating(true);
-    amendDraft(attempt, { text, error: null, remedy: null });
+    amendDraft(attempt, { text, creating: true, error: null, remedy: null });
     void (async () => {
       try {
         /*
@@ -1175,9 +1091,9 @@ function useConversationPanel(
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key));
       } catch (error: unknown) {
-        await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
-        setCreating(false);
+        amendDraft(attempt, { creating: false });
       }
     })();
   };
@@ -1188,34 +1104,33 @@ function useConversationPanel(
     derivedCardId: (idempotencyKey: string) => string,
     scopeId: string,
     attempt: ConversationDraft,
-  ): Promise<void> {
+  ): Promise<ConversationDraft> {
     const failure = error instanceof ApiError
       ? conversationCreateFailure(error.failure)
       : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
     const message = failure.message;
     switch (failure.kind) {
       case 'gone':
-        amendDraft(attempt, { error: message, remedy: null });
+        registry.discardDraft(attempt);
         go({ name: 'today' });
-        return;
+        return attempt;
       case 'exhausted':
         /* A spent key can never succeed again, so a new one is minted — and it
            takes `sentText` with it: nothing has been posted under this key, so
            the next press must not be read as "the reader changed the words".
            The words themselves are untouched, so that press is a genuinely new
            conversation carrying them. */
-        rekeyDraft(attempt, mintIdempotencyKey(), { error: message, remedy: 'retry' });
-        return;
+        return rekeyDraft(attempt, mintIdempotencyKey(), { error: message, remedy: 'retry' });
       case 'stale-payload':
         amendDraft(attempt, { error: message, remedy: 'new-conversation' });
-        return;
+        return attempt;
       case 'blocked':
         /* Nothing committed and the key is unspent, so both it and the words
            are kept. Whether resending them unchanged can work depends on the
            cause the sentence names — a 400 refuses the words themselves — and
            the composer is open either way. */
         amendDraft(attempt, { error: message, remedy: 'retry' });
-        return;
+        return attempt;
       case 'exists': {
         /* The derived card exists, so this key can never mint again. If the
            re-read turns it up we open it; if it says there is none, only a new
@@ -1227,7 +1142,7 @@ function useConversationPanel(
         const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
         if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
-        return;
+        return attempt;
       }
       case 'unavailable':
       case 'retry':
@@ -1248,7 +1163,7 @@ function useConversationPanel(
         if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
         }
-        return;
+        return attempt;
     }
   }
 
@@ -1257,8 +1172,7 @@ function useConversationPanel(
     const { create, refresh, scopeId, derivedCardId } = source;
     const text = draft.text;
     let attempt = draft;
-    setCreating(true);
-    amendDraft(attempt, { error: null, remedy: null });
+    amendDraft(attempt, { creating: true, error: null, remedy: null });
     void (async () => {
       try {
         /* Pressed deliberately, but the same fence applies: a new key is only
@@ -1274,9 +1188,9 @@ function useConversationPanel(
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key));
       } catch (error: unknown) {
-        await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
-        setCreating(false);
+        amendDraft(attempt, { creating: false });
       }
     })();
   };
@@ -1295,11 +1209,12 @@ function useConversationPanel(
      next attempt a second conversation instead of a retry of this one, and
      `start` reopens exactly this state when `+` is pressed again. */
   const closeDrawer = () => {
-    moveDrawerTo({ kind: 'close', discard: draft !== null && draft.sentText === null ? draft : null });
+    setOpenTarget(null);
+    if (draft !== null && draft.sentText === null) registry.discardDraft(draft);
   };
 
-  /* A draft belonging to another area is not open here even if the drawer was
-     left on one: `draft` is null on any route but its own. */
+  /* A draft belonging to another Track is not open here: `draft` is read only
+     from this route's provider slot. */
   const draftOpen = openTarget?.kind === 'draft' && draft !== null;
 
   return {
@@ -1313,7 +1228,7 @@ function useConversationPanel(
              somewhere else. A `'rows'` route holds one for every row it lists,
              and the track it would navigate to is hidden. */
           if (source.kind !== 'elsewhere') {
-            moveDrawerTo({ kind: 'open-row', id: conversation.id });
+            setOpenTarget({ kind: 'row', id: conversation.id });
             return;
           }
           registry.requestOpen(conversation.id);
