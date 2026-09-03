@@ -185,7 +185,7 @@ Near-term work is focused on completing the new frontend cutover, making plugin 
 
 ## Contributing
 
-The project is evolving quickly. Before a large change, open an issue describing the user-visible outcome, the affected authority boundaries, and how the behavior will be verified. Keep pull requests scoped, preserve existing migrations and persisted contracts, and run the relevant local gates before submitting.
+The project is evolving quickly. Before a large change, open an issue describing the user-visible outcome, the affected authority boundaries, and how the behavior will be verified. Keep pull requests scoped, preserve existing migrations and persisted contracts, and run the relevant local gates before submitting. See [CONTRIBUTING.md](CONTRIBUTING.md) for the pull request format, verification checklist, and squash-only merge policy.
 
 ## License
 
