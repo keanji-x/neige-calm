@@ -123,6 +123,77 @@ impl<'ast> Visit<'ast> for Idents {
     }
 }
 
+/// Every free function *called* under a piece of syntax, by its last path
+/// segment.
+///
+/// Distinct from [`Idents`], which sees a bare mention. `let _ =
+/// guard_forked_blocks;` puts the ident in the body and takes the call out of
+/// the program; only this visitor tells the two apart.
+#[derive(Default)]
+struct Calls(BTreeSet<String>);
+
+impl<'ast> Visit<'ast> for Calls {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*call.func
+            && let Some(last) = path.path.segments.last()
+        {
+            self.0.insert(last.ident.to_string());
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+/// The functions called by an **unconditional statement of `body` itself** —
+/// not nested in any `if`, `match`, loop or closure.
+///
+/// This is stricter than "is called somewhere in the body" on purpose. #1252
+/// R1/F6: a review channel hollowed out the previous assertion two ways that
+/// both left it green while taking the belt off the execution path —
+/// `let _ = guard_forked_blocks;` (an ident, no call) and
+/// `if false { guard_forked_blocks(&blocks)?; }` (a call, unreachable). A
+/// statement-level rule refuses both: the first is not a call, the second is an
+/// `if` and not a call.
+///
+/// The cost is that legitimately moving the belt under a condition is red here
+/// too. That is the intended trade — the belt is unconditional today, and
+/// making it conditional is precisely the change that should stop a reviewer.
+fn unconditional_statement_calls(body: &syn::Block) -> BTreeSet<String> {
+    fn peel(expr: &syn::Expr) -> &syn::Expr {
+        match expr {
+            syn::Expr::Try(inner) => peel(&inner.expr),
+            syn::Expr::Await(inner) => peel(&inner.base),
+            syn::Expr::Paren(inner) => peel(&inner.expr),
+            syn::Expr::Group(inner) => peel(&inner.expr),
+            other => other,
+        }
+    }
+
+    let mut called = BTreeSet::new();
+    let mut record = |expr: &syn::Expr| {
+        if let syn::Expr::Call(call) = peel(expr)
+            && let syn::Expr::Path(path) = &*call.func
+            && let Some(last) = path.path.segments.last()
+        {
+            called.insert(last.ident.to_string());
+        }
+    };
+    for statement in &body.stmts {
+        match statement {
+            syn::Stmt::Expr(expr, _) => record(expr),
+            // `let x = f(..)?;` is as unconditional as `f(..)?;`.
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init
+                    && init.diverge.is_none()
+                {
+                    record(&init.expr);
+                }
+            }
+            _ => {}
+        }
+    }
+    called
+}
+
 /// A piece of syntax as it is *written*, with every space removed.
 ///
 /// Whitespace goes so that the expected spellings in the tables above can be
@@ -379,8 +450,11 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
 /// `routes::tracks::fork_guard::tests::
 /// fork_guard_exempts_rule_one_but_belts_release_for_every_author`.
 ///
-/// So the two failure modes with no behavioural detector are the two this test
-/// takes: the call disappearing, and the belt migrating onto the shared door.
+/// So the failure modes with no behavioural detector are the ones this test
+/// takes: the call disappearing, the call being *hollowed out* where it stands
+/// (#1252 R1/F6 — `let _ = guard_forked_blocks;` and `if false { … }` both left
+/// the earlier "the ident appears in the body" version of this assertion
+/// green), and the belt migrating onto the shared door.
 /// The second is the one #1252 S2 makes newly possible and explicitly vetoed —
 /// `track_report::write::structural_init_report_tx` serves `TrackInit::Template`
 /// as well as `TrackInit::Fork`, so a belt hung there would give template
@@ -407,15 +481,29 @@ fn the_release_belt_stays_next_to_the_normalization_it_belts() {
             _ => None,
         })
         .expect("`prepare_fork_report` vanished from routes/tracks.rs");
-    let mut prepare_names = Idents::default();
-    prepare_names.visit_block(&prepare.block);
-    for required in [EXPORTED_ENTRY, "normalize_task_privilege_fields"] {
-        assert!(
-            prepare_names.0.contains(required),
-            "`prepare_fork_report` must still call `{required}`: the belt and the normalization \
-             it belts are only meaningful adjacent to each other"
-        );
-    }
+    // The belt: an unconditional statement of the function body. Not "the name
+    // appears somewhere in the body", which is what this asserted before
+    // #1252 R1/F6 and which `let _ = guard_forked_blocks;` and
+    // `if false { guard_forked_blocks(&blocks)?; }` both satisfied while
+    // taking the belt out of the program.
+    assert!(
+        unconditional_statement_calls(&prepare.block).contains(EXPORTED_ENTRY),
+        "`prepare_fork_report` must call `{EXPORTED_ENTRY}` from an unconditional statement of \
+         its own body: the belt and the normalization it belts are only meaningful adjacent to \
+         each other, and a call that is merely *mentioned*, or nested under a condition, is not \
+         on the path a fork takes"
+    );
+
+    // The normalization it belts runs per block, so its call is inside the
+    // loop and the statement-level rule does not apply to it. Call position is
+    // still stronger than a bare mention.
+    let mut prepare_calls = Calls::default();
+    prepare_calls.visit_block(&prepare.block);
+    assert!(
+        prepare_calls.0.contains("normalize_task_privilege_fields"),
+        "`prepare_fork_report` must still call `normalize_task_privilege_fields`: the belt is a \
+         belt over that normalization, and means nothing without it"
+    );
 
     let door_path = manifest.join("src/track_report/write.rs");
     let door_source = std::fs::read_to_string(&door_path)
