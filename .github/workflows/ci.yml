@@ -378,6 +378,12 @@ jobs:
       - name: template rename residual gate (#1209 PR-2, acceptance B10)
         run: ./scripts/gate-1209-template-rename-residual.sh
 
+      - name: terminology ratchet (#1316 S0)
+        run: ./scripts/gate-1316-terminology-ratchet.sh
+
+      - name: terminology ratchet discriminates (#1316 S0)
+        run: ./scripts/gate-1316-terminology-ratchet.sh --selftest
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 

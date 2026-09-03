@@ -1,0 +1,24 @@
+# #1316 retiring-vocabulary ratchet baseline. Regenerate with:
+#   ./scripts/gate-1316-terminology-ratchet.sh --update-baseline
+# Counts are MATCHING LINES per (term, scope). Only-down is enforced.
+# term	scope	count
+cove	crates	7893
+cove	fe	2290
+cove	docs	713
+cove	e2e	37
+wave	crates	20276
+wave	fe	4489
+wave	docs	1994
+wave	e2e	44
+spec	crates	5245
+spec	fe	561
+spec	docs	387
+spec	e2e	42
+runtime_id	crates	1419
+runtime_id	fe	66
+runtime_id	docs	6
+runtime_id	e2e	5
+harness_item	crates	237
+harness_item	fe	110
+harness_item	docs	2
+harness_item	e2e	0
