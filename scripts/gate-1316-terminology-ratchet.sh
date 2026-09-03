@@ -26,11 +26,32 @@
 #
 # WHAT EACH PATTERN COVERS, STATED HONESTLY
 #
-# `cove` / `wave`
-#   Both are this project's coinages. A scan of every `[a-z]*wave[a-z]*` form in
-#   `crates fe docs e2e` returns no ordinary-English use — no `wavelength`, no
-#   `microwave`, no `waveform`. The bare case-insensitive substring is therefore
-#   exact, not a heuristic, and needs no allowlist.
+# `cove`
+#   This project's coinage. No ordinary-English use in scope.
+#
+# `wave` — OVER-BROAD, and the first version of this header said otherwise
+#   The claim shipped in the first draft was "no ordinary-English use — no
+#   `wavelength`, no `microwave`, no `waveform`", produced by filtering
+#   `[a-z]*wave[a-z]*` through an exclusion regex ending `wave[a-z_]*$`. That
+#   trailing clause swallows `waved`, so the filter excluded exactly the English
+#   forms it was supposed to surface: the "zero hits" was an artefact of a
+#   broken filter, not a fact about the tree. The real hits, found by the review
+#   channel and re-verified independently:
+#
+#     crates/calm-server/src/wave_report_guard.rs:417      "would wave through"
+#     crates/calm-server/src/workspace_materialize.rs:356  "would have waved through"
+#     crates/calm-server/src/routes/plugin_routes.rs:966   "would wave through"
+#     crates/calm-server/tests/cases/wave_workspace_recycle.rs:345  "be waved through"
+#     crates/calm-server/tests/cases/deferred_read_tx_deadlock_repro.rs:256  "hand-wave"
+#
+#   `wave through` / `waved through` (= to let something pass unchecked) and
+#   `hand-wave` are ordinary English about gates and proofs, and this codebase's
+#   comments reach for them often. They are counted, exactly like the bare
+#   `spec` case below. Consequence to accept knowingly: writing "would wave
+#   through" in a new comment raises that cell and fails this gate. The honest
+#   resolution is a different word ("would let through", "would pass") — not a
+#   pattern exemption, because `(?<!hand-)` -style carve-outs would also exempt
+#   real occurrences of our noun that happen to sit next to those letters.
 #
 # `spec` — the PLANNER-AGENT sense (#1316 B class)
 #   Narrowed three ways and STILL over-broad, deliberately:
@@ -104,9 +125,17 @@ EOF
 RATCHETED_SCOPES=(crates fe docs e2e)
 INFO_SCOPES=(web)
 
+# Counts OCCURRENCES, not matching lines.
+#
+# The first version of this gate used `git grep -c`, whose unit is the matching
+# LINE. That left the ratchet trivially bypassable: appending a second
+# `cove_id` to a line that already matches does not move a line count, so new
+# retiring vocabulary could enter the tree completely green. `-o` emits one
+# output line per match, so `wc -l` is an occurrence count and the bypass is
+# closed. Occurrence counting is also strictly tighter in the down direction —
+# deleting one of two matches on a shared line now registers.
 count() { # $1=pattern $2=scope
-  git grep -P -c "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null |
-    awk -F: '{s+=$NF} END {print s+0}'
+  git grep -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null | wc -l
 }
 
 emit_baseline() {
@@ -151,6 +180,21 @@ if [ "${1:-}" = '--selftest' ]; then
     echo "selftest ok: 'specification' / 'at runtime' / 'foo.spec.ts' do not trip it"
   else
     echo "SELFTEST FAIL: ordinary English tripped the gate"; "./$SELF"; fails=1
+  fi
+
+  # The unit is OCCURRENCES, not matching lines. Three `cove` on ONE line must
+  # move the count by three; under the `git grep -c` this gate originally used
+  # it moved by one, which is what made the ratchet bypassable by appending to
+  # an already-matching line. Reading the delta is the only way to tell the two
+  # implementations apart — both are red here, only one is red for the right
+  # reason.
+  printf 'cove cove cove\n' >"$probe"
+  delta="$("./$SELF" 2>&1 | sed -n 's/.*cove\/crates rose from \([0-9]*\) to \([0-9]*\).*/\2-\1/p' | head -1)"
+  if [ -n "$delta" ] && [ "$((${delta}))" -eq 3 ]; then
+    echo "selftest ok: 3 matches on 1 line move the count by 3 (occurrence-counted, not line-counted)"
+  else
+    echo "SELFTEST FAIL: 3 matches on 1 line moved the count by '${delta:-<no rose-from message>}', expected 3 — the ratchet is line-counting again and can be bypassed by appending to a matching line"
+    fails=1
   fi
 
   exit "$fails"
