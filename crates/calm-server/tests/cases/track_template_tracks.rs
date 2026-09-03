@@ -416,7 +416,8 @@ async fn creating_from_a_template_mints_no_hidden_track() {
 /// is the *identical* half stated twice. The escape construction: make a report
 /// write fan out to every track carrying the same `template_id` (one extra
 /// `UPDATE ... WHERE template_id = ...` after `card_update_with_crdt_tx` in
-/// `track_report::write::persist`). The two documents are then genuinely one
+/// `track_report::write::write_report_row_and_project_tx`, the row write
+/// `write::persist` and the structural door share). The two documents are then genuinely one
 /// document behind two ids, and a create-time-only comparison stays green. So
 /// this case edits one track and re-reads the other; independence is only
 /// asserted about a state the two could actually disagree in.

@@ -164,6 +164,14 @@ run_case "R3: an entry is removed" red \
   "R3: the exported write-entry set changed" \
   's/^pub(crate) async fn agent_report_op($/async fn agent_report_op(/'
 
+# R3 — the #1252 S2 door is removed. The `an entry is removed` case above pins
+# the same rule against `agent_report_op`; this one exists because a pinned line
+# nobody has watched fail is a pinned line nobody knows is live, and this is the
+# line that was added last.
+run_case "R3: the structural door is removed" red \
+  "R3: the exported write-entry set changed" \
+  's/^pub(crate) async fn structural_init_report_tx($/async fn structural_init_report_tx(/'
+
 # R3 — a new entry in a visibility form the gate's first revision did not match.
 # `pub(super)` is visible to `track_report`, which can `pub use` it onward; the
 # original `pub(?:\(crate\))?` group let this one through silently.

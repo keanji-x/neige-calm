@@ -4,9 +4,11 @@
 //!
 //! [`persist`] is the one function that performs a report **edit**: it applies
 //! a [`ReportDocOp`] to the CRDT and emits the `CardUpdated` + `…Edited` pair.
-//! It is not the only code that writes the report card's row — the create-time
-//! paths do (see "What is still not closed", item 4) — and no claim here should
-//! be read as saying otherwise.
+//! It is not the only code in this file that writes the report card's row:
+//! since #1252 S2 the create-time paths write it too, through
+//! [`structural_init_report_tx`], and no claim here should be read as saying
+//! otherwise. What changed with that slice is *where* those writes are, not
+//! that they stopped — see "What is still not closed", item 4.
 //!
 //! It is **private to this module**, and that closes the caller set in two
 //! steps, which are worth separating because only the first one is `rustc`'s:
@@ -71,6 +73,20 @@
 //! | [`rest_user_replace`] | `routes::tracks::update_track_report` | `User`, fixed |
 //! | [`rest_user_block_op`] | `routes::track_report_blocks::commit` | `User`, fixed |
 //! | [`agent_report_op`] | `decision_sink::CardDecisionSink::commit_report_op` | caller-supplied; that caller derives it from `identity.role` |
+//! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — the signature has no way to name one** |
+//!
+//! The fourth row is a different kind of entry from the first three and the
+//! table would mislead without this sentence: it does not reach [`persist`],
+//! and it is not an edit. It is #1252 S2's **structural door** — track creation
+//! laying a forked or templated report onto the card it just INSERTed, inside
+//! the create transaction. It shares exactly the row write and the task
+//! projection with [`persist`] (the private
+//! [`write_report_row_and_project_tx`], where the order between those two
+//! statements is the contract) and nothing else. Its six absences —
+//! no author, no actor, no `EventBus`, no CAS input, no lifecycle /
+//! auto-promote, no recorder probe — are documented one by one on the function,
+//! and `tests/cases/fork_guard_exemption_invariant.rs` parses this file to keep
+//! them absent.
 //!
 //! The two REST entries do not *take* an `ActorId` or an `EditAuthor`. Both
 //! handlers used to pass `User` / `User` as arguments under a comment saying
@@ -92,8 +108,12 @@
 //! not the other, and the old census's mistake was letting the two blur:
 //!
 //! * *only three* — **closed for the boundary's own signature set**: three is
-//!   the number of `pub(crate)` doors, and a fourth door has to be cut in this
-//!   file because nothing else can reach [`persist`]. It is emphatically *not*
+//!   the number of `pub(crate)` doors that reach [`persist`], and a fourth such
+//!   door has to be cut in this file because nothing else can reach it.
+//!   (#1252 S2 added a fourth `pub(crate)` entry,
+//!   [`structural_init_report_tx`], which is why "three doors" and "three
+//!   `pub(crate)` fns" are no longer the same count: that one does not reach
+//!   [`persist`] and performs no edit.) It is emphatically *not*
 //!   "only three (actor, author, auto-promote, probe) tuples ever reach the
 //!   writer": [`agent_report_op`] takes all four from its caller, so any
 //!   sibling module can compose a new one without touching this file. Item 1
@@ -142,18 +162,25 @@
 //!    That gate is text over one file, so it inherits the usual limits — it is
 //!    the *residue* after `rustc` did the load-bearing part, not a repeat of
 //!    the census.
-//! 4. **Other code writing the report card's row directly.** This is not
-//!    hypothetical and not only about hand-written SQL: the create paths reach
+//! 4. **Other code writing the report card's row directly.** The class is open
+//!    and it is not only about hand-written SQL: a bare `UPDATE cards SET
+//!    payload = ..., body_crdt = ...` in any `write_with_*_typed` closure
+//!    rewrites the row without coming near this module, no module boundary
+//!    reaches that, and #1252 §3 P2 records why it has no local solution. So
+//!    "[`persist`] is the only thing that touches the row" would still be false
+//!    and is not claimed anywhere here.
+//!
+//!    What #1252 S2 changed is the one member this list has ever been able to
+//!    name. Until that slice the create paths reached
 //!    `card_update_with_crdt_tx` through
-//!    `routes::tracks::persist_initial_report_and_project_tasks_tx` to lay down
-//!    a template or forked report inside the create transaction. Those writes
-//!    are structural initialization — no edit event, no author — but they do
-//!    rewrite `payload` and `body_crdt`, so "[`persist`] is the only thing that
-//!    touches the row" would be false and is not claimed anywhere here. Same
-//!    for a bare `UPDATE cards SET payload = ..., body_crdt = ...` in any other
-//!    `write_with_*_typed` closure. No module boundary reaches this class;
-//!    #1252 §3 P2 records why it has no local solution. Declared, not
-//!    eliminated — unchanged by this slice.
+//!    `routes::tracks::persist_initial_report_and_project_tasks_tx`, so this
+//!    item read "declared, not eliminated". That function is gone: the create
+//!    paths enter through [`structural_init_report_tx`], and
+//!    `card_update_with_crdt_tx` now has **one** production call file — this
+//!    one. Read that as the honest thing it is: every production writer of the
+//!    row that anyone has found is now inside this boundary, and a *new* one
+//!    could still be written outside it tomorrow with nothing here noticing.
+//!    Eliminated for the known members, not closed as a class.
 //! 5. **Which `EditAuthor` [`agent_report_op`] is handed.** Closed for the two
 //!    REST entries by their signatures; for the MCP entry it remains the
 //!    characterization suite's job.
@@ -503,9 +530,11 @@ pub async fn persist_report(
 /// emits neither.
 ///
 /// "Every edit", not "every write to the row": the create-time paths lay a
-/// template or forked report down through `card_update_with_crdt_tx` without
-/// coming near this function (module header, "What is still not closed", item
-/// 4). Before #1318 §1 even the narrower claim was about a `pub(crate)`
+/// template or forked report down without coming near this function — since
+/// #1252 S2 they do it through this module's own
+/// [`structural_init_report_tx`], which shares the row write with this function
+/// and nothing else (module header, "What is still not closed", item 4).
+/// Before #1318 §1 even the narrower claim was about a `pub(crate)`
 /// function anybody in the crate could call; now it is about a function only
 /// this module's subtree can reach, with the entry points above as the list of
 /// doors that exist today — a list this module maintains, not one the compiler

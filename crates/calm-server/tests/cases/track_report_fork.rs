@@ -515,7 +515,8 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
 /// Counts every table the fork persistence path writes, so a "zero residue"
 /// assertion covers the whole surface: the track row, the attached area folder,
 /// both cards (planner + reportcard), the overlays, and the `tasks` rows that
-/// `persist_initial_report_and_project_tasks_tx` projects out of the copied report.
+/// `track_report::write::structural_init_report_tx` projects out of the copied
+/// report.
 async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
     calm_server::db::write_in_tx_typed(repo, |tx| {
         Box::pin(async move {
