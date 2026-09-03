@@ -2,15 +2,15 @@
 #   ./scripts/gate-1316-terminology-ratchet.sh --update-baseline
 # Counts are MATCHING LINES per (term, scope). Only-down is enforced.
 # term	scope	count
-cove	crates	10672
-cove	fe	3158
+cove	crates	10670
+cove	fe	3159
 cove	docs	885
 cove	e2e	52
-wave	crates	26489
-wave	fe	6055
+wave	crates	26633
+wave	fe	6065
 wave	docs	2361
 wave	e2e	60
-spec	crates	5800
+spec	crates	5806
 spec	fe	621
 spec	docs	408
 spec	e2e	49

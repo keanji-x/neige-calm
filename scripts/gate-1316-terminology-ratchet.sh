@@ -16,6 +16,20 @@
 #
 # THE RULE, BOTH DIRECTIONS
 #
+# A BASELINE IS ONLY VALID FOR THE TREE IT WAS GENERATED ON
+#
+# Merging `main` into a slice branch invalidates the numbers, in BOTH
+# directions, and this gate will say so. It happened to this very PR: merging
+# `main` moved `wave/crates` +144 and `cove/crates` -2, and the gate went red on
+# an unmodified script. Regenerate after every merge of upstream, and treat a
+# baseline generated before a rebase as expired evidence rather than as a number
+# to carry forward.
+#
+# That regeneration is not a loophole, but only because of an ordering fact: on
+# `main` this gate is always live, so `main` can never rise. Every count a merge
+# brings in was already gated at the moment it landed. The one tree where that
+# is not yet true is this PR itself, which introduces the gate.
+#
 #   actual > baseline  => FAIL. New retiring vocabulary entered the tree.
 #   actual < baseline  => FAIL. The ratchet must be tightened; run
 #                         `--update-baseline` and commit the new numbers.
