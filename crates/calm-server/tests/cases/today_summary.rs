@@ -11,6 +11,13 @@
 //! * **INV-TODAYDOC-011** — the derived conversation card is invariant under
 //!   actor, workspace re-point and request count.
 //!
+//! Since #1343 it also owns the *other* consumer of the same projection: a
+//! conversation created on the launchpad track through
+//! `POST /api/tracks/{id}/conversations` opens with the day's activity window.
+//! The two live in one file because they read one computation and because the
+//! rulings only make sense side by side — the summary endpoint refuses an empty
+//! day, the conversation path states it.
+//!
 //! Plus the one thing the projection's own unit tests cannot claim: that the
 //! rows a *real* emitter writes are the rows it counts.
 //!
@@ -240,6 +247,57 @@ impl Boot {
     async fn summary(&self, actor: Option<&str>) -> (StatusCode, Value) {
         self.request("POST", "/api/today/summary", actor, None)
             .await
+    }
+
+    /// `POST /api/today/launchpad/ensure` — the only way to get a launchpad
+    /// without going through the summary endpoint, which is what the #1343
+    /// cases need: they must be able to reach a launchpad on a day the summary
+    /// endpoint would refuse.
+    async fn ensure_launchpad(&self) -> String {
+        let (status, body) = self
+            .request("POST", "/api/today/launchpad/ensure", None, None)
+            .await;
+        assert!(
+            status.is_success(),
+            "launchpad ensure failed: {status} {body}"
+        );
+        body["track_id"].as_str().unwrap().to_string()
+    }
+
+    /// `POST /api/tracks/{id}/conversations` — the production create route.
+    async fn create_conversation(
+        &self,
+        track_id: &str,
+        idempotency_key: &str,
+        text: &str,
+    ) -> (StatusCode, Value) {
+        let request = Request::post(format!("/api/tracks/{track_id}/conversations"))
+            .header("content-type", "application/json")
+            .header("idempotency-key", idempotency_key)
+            .body(Body::from(json!({ "text": text }).to_string()))
+            .unwrap();
+        let response = self.app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// This card's transcript in delivery order: what the app-server was handed
+    /// first, then what is still queued behind it.
+    ///
+    /// **Turns before queue is the order, not an arbitrary concatenation.** A
+    /// message that has reached a turn was drained before anything still in the
+    /// queue, and within each half the order is the source's own — the fake
+    /// records turn items in order and `pending_queue` is a queue. So a message
+    /// appearing earlier in this joined text really was enqueued earlier, which
+    /// is the only claim the #1343 ordering assertion makes.
+    async fn transcript_in_order(&self, card_id: &str) -> String {
+        let mut texts = self.turn_texts();
+        texts.extend(self.queued_texts(card_id).await);
+        texts.join("\n---\n")
     }
 
     async fn scalar(&self, sql: &str) -> i64 {
@@ -739,6 +797,153 @@ fn count_needles(texts: &[String], needles: &[&str]) -> Vec<usize> {
 /// delivered message can be identified as the summary by its content rather
 /// than by its size.
 const SUMMARY_MARKER: &str = "Today's activity across the workspace";
+
+/// A phrase carried by #1343's opening briefing and by nothing else, including
+/// the summary prompt.
+///
+/// The two prompts render the *same* counts block, so a needle taken from the
+/// counts would match either of them; this one is from the briefing's own lead
+/// sentence, which is deliberately worded apart from the summary's for exactly
+/// that reason.
+const BRIEFING_MARKER: &str = "Context from the server before you start";
+
+/// The briefing's empty-day sentence, which has no counts in it at all.
+const EMPTY_DAY_MARKER: &str = "nothing has been recorded in this workspace today";
+
+/// #1343 — a conversation started on the launchpad opens with the day's window,
+/// **ahead of** the user's first message.
+///
+/// This is the injection that replaces the deleted `Rewrite today's progress`
+/// button as the way the day's activity reaches an agent. Three things are
+/// asserted and each rules out a different way of shipping nothing:
+///
+/// * the briefing was delivered at all (a needle on its own lead sentence, not
+///   on the counts, which the summary prompt also renders);
+/// * it carries the *real* counts, so it is the projection and not a template —
+///   the report edit below is one `track.report_edited` on one track;
+/// * it precedes the user's message, which is the whole point of calling it
+///   opening material.
+#[tokio::test]
+async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_message() {
+    let b = boot().await;
+    let track_id = b.user_track("busy").await;
+    b.edit_report(&track_id, "something happened").await;
+    let launchpad = b.ensure_launchpad().await;
+
+    let (status, created) = b
+        .create_conversation(&launchpad, "asking-about-today", "What happened today?")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "created={created}");
+    let card_id = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        b.delivered(
+            &card_id,
+            &[BRIEFING_MARKER, "What happened today?", SUMMARY_MARKER],
+            2,
+        )
+        .await,
+        vec![1, 1, 0],
+        "the briefing and the user's message, and nothing from the summary \
+         endpoint — which was never called here"
+    );
+
+    let transcript = b.transcript_in_order(&card_id).await;
+    assert!(
+        transcript.contains("- report edits: 1"),
+        "the briefing must carry the day's real counts, not a template: \
+         {transcript}"
+    );
+    assert!(
+        transcript.contains("- distinct tracks touched: 1"),
+        "{transcript}"
+    );
+    let briefing_at = transcript.find(BRIEFING_MARKER);
+    let question_at = transcript.find("What happened today?");
+    assert!(
+        briefing_at.is_some() && briefing_at < question_at,
+        "the day's material has to reach the agent before the question does; \
+         briefing at {briefing_at:?}, question at {question_at:?} in:\n\
+         {transcript}"
+    );
+}
+
+/// #1343 — an empty day is **stated**, not skipped, and it does not block the
+/// create.
+///
+/// The ruling this pins is the one the injection had to make: INV-TODAYDOC-007
+/// refuses an empty day on `POST /api/today/summary`, and the two rejected
+/// alternatives here were to copy that refusal (a user could then not start a
+/// conversation on a quiet morning) or to send nothing (the agent would answer
+/// "what happened today?" from the workspace, which is exactly the state the
+/// injection exists to end).
+///
+/// So both halves are asserted, and both are load-bearing: a 201 alone is
+/// satisfied by an implementation that briefs nothing, and the empty-day
+/// sentence alone is satisfied by one that also refuses.
+#[tokio::test]
+async fn an_empty_day_is_briefed_as_empty_and_still_opens_the_conversation() {
+    let b = boot().await;
+    // A track exists and no activity was produced on it: creating a track is
+    // not on the allowlist, so this really is an empty day. The sibling case
+    // `an_empty_activity_window_refuses_without_creating_or_sending_anything`
+    // shows the summary endpoint refusing the very same state.
+    let _quiet = b.user_track("quiet").await;
+    let launchpad = b.ensure_launchpad().await;
+
+    let (status, created) = b
+        .create_conversation(&launchpad, "asking-on-a-quiet-day", "Anything for me?")
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an empty day must not take the conversation away: {created}"
+    );
+    let card_id = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        b.delivered(
+            &card_id,
+            &[EMPTY_DAY_MARKER, "Anything for me?", "- report edits:"],
+            2,
+        )
+        .await,
+        vec![1, 1, 0],
+        "an empty day is stated in words; a block of zeroes would be the \
+         silent empty feed this ruling rejected"
+    );
+}
+
+/// #1343 stays on the launchpad. An ordinary track's conversation is untouched.
+///
+/// The branch is `track_get_launchpad()`-identity, so this is the case that
+/// tells "brief the launchpad" from "brief everything": the workspace here has
+/// a launchpad *and* real activity, so a briefing that leaked onto other tracks
+/// would have material to leak.
+#[tokio::test]
+async fn an_ordinary_tracks_conversation_carries_no_activity_briefing() {
+    let b = boot().await;
+    let track_id = b.user_track("ordinary").await;
+    b.edit_report(&track_id, "something happened").await;
+    b.ensure_launchpad().await;
+
+    let (status, created) = b
+        .create_conversation(&track_id, "ordinary-chat", "Hello there")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "created={created}");
+    let card_id = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        b.delivered(
+            &card_id,
+            &["Hello there", BRIEFING_MARKER, EMPTY_DAY_MARKER],
+            1
+        )
+        .await,
+        vec![1, 0, 0],
+        "only the user's message; the day's window belongs to Today's track"
+    );
+}
 
 /// INV-TODAYDOC-007 — the endpoint refuses an empty window and leaves nothing
 /// behind.
@@ -1406,6 +1611,11 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
      * than a gap. A row-count assertion here would read `2` and call it
      * "bootstrap + summary", which is exactly the mistake this case used to
      * make.
+     *
+     * The interloper posts to `POST /api/tracks/{launchpad}/conversations`, so
+     * since #1343 it also carries the day's opening briefing — three messages,
+     * not two. It is named here rather than folded into the total so that the
+     * count stays a statement about *which* messages arrived.
      */
     assert_eq!(
         b.delivered(
@@ -1414,13 +1624,14 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
                 TODAY_SUMMARY_BOOTSTRAP_TEXT,
                 SUMMARY_MARKER,
                 "a different first message",
+                BRIEFING_MARKER,
             ],
-            2,
+            3,
         )
         .await,
-        vec![0, 1, 1],
-        "the interloper's message and the trigger's summary — and no bootstrap, \
-         because something had already spoken to this card"
+        vec![0, 1, 1, 1],
+        "the interloper's briefing and message and the trigger's summary — and \
+         no bootstrap, because something had already spoken to this card"
     );
 }
 

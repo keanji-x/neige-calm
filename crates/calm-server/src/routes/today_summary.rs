@@ -58,13 +58,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use utoipa::ToSchema;
 
 use crate::activity_window::{
-    WorkspaceActivityWindow, local_day_window, workspace_activity_window,
+    WorkspaceActivityWindow, activity_counts_block, todays_workspace_activity,
 };
 use crate::actor::Actor;
 use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversation_keys};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::ActorId;
-use crate::model::now_ms;
 use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
 };
@@ -74,7 +73,9 @@ use crate::routes::cards::{
 };
 use crate::routes::conversations_shared::user_message_already_enqueued;
 use crate::routes::today::ensure_today_launchpad;
-use crate::routes::track_conversations::{NewTrackConversationBody, create_track_conversation};
+use crate::routes::track_conversations::{
+    NewTrackConversationBody, OpeningBriefing, create_track_conversation_inner,
+};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
 pub fn router() -> Router<AppState> {
@@ -331,16 +332,8 @@ fn summary_prompt(activity: &WorkspaceActivityWindow) -> String {
          counts are all the activity data available to you — there is no tool \
          to query for more, so write about what these numbers plus the \
          workspace itself support, and do not invent specifics:\n\
-         - tracks whose lifecycle changed: {}\n\
-         - report edits: {}\n\
-         - tasks completed: {}\n\
-         - tasks failed: {}\n\
-         - distinct tracks touched: {}\n",
-        activity.track_lifecycle_changed,
-        activity.track_report_edited,
-        activity.task_completed,
-        activity.task_failed,
-        activity.tracks_touched,
+         {}",
+        activity_counts_block(activity),
     )
 }
 
@@ -375,14 +368,12 @@ pub(crate) async fn write_today_summary(
     // Ensuring here would mean an empty day still materialized a workspace and
     // started a harness — the thing step 2 exists to avoid.
     let launchpad = app.repo.track_get_launchpad().await?;
-    let (start_ms, end_ms) = local_day_window(now_ms());
-    let activity = workspace_activity_window(
-        &pool,
-        start_ms,
-        end_ms,
-        launchpad.as_ref().map(|track| track.id.as_str()),
-    )
-    .await?;
+    // The shared entry point, not a second computation: since #1343 the
+    // launchpad's conversation-create path reads the same window, and two
+    // surfaces quoting different numbers for one day is the failure that would
+    // never look like a failure. See `activity_window`'s module docs.
+    let activity =
+        todays_workspace_activity(&pool, launchpad.as_ref().map(|track| track.id.as_str())).await?;
 
     // INV-TODAYDOC-007's enforcement point, and it is here rather than in the
     // frontend on purpose: hiding the button is UI, and a POST straight at this
@@ -390,6 +381,13 @@ pub(crate) async fn write_today_summary(
     // about *this* endpoint. `POST /api/tracks/{id}/conversations` and
     // `POST /api/cards/{id}/planner/input` stay reachable and are not in scope: a
     // user typing to an agent by hand is not the thing being prevented.
+    //
+    // #1343 sharpened what "in scope" means rather than widening it. The
+    // conversation-create path now also reads today's window and opens with it,
+    // and it does **not** refuse an empty day — it says the day is empty
+    // (`activity_window::opening_activity_briefing`). The two are not in
+    // tension: what this gate refuses is commissioning a *report* out of
+    // nothing, and a conversation the user starts commissions nothing.
     if activity.is_empty() {
         return Err(CalmError::TodaySummaryNoActivity(
             "nothing happened in this workspace today, so there is nothing to \
@@ -461,17 +459,23 @@ pub(crate) async fn write_today_summary(
         }
         // The real handler, not a reimplementation of it: the mint, the
         // derived-id guard, the four retry arms and the first-message claim all
-        // have to be the ones production uses.
-        let created = create_track_conversation(
-            State(s.clone()),
-            State(w.clone()),
-            State(cs.clone()),
+        // have to be the ones production uses. The one thing this caller says
+        // for itself is `CallerSuppliesItsOwn`: #1343 gives a user-started
+        // launchpad conversation the day's counts as opening material, and this
+        // path already carries them in `summary_prompt` below — being briefed
+        // as well would state them twice and leave a third
+        // `harness.user_message.enqueued` row where INV-TODAYDOC-010 wants two.
+        let created = create_track_conversation_inner(
+            s.clone(),
+            w.clone(),
+            cs.clone(),
             synthetic_actor(),
             headers,
-            Path(track_id.clone()),
-            Json(NewTrackConversationBody {
+            track_id.clone(),
+            NewTrackConversationBody {
                 text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
-            }),
+            },
+            OpeningBriefing::CallerSuppliesItsOwn,
         )
         .await;
         // D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒

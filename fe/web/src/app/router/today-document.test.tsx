@@ -63,8 +63,6 @@ const INITIAL_BODY = '<!-- 报告维护契约: 当下快照，每次 REWRITE -->
   + '# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n';
 const SECTION_HEADINGS = ['概要', '待你定', '已完成', '决策'] as const;
 const EMPTY_COPY = 'Nothing written today yet.';
-/** The trigger's label before a report exists. */
-const WRITE_LABEL = 'Write today’s progress';
 
 function reportCard(body: string) {
   return {
@@ -97,23 +95,18 @@ type Case = Readonly<{
   /** The launchpad report's `body`. */
   body: string;
   detail?: DetailMode;
-  /** What `POST /api/today/summary` answers; a 200 by default. */
-  summary?: ApiTransportResponse;
-  /** What `POST /api/today/launchpad/ensure` answers; a 201 by default. */
-  ensure?: ApiTransportResponse;
+  /** What the report reset answers; a 200 by default. */
+  reset?: ApiTransportResponse;
 }>;
 
-function renderToday({ resolve, body, detail = 'seeded', summary, ensure }: Case) {
+function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
   const requests: ApiRequest[] = [];
   const detailOk = () => ok({ track: launchpadTrack, cards: [reportCard(body)], overlays: [] });
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
-      if (request.path === '/api/today/launchpad/ensure') {
-        return Promise.resolve(ensure ?? { status: 201, statusText: 'Created', body: { track_id: 'lp' } });
-      }
-      if (request.path === '/api/today/summary') {
-        return Promise.resolve(summary ?? ok({ track_id: 'lp', card_id: 'conv-1' }));
+      if (request.path === '/api/today/launchpad/report/reset') {
+        return Promise.resolve(reset ?? ok({ track_id: 'lp', report_has_noninitial_content: false }));
       }
       if (request.path === '/api/today/launchpad') return Promise.resolve(resolve);
       if (request.path === '/api/areas') return Promise.resolve(ok(areas));
@@ -194,65 +187,6 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     // No launchpad means no track to read either.
     expect(requests.map((request) => request.path)).not.toContain('/api/tracks/lp');
-  });
-
-  /*
-   * The other half of the invariant, and the half that did not exist until now.
-   *
-   * INV-TODAYDOC-001 keeps `ensure` off the *render* path, because it waits on
-   * a harness start and Today must open with codex down. It does not
-   * forbid the write — its own wording reserved it for "an explicit action",
-   * and this press is that action. Without it a workspace with no activity
-   * today can never acquire a launchpad at all: `POST /api/today/summary`
-   * refuses an empty day *before* the step that would create one, and the
-   * Conversations `+` is withheld until one exists, so every door on the page
-   * stays shut.
-   *
-   * Stated as both halves in one case on purpose: "no write on load" and "a
-   * write on press" is the shape of the invariant now, and either assertion
-   * alone reads as the whole rule and is not.
-   */
-  it('bootstraps the launchpad on an explicit press, and never before one', async () => {
-    const { requests } = renderToday({ resolve: noLaunchpad(), body: INITIAL_BODY });
-    await screen.findByText(EMPTY_COPY);
-    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
-
-    await userEvent.click(screen.getByRole('button', { name: WRITE_LABEL }));
-    await waitFor(() => {
-      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
-        .toEqual(['/api/today/launchpad/ensure', '/api/today/summary']);
-    });
-  });
-
-  /* And not when there already is one: `ensure` is idempotent, but a press that
-     re-ran it would put a harness wait in front of every summary on a page that
-     already has a launchpad to write into. */
-  it('does not bootstrap when the launchpad already exists', async () => {
-    const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
-    await screen.findByText(EMPTY_COPY);
-    await userEvent.click(screen.getByRole('button', { name: WRITE_LABEL }));
-    await waitFor(() => {
-      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
-    });
-    expect(requests.map((request) => request.path)).not.toContain('/api/today/launchpad/ensure');
-  });
-
-  /* A press that cannot start the harness says so, in the vocabulary of the
-     step that failed — not "the agent service is not available" about a summary
-     that was never attempted, and above all not silence after a long wait. */
-  it('says what happened when the bootstrap itself fails', async () => {
-    const { requests } = renderToday({
-      resolve: noLaunchpad(), body: INITIAL_BODY,
-      ensure: { status: 503, statusText: 'Service Unavailable', body: { error: 'Shared codex app-server not running' } },
-    });
-    await screen.findByText(EMPTY_COPY);
-    await userEvent.click(screen.getByRole('button', { name: WRITE_LABEL }));
-    const alerts = await screen.findAllByRole('alert');
-    expect(alerts.some((alert) => alert.textContent?.includes('Shared codex app-server not running'))).toBe(true);
-    expect(alerts.some((alert) => alert.textContent?.includes('workspace could not be started'))).toBe(true);
-    // The summary was never attempted, so nothing may claim it refused.
-    expect(requests.map((request) => request.path)).not.toContain('/api/today/summary');
-    expect(screen.queryByText('Nothing has happened in this workspace today yet.')).toBeNull();
   });
 
   it('treats a 404 as a failure, not as an empty day', async () => {
@@ -338,86 +272,162 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
 });
 
 /*
- * #1253 D5 / §6 — the trigger, and the chain that makes pressing it visible.
+ * #1343 — Reset, and what the page must and must not do around it.
  *
- * PR1 shipped the empty state with no button, on the grounds that a control
- * which cannot do anything is worse than none. This is the other half.
+ * The `Rewrite today's progress` trigger this replaces is gone (owner call):
+ * the day's activity now reaches an agent when a conversation is started on
+ * the launchpad, server-side, so the page no longer asks for a write at all.
+ * What it asks for is the opposite — empty the document so the flow can be run
+ * again from the empty state.
  */
-describe('#1253 D5 the write-today’s-progress trigger', () => {
-  const WRITE = WRITE_LABEL;
-  const REWRITE = 'Rewrite today’s progress';
+describe('#1343 the document’s Reset control', () => {
+  const RESET = 'Reset';
+  const CONFIRM = 'Reset report';
 
-  it('posts to the summary endpoint, and to nothing else', async () => {
-    const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
+  /* The deleted control, pinned by absence. A label regex rather than an exact
+     string: "Write", "Rewrite" and anything else ending in "today’s progress"
+     are all the same growth back. */
+  it('offers no write-the-report control in either document state', async () => {
+    renderToday({ resolve: resolved(false), body: INITIAL_BODY });
     await screen.findByText(EMPTY_COPY);
-    await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    await waitFor(() => {
-      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
-        .toEqual(['/api/today/summary']);
-    });
-    /* No prompt and no body. The message is synthesised server-side from an
-       activity projection this frontend has no read for; a body here would be
-       that deleted layer growing back on the client. */
-    expect(requests.find((request) => request.path === '/api/today/summary')?.body).toBeUndefined();
-  });
+    expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
 
-  it('offers a re-run once the report has content, rather than hiding the control', async () => {
-    /* `report_has_noninitial_content` is about the report's CURRENT text and
-       consults no history, so it cannot mean "the summary already ran" —
-       using it to suppress the button would disable the feature for anyone who
-       edited the document by hand, and re-enable it for anyone who reverted. */
+    cleanup();
     renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n' });
-    expect(await screen.findByRole('button', { name: REWRITE })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
+    expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
   });
 
-  it('reports an empty day as a fact about the day, not as a failure', async () => {
-    renderToday({
-      resolve: resolved(false), body: INITIAL_BODY,
-      summary: refuse(409, 'today_summary_no_activity', 'nothing happened today'),
-    });
+  /* Nothing to reset when the report is already canonical, so no control —
+     and the empty state stays one sentence. */
+  it('is absent while the report is already empty', async () => {
+    renderToday({ resolve: resolved(false), body: INITIAL_BODY });
     await screen.findByText(EMPTY_COPY);
-    await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    const notice = await screen.findByText('Nothing has happened in this workspace today yet.');
-    expect(notice.getAttribute('role')).toBe('status');
-    /* Not an alert: the user asked a question and got a straight answer, and
-       interrupting a screen reader for it would be wrong. The document region
-       also keeps saying what it said — a refusal changed nothing. */
-    expect(screen.queryAllByRole('alert')).toEqual([]);
-    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
-  });
-
-  it('announces a real failure, and keeps the document it did not change', async () => {
-    renderToday({
-      resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n',
-      summary: refuse(409, 'planner_harness_dormant', 'the harness is dormant'),
-    });
-    await userEvent.click(await screen.findByRole('button', { name: REWRITE }));
-    const alerts = await screen.findAllByRole('alert');
-    expect(alerts.some((alert) => alert.textContent?.includes('the harness is dormant'))).toBe(true);
-    /* A 409 that shares its status with the empty-day refusal must not borrow
-       its copy: only the machine-readable `code` separates them. */
-    expect(screen.queryByText('Nothing has happened in this workspace today yet.')).toBeNull();
-    expect(screen.getByText('今天合了两个 PR。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: RESET })).toBeNull();
   });
 
   /*
-   * The failure this PR exists to prevent from shipping: press the button, the
-   * agent writes the report, and the page does not move.
+   * Destructive, so it is confirmed first — and the confirmation is what sends
+   * the request, not the control.
    *
-   * The event is fed through the real bridge, so the assertion covers the whole
-   * chain — the plan emitting `['today-launchpad']` and `['track', id]`, and the
-   * adapter mapping both. Refetching in the mutation's `onSuccess` would have
-   * hidden a break in that chain behind a lucky refresh, which is why it does
-   * not.
+   * Both halves are asserted. "The dialog opened" alone is satisfied by a
+   * control that also fired; "the request went out" alone is satisfied by one
+   * that never confirmed.
    */
-  it('redraws the document when the agent’s report edit arrives', async () => {
-    let hasContent = false;
-    const requests: ApiRequest[] = [];
+  it('confirms before it posts, and posts to the reset endpoint alone', async () => {
+    const { requests } = renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n' });
+    await userEvent.click(await screen.findByRole('button', { name: RESET }));
+    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
+
+    await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
+    await waitFor(() => {
+      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
+        .toEqual(['/api/today/launchpad/report/reset']);
+    });
+    /* No document on the wire. The canonical body is kernel-owned text a
+       client cannot reproduce byte for byte, and one byte out fails silently.
+       A body here would be that hazard growing back. */
+    expect(requests.find((request) => request.path === '/api/today/launchpad/report/reset')?.body)
+      .toBeUndefined();
+  });
+
+  /*
+   * The failure this control exists to avoid shipping: press Reset, the server
+   * empties the report, and the page keeps showing the old one.
+   *
+   * Unlike the deleted trigger — whose 200 meant "enqueued", so refetching
+   * would have fetched the old report and masked a broken event chain — this
+   * 200 means the write already landed. The mutation invalidates both keys and
+   * this drives the whole path through the real router.
+   */
+  it('redraws the empty state once the reset lands', async () => {
+    let hasContent = true;
     const transport: ApiTransportPort = {
       send: (request) => {
-        requests.push(request);
-        if (request.path === '/api/today/summary') return Promise.resolve(ok({ track_id: 'lp', card_id: 'conv-1' }));
+        if (request.path === '/api/today/launchpad/report/reset') {
+          hasContent = false;
+          return Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));
+        }
+        if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(hasContent));
+        if (request.path === '/api/areas') return Promise.resolve(ok(areas));
+        if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
+        if (request.path === '/api/tracks/lp') {
+          return Promise.resolve(ok({
+            track: launchpadTrack,
+            cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
+            overlays: [],
+          }));
+        }
+        return Promise.resolve(ok([]));
+      },
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+    render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+      <RouterProvider router={router} />
+    </ThemeProvider></QueryClientProvider>);
+
+    expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: RESET }));
+    await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
+    expect(await screen.findByText(EMPTY_COPY)).toBeTruthy();
+    expect(screen.queryByText('今天合了两个 PR。')).toBeNull();
+  });
+
+  /* A failed reset changes nothing, and says so where a failed delete says it
+     — the route's error box, which is this app's one convention for a
+     destructive write that did not happen. The document behind it is the same
+     document, because the server wrote nothing. */
+  it('announces a failed reset and keeps the document', async () => {
+    renderToday({
+      resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n',
+      reset: refuse(500, 'internal', 'it exploded'),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: RESET }));
+    await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((alert) => alert.textContent?.includes('it exploded'))).toBe(true);
+    expect(screen.getByText('今天合了两个 PR。')).toBeTruthy();
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+  });
+});
+
+/*
+ * §6 — the refresh chain, which no button on this page depends on any more and
+ * which is therefore *more* load-bearing than it was, not less.
+ *
+ * The day's report is now written by an agent in a conversation started on the
+ * launchpad; nothing on Today asks for that write, so an event is the ONLY way
+ * the page can learn it happened. `track.report_edited` carries
+ * `['today-launchpad']` (the empty-state predicate) and `['track', id]` (the
+ * document), and `PolicyMap` is exhaustive over event kinds rather than over
+ * query keys — so deleting either line turns no golden red. This is what turns
+ * red.
+ *
+ * Both directions are driven, and the second is the one that separates the two
+ * keys: empty → written mounts the detail query for the first time, so
+ * `['today-launchpad']` alone would be enough. Written → written does not move
+ * the resolve's value at all, and `['track', id]` is the only key that can make
+ * the already-mounted detail refetch.
+ */
+describe('#1253 §6 the report-edit refresh chain', () => {
+  function reportEdited(editId: string) {
+    // The real wire event through the real plan and the real adapter — not a
+    // hand-picked key list, which would assert the chain by assuming it.
+    return wireEventSchema.parse({
+      ev: 'track.report_edited',
+      data: {
+        track_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: editId,
+        summary_before: '', summary_after: 'today', body_before: '', body_after: '# 概要',
+      },
+    });
+  }
+
+  it('redraws an empty document when the agent’s first report edit arrives', async () => {
+    let hasContent = false;
+    const transport: ApiTransportPort = {
+      send: (request) => {
         if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(hasContent));
         if (request.path === '/api/areas') return Promise.resolve(ok(areas));
         if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
@@ -439,43 +449,16 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     </ThemeProvider></QueryClientProvider>);
 
     await screen.findByText(EMPTY_COPY);
-    await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    await waitFor(() => {
-      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
-    });
-    // The agent has now written the report; the server would answer differently.
     hasContent = true;
-    // The real plan and the real adapter, driven with the real wire event —
-    // not a hand-picked key list, which would assert the chain by assuming it.
-    const edited = wireEventSchema.parse({
-      ev: 'track.report_edited',
-      data: {
-        track_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
-        summary_before: '', summary_after: 'today', body_before: '', body_after: '# 概要',
-      },
-    });
-    applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(edited).invalidate }]);
+    applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(reportEdited('edit-1')).invalidate }]);
     expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
   });
 
-  /*
-   * The same chain on the SECOND summary — and this is the case that separates
-   * the two keys.
-   *
-   * Going empty → written, `['today-launchpad']` alone is enough: the detail
-   * query is `enabled`-gated on `report_has_noninitial_content`, so it mounts
-   * for the first time and fetches fresh whatever the cache says. Written →
-   * written has no such luck. The resolve's value does not change, the detail
-   * query is already mounted, and `['track', id]` is the only key that can make
-   * it refetch — without it the reader presses "Rewrite", the agent rewrites,
-   * and the page keeps showing yesterday's paragraph.
-   */
   it('redraws a report that was already written when it is rewritten', async () => {
     let body = '# 概要\n\n上午合了一个 PR。\n';
     const transport: ApiTransportPort = {
       send: (request) => {
-        if (request.path === '/api/today/summary') return Promise.resolve(ok({ track_id: 'lp', card_id: 'conv-1' }));
         if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(true));
         if (request.path === '/api/areas') return Promise.resolve(ok(areas));
         if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
@@ -493,16 +476,8 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     </ThemeProvider></QueryClientProvider>);
 
     expect(await screen.findByText('上午合了一个 PR。')).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: REWRITE }));
     body = '# 概要\n\n晚上又合了两个。\n';
-    const edited = wireEventSchema.parse({
-      ev: 'track.report_edited',
-      data: {
-        track_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-2',
-        summary_before: '', summary_after: 'today', body_before: '# 概要', body_after: '# 概要',
-      },
-    });
-    applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(edited).invalidate }]);
+    applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(reportEdited('edit-2')).invalidate }]);
     expect(await screen.findByText('晚上又合了两个。')).toBeTruthy();
     expect(screen.queryByText('上午合了一个 PR。')).toBeNull();
   });

@@ -51,3 +51,24 @@ export function deleteAreaCopy(areaName: string, trackCount: number | undefined)
     confirmLabel: 'Delete area',
   });
 }
+
+/**
+ * #1343 — Today's report reset.
+ *
+ * Offered from one place only, so this is not INV-DUP-010's "three surfaces,
+ * one sentence" case; it lives here because the file is where destructive copy
+ * is read and reviewed, and a confirm sentence written inline in a route is one
+ * nobody finds again.
+ *
+ * The consequence names what is lost *and* what is not: the day's report is
+ * discarded, the conversations on Today are not. That second half is the whole
+ * reason this action exists as a report reset rather than a "clear Today", and
+ * a reader deciding whether to press it needs it.
+ */
+export const RESET_TODAY_REPORT_COPY = Object.freeze({
+  /** The control's own label, beside the document. */
+  trigger: 'Reset',
+  title: 'Reset today’s report?',
+  description: 'Today’s report goes back to empty and what it says now is discarded. This cannot be undone. Conversations are not affected.',
+  confirmLabel: 'Reset report',
+});

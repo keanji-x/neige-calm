@@ -68,11 +68,12 @@ value that arrives as inline `style` — it is per-row data, not a variant.
 ## The phone, and the ledger that declares it (#1234)
 
 The compact viewport draws a header and the month calendar, and that is all it
-draws. **The gap is allowed; leaving it undeclared is not.** #1253 added six
-props to `TodayPageProps` — `launchpad`, `launchpadDocument`, `launchpadError`,
-`onWriteSummary`, `summaryPending`, `summaryNotice` — none of which the phone
-renders, and the whole review chain missed it, because nothing anywhere stated
-what the phone leaves out.
+draws. **The gap is allowed; leaving it undeclared is not.** The desktop-only
+document and conversation work added `launchpad`, `launchpadDocument`,
+`launchpadError`, `documentAction`, `conversationList` and
+`conversationAction` to `TodayPageProps`; none reaches the phone. The original
+review chain missed this class of gap because nothing anywhere stated what the
+phone leaves out.
 
 `page-props.ts` states it. `TODAY_VIEWPORT_LEDGER` maps **every** key of
 `TodayPageProps` to `{ render: true }` or `{ render: false, why }`, and two
@@ -135,26 +136,9 @@ around it stays interface-sized. Running is ambience and lives in the panel.
 - **INV-TODAYDOC-001** — the page load only *resolves* (`GET /api/today/launchpad`).
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
   `planner-harness-start` operation, so it must never be on this path; it belongs
-  to an explicit action. **The trigger is that action, since 2026-09-03.**
-
-  It used to say "there is no such action yet", and that sentence is why this
-  page could reach a state with no way out: `POST /api/today/summary` refuses a
-  day with no activity *before* the step that would create the launchpad
-  (INV-TODAYDOC-007), and the Conversations `+` is withheld until a launchpad
-  exists — so a quiet day left the route with no launchpad, no way to make one,
-  and an empty Conversations module for good. Observed on the preview instance.
-
-  So a press with no launchpad runs `ensure` first, then the summary. What the
-  invariant forbids is unchanged and is the part that was always load-bearing:
-  a wait on codex on the **render** path, which would make Today unopenable
-  whenever codex is down. A press is not a render. The endpoint's own guarantee
-  is unchanged too — see INV-TODAYDOC-007 below for the line between them —
-  and the reasoning, with its cost, is written out on
-  `useTodaySummaryMutation` in `app/providers/queries.ts`.
-
-  Both halves are pinned in `app/router/today-document.test.tsx`: no write of
-  any kind during a page load, and `ensure` on a press when — and only when —
-  there is no launchpad.
+  to an explicit action. There is no browser caller after #1343 removes the
+  write-the-report trigger. `app/router/today-document.test.tsx` pins the
+  remaining invariant: no write of any kind occurs during a page load.
 - **INV-TODAYDOC-002** — **`null` is data; any failure is an error.** A failed
   read is rendered as an error and the empty state is suppressed: a 5xx that
   degrades into "nothing written today" tells the reader their day was empty
@@ -196,35 +180,46 @@ around it stays interface-sized. Running is ambience and lives in the panel.
   as one.** Suppressing a re-run button on it would mean a user reverting the
   document silently un-suppresses the button. Anything that needs "did the
   summary run" needs its own persistent marker or event.
-- **The trigger** (#1253 PR2, D5) — `onWriteSummary` posts to
-  `POST /api/today/summary`, which takes no body and no prompt. The control is
-  offered in **both** states, with the label the only difference (`Write` /
-  `Rewrite`): the report's own contract is "a snapshot of now, rewritten every
-  time", so re-running is ordinary, and the predicate above cannot be used to
-  suppress it. It is **not** hidden when nothing has happened today — this page
-  has no activity read and by design never will (D4 deleted the layer that would
-  have offered one), so the gate is the server's: the endpoint computes the day's
-  window itself and refuses an empty one without creating a conversation or
-  sending a message (INV-TODAYDOC-007). The refusal comes back as
-  `summaryNotice` and reads as a fact about the day, not as an error.
+- **The write-the-report trigger is gone** (#1343, owner call). `onWriteSummary`,
+  its `Write` / `Rewrite` labels, its pending state and its notice are all
+  removed. The empty state is now **one sentence** and nothing else.
 
-  **INV-TODAYDOC-007 is a property of that endpoint, and it still holds
-  exactly.** `POST /api/today/summary`, refused, creates nothing — its step 2
-  runs before its step 3 for that reason, and no line of the handler changed.
-  What the press adds in front of it, on a workspace with no launchpad, is a
-  separate `ensure` the user asked for; the workspace it materializes is
-  attributable to that request rather than left behind by a refusal. The cost,
-  stated rather than argued away: on a genuinely empty day the first press does
-  create a workspace and start a harness before the refusal comes back. It is
-  paid once, and it is what makes the route escapable at all.
+  What replaced it is not another control: the day's activity window is
+  injected **server-side** when a conversation is started on the launchpad
+  track, so an agent opens with the day's numbers in hand and the page has
+  nothing left to ask for. `POST /api/today/summary` is still served and still
+  behaves exactly as it did; nothing in the browser calls it.
 
-  The button says what it does before it is pressed ("an agent reads today's
-  activity and writes it up here"), and while a press is in flight it names the
-  step it is on — preparing the workspace is the slow half and does not get to
-  be described as writing. Busy is `aria-disabled` rather than native-disabled,
-  so the focused control stays in the accessibility tree; a click guard still
-  prevents a second request. A no-activity answer is a polite status update,
-  while an actual failure remains an alert.
+  **INV-TODAYDOC-007 did not move and did not weaken.** It is still enforced by
+  that endpoint, which still refuses an empty window without creating a
+  conversation or sending a message. What changed is that the frontend no
+  longer has a path to it, so the refusal has no UI to surface in — which is
+  why `summaryNotice` and its copy are gone rather than relocated. The
+  injection path is a *different* ruling on the same fact: an empty day there
+  is briefed as empty (`activity_window::opening_activity_briefing`) rather
+  than refused, because a conversation the user started commissions no report
+  and taking it away over a quiet morning would be the wrong trade. Both live
+  in `crates/calm-server`; neither is a statement this page can make.
+- **Reset** (#1343) — `documentAction` carries it, and it is the only control
+  the document region has. It posts `POST /api/today/launchpad/report/reset`,
+  which puts the report back to the kernel's canonical empty document and
+  touches nothing else — no conversation is created, reset or deleted.
+
+  Three things about it are decisions rather than details:
+
+  * **It sends no document, and must never grow a parameter for one.** The
+    empty-state predicate is a byte-for-byte comparison against
+    `TrackReportPayload::initial()`, ~2.6 kB of kernel-owned text assembled
+    from two `include_str!`-ed contract fragments. A client posting its own
+    copy to `POST /api/tracks/{id}/report` would be mirror code, and one byte
+    out fails *silently*: a 200, a rewritten report, and an empty state that
+    never appears.
+  * **It is destructive**, so it goes through `ConfirmDialog` and
+    `useDeleteConfirm`, the same shape and the same failure surface as the
+    track delete on this route. The copy lives in `ui/confirm-dialog/copy.ts`
+    and names what is *not* lost as well as what is.
+  * **It is offered only beside a written report.** There is nothing to reset
+    when the report is already canonical, and the empty state is one sentence.
 - **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
   reason for putting it above the document, so an uncapped list would not be a
   cosmetic problem — it would falsify the layout's justification. The overflow
@@ -241,8 +236,13 @@ around it stays interface-sized. Running is ambience and lives in the panel.
 `core/events/invalidation-plan.ts`'s `track.report_edited` policy now carries
 **four** keys. Two of them exist only for this page: `['track', id]` is what the
 document is read through, and `['today-launchpad']` is what the empty-state
-predicate is read through. Without either, pressing the trigger leaves the page
-unchanged until a reload — the first bug report this feature would have got.
+predicate is read through.
+
+Since #1343 this chain is *more* load-bearing, not less. Nothing on this page
+asks for the report to be written any more — an agent writes it from a
+conversation — so the event is the **only** way the page can learn it happened.
+Without either key the report is written and the page does not move until a
+reload.
 
 `PolicyMap` is exhaustive over event **kinds**, not over query keys, so deleting
 either line adds no missing kind and turns no golden red. What guards them is
@@ -285,10 +285,10 @@ Consequences worth knowing before "fixing" one of them:
   conversation to. `TodayRoute` withholds it on one condition, `launchpadTrackId
   === ''`: with no launchpad there is no track to attach to, and minting one is
   `POST /api/today/launchpad/ensure` — a write that waits on codex, which this
-  `+` is not the place for. It stays withheld, and that is no longer a dead end:
-  the document's trigger runs `ensure` on a press (INV-TODAYDOC-001 above), so
-  there is a reachable route to a launchpad and the `+` does not have to be a
-  second one.
+  `+` is not the place for. It stays withheld. Since #1343 also removes the
+  document trigger, a fresh workspace has no browser action that materializes
+  the launchpad; that is an explicit gap, not an implicit `ensure` hidden behind
+  page load or `+`.
 - **A cross-track index is gone from here, and is not lost.** Owner's plan is a
   card of its own holding everything about one track; it has its own issue. Do
   not squeeze it back into this module.
@@ -299,11 +299,6 @@ Consequences worth knowing before "fixing" one of them:
   failure renders an error with Retry; only a successful `[]` says there are no
   conversations yet. The same applies one level earlier to the launchpad
   resolve: unknown or failed cannot be reworded as an empty list.
-- A summary attempt restarts the launchpad conversation read on both success and
-  failure, because the endpoint can create the card before a later send step
-  fails. The restart first cancels ownership of an older in-flight snapshot;
-  otherwise TanStack can reuse a pre-summary first load and let its empty result
-  land after the mutation.
 - A transcript-derived first-message name is projected back onto the server row
   after the drawer closes, because it is stable and the endpoint does not carry
   it. Turn counts and activity times remain open-row snapshots rather than stale

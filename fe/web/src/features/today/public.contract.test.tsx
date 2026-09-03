@@ -156,10 +156,11 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     expect(screen.queryByText("the day's report")).toBeNull();
   });
 
-  it('offers no trigger button anywhere in the main column', () => {
+  it('offers no button anywhere in the main column', () => {
     /*
-     * `POST /api/today/summary` does not exist until PR2. A stubbed, mocked or
-     * disabled button would be worse than its absence.
+     * The empty state is one sentence (#1343, owner call). Nothing else stands
+     * in this column while the day has no report — no caption, and since #1343
+     * no `Rewrite today’s progress` button either.
      *
      * Asserted as "no button at all in the main column", not as "no button
      * inside the empty-state paragraph" (that paragraph is a `<p>` with one
@@ -325,140 +326,76 @@ describe('#1253 the first-run page still owns a document', () => {
   });
 });
 
-describe('#1253 D5 the document’s trigger', () => {
-  const WRITE = 'Write today’s progress';
-  const REWRITE = 'Rewrite today’s progress';
+describe('#1343 the document’s action slot', () => {
   const props = {
     renderTrackRow, tracks: [track()], areas: [area()], nowMs: NOW,
     launchpadDocument: <p>the day&apos;s report</p>,
   } as const;
+  const ACTION = <button type="button">Reset</button>;
 
   /*
-   * No control at all when the composition offers none — not a disabled one.
+   * #1343 — the empty state is ONE sentence and nothing else.
    *
-   * A disabled button is a promise it will work later. An absent one is the
-   * honest shape for "this composition has no trigger", which is what every
-   * suite in this file passes and what `features/**` alone can ever have: the
-   * endpoint lives in `app/router`.
-   */
-  it('renders nothing when no trigger was supplied', () => {
-    render(<TodayPage {...props} launchpad={{ track_id: 'lp', report_has_noninitial_content: false }} />);
-    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
-    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
-  });
-
-  /*
-   * The control appears whether or not anything happened today.
+   * A `Write` / `Rewrite today’s progress` button used to stand here. It was
+   * removed on owner call: the day’s activity now reaches an agent when a
+   * conversation is started on the launchpad, injected server-side, so the
+   * button was no longer the only route to anything.
    *
-   * This page cannot know — the design gives it no activity read, deliberately
-   * (D4 deleted the layer that would have offered one) — so hiding the button
-   * would be a guess, and the wrong guess makes the feature look broken. The
-   * gate is `POST /api/today/summary`'s, which refuses an empty window without
-   * creating a conversation or sending a message (INV-TODAYDOC-007).
+   * The action slot is not offered in this branch either, and that is the same
+   * ruling rather than an omission: there is nothing to reset when the report
+   * is already canonical.
    */
-  it('offers the trigger in the empty state and a re-run once the report has content', async () => {
-    const pressed: string[] = [];
-    const { rerender } = render(<TodayPage
+  it('shows one sentence and no controls when the report is empty', () => {
+    render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-      onWriteSummary={() => pressed.push('empty')}
+      documentAction={ACTION}
     />);
-    await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    expect(pressed).toEqual(['empty']);
+    expect(screen.getByText('Nothing written today yet.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+    // The deleted control, pinned by absence so it cannot drift back in
+    // without this suite noticing. A label regex, not an exact string: "Write",
+    // "Rewrite" and anything else ending in "today’s progress" are all the same
+    // growth back.
+    expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
+  });
 
-    rerender(<TodayPage
+  /* Beside a written document the slot renders exactly what the composition
+     layer put in it — the control is wired there because it is destructive and
+     needs a confirmation dialog, which is a sibling domain this one may not
+     import. */
+  it('renders the composition’s action beside a written report', () => {
+    render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      onWriteSummary={() => pressed.push('rerun')}
+      documentAction={ACTION}
     />);
-    await userEvent.click(screen.getByRole('button', { name: REWRITE }));
-    expect(pressed).toEqual(['empty', 'rerun']);
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
-  /*
-   * The control is a button in the app's own vocabulary, and it says what it
-   * does before it is pressed.
-   *
-   * Both halves are owner feedback on the 4140 preview, and the tier took two
-   * rounds. It read as a phrase rather than as something pressable while it was
-   * `tertiary` plus the 11px borderless disclosure recipe; `secondary` fixed
-   * that and then read as too heavy a frame beside the report. It is `tertiary`
-   * alone now — §4.1's geometry without `.moreButton`'s shrink — which is
-   * button-shaped at rest and takes its fill on hover and focus.
-   *
-   * Asserted by name, because a button drawn locally in `today.module.css` is
-   * exactly the drift §9's `[data-nc-action]` gate exists to catch, and it
-   * would still look right.
-   */
-  it('is a tertiary action carrying a caption for what it does', () => {
-    render(<TodayPage
-      {...props}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-      onWriteSummary={() => undefined}
-    />);
-    const button = screen.getByRole('button', { name: WRITE });
-    expect(button.getAttribute('data-nc-action')).toBe('tertiary');
-    expect(screen.getByText('An agent reads today’s activity and writes it up here.')).toBeTruthy();
-  });
-
-  /* The slow half of a first press is `ensure`, not the summary, and the
-     control names the step it is on rather than describing the wrong one for
-     however long a harness takes to come up. */
-  it('names the step in flight while the launchpad is being prepared', () => {
-    render(<TodayPage
-      {...props}
-      launchpad={null}
-      onWriteSummary={() => undefined}
-      summaryPending
-      summaryPhase="preparing"
-    />);
-    expect(screen.getByRole('button', { name: 'Preparing today’s workspace…' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Writing…' })).toBeNull();
-  });
-
-  /* In flight the control says so and cannot fire again — one press, one
-     request, however fast the user is. */
-  it('is inert while a request is in flight', async () => {
-    const pressed: string[] = [];
-    render(<TodayPage
-      {...props}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-      onWriteSummary={() => pressed.push('again')}
-      summaryPending
-    />);
-    const button = screen.getByRole('button', { name: 'Writing…' });
-    expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.getAttribute('aria-disabled')).toBe('true');
-    expect(button.getAttribute('data-nc-state')).toBe('busy');
-    expect(button.hasAttribute('disabled')).toBe(false);
-    await userEvent.click(button);
-    expect(pressed).toEqual([]);
-  });
-
-  /* The notice sits beside the button, not in place of the document: a refused
-     or failed trigger changed nothing about the report already on screen. */
-  it('shows the trigger’s answer without replacing the report', () => {
+  /* No slot, no control — not a disabled one. A disabled button is a promise
+     it will work later; an absent one is the honest shape for "this
+     composition has no action", which is what `features/**` alone can have. */
+  it('renders nothing when no action was supplied', () => {
     render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      onWriteSummary={() => undefined}
-      summaryNotice={<span>Nothing has happened in this workspace today yet.</span>}
     />);
-    expect(screen.getByText('Nothing has happened in this workspace today yet.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
   /* INV-TODAYDOC-002 — a failed resolve shows the failure and nothing else.
-     The trigger would rewrite a document the page could not even read. */
+     An action on a document the page could not even read has no referent. */
   it('is absent when the resolve itself failed', () => {
     render(<TodayPage
       {...props}
       launchpad={undefined}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
-      onWriteSummary={() => undefined}
+      documentAction={ACTION}
     />);
-    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
-    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('boom');
   });
 });

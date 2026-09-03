@@ -2,8 +2,8 @@
  * Facts about Today that only a real engine can settle, all of them invisible
  * to jsdom, which loads no CSS:
  *
- *   1. the summary notice inherits from `.document`, so it is the one piece of
- *      text on this page that can silently take the prose rank;
+ *   1. the document action sits inside `.document`, but remains at the
+ *      interface type rank rather than inheriting the prose rank;
  *   2. the agenda's empty line is a shared primitive (`PanelEmpty`) placed by
  *      this feature, so its inset depends on where this feature puts it;
  *   3. the document region's own geometry — the gutter this page publishes for
@@ -40,23 +40,13 @@ const renderTrackRow: TodayPageProps['renderTrackRow'] = (track) => (
  * the *resolved* `font-size` string the engine reports, so the probe has to go
  * through the same resolution the page does.
  */
-function fontSizeOf(token: '--text-lg' | '--text-base' | '--text-xs'): string {
+function fontSizeOf(token: '--text-lg' | '--text-base'): string {
   const probe = document.createElement('span');
   probe.style.fontSize = `var(${token})`;
   document.body.append(probe);
   const size = getComputedStyle(probe).fontSize;
   probe.remove();
   return size;
-}
-
-/** What one length token resolves to right now, in px. */
-function lengthOf(token: '--measure-prose'): number {
-  const probe = document.createElement('div');
-  probe.style.inlineSize = `var(${token})`;
-  document.body.append(probe);
-  const width = probe.getBoundingClientRect().width;
-  probe.remove();
-  return width;
 }
 
 function area(): Area {
@@ -101,7 +91,7 @@ function Main({ children, inlineSize = '1080px' }: { children: ReactNode; inline
   );
 }
 
-/** The document region: the box the empty line and the trigger live in. */
+/** The document region: the box the empty line or written report lives in. */
 function regionOf(container: Element): HTMLElement {
   const line = [...container.querySelectorAll('p')]
     .find((node) => node.textContent === 'Nothing written today yet.');
@@ -109,58 +99,45 @@ function regionOf(container: Element): HTMLElement {
   return (line as HTMLElement).parentElement as HTMLElement;
 }
 
-describe('the summary notice answers a control, not the document', () => {
-  it('drops to the label rank inside the document region', async () => {
+describe('the document’s action answers a control, not the document', () => {
+  it('stays at interface rank inside the document region', async () => {
     await page.viewport(1280, 800);
     const { container } = render(
       <Main><TodayPage
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
-        launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-        onWriteSummary={() => undefined}
-        summaryNotice={<span data-nc-role="hint">Nothing happened today.</span>}
+        launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
+        launchpadDocument={<p>the day&apos;s report</p>}
+        documentAction={<button type="button" data-nc-action="destructive">Reset</button>}
       /></Main>,
     );
-    const notice = container.querySelector('[data-nc-role="hint"]');
-    const trigger = container.querySelector('button[data-nc-action="tertiary"]');
-    const region = regionOf(container);
-    expect(notice).not.toBeNull();
-    expect(trigger).not.toBeNull();
+    const action = container.querySelector('button[data-nc-action="destructive"]');
+    const region = container.querySelector('p')?.parentElement;
+    expect(action).not.toBeNull();
+    expect(region).not.toBeNull();
     /*
      * Compared against the tokens as the engine resolves them, not against
      * `18px` / `13px`.
      *
-     * What this locks is the size each element ends up at: the notice computes
-     * to whatever `--text-base` resolves to right now and the document region
-     * to `--text-lg`, with the two ranks asserted distinct first so they cannot
-     * pass by collapsing into each other. It does not lock which token the CSS
-     * *names* — a rule written as a literal would pass too, as long as the
-     * number still matches the token's current value. Comparing against probes
-     * rather than `18px` / `13px` is what keeps a legitimate global retune of
-     * either token from failing this test while the implementation stays
-     * correct.
+     * What this locks is the size each element ends up at: the control
+     * computes to whatever `--text-base` resolves to right now and the
+     * document region to `--text-lg`, with the two ranks asserted distinct
+     * first so they cannot pass by collapsing into each other. It does not
+     * lock which token the CSS *names* — a rule written as a literal would
+     * pass too, as long as the number still matches the token's current value.
+     * Comparing against probes rather than `18px` / `13px` is what keeps a
+     * legitimate global retune of either token from failing this test while
+     * the implementation stays correct.
      */
     const prose = fontSizeOf('--text-lg');
     const interfaceRank = fontSizeOf('--text-base');
-    const labelRank = fontSizeOf('--text-xs');
     expect(prose).not.toBe(interfaceRank);
-    expect(interfaceRank).not.toBe(labelRank);
     // The region really is at the prose rank — otherwise this test would pass
     // for the trivial reason that nothing here is enlarged at all.
-    expect(getComputedStyle(region).fontSize).toBe(prose);
-    /*
-     * …and the notice is not. It is a step *below* the control it answers, not
-     * merely below the document: owner asked for this line to be quieter, and
-     * `--text-3` is already the faintest rank the ladder gives text — the next
-     * one down is `:disabled`'s and measures ~2.2:1
-     * (`tools/styles/check-contrast.mjs`). Asserting both ranks is what makes
-     * "quieter than the button" the claim rather than "smaller than prose",
-     * which it already was.
-     */
-    expect(getComputedStyle(notice as Element).fontSize).toBe(labelRank);
-    expect(getComputedStyle(trigger as Element).fontSize).toBe(interfaceRank);
-    // Not the darkest text either: it is an aside about a press.
-    expect(getComputedStyle(notice as Element).color)
-      .not.toBe(getComputedStyle(region).color);
+    expect(getComputedStyle(region as Element).fontSize).toBe(prose);
+    // …and the control is not: `[data-nc-action]` declares its own size
+    // (base.css §4.1) and a declaration beats an inherited value, so it reads
+    // at interface rank beside a document rather than as part of the prose.
+    expect(getComputedStyle(action as Element).fontSize).toBe(interfaceRank);
   });
 });
 
@@ -181,25 +158,24 @@ describe('the document region owns the column the report will stand in', () => {
       <Main><TodayPage
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
         launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-        onWriteSummary={() => undefined}
       /></Main>,
     );
   }
 
-  it('publishes a real gutter, and stands the trigger on the document’s column', async () => {
+  it('publishes a real gutter, and stands the action on the document’s column', async () => {
     await page.viewport(1280, 800);
     const { container } = render(
       <Main><TodayPage
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
         launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
         launchpadDocument={<p>today’s report</p>}
-        onWriteSummary={() => undefined}
+        documentAction={<button type="button" data-nc-action="destructive">Reset</button>}
       /></Main>,
     );
-    const trigger = container.querySelector('button[data-nc-action="tertiary"]')
-      ?.parentElement?.parentElement as HTMLElement;
-    const column = trigger.parentElement?.parentElement as HTMLElement;
-    const triggerBox = trigger.getBoundingClientRect();
+    const action = container.querySelector('button[data-nc-action="destructive"]')
+      ?.parentElement as HTMLElement;
+    const column = action.parentElement?.parentElement as HTMLElement;
+    const actionBox = action.getBoundingClientRect();
     const columnBox = column.getBoundingClientRect();
 
     /*
@@ -208,22 +184,13 @@ describe('the document region owns the column the report will stand in', () => {
      * resolves to, so `parseFloat` on it is `NaN` whether the page publishes a
      * good expression or nothing at all.
      *
-     * What the boxes say instead is stronger. The trigger takes
-     * `margin-inline-start: var(--document-start, 0px)` and
-     * `max-inline-size: var(--document-measure, ...)`, so with both published it
-     * lands on the document's own column: a real gutter on the leading side and
-     * the same gutter left over on the trailing side. Delete either publication
-     * and `var()` falls back — 0px and `--measure-prose` — which is precisely
-     * the layout owner reported: flush left, and 504 wide.
+     * What the boxes say instead is stronger. The action takes
+     * `margin-inline-start: var(--document-start, 0px)`, so it lands on the
+     * document's own column rather than flush against the main column. Delete
+     * the publication and `var()` falls back to 0px.
      */
-    const leading = triggerBox.left - columnBox.left;
-    const trailing = columnBox.right - triggerBox.right;
+    const leading = actionBox.left - columnBox.left;
     expect(leading).toBeGreaterThan(0);
-    expect(Math.abs(leading - trailing)).toBeLessThanOrEqual(1);
-    // The measure is the document's, not the bare prose measure: a document is
-    // wider than its own text — it has two margins — which is why `.doc` sets
-    // `max-inline-size: none` and takes the number from here.
-    expect(triggerBox.width).toBeGreaterThan(lengthOf('--measure-prose'));
   });
 
   it('centres the empty day in the main column, not inside a 504px box', async () => {
