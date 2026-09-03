@@ -22,7 +22,7 @@
 #                  defect 3). Audited the vendored codex prompts + git-forge
 #                  fixture: `rg` and `zstd` are the only agent-/worker-facing
 #                  CLIs that must be apt-installed here — `neige` is agent-facing
-#                  too (the spec agent's wave-read CLI) but is host-compiled and
+#                  too (the spec agent's track-read CLI) but is host-compiled and
 #                  bind-mounted onto PATH like codex (run.sh `ensure_neige_bin`),
 #                  `jq` is consumed inside the shimmed `gh` (never a separate
 #                  process), and fd/ast-grep/bat/tree/node/python are unused.

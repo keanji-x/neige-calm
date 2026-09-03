@@ -12,8 +12,8 @@ import type {
   KernelArea,
   KernelOverlay,
   KernelTerminal,
-  KernelWave,
-  KernelWaveDetail,
+  KernelTrack,
+  KernelTrackDetail,
   GitDiffResponse,
   GitStatusResponse,
   ListdirResponse,
@@ -23,23 +23,23 @@ import type {
   NewAreaBody,
   NewOverlayBody,
   NewTerminalCardBody,
-  NewWaveBody,
+  NewTrackBody,
   ReadFileResponse,
   SettingsBag,
   SettingsPutBody,
-  WavePatchBody,
+  TrackPatchBody,
 } from './wire';
 
-export type WaveFsEntry =
-  paths['/api/waves/{id}/files/ls']['get']['responses'][200]['content']['application/json'][number];
-export type WaveFsContent =
-  paths['/api/waves/{id}/files/cat']['get']['responses'][200]['content']['application/json'];
-export type WaveBacklink =
-  paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json']['backlinks'][number];
-export type WaveBacklinksResponse =
-  paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json'];
-export type WaveReportRead =
-  paths['/api/waves/{id}/report']['get']['responses'][200]['content']['application/json'];
+export type TrackFsEntry =
+  paths['/api/tracks/{id}/files/ls']['get']['responses'][200]['content']['application/json'][number];
+export type TrackFsContent =
+  paths['/api/tracks/{id}/files/cat']['get']['responses'][200]['content']['application/json'];
+export type TrackBacklink =
+  paths['/api/tracks/{id}/backlinks']['get']['responses'][200]['content']['application/json']['backlinks'][number];
+export type TrackBacklinksResponse =
+  paths['/api/tracks/{id}/backlinks']['get']['responses'][200]['content']['application/json'];
+export type TrackReportRead =
+  paths['/api/tracks/{id}/report']['get']['responses'][200]['content']['application/json'];
 
 export class CalmApiError extends Error {
   status: number;
@@ -48,9 +48,9 @@ export class CalmApiError extends Error {
    * Raw parsed JSON body, when the server returned one. Most routes
    * surface errors as `{error, code}` and the request helper hoists
    * those into `.message` / `.code` — `.body` is the escape hatch for
-   * routes that return a typed body directly (e.g. `POST /api/waves`
+   * routes that return a typed body directly (e.g. `POST /api/tracks`
    * 409 → `FolderConflict { conflict_path, conflict_kind, ... }` per
-   * `routes::waves` issue #250 PR 2). Callers that care about the
+   * `routes::tracks` issue #250 PR 2). Callers that care about the
    * structured shape (NewTaskForm) type-narrow this themselves; the
    * field stays `unknown` here so the wire types don't leak into
    * every consumer.
@@ -114,7 +114,7 @@ export const createArea = (b: NewAreaBody) =>
 
 /**
  * Issue #175 — idempotent upsert for the singleton system area that hosts
- * the default Today terminal's wave + card. Returns the existing row when
+ * the default Today terminal's track + card. Returns the existing row when
  * one is present (200), otherwise mints a fresh row (201). The
  * `useTodayTerminal` hook calls this on bootstrap so the user's sidebar
  * never sees the underlying scaffolding area.
@@ -130,15 +130,15 @@ export const updateArea = (id: string, b: AreaPatchBody) =>
   request<KernelArea>('PATCH', `/api/areas/${encodeURIComponent(id)}`, b);
 export const deleteArea = (id: string) =>
   request<void>('DELETE', `/api/areas/${encodeURIComponent(id)}`);
-export const wavesInArea = (areaId: string) =>
-  request<KernelWave[]>('GET', `/api/areas/${encodeURIComponent(areaId)}/waves`);
+export const tracksInArea = (areaId: string) =>
+  request<KernelTrack[]>('GET', `/api/areas/${encodeURIComponent(areaId)}/tracks`);
 
 /**
  * Issue #250 PR 3 — "which area (if any) already claims this absolute
  * path?". At most one claim can cover a path (overlap is rejected
  * atomically at create time, issue #275), so there is no tiebreak and
  * no ambiguity. Returns `null` when no area covers it; the caller then either picks an existing area + opts in
- * to `attach_folder: true` on the wave-create, or mints a fresh area.
+ * to `attach_folder: true` on the track-create, or mints a fresh area.
  *
  * NewTaskForm is the only consumer today — debounced cwd-input change
  * fires this lookup so the area dropdown can lock to the auto-matched
@@ -152,21 +152,21 @@ export const resolveAreaPath = (path: string) =>
     `/api/areas/resolve?path=${encodeURIComponent(path)}`,
   );
 
-// ---------------- waves ----------------
+// ---------------- tracks ----------------
 
 /**
- * Issue #250 PR 2 — calendar window query. `GET /api/waves?since=&until=&area_id=`
- * returns every wave overlapping the window `[since, until]` (unix ms,
+ * Issue #250 PR 2 — calendar window query. `GET /api/tracks?since=&until=&area_id=`
+ * returns every track overlapping the window `[since, until]` (unix ms,
  * inclusive at both endpoints). The kernel applies the dual predicate
  * `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`
- * so still-open waves remain visible across every day they span. All
- * three params are optional; omitting all degenerates to "every wave".
+ * so still-open tracks remain visible across every day they span. All
+ * three params are optional; omitting all degenerates to "every track".
  *
  * Calendar (issue #250 PR 5) uses this as the one read for the weekly
  * grid: pass `since`/`until` for the current week's window in local
  * time, no `area_id` so the result aggregates across areas.
  */
-export const wavesRange = (params: {
+export const tracksRange = (params: {
   since?: number;
   until?: number;
   area_id?: string;
@@ -176,28 +176,28 @@ export const wavesRange = (params: {
   if (params.until !== undefined) qs.set('until', String(params.until));
   if (params.area_id) qs.set('area_id', params.area_id);
   const tail = qs.toString();
-  return request<KernelWave[]>('GET', `/api/waves${tail ? `?${tail}` : ''}`);
+  return request<KernelTrack[]>('GET', `/api/tracks${tail ? `?${tail}` : ''}`);
 };
 
-export const createWave = (b: NewWaveBody) =>
-  request<KernelWave>('POST', '/api/waves', b);
-export const getWaveDetail = (id: string) =>
-  request<KernelWaveDetail>('GET', `/api/waves/${encodeURIComponent(id)}`);
-export const getWaveBacklinks = (id: string) =>
-  request<WaveBacklinksResponse>(
+export const createTrack = (b: NewTrackBody) =>
+  request<KernelTrack>('POST', '/api/tracks', b);
+export const getTrackDetail = (id: string) =>
+  request<KernelTrackDetail>('GET', `/api/tracks/${encodeURIComponent(id)}`);
+export const getTrackBacklinks = (id: string) =>
+  request<TrackBacklinksResponse>(
     'GET',
-    `/api/waves/${encodeURIComponent(id)}/backlinks`,
+    `/api/tracks/${encodeURIComponent(id)}/backlinks`,
   );
-export const updateWave = (id: string, b: WavePatchBody) =>
-  request<KernelWave>('PATCH', `/api/waves/${encodeURIComponent(id)}`, b);
-export const deleteWave = (id: string) =>
-  request<void>('DELETE', `/api/waves/${encodeURIComponent(id)}`);
+export const updateTrack = (id: string, b: TrackPatchBody) =>
+  request<KernelTrack>('PATCH', `/api/tracks/${encodeURIComponent(id)}`, b);
+export const deleteTrack = (id: string) =>
+  request<void>('DELETE', `/api/tracks/${encodeURIComponent(id)}`);
 
 /**
- * Issue #247 PR3 — user-driven wave-report edit. The kernel persists the
+ * Issue #247 PR3 — user-driven track-report edit. The kernel persists the
  * `{summary, body}` pair through the same CRDT pipeline the spec agent's
  * `calm.report.write` MCP tool uses, then echoes back the projected
- * `WaveReportPayload` (with `schemaVersion` reasserted). Session-gated:
+ * `TrackReportPayload` (with `schemaVersion` reasserted). Session-gated:
  * only `Actor::User` is accepted; worker / plugin / spec sessions are
  * rejected with 403 by construction (`author` is derived server-side,
  * never accepted on the wire — `serde(deny_unknown_fields)` closes the
@@ -205,57 +205,57 @@ export const deleteWave = (id: string) =>
  *
  * The card UI calls this from its inline edit mode; on success it swaps
  * to the returned payload so the user sees the post-merge text without
- * waiting for the `card.updated` / `wave.report_edited` events to roll
+ * waiting for the `card.updated` / `track.report_edited` events to roll
  * back through the WS bus.
  */
-export const updateWaveReport = (
+export const updateTrackReport = (
   id: string,
   b: { summary: string; body: string; docRev: number },
 ) =>
   request<{ schemaVersion: number; docRev: number; summary: string; body: string }>(
     'POST',
-    `/api/waves/${encodeURIComponent(id)}/report`,
+    `/api/tracks/${encodeURIComponent(id)}/report`,
     { summary: b.summary, body: b.body, ifDocRev: b.docRev },
   );
 
-export const getWaveReport = (id: string) =>
-  request<WaveReportRead>('GET', `/api/waves/${encodeURIComponent(id)}/report`);
+export const getTrackReport = (id: string) =>
+  request<TrackReportRead>('GET', `/api/tracks/${encodeURIComponent(id)}/report`);
 
-export const updateWaveReportBlock = (
-  waveId: string,
+export const updateTrackReportBlock = (
+  trackId: string,
   blockId: string,
   body: { kind: string; payload: unknown; ifBlockRev: number },
-) => request<unknown>('PATCH', `/api/waves/${encodeURIComponent(waveId)}/report/blocks/${encodeURIComponent(blockId)}`, body);
+) => request<unknown>('PATCH', `/api/tracks/${encodeURIComponent(trackId)}/report/blocks/${encodeURIComponent(blockId)}`, body);
 
-export const deleteWaveReportBlock = (waveId: string, blockId: string, ifBlockRev: number) =>
-  request<unknown>('DELETE', `/api/waves/${encodeURIComponent(waveId)}/report/blocks/${encodeURIComponent(blockId)}`, { ifBlockRev });
+export const deleteTrackReportBlock = (trackId: string, blockId: string, ifBlockRev: number) =>
+  request<unknown>('DELETE', `/api/tracks/${encodeURIComponent(trackId)}/report/blocks/${encodeURIComponent(blockId)}`, { ifBlockRev });
 
-export const listWaveFiles = (waveId: string, path?: string | null) => {
+export const listTrackFiles = (trackId: string, path?: string | null) => {
   const qs = new URLSearchParams();
   if (path != null && path.length > 0) qs.set('path', path);
   const tail = qs.toString();
-  return request<WaveFsEntry[]>(
+  return request<TrackFsEntry[]>(
     'GET',
-    `/api/waves/${encodeURIComponent(waveId)}/files/ls${tail ? `?${tail}` : ''}`,
+    `/api/tracks/${encodeURIComponent(trackId)}/files/ls${tail ? `?${tail}` : ''}`,
   );
 };
 
-export const catWaveFile = (waveId: string, path: string) => {
+export const catTrackFile = (trackId: string, path: string) => {
   const qs = new URLSearchParams({ path });
-  return request<WaveFsContent>(
+  return request<TrackFsContent>(
     'GET',
-    `/api/waves/${encodeURIComponent(waveId)}/files/cat?${qs.toString()}`,
+    `/api/tracks/${encodeURIComponent(trackId)}/files/cat?${qs.toString()}`,
   );
 };
 
 // ---------------- cards ----------------
 
-export const cardsInWave = (waveId: string) =>
-  request<KernelCard[]>('GET', `/api/waves/${encodeURIComponent(waveId)}/cards`);
-export const createCard = (waveId: string, b: NewCardBody) =>
+export const cardsInTrack = (trackId: string) =>
+  request<KernelCard[]>('GET', `/api/tracks/${encodeURIComponent(trackId)}/cards`);
+export const createCard = (trackId: string, b: NewCardBody) =>
   request<KernelCard>(
     'POST',
-    `/api/waves/${encodeURIComponent(waveId)}/cards`,
+    `/api/tracks/${encodeURIComponent(trackId)}/cards`,
     b,
   );
 export const updateCard = (id: string, b: CardPatchBody) =>
@@ -317,7 +317,7 @@ export const restartClaudeCard = (id: string) =>
 // ---------------- overlays ----------------
 
 export const listOverlays = (
-  entity_kind: 'wave' | 'card' | 'view',
+  entity_kind: 'track' | 'card' | 'view',
   entity_id: string,
 ) =>
   request<KernelOverlay[]>(
@@ -328,11 +328,11 @@ export const listOverlays = (
 /**
  * Lists every overlay of the given kind across the workspace. The kernel
  * extends `GET /api/overlays` to accept `entity_kind` alone (without
- * `entity_id`) for this use. The Sidebar uses the `'wave'` variant so
- * status indicators stay accurate without fanning out per-wave detail
+ * `entity_id`) for this use. The Sidebar uses the `'track'` variant so
+ * status indicators stay accurate without fanning out per-track detail
  * fetches.
  */
-export const listAllOverlays = (entity_kind: 'wave' | 'card') =>
+export const listAllOverlays = (entity_kind: 'track' | 'card') =>
   request<KernelOverlay[]>('GET', `/api/overlays?entity_kind=${entity_kind}`);
 
 export const upsertOverlay = (b: NewOverlayBody) =>
@@ -356,10 +356,10 @@ export const deleteOverlay = (b: {
  * 500 response means the daemon spawn failed; the persisted rows stay (the
  * orphan-terminal sweeper reaps them within ~60s).
  */
-export const createTerminalCard = (waveId: string, b: NewTerminalCardBody) =>
+export const createTerminalCard = (trackId: string, b: NewTerminalCardBody) =>
   request<KernelCard>(
     'POST',
-    `/api/waves/${encodeURIComponent(waveId)}/terminal-cards`,
+    `/api/tracks/${encodeURIComponent(trackId)}/terminal-cards`,
     b,
   );
 
@@ -385,17 +385,17 @@ export const getTerminalForCard = (cardId: string) =>
  * stay (the orphan-terminal sweeper reaps them within ~60s), matching
  * the terminal-card endpoint's contract.
  */
-export const createCodexCard = (waveId: string, b: NewCodexCardBody) =>
+export const createCodexCard = (trackId: string, b: NewCodexCardBody) =>
   request<KernelCard>(
     'POST',
-    `/api/waves/${encodeURIComponent(waveId)}/codex-cards`,
+    `/api/tracks/${encodeURIComponent(trackId)}/codex-cards`,
     b,
   );
 
-export const createClaudeCard = (waveId: string, b: NewClaudeCardBody) =>
+export const createClaudeCard = (trackId: string, b: NewClaudeCardBody) =>
   request<KernelCard>(
     'POST',
-    `/api/waves/${encodeURIComponent(waveId)}/claude-cards`,
+    `/api/tracks/${encodeURIComponent(trackId)}/claude-cards`,
     b,
   );
 

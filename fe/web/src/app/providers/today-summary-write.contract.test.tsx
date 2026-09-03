@@ -5,8 +5,8 @@
 //
 // A 200 from `POST /api/today/summary` means the message was enqueued, not that
 // the agent has written anything. The write lands later as a
-// `wave.report_edited` event, which the bridge turns into `['today-launchpad']`
-// and `['wave', id]`. Refetching either in `onSuccess` would fetch the OLD
+// `track.report_edited` event, which the bridge turns into `['today-launchpad']`
+// and `['track', id]`. Refetching either in `onSuccess` would fetch the OLD
 // report — and worse, it would hide a broken invalidation chain behind a lucky
 // refresh: the page would appear to update after a press even with both keys
 // missing from the policy, which is the defect §6 exists to prevent.
@@ -35,7 +35,7 @@ it('invalidates the conversation lists and nothing the document is read through'
       // No prompt: the message is synthesised server-side.
       expect(request.body).toBeUndefined();
       return Promise.resolve({
-        status: 200, statusText: 'OK', body: { wave_id: 'lp', card_id: 'conv-1' },
+        status: 200, statusText: 'OK', body: { track_id: 'lp', card_id: 'conv-1' },
       });
     },
   };
@@ -62,7 +62,7 @@ it('invalidates the conversation lists and nothing the document is read through'
    * The FULL set, not a denylist of the two keys that would hurt most.
    *
    * A first version asserted `toContain(conversations)` plus `not.toContain`
-   * for `['today-launchpad']` and `['wave', id]`, which is what the comment in
+   * for `['today-launchpad']` and `['track', id]`, which is what the comment in
    * `queries.ts` claims ("and only those") minus the "only": a third
    * invalidation added later would have passed. Equality is what makes the
    * sentence true.
@@ -73,5 +73,5 @@ it('invalidates the conversation lists and nothing the document is read through'
    * invalidation policy they exist to pin — a green test measuring the wrong
    * mechanism.
    */
-  expect(invalidated).toEqual([[...queryKeys.waveConversationsPrefix()]]);
+  expect(invalidated).toEqual([[...queryKeys.trackConversationsPrefix()]]);
 });

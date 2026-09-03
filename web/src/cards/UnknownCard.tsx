@@ -3,7 +3,7 @@
 // `adaptKernelCard` returns null when no `CardEntry.fromKernel` claims a
 // kernel card — usually because the card's `kind` is unrecognized or its
 // `payload` failed the kind's zod schema. Before this slot existed,
-// `currentWave` filtered the nulls and the wave just rendered with one
+// `currentTrack` filtered the nulls and the track just rendered with one
 // fewer panel, which made schema drift invisible to the user. Now we
 // surface a small placeholder so the user (and devtools) can see that
 // something arrived from the server that the UI didn't know how to draw.

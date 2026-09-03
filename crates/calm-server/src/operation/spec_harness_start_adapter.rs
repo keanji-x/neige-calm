@@ -22,7 +22,7 @@ use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
     SpecHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
 };
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
     mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
 };
@@ -38,8 +38,8 @@ use crate::session_projection_repo::{
 };
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
+use crate::track_area_cache::TrackAreaCache;
 use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
-use crate::wave_area_cache::WaveAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -60,11 +60,11 @@ const START_PHASES: &[PhaseTag] = &[
 const REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR: &str =
     "no per-card MCP token row; refusing to start an unauthenticated shell";
 
-/// 4xx used by `validate` and `/spec/reset` when the wave carries the kernel
+/// 4xx used by `validate` and `/spec/reset` when the track carries the kernel
 /// view/template overlay (#1110 S1).
-pub fn template_wave_spec_harness_error(wave_id: &str) -> CalmError {
+pub fn template_track_spec_harness_error(track_id: &str) -> CalmError {
     CalmError::BadRequest(format!(
-        "wave {wave_id} is a template (kernel view/template overlay); spec harness is not started on template waves"
+        "track {track_id} is a template (kernel view/template overlay); spec harness is not started on template tracks"
     ))
 }
 
@@ -86,7 +86,7 @@ pub struct SpecHarnessStartAdapter {
     harness_registry: HarnessRegistry,
     plugin: Arc<PluginHost>,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     mcp_socket_path: Option<PathBuf>,
     per_card_mint_locks: PerCardLocks,
 }
@@ -98,7 +98,7 @@ impl SpecHarnessStartAdapter {
         harness_registry: HarnessRegistry,
         plugin: Arc<PluginHost>,
         card_role_cache: CardRoleCache,
-        wave_area_cache: WaveAreaCache,
+        track_area_cache: TrackAreaCache,
         mcp_socket_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -107,7 +107,7 @@ impl SpecHarnessStartAdapter {
             harness_registry,
             plugin,
             card_role_cache,
-            wave_area_cache,
+            track_area_cache,
             mcp_socket_path,
             per_card_mint_locks: new_per_card_locks(),
         }
@@ -139,28 +139,28 @@ impl SpecHarnessStartAdapter {
         }
     }
 
-    async fn bound_template(&self, wave_id: &str) -> Result<Option<BoundTemplate>> {
-        let wave = match self.repo.wave_get(wave_id).await {
-            Ok(wave) => wave,
+    async fn bound_template(&self, track_id: &str) -> Result<Option<BoundTemplate>> {
+        let track = match self.repo.track_get(track_id).await {
+            Ok(track) => track,
             Err(error) => {
                 tracing::error!(
                     target: "spec_harness::template_binding",
-                    wave_id,
+                    track_id,
                     error = %error,
                     "template binding lookup failed; using vanilla spec prompt"
                 );
                 return Ok(None);
             }
         };
-        let Some(wave) = wave else {
+        let Some(track) = track else {
             tracing::error!(
                 target: "spec_harness::template_binding",
-                wave_id,
-                "bound template wave was not found while resolving descriptor; using vanilla spec prompt"
+                track_id,
+                "bound template track was not found while resolving descriptor; using vanilla spec prompt"
             );
             return Ok(None);
         };
-        let Some(template_id) = wave.template_id.as_deref() else {
+        let Some(template_id) = track.template_id.as_deref() else {
             return Ok(None);
         };
         let running_plugin_ids = self.plugin.running_plugin_ids().await;
@@ -175,7 +175,7 @@ impl SpecHarnessStartAdapter {
             {
                 return Ok(Some(BoundTemplate {
                     descriptor: template,
-                    input: wave.template_input.clone(),
+                    input: track.template_input.clone(),
                 }));
             }
         }
@@ -184,7 +184,7 @@ impl SpecHarnessStartAdapter {
         // along with the descriptor rather than injected without context.
         tracing::error!(
             target: "spec_harness::template_binding",
-            wave_id,
+            track_id,
             template_id,
             "bound template descriptor was not resolved from a running trusted forge plugin; using vanilla spec prompt"
         );
@@ -193,7 +193,7 @@ impl SpecHarnessStartAdapter {
 }
 
 /// #891 — a resolved template binding: the descriptor from the running
-/// trusted plugin plus the wave row's persisted `template_input` (already
+/// trusted plugin plus the track row's persisted `template_input` (already
 /// schema-validated at create time).
 struct BoundTemplate {
     descriptor: TemplateDescriptor,
@@ -206,9 +206,9 @@ pub enum HarnessProfile {
     #[default]
     Spec,
     PlainChat,
-    /// #1189 — a wave-scoped assistant conversation. Minted lazily like a
+    /// #1189 — a track-scoped assistant conversation. Minted lazily like a
     /// plain chat, but it is an MCP-authenticated `CardRole::Assistant` card on
-    /// an ordinary wave: it reads and writes that wave's report through the
+    /// an ordinary track: it reads and writes that track's report through the
     /// block channel and has no lifecycle / plan / review / admin authority.
     Assistant,
 }
@@ -216,7 +216,7 @@ pub enum HarnessProfile {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpecHarnessStartOperationPayload {
     pub actor: ActorId,
-    pub wave_id: String,
+    pub track_id: String,
     pub spec_card_id: CardId,
     #[serde(default)]
     pub report_card_id: Option<String>,
@@ -269,7 +269,7 @@ pub struct SpecHarnessStartOperationPayload {
 }
 
 /// The user-supplied part of a lazily minted conversation card — an area chat
-/// (`HarnessProfile::PlainChat`) or a wave assistant (`HarnessProfile::Assistant`).
+/// (`HarnessProfile::PlainChat`) or a track assistant (`HarnessProfile::Assistant`).
 /// Everything the kernel owns (kind, role, `deletable`, the persisted
 /// `harness_profile` marker) is pinned by the adapter and deliberately absent
 /// here.
@@ -303,9 +303,9 @@ pub struct LazyMintCardSeed {
 /// safety property rather than bookkeeping: `derive_session_identity`
 /// (`calm-truth/src/db/sqlite/session_row.rs`) maps `SharedSpec` to
 /// `WorkerContract::Planner`, and `session_repoint_current_links_tx`
-/// (`session_mirror.rs`) makes every live Planner session the wave's
+/// (`session_mirror.rs`) makes every live Planner session the track's
 /// `root_session_id`. An assistant session under `SharedSpec` would therefore
-/// displace the spec card's session as the wave's planning authority the
+/// displace the spec card's session as the track's planning authority the
 /// moment it started.
 fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
     match profile {
@@ -335,29 +335,29 @@ fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)
     }
 }
 
-/// The persisted `payload.harness_profile` value of a wave assistant card.
-/// Read by `plain_chat::card_is_wave_assistant` and by the wave conversation
+/// The persisted `payload.harness_profile` value of a track assistant card.
+/// Read by `plain_chat::card_is_track_assistant` and by the track conversation
 /// list predicate; those three places are the whole contract.
 pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = "assistant";
 
 pub(crate) fn render_spec_developer_instructions(
-    wave_id: &str,
+    track_id: &str,
     template_descriptor: Option<&TemplateDescriptor>,
     template_input: Option<&serde_json::Value>,
 ) -> String {
     let mut instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
-        wave_id,
+        track_id,
     );
     // #1110 S5 — the descriptor is an id handle only. Plan prose lives in
-    // the forked report; the remaining injected contract is the wave's
+    // the forked report; the remaining injected contract is the track's
     // validated `template_input`, gated on a resolved binding.
     if template_descriptor.is_none() {
         return instructions;
     }
-    // #891 — the wave's validated template_input, verbatim. Deliberately
+    // #891 — the track's validated template_input, verbatim. Deliberately
     // NOT passed through `render_system_prompt`: user-controlled JSON must
-    // not have literal `{wave_id}` substituted.
+    // not have literal `{track_id}` substituted.
     if let Some(input) = template_input {
         instructions.push_str("\n\n## Bound Template Input\n");
         instructions.push_str("```json\n");
@@ -371,11 +371,11 @@ pub(crate) fn render_spec_developer_instructions(
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub fn render_spec_developer_instructions_for_test(
-    wave_id: &str,
+    track_id: &str,
     template_descriptor: Option<&TemplateDescriptor>,
     template_input: Option<&serde_json::Value>,
 ) -> String {
-    render_spec_developer_instructions(wave_id, template_descriptor, template_input)
+    render_spec_developer_instructions(track_id, template_descriptor, template_input)
 }
 
 #[async_trait]
@@ -398,19 +398,19 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
-        let wave = self
+        let track = self
             .repo
-            .wave_get(&payload.wave_id)
+            .track_get(&payload.track_id)
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
+            .ok_or_else(|| CalmError::NotFound(format!("track {}", payload.track_id)))?;
         if self
             .repo
-            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, payload.wave_id.as_str())
+            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, payload.track_id.as_str())
             .await?
             .iter()
             .any(is_template_overlay)
         {
-            return Err(template_wave_spec_harness_error(payload.wave_id.as_str()));
+            return Err(template_track_spec_harness_error(payload.track_id.as_str()));
         }
         // #1098 §5.6 — the lazy-mint branch. `validate` runs BEFORE the
         // operation row is inserted, so the usual "card must exist + its role
@@ -418,20 +418,20 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         // are unsatisfiable: the card is this operation's own output. The
         // checks below are the fail-closed replacement, and they must stay
         // strictly narrower than the ordinary branch — a caller must not be
-        // able to conjure a chat card onto an arbitrary wave.
+        // able to conjure a chat card onto an arbitrary track.
         if let Some(seed) = payload.create_card.as_ref() {
             // Guard ① — which profiles may mint at all. `Spec` never can: a
-            // spec card is minted with its wave, and letting this branch write
-            // one would hand a caller the wave's lifecycle authority.
+            // spec card is minted with its track, and letting this branch write
+            // one would hand a caller the track's lifecycle authority.
             //
             // Guard ② — where. The two profiles answer it differently, and the
             // assistant answer is the stronger one (#1189 §4.3): instead of
-            // asking what KIND of wave this is, the adapter recomputes the
-            // deterministic card id from `(wave_id, idempotency_key)` and
+            // asking what KIND of track this is, the adapter recomputes the
+            // deterministic card id from `(track_id, idempotency_key)` and
             // refuses any id it did not derive itself. A forged id, an id
-            // derived for somebody else's wave, and an id conjured out of
+            // derived for somebody else's track, and an id conjured out of
             // nothing all fail the same comparison, so the assistant branch
-            // needs no wave-shape allowlist to stay closed.
+            // needs no track-shape allowlist to stay closed.
             match payload.profile {
                 HarnessProfile::Spec => {
                     return Err(CalmError::BadRequest(format!(
@@ -446,18 +446,18 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     // area route's operation payload — changing a live payload
                     // hash for no gain, since this check is already exact for
                     // that flavour: an area chat card belongs on an area chat
-                    // wave and nowhere else.
-                    if wave.purpose.as_deref() != Some(crate::AREA_CHAT_PURPOSE) {
+                    // track and nowhere else.
+                    if track.purpose.as_deref() != Some(crate::AREA_CHAT_PURPOSE) {
                         return Err(CalmError::Forbidden(format!(
-                            "wave {} is not an area chat wave; chat cards are only minted there",
-                            wave.id
+                            "track {} is not an area chat track; chat cards are only minted there",
+                            track.id
                         )));
                     }
                 }
                 HarnessProfile::Assistant => {
                     // Fail closed on a missing key: without it there is nothing
                     // to recompute from, and "no key" must not read as "no
-                    // check". Only `POST /api/waves/{id}/conversations` sets
+                    // check". Only `POST /api/tracks/{id}/conversations` sets
                     // it, and that route requires the header.
                     let Some(idempotency_key) = seed.idempotency_key.as_deref() else {
                         return Err(CalmError::BadRequest(format!(
@@ -465,15 +465,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             payload.spec_card_id
                         )));
                     };
-                    let expected = crate::conversation_keys::derive_wave_conversation_keys(
-                        wave.id.as_str(),
+                    let expected = crate::conversation_keys::derive_track_conversation_keys(
+                        track.id.as_str(),
                         idempotency_key,
                     )
                     .card_id;
                     if payload.spec_card_id.as_str() != expected {
                         return Err(CalmError::Forbidden(format!(
-                            "card {} is not the conversation id derived for wave {} under this idempotency key",
-                            payload.spec_card_id, wave.id
+                            "card {} is not the conversation id derived for track {} under this idempotency key",
+                            payload.spec_card_id, track.id
                         )));
                     }
                 }
@@ -504,10 +504,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 payload.spec_card_id
             )));
         };
-        if card.wave_id.as_str() != payload.wave_id {
+        if card.track_id.as_str() != payload.track_id {
             return Err(CalmError::BadRequest(format!(
-                "spec card {} belongs to wave {}, not {}",
-                card.id, card.wave_id, payload.wave_id
+                "spec card {} belongs to track {}, not {}",
+                card.id, card.track_id, payload.track_id
             )));
         }
         let expected_role = match payload.profile {
@@ -531,7 +531,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             // here with an existing assistant card; the marker + role pair is
             // what makes the profile legitimate, exactly as for plain chat.
             HarnessProfile::Assistant
-                if crate::plain_chat::card_is_wave_assistant(
+                if crate::plain_chat::card_is_track_assistant(
                     &card,
                     self.card_role_cache.get(&card.id),
                     true,
@@ -541,7 +541,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             HarnessProfile::Assistant => {
                 return Err(CalmError::BadRequest(format!(
-                    "card {} is not marked as a wave assistant",
+                    "card {} is not marked as a track assistant",
                     card.id
                 )));
             }
@@ -553,17 +553,17 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     format!("card {} is not marked for plain chat", card.id)
                 }
                 HarnessProfile::Assistant => {
-                    format!("card {} is not marked as a wave assistant", card.id)
+                    format!("card {} is not marked as a track assistant", card.id)
                 }
             };
             return Err(CalmError::BadRequest(message));
         }
         if expected_role == CardRole::Spec
-            && wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
+            && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
         {
             return Err(CalmError::Forbidden(format!(
-                "spec harness is disabled for area chat wave {}",
-                wave.id
+                "spec harness is disabled for area chat track {}",
+                track.id
             )));
         }
         if !self.daemon.is_running() {
@@ -582,7 +582,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
     ) -> Result<TxOutput> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = payload.spec_card_id;
-        let wave_id = payload.wave_id;
+        let track_id = payload.track_id;
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
         let session_kind = session_kind_for(payload.profile);
@@ -596,14 +596,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             let scope = card_scope(
                 self.repo.as_ref(),
                 card_id.clone(),
-                WaveId::from(wave_id.clone()),
+                TrackId::from(track_id.clone()),
             )
             .await?;
             let created = card_create_with_id_tx(
                 tx,
                 card_id.to_string(),
                 NewCard {
-                    wave_id: WaveId::from(wave_id.clone()),
+                    track_id: TrackId::from(track_id.clone()),
                     kind: "codex".into(),
                     sort: seed.sort,
                     // Pinned by the kernel, not by the caller. Note the absent
@@ -635,7 +635,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 &event,
                 &scope,
                 &self.card_role_cache,
-                &self.wave_area_cache,
+                &self.track_area_cache,
             ) {
                 return Err(CalmError::Forbidden(violation.to_string()));
             }
@@ -657,13 +657,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             });
         }
         let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
+            r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
                  FROM cards
                 WHERE id = ?1
-                  AND wave_id = ?2"#,
+                  AND track_id = ?2"#,
         )
         .bind(card_id.as_str())
-        .bind(wave_id.as_str())
+        .bind(track_id.as_str())
         .fetch_optional(&mut **tx)
         .await?
         .map(Card::from)
@@ -740,7 +740,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         output.post_commit_events = post_commit_events;
         output.data = json!({
             "card_id": card.id,
-            "wave_id": wave_id,
+            "track_id": track_id,
             "runtime_id": runtime_id,
             "runtime_deferred": defer_runtime_start,
             "cwd": payload.cwd,
@@ -794,7 +794,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             HarnessProfile::Assistant => CardRole::Assistant,
         };
         let card_id = output.output_string("card_id", "spec harness")?;
-        let wave_id = output.output_string("wave_id", "spec harness")?;
+        let track_id = output.output_string("track_id", "spec harness")?;
         let runtime_id = output.output_string("runtime_id", "spec harness")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output.output_string("cwd", "spec harness")?;
@@ -858,16 +858,16 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 // The assistant gets its own prompt, not the spec one: the spec
                 // prompt is mostly lifecycle/plan/verdict instructions for
                 // tools the assistant is forbidden to call, and a template
-                // binding drives the wave's plan, which is likewise not the
+                // binding drives the track's plan, which is likewise not the
                 // assistant's business.
                 HarnessProfile::Assistant => Some(crate::spec_card::render_system_prompt(
                     crate::spec_card::ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-                    &wave_id,
+                    &track_id,
                 )),
                 HarnessProfile::Spec => {
-                    let bound_template = self.bound_template(&wave_id).await?;
+                    let bound_template = self.bound_template(&track_id).await?;
                     Some(render_spec_developer_instructions(
-                        &wave_id,
+                        &track_id,
                         bound_template.as_ref().map(|bound| &bound.descriptor),
                         bound_template
                             .as_ref()
@@ -891,7 +891,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 developer_instructions,
                 // The assistant needs the same channel-3 MCP credentials as the
                 // spec harness — the block channel is its only write surface,
-                // and `neige` is how it reads the wave. WHICH tools that token
+                // and `neige` is how it reads the track. WHICH tools that token
                 // can reach is not decided here: `tools/list` filters on
                 // `ToolDescriptor::visible_to_roles` and every write handler
                 // re-checks `require_role*`, both resolved from the card's
@@ -912,7 +912,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     .await?
             } else {
                 self.daemon
-                    .thread_start_for_card(&card_id, card_role, Some(&wave_id), params)
+                    .thread_start_for_card(&card_id, card_role, Some(&track_id), params)
                     .await?
             }
         };
@@ -938,12 +938,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         map.remove("appserver_boot_id");
         map.remove("appserver_needs_initial_prompt");
 
-        let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+        let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
         let transcript_scope = scope.clone();
         let transcript_runtime_id = runtime_id.clone();
         let transcript_card_id = CardId::from(card_id.clone());
-        let transcript_wave_id = WaveId::from(wave_id.clone());
-        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_area_cache.clone());
+        let transcript_track_id = TrackId::from(track_id.clone());
+        let write = WriteContext::new(self.card_role_cache.clone(), self.track_area_cache.clone());
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
@@ -1093,11 +1093,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     None,
                     &ctx.events,
                     &self.card_role_cache,
-                    &self.wave_area_cache,
+                    &self.track_area_cache,
                     Event::HarnessTranscriptCleared {
                         runtime_id: transcript_runtime_id,
                         card_id: transcript_card_id,
-                        wave_id: transcript_wave_id,
+                        track_id: transcript_track_id,
                         // Always `Some(..)` — the `Option` on the event exists
                         // only so pre-#1252 rows still deserialize on replay.
                         cleared_item_count: Some(cleared_measure.item_count),
@@ -1124,7 +1124,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
     ) -> Result<SpawnOutcome> {
         let runtime_id = output.output_string("runtime_id", "spec harness")?;
         let card_id = output.output_string("card_id", "spec harness")?;
-        let wave_id = output.output_string("wave_id", "spec harness")?;
+        let track_id = output.output_string("track_id", "spec harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "spec harness")?;
         let snapshot = output_snapshot(output)?;
         // #953 §5 — atomic replace claim: the old remove-then-insert pair
@@ -1139,13 +1139,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         }
         let handle = SpecHarness::run(SpecHarnessParams {
             runtime_id: runtime_id.clone(),
-            wave_id: WaveId::from(wave_id),
+            track_id: TrackId::from(track_id),
             card_id: CardId::from(card_id),
             thread_id,
             repo: self.repo.clone(),
             events: ctx.events.clone(),
             card_role_cache: self.card_role_cache.clone(),
-            wave_area_cache: self.wave_area_cache.clone(),
+            track_area_cache: self.track_area_cache.clone(),
             daemon: self.daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,
@@ -1200,10 +1200,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         // loop is the wrong order. Stop the task, then remove the row.
         let delete_card_step = match payload.create_card.is_some() {
             true => {
-                let wave_id = output.output_string("wave_id", "spec harness")?;
+                let track_id = output.output_string("track_id", "spec harness")?;
                 Some(CompensationStep::new(
                     "delete_card",
-                    json!({ "card_id": card_id, "wave_id": wave_id }),
+                    json!({ "card_id": card_id, "track_id": track_id }),
                 ))
             }
             false => None,
@@ -1317,15 +1317,16 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             // at commit, and a client that saw the add must see the removal.
             "delete_card" => {
                 let card_id = step.arg_string("card_id", "spec harness")?;
-                let wave_id = step.arg_string("wave_id", "spec harness")?;
+                let track_id = step.arg_string("track_id", "spec harness")?;
                 if ctx.repo.card_get(&card_id).await?.is_none() {
                     return Ok(());
                 }
                 let card_id = CardId::from(card_id);
-                let wave_id = WaveId::from(wave_id);
-                let scope = card_scope(ctx.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
+                let track_id = TrackId::from(track_id);
+                let scope =
+                    card_scope(ctx.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
                 let write =
-                    WriteContext::new(self.card_role_cache.clone(), self.wave_area_cache.clone());
+                    WriteContext::new(self.card_role_cache.clone(), self.track_area_cache.clone());
                 let write_for_tx = write.clone();
                 // Narrow to the single deprecated call. A function-level allow
                 // here would silently cover every other arm of this match.
@@ -1344,7 +1345,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                                 (),
                                 Event::CardDeleted {
                                     id: card_id,
-                                    wave_id,
+                                    track_id,
                                 },
                             ))
                         })
@@ -1494,7 +1495,7 @@ mod tests {
     use crate::db::prelude::{ServerRepoOutOfDomainExt, ServerRepoSyncDomainRawExt};
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::model::{NewArea, NewPlugin, NewWave};
+    use crate::model::{NewArea, NewPlugin, NewTrack};
     use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
     use crate::routes::theme::RequestTheme;
@@ -1511,7 +1512,7 @@ mod tests {
     #[test]
     fn spec_developer_instructions_do_not_inject_template_plan_prose() {
         let template = populated_template_descriptor();
-        let out = render_spec_developer_instructions("wave-abc", Some(&template), None);
+        let out = render_spec_developer_instructions("track-abc", Some(&template), None);
 
         assert!(
             !out.contains("## Bound Template Instructions"),
@@ -1526,7 +1527,7 @@ mod tests {
             "S3 must not inject gates"
         );
         assert!(
-            !out.contains("Follow template instructions for wave"),
+            !out.contains("Follow template instructions for track"),
             "descriptor prose must not leak into the spec prompt"
         );
         assert!(!out.contains(r#""key": "review-a""#));
@@ -1536,7 +1537,7 @@ mod tests {
             out,
             crate::spec_card::render_system_prompt(
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
-                "wave-abc",
+                "track-abc",
             )
         );
     }
@@ -1545,10 +1546,10 @@ mod tests {
     fn spec_developer_instructions_without_template_match_static_template() {
         let expected = crate::spec_card::render_system_prompt(
             crate::spec_card::SeededCardRole::Spec.prompt_template(),
-            "wave-abc",
+            "track-abc",
         );
 
-        let out = render_spec_developer_instructions("wave-abc", None, None);
+        let out = render_spec_developer_instructions("track-abc", None, None);
 
         assert_eq!(out, expected);
         assert!(
@@ -1569,10 +1570,10 @@ mod tests {
             "issue_url": "https://github.com/o/r/issues/1",
             "repo": "o/r",
             "issue_number": 1,
-            "notes": "literal {wave_id} must survive"
+            "notes": "literal {track_id} must survive"
         });
 
-        let out = render_spec_developer_instructions("wave-abc", Some(&template), Some(&input));
+        let out = render_spec_developer_instructions("track-abc", Some(&template), Some(&input));
 
         assert!(
             !out.contains("## Bound Template Instructions")
@@ -1593,11 +1594,11 @@ mod tests {
             rendered_input, input,
             "template input must round-trip in full"
         );
-        // User JSON is injected verbatim — no `{wave_id}` template substitution.
-        assert!(out.contains("literal {wave_id} must survive"));
+        // User JSON is injected verbatim — no `{track_id}` template substitution.
+        assert!(out.contains("literal {track_id} must survive"));
 
         // input = None renders no section at all.
-        let without = render_spec_developer_instructions("wave-abc", Some(&template), None);
+        let without = render_spec_developer_instructions("track-abc", Some(&template), None);
         assert!(!without.contains("## Bound Template Input"));
     }
 
@@ -1625,7 +1626,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite repo"),
         );
-        let wave = make_wave(repo.as_ref(), None, None).await;
+        let track = make_track(repo.as_ref(), None, None).await;
 
         let mut base = HarnessSnapshot::initial(0, vec![]);
         base.phase = HarnessPhaseTag::Idle;
@@ -1639,7 +1640,7 @@ mod tests {
                 &mut tx,
                 new_id(),
                 NewCard {
-                    wave_id: wave.id.clone(),
+                    track_id: track.id.clone(),
                     title: None,
                     kind: "codex".into(),
                     sort: None,
@@ -1710,9 +1711,9 @@ mod tests {
                 .expect("open in-memory sqlite repo"),
         );
         let bound_input = json!({ "issue_url": "https://github.com/o/r/issues/1" });
-        let bound_wave =
-            make_wave(repo.as_ref(), Some(TEMPLATE_ID), Some(bound_input.clone())).await;
-        let unbound_wave = make_wave(repo.as_ref(), None, None).await;
+        let bound_track =
+            make_track(repo.as_ref(), Some(TEMPLATE_ID), Some(bound_input.clone())).await;
+        let unbound_track = make_track(repo.as_ref(), None, None).await;
 
         let (trusted_running_host, trusted_running_tmp) =
             plugin_host_with_template(repo.clone(), &trusted_plugin_id, true).await;
@@ -1723,12 +1724,12 @@ mod tests {
         wait_for_running(&trusted_running_host, &trusted_plugin_id).await;
         let trusted_running_adapter = adapter_for(repo.clone(), trusted_running_host.clone());
         let bound = trusted_running_adapter
-            .bound_template(bound_wave.id.as_str())
+            .bound_template(bound_track.id.as_str())
             .await
             .expect("resolve trusted running descriptor")
             .expect("bound template");
         assert_eq!(bound.descriptor.id, TEMPLATE_ID);
-        // The wave row's persisted template_input rides along with the descriptor.
+        // The track row's persisted template_input rides along with the descriptor.
         assert_eq!(bound.input.as_ref(), Some(&bound_input));
 
         let (trusted_stopped_host, _trusted_stopped_tmp) =
@@ -1736,7 +1737,7 @@ mod tests {
         let trusted_stopped_adapter = adapter_for(repo.clone(), trusted_stopped_host);
         assert!(
             trusted_stopped_adapter
-                .bound_template(bound_wave.id.as_str())
+                .bound_template(bound_track.id.as_str())
                 .await
                 .expect("trusted stopped lookup")
                 .is_none()
@@ -1752,7 +1753,7 @@ mod tests {
         let untrusted_running_adapter = adapter_for(repo.clone(), untrusted_running_host.clone());
         assert!(
             untrusted_running_adapter
-                .bound_template(bound_wave.id.as_str())
+                .bound_template(bound_track.id.as_str())
                 .await
                 .expect("untrusted running lookup")
                 .is_none()
@@ -1760,7 +1761,7 @@ mod tests {
 
         assert!(
             trusted_running_adapter
-                .bound_template(unbound_wave.id.as_str())
+                .bound_template(unbound_track.id.as_str())
                 .await
                 .expect("unbound lookup")
                 .is_none()
@@ -1801,11 +1802,11 @@ mod tests {
         candidate
     }
 
-    async fn make_wave(
+    async fn make_track(
         repo: &SqlxRepo,
         template_id: Option<&str>,
         template_input: Option<serde_json::Value>,
-    ) -> crate::model::Wave {
+    ) -> crate::model::Track {
         let area = repo
             .area_create(NewArea {
                 name: format!("area-{template_id:?}"),
@@ -1814,7 +1815,7 @@ mod tests {
             })
             .await
             .expect("create area");
-        repo.wave_create(NewWave {
+        repo.track_create(NewTrack {
             template_input,
             area_id: area.id,
             title: "template resolver".into(),
@@ -1826,7 +1827,7 @@ mod tests {
             theme: RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave")
+        .expect("create track")
     }
 
     async fn plugin_host_with_template(
@@ -1878,7 +1879,7 @@ mod tests {
             plugins_data_dir,
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
         ));
         (host, tmp)
     }
@@ -1891,7 +1892,7 @@ mod tests {
             HarnessRegistry::new(),
             plugin,
             CardRoleCache::new(),
-            WaveAreaCache::new(),
+            TrackAreaCache::new(),
             None,
         )
     }
@@ -1956,7 +1957,7 @@ mod tests {
             std::env::temp_dir().join(format!("calm-plan-compensation-{}", new_id())),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
         ));
         let adapter = adapter_for(repo.clone(), host);
         let reason = format!(
@@ -1970,7 +1971,7 @@ mod tests {
         let mut output = TxOutput::new("card", Some("conv-1".into()), json!({}));
         output.data = json!({
             "card_id": "conv-1",
-            "wave_id": "wave-1",
+            "track_id": "track-1",
             "runtime_id": "runtime-1",
         });
 
@@ -1985,7 +1986,7 @@ mod tests {
             "a lazily minted card must be deleted even on the zero-step early return"
         );
         assert_eq!(with_seed.steps[0].args["card_id"], json!("conv-1"));
-        assert_eq!(with_seed.steps[0].args["wave_id"], json!("wave-1"));
+        assert_eq!(with_seed.steps[0].args["track_id"], json!("track-1"));
 
         // Counterexample: without `create_card` the historical zero-step
         // contract is preserved verbatim.
@@ -2019,14 +2020,14 @@ mod tests {
             std::env::temp_dir().join(format!("calm-compensation-order-{}", new_id())),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
         ));
         let adapter = adapter_for(repo.clone(), host);
 
         let mut output = TxOutput::new("card", Some("conv-1".into()), json!({}));
         output.data = json!({
             "card_id": "conv-1",
-            "wave_id": "wave-1",
+            "track_id": "track-1",
             "runtime_id": "runtime-1",
         });
 
@@ -2098,7 +2099,7 @@ mod tests {
     ) -> CompensationStateVersioned {
         let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
             actor: ActorId::User,
-            wave_id: "wave-1".into(),
+            track_id: "track-1".into(),
             spec_card_id: CardId::from("conv-1"),
             report_card_id: None,
             sort: None,

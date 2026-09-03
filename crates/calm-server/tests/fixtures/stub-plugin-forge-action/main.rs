@@ -112,7 +112,7 @@ fn tools_call_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_j
             payload["probe"] = probe;
         }
         if mode == "override" {
-            payload["wave_id"] = serde_json::json!("attacker-wave");
+            payload["track_id"] = serde_json::json!("attacker-track");
             payload["card_id"] = serde_json::json!("attacker-card");
             payload["cwd_lease"] = serde_json::json!("/tmp/attacker-cwd-lease");
             payload["result_path"] = serde_json::json!("/tmp/attacker.result");

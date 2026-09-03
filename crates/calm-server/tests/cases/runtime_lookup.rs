@@ -1,6 +1,6 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
-use calm_server::model::{Card, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{Card, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_lookup::{
     resolve_active_thread_for_card, resolve_card_for_thread, resolve_claude_session_for_card,
 };
@@ -15,7 +15,7 @@ async fn fresh_repo() -> SqlxRepo {
         .expect("open in-memory sqlite repo")
 }
 
-async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
+async fn make_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
         .area_create(NewArea {
             name: "runtime lookup".into(),
@@ -24,7 +24,7 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         })
         .await
         .expect("create area");
-    repo.wave_create(NewWave {
+    repo.track_create(NewTrack {
         template_input: None,
         area_id: area.id,
         title: "runtime lookup".into(),
@@ -36,13 +36,13 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
-    .expect("create wave")
+    .expect("create track")
 }
 
 async fn make_card(repo: &SqlxRepo, kind: &str, payload: Value) -> Card {
-    let wave = make_wave(repo).await;
+    let track = make_track(repo).await;
     repo.card_create(NewCard {
-        wave_id: wave.id,
+        track_id: track.id,
         title: None,
         kind: kind.into(),
         sort: None,

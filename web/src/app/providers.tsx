@@ -13,7 +13,7 @@
 // in-memory cache from the persisted blob in IndexedDB; on cache writes
 // it serializes back. Allowlist + buster + maxAge live in
 // `api/persistConfig.ts` — see that file for the policy. The first paint
-// after a fresh reload now shows cached areas/waves/overlays instantly
+// after a fresh reload now shows cached areas/tracks/overlays instantly
 // while React Query refetches in the background per the normal
 // staleTime / refetchOnMount rules; nothing about the online behavior
 // changes, the persister just front-loads the data.

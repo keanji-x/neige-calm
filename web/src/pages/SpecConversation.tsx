@@ -14,7 +14,7 @@ import {
 } from './useSpecChatHistory';
 
 export interface SpecConversationProps {
-  /** Spec card id; null/undefined when wave has no spec card. */
+  /** Spec card id; null/undefined when track has no spec card. */
   specCardId: string | null;
   /** Whether the persistently-mounted drawer is currently open. */
   drawerOpen: boolean;
@@ -575,7 +575,7 @@ export function SpecConversation({
       >
         {specCardId == null ? (
           <p className="report-convo-empty">
-            Spec Agent is unavailable for this wave.
+            Spec Agent is unavailable for this track.
           </p>
         ) : (
           <div className="report-convo-doc">
@@ -703,7 +703,7 @@ export function SpecConversation({
           <>
             <p>
               This kills the current spec daemon and starts a new conversation.
-              The wave report is preserved, but the spec conversation transcript
+              The track report is preserved, but the spec conversation transcript
               will be discarded.
             </p>
             {resetAttempted && run.resetError && (

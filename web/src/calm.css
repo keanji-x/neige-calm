@@ -318,7 +318,7 @@
      .doc, .git, .diff, .plan-card, .note, .today-term, .today-card,
      .login-card, .settings-section, .add-panel, .view-toggle,
      .add-panel-menu, .dirpicker-inline, .react-grid-placeholder,
-     .xterm-restart, .wave-list-item:focus-visible). 14px was an oddball
+     .xterm-restart, .track-list-item:focus-visible). 14px was an oddball
      outside the new scale, with ~20 consumers — too many to rename
      individually for one slice. The alias accepts the 4px shrink across
      all card surfaces (the same intentional lossiness #150 chose for
@@ -419,7 +419,7 @@ select:-webkit-autofill {
 }
 
 /* Visually hidden but readable by assistive tech. Used for aria-describedby
-   helper spans (e.g. the rename hint on Area/Wave titles) so the
+   helper spans (e.g. the rename hint on Area/Track titles) so the
    accessible name stays clean while AT still verbalizes the action. The
    standard "clip pattern" — no display:none (which would hide from AT). */
 .sr-only {
@@ -618,7 +618,7 @@ select:-webkit-autofill {
   border-radius: var(--radius-md);
 }
 
-.side .side-section.attn-zone .side-wave-row.attention .side-wave-title {
+.side .side-section.attn-zone .side-track-row.attention .side-track-title {
   color: var(--text);
 }
 /* The Areas nav grows to fill the column between the Today nav (or the
@@ -727,7 +727,7 @@ select:-webkit-autofill {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.side .side-wave {
+.side .side-track {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-3) var(--space-5);
   width: 100%;
@@ -738,30 +738,30 @@ select:-webkit-autofill {
   text-align: left;
   transition: background var(--motion-quick), color var(--motion-quick);
 }
-.side .side-wave:hover { background: var(--overlay-active); color: var(--text); }
-[data-theme="dark"] .side .side-wave:hover { background: var(--overlay-active); }
-.side .side-wave.active {
+.side .side-track:hover { background: var(--overlay-active); color: var(--text); }
+[data-theme="dark"] .side .side-track:hover { background: var(--overlay-active); }
+.side .side-track.active {
   background: var(--overlay-active);
   color: var(--color-nav-item-active);
   font: var(--font-nav-item-active);
 }
-[data-theme="dark"] .side .side-wave.active { background: var(--overlay-active); }
-.side .side-wave-title {
+[data-theme="dark"] .side .side-track.active { background: var(--overlay-active); }
+.side .side-track-title {
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Issue #369: attention rows reuse the existing --warn token (no new red).
    This direct color on the title span outranks the inherited hover/active
-   color set on the parent .side-wave button, so it holds in all states. */
-.side .side-wave-row.attention .side-wave-title {
+   color set on the parent .side-track button, so it holds in all states. */
+.side .side-track-row.attention .side-track-title {
   color: var(--warn);
 }
-/* Wave row group: wraps the wave-nav button, optional area-nav button,
+/* Track row group: wraps the track-nav button, optional area-nav button,
    and pin button so none are nested inside the others (avoids nested-button
    a11y violation). The row itself carries hover/active states. Overflow
    hidden clips child backgrounds to the row's border-radius so per-child
    radius management isn't needed. */
-.side .side-wave-row {
+.side .side-track-row {
   position: relative;
   display: flex;
   flex-direction: row;
@@ -769,47 +769,47 @@ select:-webkit-autofill {
   border-radius: var(--radius-md);
   overflow: hidden;
 }
-.side .side-wave-row .side-wave {
+.side .side-track-row .side-track {
   border-radius: var(--radius-md);
   padding-left: calc(var(--space-3) + 20px + var(--space-3));
   /* Reserve space on the right so the title never ellipsizes under the
      absolutely-positioned delete button. */
   padding-right: calc(var(--space-5) + 20px + var(--space-3));
 }
-/* Area-name plain-text label — inline after the wave title inside the nav button. */
-.side .side-wave-area {
+/* Area-name plain-text label — inline after the track title inside the nav button. */
+.side .side-track-area {
   font: var(--font-nav-meta);
   color: var(--color-nav-meta);
   letter-spacing: var(--track-nav-meta);
   margin-left: var(--space-3);
   flex-shrink: 0;
-  /* 60px chosen empirically to fit ~6 chars of area name on the 200px sidebar without crowding the wave title. */
+  /* 60px chosen empirically to fit ~6 chars of area name on the 200px sidebar without crowding the track title. */
   max-width: 60px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.side .side-wave-row:hover .side-wave-area,
-.side .side-wave.active .side-wave-area { color: var(--text-label); }
-/* Wave row hover intentionally matches the selected/active gray for a consistent sidebar selection feel. */
-.side .side-wave-row:hover .side-wave { background: var(--overlay-active); color: var(--text); }
-[data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-active); }
-.side .side-wave-row .side-wave.active {
+.side .side-track-row:hover .side-track-area,
+.side .side-track.active .side-track-area { color: var(--text-label); }
+/* Track row hover intentionally matches the selected/active gray for a consistent sidebar selection feel. */
+.side .side-track-row:hover .side-track { background: var(--overlay-active); color: var(--text); }
+[data-theme="dark"] .side .side-track-row:hover .side-track { background: var(--overlay-active); }
+.side .side-track-row .side-track.active {
   background: var(--overlay-active);
   color: var(--color-nav-item-active);
   font: var(--font-nav-item-active);
 }
-[data-theme="dark"] .side .side-wave-row .side-wave.active { background: var(--overlay-active); }
-/* Removed the old `.side-wave:hover { background: transparent }` override:
+[data-theme="dark"] .side .side-track-row .side-track.active { background: var(--overlay-active); }
+/* Removed the old `.side-track:hover { background: transparent }` override:
    it erased the hover-faint and selected/active backgrounds at equal specificity.
    The row-hover rule above sets the selected/active value, so no guard is needed. */
 /* Pressed feedback: paint the selected-row background on mousedown (before
    the click navigates) so selection feels instant. */
-.side .side-wave-row .side-wave:active { background: var(--overlay-active); color: var(--text); }
+.side .side-track-row .side-track:active { background: var(--overlay-active); color: var(--text); }
 /* Pin button: hidden by default; revealed on row hover or when pinned.
    Sits absolutely at the same x column as .area-row-chevron so the
-   left-edge wave and area controls line up vertically. */
-.side .side-wave-pin {
+   left-edge track and area controls line up vertically. */
+.side .side-track-pin {
   position: absolute;
   left: var(--space-3);
   right: auto;
@@ -831,16 +831,16 @@ select:-webkit-autofill {
   opacity: 0;
   transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
 }
-.side .side-wave-row:hover .side-wave-pin,
-.side .side-wave-row:focus-within .side-wave-pin,
-.side .side-wave-pin.pinned { opacity: 1; }
-.side .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
-.side .side-wave-pin:focus-visible {
+.side .side-track-row:hover .side-track-pin,
+.side .side-track-row:focus-within .side-track-pin,
+.side .side-track-pin.pinned { opacity: 1; }
+.side .side-track-pin:hover { background: var(--overlay-hover); color: var(--text); }
+.side .side-track-pin:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   opacity: 1;
 }
-.side .side-wave-delete {
+.side .side-track-delete {
   position: absolute;
   right: var(--space-5);
   top: 50%;
@@ -859,13 +859,13 @@ select:-webkit-autofill {
   opacity: 0;
   transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
 }
-.side .side-wave-row:hover .side-wave-delete,
-.side .side-wave-row:focus-within .side-wave-delete { opacity: 1; }
-.side .side-wave-delete:hover {
+.side .side-track-row:hover .side-track-delete,
+.side .side-track-row:focus-within .side-track-delete { opacity: 1; }
+.side .side-track-delete:hover {
   background: var(--warn-soft);
   color: var(--warn);
 }
-.side .side-wave-delete:focus-visible {
+.side .side-track-delete:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -952,10 +952,10 @@ select:-webkit-autofill {
    wrapping disclosure, nav, and optional delete sibling buttons. Nesting
    buttons would be invalid HTML and trip axe's `nested-interactive`;
    the wrapper hosts hover/focus-within reveal of the × the same way
-   `.wave-row-wrapper` does on the area page. */
+   `.track-row-wrapper` does on the area page. */
 /* Outer wrapper that paints the area tint as a SINGLE background.
-   area-row + side-areas-waves are transparent children, so there's
-   no inter-element seam at the area/waves boundary. */
+   area-row + side-areas-tracks are transparent children, so there's
+   no inter-element seam at the area/tracks boundary. */
 .side .area-block {
   margin-bottom: var(--space-2);
   background-color: color-mix(in oklch, var(--area-color, transparent) var(--area-tint-strength), transparent);
@@ -1021,7 +1021,7 @@ select:-webkit-autofill {
 /* `.swatch-wrap` is kept (even though `.swatch` is hidden) so the
    chevron alignment math at `.area-nav { padding-left: ... + 22px }`
    above stays valid. Removing the wrap would shift the area label
-   left and break visual alignment with inline waves underneath. */
+   left and break visual alignment with inline tracks underneath. */
 .side .area-nav .swatch-wrap {
   position: relative;
   width: 12px; height: 12px;
@@ -1040,7 +1040,7 @@ select:-webkit-autofill {
 
 /* Single right-edge badge slot — replaces the swatch-overlay pip + the
    gray total count. `.warn` shows the waiting count in red; `.muted`
-   shows the total wave count in the decorative tone. The badge is a
+   shows the total track count in the decorative tone. The badge is a
    compact 16×16 circle, right-aligned in the same right-edge column as
    the Areas-header `+` (their right edges align; the badge is
    intentionally a touch smaller so the red count reads as a quiet
@@ -1100,18 +1100,18 @@ select:-webkit-autofill {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.side .side-areas-waves {
+.side .side-areas-tracks {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   padding-left: var(--space-0);
 }
-.side .side-areas-waves .side-wave {
+.side .side-areas-tracks .side-track {
   /* Match the .area-nav text column above:
      padding-left (var(--space-3) + 22px) + swatch (12px) + gap (var(--space-3)) = 46px */
   padding-left: calc(var(--space-3) + 22px + var(--space-3) + 12px);
 }
-.side .side-areas-waves .side-wave-area { display: none; }
+.side .side-areas-tracks .side-track-area { display: none; }
 
 /* Inline-edit state — same row geometry as `.area-nav` but with a text
    input instead of a label, so opening the form feels like an in-place
@@ -1287,17 +1287,17 @@ select:-webkit-autofill {
 [data-theme="dark"] .go.ghost:hover { background: var(--overlay-hover); }
 .go .mini { font-size: var(--text-xs); opacity: 0.6; margin-left: var(--space-3); }
 
-/* waves list — minimal */
-.waves {
+/* tracks list — minimal */
+.tracks {
   display: flex; flex-direction: column;
 }
-/* WaveRow is a real <button> (Slice 9 follow-up to #56/#60). The wrapper
+/* TrackRow is a real <button> (Slice 9 follow-up to #56/#60). The wrapper
    owns `position: relative` so the sibling hover-reveal × delete button
    can sit absolutely-positioned over the row's right edge without
    nesting interactive elements (which would trip axe's
    `nested-interactive` rule). */
-.wave-row-wrapper { position: relative; }
-.wave-row {
+.track-row-wrapper { position: relative; }
+.track-row {
   display: grid;
   grid-template-columns: 26px 1fr auto;
   gap: var(--space-7);
@@ -1319,40 +1319,40 @@ select:-webkit-autofill {
   transition: background var(--motion-quick);
   cursor: pointer;
 }
-.wave-row:disabled { cursor: default; }
-.wave-row:hover:not(:disabled) { background: var(--overlay-hover-faint); }
-[data-theme="dark"] .wave-row:hover:not(:disabled) { background: var(--overlay-hover-faint); }
-.wave-row .glyph {
+.track-row:disabled { cursor: default; }
+.track-row:hover:not(:disabled) { background: var(--overlay-hover-faint); }
+[data-theme="dark"] .track-row:hover:not(:disabled) { background: var(--overlay-hover-faint); }
+.track-row .glyph {
   width: 26px; height: 26px;
   /* Left-anchored, vertically centered. The status dot is 7-8px, so a
      `place-items: center` would visually offset it ~10px inward from the
      cell edge — breaking alignment with the page title (at x=0) and the
-     "+" of the New-wave row (also at x=0). Left-anchoring keeps all
+     "+" of the New-track row (also at x=0). Left-anchoring keeps all
      three optical edges on one column. */
   display: grid; place-items: center start;
   color: var(--text-3);
 }
-.wave-row .body { min-width: 0; }
-.wave-row .t {
+.track-row .body { min-width: 0; }
+.track-row .t {
   font-size: var(--text-md); font-weight: 500;
   color: var(--text);
   margin-bottom: var(--space-1);
   text-wrap: pretty;
 }
-.wave-row .s {
+.track-row .s {
   font-size: var(--text-base);
   color: var(--text-3);
   display: flex; gap: var(--space-5); align-items: center;
 }
-.wave-row .s .area-tag {
+.track-row .s .area-tag {
   display: inline-flex; align-items: center; gap: var(--space-3);
   font-weight: 500;
 }
-.wave-row .s .area-tag i {
+.track-row .s .area-tag i {
   display: inline-block;
   width: 6px; height: 6px; border-radius: var(--radius-pill);
 }
-.wave-row .when {
+.track-row .when {
   font-size: var(--text-sm);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
@@ -1362,10 +1362,10 @@ select:-webkit-autofill {
 /* Per-row delete affordance — hidden until the row is hovered or
    keyboard-focused. Sits absolutely so it doesn't push the existing
    eta/progress cluster around when it appears. The delete is a SIBLING
-   of the row button inside `.wave-row-wrapper`, never nested inside the
-   row — see WaveRow.tsx. Hover-reveal therefore keys off the wrapper,
+   of the row button inside `.track-row-wrapper`, never nested inside the
+   row — see TrackRow.tsx. Hover-reveal therefore keys off the wrapper,
    not the row. */
-.wave-row-wrapper .wave-row-delete {
+.track-row-wrapper .track-row-delete {
   position: absolute;
   right: 0;
   top: 50%;
@@ -1383,20 +1383,20 @@ select:-webkit-autofill {
   opacity: 0;
   transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
 }
-.wave-row-wrapper:hover .wave-row-delete,
-.wave-row-wrapper:focus-within .wave-row-delete { opacity: 1; }
-.wave-row-wrapper .wave-row-delete:hover {
+.track-row-wrapper:hover .track-row-delete,
+.track-row-wrapper:focus-within .track-row-delete { opacity: 1; }
+.track-row-wrapper .track-row-delete:hover {
   background: var(--warn-soft);
   color: var(--warn);
 }
 
-/* Per-row pin button in area-page wave rows. Reuses `.side-wave-pin`
+/* Per-row pin button in area-page track rows. Reuses `.side-track-pin`
    visual rules (opacity/color transitions) and sits absolutely so the
    eta/progress cluster isn't displaced. When only the pin is present it
    lands at right: 0 (matching .area-head-add); when the delete button
    is also present (`:has`) it shifts left to avoid overlap. Always
    visible when pinned. */
-.wave-row-wrapper .side-wave-pin {
+.track-row-wrapper .side-track-pin {
   position: absolute;
   right: 0;
   top: 50%;
@@ -1418,15 +1418,15 @@ select:-webkit-autofill {
    and widen the row's right gutter so neither button clips the content.
    Pin offset: 28px (delete width) + 4px gap = 32px from right edge.
    Double-button padding: 28 + 4 + 28 = 60px total clearance needed. */
-.wave-row-wrapper:has(.wave-row-delete) .side-wave-pin { right: calc(var(--space-11) + var(--space-2)); }
-.wave-row-wrapper:has(.wave-row-delete):has(.side-wave-pin) .wave-row {
+.track-row-wrapper:has(.track-row-delete) .side-track-pin { right: calc(var(--space-11) + var(--space-2)); }
+.track-row-wrapper:has(.track-row-delete):has(.side-track-pin) .track-row {
   padding-right: calc(2 * var(--space-11) + var(--space-2));
 }
-.wave-row-wrapper:hover .side-wave-pin,
-.wave-row-wrapper:focus-within .side-wave-pin { opacity: 1; }
-.wave-row-wrapper .side-wave-pin.pinned { opacity: 1; }
-.wave-row-wrapper .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
-.wave-row-wrapper .side-wave-pin:focus-visible {
+.track-row-wrapper:hover .side-track-pin,
+.track-row-wrapper:focus-within .side-track-pin { opacity: 1; }
+.track-row-wrapper .side-track-pin.pinned { opacity: 1; }
+.track-row-wrapper .side-track-pin:hover { background: var(--overlay-hover); color: var(--text); }
+.track-row-wrapper .side-track-pin:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   opacity: 1;
@@ -1469,7 +1469,7 @@ select:-webkit-autofill {
   text-wrap: pretty;
 }
 
-/* ===== Wave detail: workbench layout ===== */
+/* ===== Track detail: workbench layout ===== */
 .workbench {
   width: 100%;
   max-width: 1280px;
@@ -1477,13 +1477,13 @@ select:-webkit-autofill {
   display: flex; flex-direction: column;
   min-width: 0;
 }
-.wave-header {
+.track-header {
   display: flex; align-items: center; gap: var(--space-7);
   padding: var(--space-4) var(--space-0) var(--space-7);
   margin-bottom: var(--space-9);
   border-bottom: 1px solid var(--hairline);
 }
-.wave-back {
+.track-back {
   width: 26px; height: 26px;
   display: grid; place-items: center;
   border-radius: var(--radius-md);
@@ -1491,27 +1491,27 @@ select:-webkit-autofill {
   flex-shrink: 0;
   transition: background var(--motion-quick), color var(--motion-quick);
 }
-.wave-back:hover { background: var(--overlay-hover-strong); color: var(--text); }
-[data-theme="dark"] .wave-back:hover { background: var(--overlay-hover-strong); }
-.wave-back:focus-visible {
+.track-back:hover { background: var(--overlay-hover-strong); color: var(--text); }
+[data-theme="dark"] .track-back:hover { background: var(--overlay-hover-strong); }
+.track-back:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.wave-crumb {
+.track-crumb {
   display: flex; align-items: center; gap: var(--space-4);
   /* Content-sized (shrinkable, min-width:0 keeps the title ellipsis
      working) rather than greedy `flex: 1`: the view-mode control sits
      at the crumb tail and should not shove against the right-side meta
-     cluster. The free space lives between the crumb and `.wave-meta`
+     cluster. The free space lives between the crumb and `.track-meta`
      (margin-left: auto below). */
   min-width: 0; flex: 0 1 auto;
   font-size: var(--text-md);
 }
-.wave-area-dot {
+.track-area-dot {
   width: 9px; height: 9px; border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
-.wave-area {
+.track-area {
   color: var(--text-meta);
   cursor: pointer;
   flex-shrink: 0;
@@ -1521,14 +1521,14 @@ select:-webkit-autofill {
      reset (top of file) covers most of this; this rule preserves the
      original anchor's color/hover semantics. */
 }
-.wave-area:hover { color: var(--text); }
-.wave-area:focus-visible {
+.track-area:hover { color: var(--text); }
+.track-area:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
-.wave-sep { color: var(--text-4); flex-shrink: 0; }
-.wave-title {
+.track-sep { color: var(--text-4); flex-shrink: 0; }
+.track-title {
   font-family: var(--font-display);
   font-size: var(--text-lg);
   font-weight: 500;
@@ -1539,17 +1539,17 @@ select:-webkit-autofill {
 /* Click-to-rename target. The span is focusable (tabIndex=0, role=button)
    so keyboard users can land on it; the ring matches the rename input below
    so the visual story stays consistent when the span swaps to an <input>. */
-.wave-title[role="button"] {
+.track-title[role="button"] {
   border-radius: var(--radius-sm);
   outline: none;
 }
-.wave-title[role="button"]:focus-visible {
+.track-title[role="button"]:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-/* When the wave title is in rename mode it becomes an <input> with the same
+/* When the track title is in rename mode it becomes an <input> with the same
    visual class. Strip the default chrome and pair `outline: none` with a
    visible focus indicator so keyboard users can still see the focus ring. */
-.wave-title-input {
+.track-title-input {
   background: transparent;
   border: none;
   outline: none;
@@ -1599,13 +1599,13 @@ select:-webkit-autofill {
 
 /* ===== AreaPage header =====
    `.area-head` is the title row, laid out as a flex row so the inline
-   icon buttons (`+ New wave`, `×` delete) center against the h1's
+   icon buttons (`+ New track`, `×` delete) center against the h1's
    line-box via `align-items: center`. The default
    `.h-display { margin: 0 0 var(--space-10) }` is moved onto
    `.area-head` itself; otherwise the flex row's height would inflate to
    (line-height + 24px margin) and `align-items: center` would push the
    icons below the text midline. The 24px breath below the title stays
-   the same — it now lives on the header, matching Settings + Wave pages.
+   the same — it now lives on the header, matching Settings + Track pages.
 
    The `×` glyph is rendered by <CloseIcon /> and the `+` glyph by
    <PlusIcon /> — inline SVGs centered on their viewBox geometric
@@ -1650,14 +1650,14 @@ select:-webkit-autofill {
 }
 .area-head:hover .area-head-delete,
 .area-head:focus-within .area-head-delete { opacity: 1; }
-.wave-meta {
+.track-meta {
   display: flex; align-items: center; gap: var(--space-4);
   flex-shrink: 0;
-  /* Soak up the header's free space on the left — `.wave-crumb` is
+  /* Soak up the header's free space on the left — `.track-crumb` is
      content-sized since the #594 toggle moved next to it. */
   margin-left: auto;
 }
-.wave-action-cluster {
+.track-action-cluster {
   display: flex; align-items: center; gap: var(--space-2);
 }
 .status-pill {
@@ -1674,13 +1674,13 @@ select:-webkit-autofill {
 }
 .status-pill-dot.live-dot { animation: dot-pulse var(--motion-pulse) ease-in-out infinite; }
 .status-pill-dot.warn    { box-shadow: 0 0 0 3px var(--warn-soft); }
-.wave-percent {
+.track-percent {
   font-size: var(--text-sm); color: var(--text-3);
   font-weight: 500;
   min-width: 36px; text-align: right;
 }
 
-/* Wave workbench body — flex column that hosts the RGL grid and a trailing
+/* Track workbench body — flex column that hosts the RGL grid and a trailing
    AddPanel. Fills the .workbench inner width; the grid's own width comes
    from RGL's WidthProvider. */
 .workbench-main {
@@ -1971,7 +1971,7 @@ select:-webkit-autofill {
   margin-top: var(--space-10);
   padding: var(--space-8);
 }
-/* Shared "calm prose" typography — used by wave report bodies, spec
+/* Shared "calm prose" typography — used by track report bodies, spec
    conversation agent turns, and the file-viewer markdown preview. The
    report-specific section counter lives in .report-prose below and
    is layered on top; anything visually shared belongs here. */
@@ -2081,7 +2081,7 @@ select:-webkit-autofill {
   border: none;
   border-top: 1px solid var(--hairline);
 }
-/* Wave-report-only overlay: one decimal-leading-zero counter for H1 and H2 in
+/* Track-report-only overlay: one decimal-leading-zero counter for H1 and H2 in
    document order. The report body spans every prose block; each conversation
    turn owns an independent scope. */
 .report-body,
@@ -2165,7 +2165,7 @@ select:-webkit-autofill {
    Hiding the block alone is enough HERE, unlike in `fe/`, because this page has
    no per-block sibling: `ReportBlockView` emits the block div straight into
    `.report-body` (`pages/report-blocks/index.tsx`, rendered by
-   `WaveReportPage`'s `ReportMarkdown`), and backlink markers live in the rail, not
+   `TrackReportPage`'s `ReportMarkdown`), and backlink markers live in the rail, not
    beside the prose — `.report-backlinks` is a rail section. In `fe/` the
    slot is a `display: contents` row holding the block AND its `◂ N` sidenote,
    so the rule there has to be on the row or the marker is orphaned.
@@ -2513,7 +2513,7 @@ select:-webkit-autofill {
   border: none;
   background: transparent;
 }
-.wave-fs-viewer-cards-index {
+.track-fs-viewer-cards-index {
   padding: var(--space-8);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-lg);
@@ -2521,7 +2521,7 @@ select:-webkit-autofill {
   color: var(--text-2);
   font-family: var(--font-sans);
 }
-.wave-fs-viewer-title {
+.track-fs-viewer-title {
   margin: var(--space-0);
   color: var(--text);
   font-size: var(--text-md);
@@ -2529,20 +2529,20 @@ select:-webkit-autofill {
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-normal);
 }
-.wave-fs-viewer-empty {
+.track-fs-viewer-empty {
   margin: var(--space-6) var(--space-0) var(--space-0);
   color: var(--text-3);
   font-size: var(--text-sm);
   line-height: var(--leading-base);
 }
-.wave-fs-viewer-card-list {
+.track-fs-viewer-card-list {
   display: grid;
   gap: var(--space-4);
   margin: var(--space-7) var(--space-0) var(--space-0);
   padding: var(--space-0);
   list-style: none;
 }
-.wave-fs-viewer-card-row {
+.track-fs-viewer-card-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
@@ -2553,12 +2553,12 @@ select:-webkit-autofill {
   border-radius: var(--radius-md);
   background: var(--surface-card);
 }
-.wave-fs-viewer-card-main {
+.track-fs-viewer-card-main {
   min-width: 0;
   display: grid;
   gap: var(--space-2);
 }
-.wave-fs-viewer-card-title {
+.track-fs-viewer-card-title {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text);
@@ -2566,14 +2566,14 @@ select:-webkit-autofill {
   line-height: var(--leading-snug);
   font-weight: var(--weight-semibold);
 }
-.wave-fs-viewer-card-meta {
+.track-fs-viewer-card-meta {
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
 }
-.wave-fs-viewer-card-id {
+.track-fs-viewer-card-id {
   min-width: 0;
   overflow: hidden;
   color: var(--text-3);
@@ -2583,13 +2583,13 @@ select:-webkit-autofill {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wave-fs-viewer-card-sort {
+.track-fs-viewer-card-sort {
   color: var(--text-3);
   font-size: var(--text-xs);
   line-height: var(--leading-snug);
   white-space: nowrap;
 }
-.wave-fs-viewer-info-card {
+.track-fs-viewer-info-card {
   display: grid;
   gap: var(--space-6);
   padding: var(--space-8);
@@ -2599,7 +2599,7 @@ select:-webkit-autofill {
   color: var(--text-2);
   font-family: var(--font-sans);
 }
-.wave-fs-viewer-primary {
+.track-fs-viewer-primary {
   min-width: 0;
   margin: var(--space-0);
   overflow-wrap: anywhere;
@@ -2608,21 +2608,21 @@ select:-webkit-autofill {
   line-height: var(--leading-snug);
   font-weight: var(--weight-semibold);
 }
-.wave-fs-viewer-list {
+.track-fs-viewer-list {
   display: grid;
   gap: var(--space-4);
   margin: var(--space-0);
   padding: var(--space-0);
   list-style: none;
 }
-.wave-fs-viewer-row {
+.track-fs-viewer-row {
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
 }
-.wave-fs-viewer-list > .wave-fs-viewer-row {
+.track-fs-viewer-list > .track-fs-viewer-row {
   align-items: flex-start;
   justify-content: space-between;
   padding: var(--space-5) var(--space-6);
@@ -2630,12 +2630,12 @@ select:-webkit-autofill {
   border-radius: var(--radius-md);
   background: var(--surface-card);
 }
-.wave-fs-viewer-main {
+.track-fs-viewer-main {
   min-width: min(220px, 100%);
   display: grid;
   gap: var(--space-2);
 }
-.wave-fs-viewer-meta {
+.track-fs-viewer-meta {
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
@@ -2643,7 +2643,7 @@ select:-webkit-autofill {
   justify-content: flex-end;
   gap: var(--space-3);
 }
-.wave-fs-viewer-mono {
+.track-fs-viewer-mono {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text-3);
@@ -2651,15 +2651,15 @@ select:-webkit-autofill {
   font-size: var(--text-xs);
   line-height: var(--leading-snug);
 }
-.wave-fs-viewer-break {
+.track-fs-viewer-break {
   word-break: break-word;
 }
-.wave-fs-viewer-small {
+.track-fs-viewer-small {
   color: var(--text-3);
   font-size: var(--text-xs);
   line-height: var(--leading-snug);
 }
-.wave-fs-viewer-chip {
+.track-fs-viewer-chip {
   max-width: 180px;
   overflow: hidden;
   display: inline-flex;
@@ -2676,28 +2676,28 @@ select:-webkit-autofill {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wave-fs-viewer-chip[data-tone="accent"] {
+.track-fs-viewer-chip[data-tone="accent"] {
   border-color: var(--accent-soft);
   background: var(--accent-soft);
   color: var(--accent);
 }
-.wave-fs-viewer-chip[data-tone="warning"] {
+.track-fs-viewer-chip[data-tone="warning"] {
   border-color: var(--warn-border);
   background: var(--warn-soft);
   color: var(--warn);
 }
-.wave-fs-viewer-chip[data-tone="success"] {
+.track-fs-viewer-chip[data-tone="success"] {
   color: var(--success);
 }
-.wave-fs-viewer-chip[data-tone="danger"] {
+.track-fs-viewer-chip[data-tone="danger"] {
   color: var(--error-text);
 }
-.wave-fs-viewer-verdict {
+.track-fs-viewer-verdict {
   min-width: 0;
   display: inline-grid;
   gap: var(--space-1);
 }
-.wave-fs-viewer-verdict-reason {
+.track-fs-viewer-verdict-reason {
   min-width: 0;
   color: var(--text-3);
   font-size: var(--text-xs);
@@ -2705,18 +2705,18 @@ select:-webkit-autofill {
   line-height: var(--leading-snug);
   overflow-wrap: anywhere;
 }
-.wave-fs-viewer-field {
+.track-fs-viewer-field {
   min-width: 0;
   display: grid;
   gap: var(--space-2);
 }
-.wave-fs-viewer-label {
+.track-fs-viewer-label {
   color: var(--text-4);
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
   line-height: var(--leading-snug);
 }
-.wave-fs-viewer-footer {
+.track-fs-viewer-footer {
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
@@ -2725,18 +2725,18 @@ select:-webkit-autofill {
   font-size: var(--text-xs);
   line-height: var(--leading-snug);
 }
-.wave-fs-viewer-payload {
+.track-fs-viewer-payload {
   min-width: 0;
   color: var(--text-2);
   font-size: var(--text-sm);
   line-height: var(--leading-base);
 }
-.wave-fs-viewer-payload summary {
+.track-fs-viewer-payload summary {
   cursor: pointer;
   color: var(--text);
   font-weight: var(--weight-semibold);
 }
-.wave-fs-viewer-payload-pre {
+.track-fs-viewer-payload-pre {
   max-height: 360px;
   margin: var(--space-4) var(--space-0) var(--space-0);
   overflow: auto;
@@ -3074,13 +3074,13 @@ button.report-rail-head:hover {
 .report-rail-files {
   padding: var(--space-0);
 }
-.report-rail-files .wave-report-files-tree {
+.report-rail-files .track-report-files-tree {
   overflow: visible;
   padding: var(--space-0);
   border: none;
   background: transparent;
 }
-.report-rail-files .wave-report-files-row {
+.report-rail-files .track-report-files-row {
   min-height: 0;
   margin-block: var(--space-0);
   padding-top: var(--space-2);
@@ -3090,7 +3090,7 @@ button.report-rail-head:hover {
   font-size: 11.5px;
   line-height: var(--leading-base);
 }
-.report-rail-files .wave-report-files-row:hover {
+.report-rail-files .track-report-files-row:hover {
   background: var(--surface-card);
 }
 .report-rail-open {
@@ -3759,11 +3759,11 @@ button.report-rail-head:hover {
 /* warn text */
 .warn-text { color: var(--warn); }
 
-/* ===== Wave card (RGL grid cell wrapper) =====
+/* ===== Track card (RGL grid cell wrapper) =====
    Each grid item is a flex column so the child card (.term/.doc/.git/.diff/
    .plan-card/.note) can grow to fill the cell. The wrapper itself is just a
    transparent positioning context — the card draws the border + shadow. */
-.wave-card {
+.track-card {
   position: relative;
   width: 100%;
   height: 100%;
@@ -3778,11 +3778,11 @@ button.report-rail-head:hover {
    Keyed on an attribute, not a class: react-grid-layout owns the grid item's
    className and rewrites it on re-render, so a class set from `useRevealCard`
    did not survive. The list rows are the same reveal, one selector over. */
-.wave-card[data-nc-reveal],
-.wave-list-item[data-nc-reveal] {
-  animation: wave-card-highlight 1.8s ease-out;
+.track-card[data-nc-reveal],
+.track-list-item[data-nc-reveal] {
+  animation: track-card-highlight 1.8s ease-out;
 }
-@keyframes wave-card-highlight {
+@keyframes track-card-highlight {
   from {
     box-shadow: 0 0 0 var(--space-2) var(--accent-soft);
   }
@@ -3793,14 +3793,14 @@ button.report-rail-head:hover {
 
 /* Inside a grid cell, cards drop their stacked-layout margin and stretch
    to fill the wrapper. The wrapper owns the gap (RGL `margin` prop). */
-.wave-card > .term {
+.track-card > .term {
   margin-bottom: var(--space-0);
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.wave-card > .term .term-body {
+.track-card > .term .term-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -3814,7 +3814,7 @@ button.report-rail-head:hover {
      → fit() recomputes fewer cols → content shrinks → scrollbar disappears
      → width grows → fit() runs again → …
    which presents as the cell pulsing from the top-left. */
-.wave-card > .term.live .term-body {
+.track-card > .term.live .term-body {
   min-height: 0;
   overflow: hidden;
 }
@@ -3824,7 +3824,7 @@ button.report-rail-head:hover {
    The grid cell already enforces a `minH` in rows; letting xterm fit the
    cell exactly stops the feedback loop where overflow → relayout →
    ResizeObserver → fit() → overflow. */
-.wave-card .xterm-view {
+.track-card .xterm-view {
   min-height: 0;
 }
 
@@ -3865,8 +3865,8 @@ button.report-rail-head:hover {
   transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
   z-index: var(--z-raised);
 }
-.wave-card:hover .card-grid-close,
-.wave-card:focus-within .card-grid-close {
+.track-card:hover .card-grid-close,
+.track-card:focus-within .card-grid-close {
   opacity: 1;
 }
 .card-grid-close:hover {
@@ -3875,7 +3875,7 @@ button.report-rail-head:hover {
 }
 
 /* ===== Add panel =====
-   Now lives in the wave header (wave-meta cluster) so the create entry
+   Now lives in the track header (track-meta cluster) so the create entry
    point is up where the user looks first. The wrap drops its old grid-
    below positioning hints; the action cluster owns close control spacing. */
 .add-panel-wrap {
@@ -3901,7 +3901,7 @@ button.report-rail-head:hover {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* Wave view mode cycle button. */
+/* Track view mode cycle button. */
 .view-cycle {
   width: 26px;
   height: 26px;
@@ -3926,7 +3926,7 @@ button.report-rail-head:hover {
 .add-panel-menu {
   position: absolute;
   top: calc(100% + 4px);
-  /* Right-anchor: AddPanel now sits near the right edge of the wave
+  /* Right-anchor: AddPanel now sits near the right edge of the track
      header, so left-anchored menus would overflow off-screen. */
   right: 0;
   min-width: 180px;
@@ -4094,7 +4094,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 
 /* ===== NewTaskForm — #250 PR 3 inline configuration card =====
-   Used by AreaPage's `+ New wave` (this PR) and the calendar empty-
+   Used by AreaPage's `+ New track` (this PR) and the calendar empty-
    cell click (PR 6). Per the issue comment "configuration card", this
    sits inline in the page (not a modal Dialog) so the page footprint
    stays the same as the CTA it replaces.
@@ -4103,7 +4103,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    row), but the wrapping panel renders a 1px hairline border + tight
    inner padding so the form reads as a distinct card slot within the
    page rather than as flat in-flow content. Heading is small + muted
-   so the surrounding context (the area title above, the wave list
+   so the surrounding context (the area title above, the track list
    below) stays the primary focal point. */
 .new-task-form {
   display: flex;
@@ -4237,7 +4237,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 
 /* ===== .calm-select — themed dropdown drawer (#891 slice ③) =====
    Reusable customizable-select treatment for native <select>s (live
-   design exploration; currently applied to the New-wave dialog's
+   design exploration; currently applied to the New-track dialog's
    Workflow + Area selects — one popup system per card). In Chromium,
    `appearance: base-select` on both the select and its
    `::picker(select)` opts into an in-page, fully-stylable dropdown
@@ -4255,9 +4255,9 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
    `.calm-select-opt-name` + `.calm-select-opt-desc` spans (the desc is
    hidden in the cloned trigger content; fallback engines flatten it to
    inline text, so keep descriptions short). */
-/* Workflow field wrapper (label + select column) in the New-wave
+/* Workflow field wrapper (label + select column) in the New-track
    dialog. */
-.new-wave-kind {
+.new-track-kind {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -4367,7 +4367,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   }
 }
 
-/* One cohesive card (#891 signoff round 2): hosted in the New-wave
+/* One cohesive card (#891 signoff round 2): hosted in the New-track
    dialog (title row suppressed), the form drops its inline-panel
    chrome — the modal panel itself is the card, so a second border +
    inset padding would read as a card-in-card. The standalone
@@ -4801,7 +4801,7 @@ textarea.new-task-form-rawjson-text {
 /* #306 followup — `--text-2` not `--text-3` on the soft palette pairs.
    The original `--text-3 on --warn-soft` / `--text-3 on --accent-soft`
    landings missed WCAG 2 AA 4.5:1 in dark mode (axe reported neutral
-   at 4.41 against the wave card's --warn-soft; success against dark
+   at 4.41 against the track card's --warn-soft; success against dark
    --accent-soft computes to 4.33, also short). Bumping to --text-2
    lifts both pairs comfortably above the threshold in both themes
    (neutral dark 6.00, light 6.46; success dark 5.87, light 6.44) at
@@ -4954,7 +4954,7 @@ textarea.new-task-form-rawjson-text {
    kernel card. The dashed border + low opacity reads as a placeholder
    so schema drift surfaces visually instead of silently dropping the
    card. The flex-column stacks `<CardHead>` over the body so the body
-   fills the slot height when the wave gives the card more room. */
+   fills the slot height when the track gives the card more room. */
 .card-unknown {
   border: 1px dashed var(--hairline-strong);
   height: 100%;
@@ -5013,14 +5013,14 @@ textarea.new-task-form-rawjson-text {
   padding: var(--space-6);
 }
 
-.wave-report-files {
+.track-report-files {
   flex: 1 1 0;
   min-height: 0;
   display: grid;
   grid-template-columns: clamp(200px, 24%, 280px) minmax(0, 1fr);
   background: var(--paper);
 }
-.wave-report-files-tree {
+.track-report-files-tree {
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -5028,16 +5028,16 @@ textarea.new-task-form-rawjson-text {
   background: var(--surface-card);
   padding: var(--space-2) var(--space-0);
 }
-.wave-report-files-item,
-.wave-report-files-group {
+.track-report-files-item,
+.track-report-files-group {
   list-style: none;
   margin: var(--space-0);
   padding: var(--space-0);
 }
-.wave-report-files-item {
+.track-report-files-item {
   outline: none;
 }
-.wave-report-files-row {
+.track-report-files-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -5054,37 +5054,37 @@ textarea.new-task-form-rawjson-text {
   font-size: var(--text-xs);
   text-align: left;
 }
-.wave-report-files-row:hover {
+.track-report-files-row:hover {
   background: var(--overlay-hover);
   color: var(--text);
 }
-.wave-report-files-item:focus-visible > .wave-report-files-row {
+.track-report-files-item:focus-visible > .track-report-files-row {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.wave-report-files-row.is-selected {
+.track-report-files-row.is-selected {
   background: var(--overlay-active);
   color: var(--text);
 }
-.wave-report-files-caret {
+.track-report-files-caret {
   flex: 0 0 1em;
   width: 1em;
   color: var(--text-3);
 }
-.wave-report-files-label {
+.track-report-files-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wave-report-files-meta {
+.track-report-files-meta {
   flex: 0 0 auto;
   margin-left: auto;
   color: var(--text-4);
   font-family: var(--font-code);
   font-size: var(--text-xs);
 }
-.wave-report-files-viewer {
+.track-report-files-viewer {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -5092,54 +5092,54 @@ textarea.new-task-form-rawjson-text {
   flex-direction: column;
   background: var(--paper);
 }
-.wave-report-files-viewer-empty,
-.wave-report-files-state,
-.wave-report-files-error {
+.track-report-files-viewer-empty,
+.track-report-files-state,
+.track-report-files-error {
   color: var(--text-3);
   font-size: var(--text-sm);
 }
-.wave-report-files-viewer-empty {
+.track-report-files-viewer-empty {
   align-items: center;
   justify-content: center;
   padding: var(--space-6);
 }
-.wave-report-files-state,
-.wave-report-files-error {
+.track-report-files-state,
+.track-report-files-error {
   padding: var(--space-2) var(--space-3);
 }
-.wave-report-files-error {
+.track-report-files-error {
   color: var(--error-text, var(--warn));
 }
-.wave-report-files-markdown {
+.track-report-files-markdown {
   overflow: auto;
   padding: var(--space-4) var(--space-6);
 }
-.wave-report-files-markdown p,
-.wave-report-files-markdown ul,
-.wave-report-files-markdown ol {
+.track-report-files-markdown p,
+.track-report-files-markdown ul,
+.track-report-files-markdown ol {
   margin: var(--space-0) var(--space-0) var(--space-3);
   font-size: var(--text-sm);
   color: var(--text-2);
   line-height: var(--leading-loose);
 }
-.wave-report-files-markdown h1,
-.wave-report-files-markdown h2,
-.wave-report-files-markdown h3 {
+.track-report-files-markdown h1,
+.track-report-files-markdown h2,
+.track-report-files-markdown h3 {
   margin: var(--space-0) var(--space-0) var(--space-3);
   color: var(--text);
 }
-.wave-report-files-markdown ul,
-.wave-report-files-markdown ol {
+.track-report-files-markdown ul,
+.track-report-files-markdown ol {
   padding-left: var(--space-7);
 }
-.wave-report-files-markdown code {
+.track-report-files-markdown code {
   font-family: var(--font-code);
   font-size: var(--text-sm);
   background: var(--surface-chip);
   padding: var(--space-0) var(--space-2);
   border-radius: var(--radius-xs);
 }
-.wave-report-files-markdown pre {
+.track-report-files-markdown pre {
   font-family: var(--font-code);
   font-size: var(--text-sm);
   background: var(--surface-chip);
@@ -5148,14 +5148,14 @@ textarea.new-task-form-rawjson-text {
   overflow: auto;
   margin: var(--space-0) var(--space-0) var(--space-3);
 }
-.wave-report-files-code-wrap .cm-theme {
+.track-report-files-code-wrap .cm-theme {
   flex: 1 1 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.wave-report-files-code-wrap .cm-editor { height: 100%; }
-.wave-report-files-code-wrap .cm-scroller { font-family: var(--font-code); }
+.track-report-files-code-wrap .cm-editor { height: 100%; }
+.track-report-files-code-wrap .cm-scroller { font-family: var(--font-code); }
 
 /* ===== File Viewer card (issue #373) ===== */
 .file-viewer-card {
@@ -6004,8 +6004,8 @@ textarea.new-task-form-rawjson-text {
   /* `overflow: hidden`, not `auto`: when this wraps a live <XtermView/>
      (Today's default PTY), an auto scrollbar fights with xterm's own
      scrollback viewport and fit.fit() in a width-feedback loop — same
-     bug as the wave grid's terminal cards, see notes near
-     `.wave-card > .term.live .term-body`. The boot/error fallback inside
+     bug as the track grid's terminal cards, see notes near
+     `.track-card > .term.live .term-body`. The boot/error fallback inside
      is one or two lines so it never needs to scroll either. */
   flex: 1; min-height: 0;
   overflow: hidden;
@@ -6357,7 +6357,7 @@ textarea.new-task-form-rawjson-text {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   margin: 0 -4px;
   /* Issue #250 PR 5 — the agenda is allowed to scroll instead of pushing
-     the rail card unboundedly tall when many waves overlap the selected
+     the rail card unboundedly tall when many tracks overlap the selected
      day. `scrollbar-gutter: stable` keeps the row width steady when the
      scrollbar appears so titles don't reflow. */
   max-height: 360px;
@@ -6418,7 +6418,7 @@ textarea.new-task-form-rawjson-text {
   border-radius: var(--radius-xs);
   align-self: stretch;
 }
-/* Body is a column so the wave variant can stack title + lifecycle.
+/* Body is a column so the track variant can stack title + lifecycle.
    The scheduled-event variant has only the title row inside, so column
    layout reads identical to a single flex line. `overflow: hidden`
    lets descendant `text-overflow: ellipsis` rules actually kick in. */
@@ -6449,9 +6449,9 @@ textarea.new-task-form-rawjson-text {
   min-width: 0;
   flex: 1 1 auto;
 }
-/* Lifecycle text below the title — wave variant only. Uses the
+/* Lifecycle text below the title — track variant only. Uses the
    canonical `lifecycleLabel` phrase so the calendar agrees with
-   <WaveLifecycleBadge>. Clamped to single line ellipsis so a long
+   <TrackLifecycleBadge>. Clamped to single line ellipsis so a long
    future label can't reflow the rail.
    `.is-attention` lifts blocked / reviewing / failed into the warn
    colour so the text matches the right-edge dot flag visually. */
@@ -6468,11 +6468,11 @@ textarea.new-task-form-rawjson-text {
   color: var(--warn);
   font-weight: 500;
 }
-/* Wave variant — drop the hour gutter (waves are day-level, not
+/* Track variant — drop the hour gutter (tracks are day-level, not
    hour-bucketed) so the 3px area bar sits flush left and the row
    stops looking head-heavy. `align-items: flex-start` keeps the
    two-line body top-aligned against the bar. */
-.cal-event--wave {
+.cal-event--track {
   grid-template-columns: 3px 1fr;
   align-items: flex-start;
 }
@@ -6577,7 +6577,7 @@ textarea.new-task-form-rawjson-text {
    grid to Calm's tokens. RGL's bundled CSS handles the absolute
    positioning + transforms; we only restyle the visible bits.
    ============================================================ */
-.wave-grid {
+.track-grid {
   /* The grid itself is just a positioning host; the cards carry the chrome.
      A small bottom margin so the trailing AddPanel doesn't kiss the last
      row. */
@@ -6629,7 +6629,7 @@ textarea.new-task-form-rawjson-text {
 
 /* Resize handle — default is a SE-corner SVG triangle. Replace with a
    minimal hairline-corner glyph that brightens to the accent on hover.
-   Only the SE handle is enabled (see WaveGrid.tsx). */
+   Only the SE handle is enabled (see TrackGrid.tsx). */
 .react-resizable-handle {
   background-image: none;
   width: 16px;
@@ -6660,18 +6660,18 @@ textarea.new-task-form-rawjson-text {
 }
 
 /* ============================================================
-   WaveList — keyboard-canonical alternative to WaveGrid.
+   TrackList — keyboard-canonical alternative to TrackGrid.
    Slice 9 of issue #56 (Path C). The list view drops RGL's
    absolutely-positioned cells and lays cards out as a semantic
    `<ul>` flowing top-to-bottom. Visual density is similar to
    the stacked-card look the app used pre-RGL; the
-   `.wave-list-item` carries the card chrome instead of an
-   inner `.wave-card`.
+   `.track-list-item` carries the card chrome instead of an
+   inner `.track-card`.
    ============================================================ */
-.wave-list-wrap {
+.track-list-wrap {
   margin-bottom: var(--space-8);
 }
-.wave-list {
+.track-list {
   list-style: none;
   margin: var(--space-0);
   padding: var(--space-0);
@@ -6679,7 +6679,7 @@ textarea.new-task-form-rawjson-text {
   flex-direction: column;
   gap: var(--space-7);
 }
-.wave-list-item {
+.track-list-item {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -6690,7 +6690,7 @@ textarea.new-task-form-rawjson-text {
      any output) collapses to its header. */
   outline: none;
 }
-.wave-list-item:focus-visible {
+.track-list-item:focus-visible {
   /* Soft accent ring on the focused row — matches the rename-button
      `:focus-visible` pattern from Slice 3. Inset shadow rather than
      outline so a tall card with internal padding still shows the
@@ -6700,17 +6700,17 @@ textarea.new-task-form-rawjson-text {
 }
 /* Inside a list item, cards stretch to fill the row's width and
    their bodies obey their own min-height contracts. The grid view
-   uses `.wave-card > ...` selectors; we mirror them here. */
-.wave-list-item > .term,
-.wave-list-item > .doc,
-.wave-list-item > .git,
-.wave-list-item > .diff,
-.wave-list-item > .plan-card,
-.wave-list-item > .note,
-.wave-list-item > .codex-card,
-.wave-list-item > .iframe-card,
-.wave-list-item > .plugin-iframe-card,
-.wave-list-item > .card-unknown {
+   uses `.track-card > ...` selectors; we mirror them here. */
+.track-list-item > .term,
+.track-list-item > .doc,
+.track-list-item > .git,
+.track-list-item > .diff,
+.track-list-item > .plan-card,
+.track-list-item > .note,
+.track-list-item > .codex-card,
+.track-list-item > .iframe-card,
+.track-list-item > .plugin-iframe-card,
+.track-list-item > .card-unknown {
   margin: var(--space-0);
   width: 100%;
 }
@@ -6718,20 +6718,20 @@ textarea.new-task-form-rawjson-text {
    reasonable default. The grid view enforces dimensions via RGL row
    heights; in list view there's no parent grid, so we pin a height
    so the PTY's character-cell grid has enough room to be useful
-   without dominating the page on a wave with several cards. */
-.wave-list-item > .codex-card {
+   without dominating the page on a track with several cards. */
+.track-list-item > .codex-card {
   height: 400px;
 }
-.wave-list-item > .term.live {
+.track-list-item > .term.live {
   height: 400px;
 }
 /* Plugin iframe cards: cap the width on wide viewports so a fluid
    iframe doesn't render edge-to-edge in list view. 800px reads as
    a comfortable column for a reading-focused plugin while still
-   letting an iframe that wants to be wider stretch the wave page
+   letting an iframe that wants to be wider stretch the track page
    width itself. */
-.wave-list-item > .iframe-card,
-.wave-list-item > .plugin-iframe-card {
+.track-list-item > .iframe-card,
+.track-list-item > .plugin-iframe-card {
   max-width: 800px;
   height: 400px;
 }
@@ -6759,9 +6759,9 @@ textarea.new-task-form-rawjson-text {
   transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
   z-index: var(--z-raised);
 }
-.wave-list-item:hover .card-list-close,
-.wave-list-item:focus-within .card-list-close,
-.wave-list-item.is-active .card-list-close {
+.track-list-item:hover .card-list-close,
+.track-list-item:focus-within .card-list-close,
+.track-list-item.is-active .card-list-close {
   opacity: 1;
 }
 .card-list-close:hover {
@@ -6774,7 +6774,7 @@ textarea.new-task-form-rawjson-text {
   opacity: 1;
 }
 
-.wave-list-empty {
+.track-list-empty {
   color: var(--text-3);
   font-size: var(--text-base);
   margin: var(--space-4) var(--space-0);

@@ -3,7 +3,7 @@
   "wire": {
     "ev": "proposal.submitted",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "proposal_id": "pp-01",
       "plugin_id": "dev.neige.invest",
       "subject_kind": "report",

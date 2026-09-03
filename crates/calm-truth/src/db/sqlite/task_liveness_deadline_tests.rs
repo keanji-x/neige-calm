@@ -7,8 +7,8 @@ use crate::model::{Task, TaskKind, TaskStatus, now_ms};
 fn task(key: &str, status: TaskStatus) -> Task {
     let now = now_ms();
     Task {
-        id: format!("wave-1:{key}"),
-        wave_id: "wave-1".to_string(),
+        id: format!("track-1:{key}"),
+        track_id: "track-1".to_string(),
         key: key.to_string(),
         kind: TaskKind::Codex,
         goal: format!("do {key}"),
@@ -39,12 +39,12 @@ fn task(key: &str, status: TaskStatus) -> Task {
 async fn insert_task(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, task: &Task) {
     sqlx::query(
         r#"INSERT INTO tasks (
-               id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+               id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
                gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
                running_deadline_ms,context_stale_at_ms,declared_by,claim_context_json,
                context_closure_truncated,decl_ready,decl_released_by_user,
-               context_verify_failures,spawn,child_wave_id,created_at_ms,updated_at_ms,
+               context_verify_failures,spawn,child_track_id,created_at_ms,updated_at_ms,
                finished_at_ms
            ) VALUES (
                ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
@@ -52,7 +52,7 @@ async fn insert_task(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, task: &Task) 
            )"#,
     )
     .bind(&task.id)
-    .bind(&task.wave_id)
+    .bind(&task.track_id)
     .bind(&task.key)
     .bind(task.kind)
     .bind(&task.goal)

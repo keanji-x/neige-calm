@@ -1,6 +1,6 @@
 // INV-DUP-008 — the one click-or-F2-to-rename title.
 //
-// Both the area header and the wave header rename in place, and the area one
+// Both the area header and the track header rename in place, and the area one
 // carried a synthesized-click suppressor (#288): committing with Enter fires
 // keyup on the freshly-restored title element, which browsers turn into a
 // `click` — that reopened the editor and, on the next commit, PATCHed the
@@ -21,8 +21,8 @@ export type EditableTitleProps = Readonly<{
    * blank name opens a blank box. What read mode *shows* for a blank name is
    * `placeholder`, and the split is the point: while there was one `value`
    * doing both jobs, a caller that handed in a display fallback handed it to
-   * the editor too — the wave page passed `waveDisplayTitle(wave.title)`, so
-   * opening the editor on an unnamed wave put `Untitled wave` in the box and
+   * the editor too — the track page passed `trackDisplayTitle(track.title)`, so
+   * opening the editor on an unnamed track put `Untitled track` in the box and
    * the reader had to delete it before typing. (It could not be *stored*: the
    * `next === value` arm below made re-submitting it a no-op. The defect was
    * the text in the box, not a write.)
@@ -44,7 +44,7 @@ export type EditableTitleProps = Readonly<{
    * product cannot recover from.
    *
    * `'clear'` makes the empty commit a real request: write the empty name.
-   * A wave has a second namer — the spec agent's `calm.wave.rename` succeeds
+   * A track has a second namer — the spec agent's `calm.track.rename` succeeds
    * only while the title is empty (#1211 S3) — so clearing the name is how a
    * reader hands naming back to it, and swallowing that keystroke would leave
    * "I cleared it, pressed Enter, and nothing happened".

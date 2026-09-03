@@ -12,7 +12,7 @@
 //
 //   <ThemeProvider>                          (real, from app/theme.tsx)
 //     <QueryClientProvider>                  (real RQ client)
-//       <Suspense fallback="loading">        (matches WavePage's Suspense)
+//       <Suspense fallback="loading">        (matches TrackPage's Suspense)
 //         <CodexEntry.Component card={..} /> (real codex card via registry)
 //       </Suspense>
 //     </QueryClientProvider>

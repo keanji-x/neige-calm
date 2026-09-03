@@ -37,7 +37,7 @@ async fn fresh_state() -> AppState {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -129,13 +129,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
-    // #1300 S1: "2" -> "3" when `PUT /api/wave-templates/{id}` was deleted.
+    // #1300 S1: "2" -> "3" when `PUT /api/track-templates/{id}` was deleted.
     assert_eq!(v["apiVersion"].as_str().unwrap(), "3");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 14);
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 15);
 
     // minWebCompatVersion must echo the in-process constant — the whole
     // point of the field is to bind frontend expectations to a value the
@@ -149,12 +149,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // #1300 S1: 17 -> 18 so a cached bundle still rendering the deleted
     // Settings > Templates editor gets the refresh curtain instead of a 404 on
     // Save.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 19);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 20);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 19);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 20);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -206,9 +206,9 @@ async fn db_instance_id_changes_across_boots_stable_within_boot() {
 }
 
 /// #1209 PR-2 (design §3.6, test #15) — the server's compatibility **floor**
-/// really moved past the bundle that predates the wave-create field rename.
+/// really moved past the bundle that predates the track-create field rename.
 ///
-/// `POST /api/waves` now rejects the pre-rename spelling with a 400
+/// `POST /api/tracks` now rejects the pre-rename spelling with a 400
 /// (`deny_unknown_fields`). A cached bundle at 16 would therefore keep issuing
 /// requests that cannot succeed — "partially works", which
 /// `docs/upgrade-stability.md` forbids. Raising `minWebCompatVersion` above 16
@@ -225,7 +225,7 @@ async fn db_instance_id_changes_across_boots_stable_within_boot() {
 #[tokio::test]
 async fn web_compat_floor_is_above_the_previous_bundle() {
     /// Floor shipped before #1209 PR-2; the last bundle generation that spoke
-    /// the pre-rename wave-create field names.
+    /// the pre-rename track-create field names.
     const LAST_PRE_RENAME_FLOOR: u64 = 16;
 
     let state = fresh_state().await;

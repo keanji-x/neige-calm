@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { excludeReportCards } from './excludeReportCards';
-import type { WaveCardSlot } from '../types';
+import type { TrackCardSlot } from '../types';
 import type { TerminalCardData } from './builtins/terminal';
 import type { SpecCardData } from './builtins/spec';
-import type { WaveReportCardData } from './builtins/wave-report';
+import type { TrackReportCardData } from './builtins/track-report';
 
-function terminal(id: string): WaveCardSlot {
+function terminal(id: string): TrackCardSlot {
   const card: TerminalCardData = {
     type: 'terminal',
     id,
@@ -15,9 +15,9 @@ function terminal(id: string): WaveCardSlot {
   return { kind: 'card', card };
 }
 
-function report(id = 'report_1'): WaveCardSlot {
-  const card: WaveReportCardData = {
-    type: 'wave-report',
+function report(id = 'report_1'): TrackCardSlot {
+  const card: TrackReportCardData = {
+    type: 'track-report',
     id,
     summary: '',
     body: '# Report',
@@ -26,7 +26,7 @@ function report(id = 'report_1'): WaveCardSlot {
   return { kind: 'card', card, sort: -1, deletable: false };
 }
 
-function spec(id = 'spec_1'): WaveCardSlot {
+function spec(id = 'spec_1'): TrackCardSlot {
   const card: SpecCardData = {
     type: 'spec',
     id,
@@ -48,7 +48,7 @@ describe('excludeReportCards', () => {
     ]);
   });
 
-  it('excludes a wave-report card', () => {
+  it('excludes a track-report card', () => {
     expect(excludeReportCards([report()])).toEqual([]);
   });
 
@@ -71,10 +71,10 @@ describe('excludeReportCards', () => {
     expect(out.map((x) => x.originalIndex)).toEqual([0, 2, 4]);
   });
 
-  it('excludes unknown wave-report kernel cards defensively', () => {
-    const cards: WaveCardSlot[] = [
+  it('excludes unknown track-report kernel cards defensively', () => {
+    const cards: TrackCardSlot[] = [
       terminal('term_1'),
-      { kind: 'unknown', id: 'unknown_report', kernelKind: 'wave-report' },
+      { kind: 'unknown', id: 'unknown_report', kernelKind: 'track-report' },
     ];
 
     expect(excludeReportCards(cards)).toEqual([

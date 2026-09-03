@@ -21,18 +21,18 @@ use std::time::Duration;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use serde_json::json;
 use tokio::time::{Instant, sleep};
 
 const CALLER_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-caller");
 
-/// Boot a host with one caller-stub plugin installed and an area+wave already
+/// Boot a host with one caller-stub plugin installed and an area+track already
 /// seeded in the repo. Returns the host, the repo (so the test can assert on
-/// state directly), the demo wave id (also baked into the plugin's env), and
+/// state directly), the demo track id (also baked into the plugin's env), and
 /// the tempdir guard.
-async fn boot_with_wave(
+async fn boot_with_track(
     plugin_id: &str,
 ) -> (Arc<PluginHost>, Arc<dyn Repo>, String, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -57,8 +57,8 @@ async fn boot_with_wave(
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "demo".into(),
@@ -80,10 +80,10 @@ async fn boot_with_wave(
         "display_name": "Caller stub",
         "entrypoint": {
             "command": "bin/stub",
-            "env": { "NEIGE_DEMO_WAVE": wave.id.clone() }
+            "env": { "NEIGE_DEMO_TRACK": track.id.clone() }
         },
         "permissions": {
-            "overlays_write": ["wave", "card"],
+            "overlays_write": ["track", "card"],
             "cards_create": true,
             "cards_read_all": true,
             "events_subscribe": ["*"],
@@ -119,10 +119,10 @@ async fn boot_with_wave(
         events,
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
-    (host, repo, wave.id.to_string(), tmp)
+    (host, repo, track.id.to_string(), tmp)
 }
 
 async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
@@ -143,7 +143,7 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
 #[tokio::test]
 async fn caller_stub_drives_neige_callbacks_end_to_end() {
     let plugin_id = "test.caller";
-    let (host, repo, wave_id, _tmp) = boot_with_wave(plugin_id).await;
+    let (host, repo, track_id, _tmp) = boot_with_track(plugin_id).await;
 
     host.spawn(plugin_id).await.expect("spawn caller stub");
     wait_for_running(&host, plugin_id).await;
@@ -154,7 +154,7 @@ async fn caller_stub_drives_neige_callbacks_end_to_end() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let kv = repo.plugin_kv_get(plugin_id, "answer").await.unwrap();
-        let cards = repo.cards_by_wave(&wave_id).await.unwrap();
+        let cards = repo.cards_by_track(&track_id).await.unwrap();
         let demo_card = cards
             .iter()
             .find(|c| c.kind == format!("plugin:{plugin_id}:demo"));
@@ -181,7 +181,7 @@ async fn caller_stub_drives_neige_callbacks_end_to_end() {
 
             // Overlay should be present and scoped to the plugin's id (server
             // enforces — the stub didn't even pass a plugin_id field).
-            let overlays = repo.overlays_for("wave", &wave_id).await.unwrap();
+            let overlays = repo.overlays_for("track", &track_id).await.unwrap();
             let our_overlay = overlays
                 .iter()
                 .find(|o| o.plugin_id == plugin_id && o.kind == "status")

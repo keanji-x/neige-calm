@@ -81,7 +81,7 @@
  *   here.
  * * `13` — proposal-channel events (issue #955 §5 PR-a):
  *   `proposal.submitted` / `proposal.resolved` join the WS event union
- *   and `wave.report_edited` gains the `'plugin'` author arm + optional
+ *   and `track.report_edited` gains the `'plugin'` author arm + optional
  *   `author_plugin_id`, with backend `SYNC_EVENT_VERSION` bumped
  *   11 → 12 in lockstep. Older frontends' zod schemas don't know the
  *   new discriminators (and reject the new author arm) and would
@@ -95,9 +95,9 @@
  *   `SYNC_EVENT_VERSION` bumped 12 → 13 in lockstep. Older frontends'
  *   event unions do not recognize the new discriminators.
  * * `17` — issue #1209 PR-2 renames the two template fields of the
- *   `POST /api/waves` request body to `template_id` / `template_input`.
- *   `CreateWaveRequest` keeps `deny_unknown_fields`, so a cached bundle at
- *   `16` would send the pre-rename spelling and get a 400 on every wave create —
+ *   `POST /api/tracks` request body to `template_id` / `template_input`.
+ *   `CreateTrackRequest` keeps `deny_unknown_fields`, so a cached bundle at
+ *   `16` would send the pre-rename spelling and get a 400 on every track create —
  *   exactly the "partially works" outcome `docs/upgrade-stability.md` forbids.
  *   Raising the floor makes those bundles show the hard refresh curtain
  *   instead of issuing a doomed request.
@@ -109,7 +109,7 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 19;
+export const WEB_COMPAT_VERSION = 20;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

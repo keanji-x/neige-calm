@@ -98,7 +98,7 @@ describe('MobileListItem hint', () => {
 /*
  * #1234 S1b-4a/4b did not change this rule — and that is exactly why it is
  * pinned here. `MobileListItem` has seven call sites: `app/shell`'s Pages list,
- * its Areas list and an area's Waves list, the wave page's Outline rows (parent
+ * its Areas list and an area's Tracks list, the track page's Outline rows (parent
  * and child), and the Cards and Tasks rows the painter now composes. Five of the
  * seven pass a string meta, so the composed name is live behaviour, not a
  * corner. Those two slices reworked the primitive around them — `onSelect`
@@ -272,7 +272,7 @@ describe('MobileListItem accessible description', () => {
    * The two cases above run with `import.meta.env.DEV` true, which is the tier
    * the throw is for: an Astryx upgrade that changed the markup is looked at in
    * development and in CI. Production is a different trade. This component
-   * renders inside the `/wave/$waveId` route; neither the route nor the router
+   * renders inside the `/track/$trackId` route; neither the route nor the router
    * configures an `errorComponent`, so a throw out of a layout effect is caught
    * by the global `CatchBoundary` above `Matches` and replaces the entire match
    * — app shell and navigation with it — with a bare error page. Losing the

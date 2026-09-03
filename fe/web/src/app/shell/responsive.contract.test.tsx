@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './public.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
 
 /*
  * `navigation.ts` is now loaded for real below — only its hooks are replaced —
@@ -18,22 +18,22 @@ vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => undefined,
 }));
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
-const WAVE = {
+const TRACK = {
   id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
 };
 
 vi.mock('../providers/queries.ts', () => ({
   useWorkspace: () => ({
-    areas: [AREA], waves: [WAVE], wavesByArea: new Map([['c1', [WAVE]]]), waveErrorsByArea: new Map(), wavesLoadingByArea: new Map(),
+    areas: [AREA], tracks: [TRACK], tracksByArea: new Map([['c1', [TRACK]]]), trackErrorsByArea: new Map(), tracksLoadingByArea: new Map(),
     areasError: null, overlaysError: null, areasLoading: false, overlaysLoading: false,
-    retryAreas: vi.fn(), retryOverlays: vi.fn(), retryWaves: vi.fn(),
+    retryAreas: vi.fn(), retryOverlays: vi.fn(), retryTracks: vi.fn(),
   }),
   useAreaMutations: () => ({ create: vi.fn(), remove: vi.fn() }),
-  useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
+  useTrackMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   // #1209 — the dialog's template read. Blank-only is a working state, so the
   // rail contract needs nothing more than the degraded shape here.
-  useWaveTemplates: () => ({ templates: [], error: null }),
+  useTrackTemplates: () => ({ templates: [], error: null }),
   ApiError: class ApiError extends Error {},
 }));
 /*
@@ -45,7 +45,7 @@ vi.mock('../router/navigation.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../router/navigation.ts')>()),
   useCurrentPath: () => '/',
   useGo: () => vi.fn(),
-  useGoSameWave: () => vi.fn(),
+  useGoSameTrack: () => vi.fn(),
   routeParamFromPath: () => undefined,
 }));
 vi.mock('./sidebar.tsx', () => ({ Sidebar: ({ collapsed, onToggleCollapsed }: {
@@ -94,7 +94,7 @@ describe('compact navigation interaction contracts', () => {
      * The dock yields to a secondary page. That used to be published as a
      * `window` event; since #1191 §2.1 it is derived, so the only way to reach
      * it here is to drive the state it is derived from — drilling the Areas
-     * sheet into an area. `useCurrentPath` is mocked to `/`, so the wave-route
+     * sheet into an area. `useCurrentPath` is mocked to `/`, so the track-route
      * half of the OR is out of play and this is the area half on its own.
      */
     const dock = document.querySelector('nav[aria-label="Primary"]');

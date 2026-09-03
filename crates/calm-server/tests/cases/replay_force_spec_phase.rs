@@ -7,10 +7,10 @@
 //! Step-0 probe findings (recorded here and in the PR commit body):
 //! in replay boot the shared codex app-server is `new_stub` (supervisor
 //! state `Idle`, no `fake`), so `is_running()` is false and the
-//! `spec-harness-start` operation submitted by `POST /api/waves` fails
-//! at `validate` ("shared codex app-server is not running") — wave +
+//! `spec-harness-start` operation submitted by `POST /api/tracks` fails
+//! at `validate` ("shared codex app-server is not running") — track +
 //! spec/report cards are created, but NO runtime row exists and NO
-//! harness is registered. `probe_replay_boot_wave_create_leaves_spec_card_inert`
+//! harness is registered. `probe_replay_boot_track_create_leaves_spec_card_inert`
 //! pins that, which is why the dev endpoint must stand up its own
 //! runtime row + harness (fixtures-gated `run_unstarted_for_test`-style
 //! spawn) instead of 404ing on registry miss.
@@ -109,13 +109,13 @@ async fn boot() -> Boot {
     }
 }
 
-async fn create_wave(boot: &Boot) -> (String, String) {
+async fn create_track(boot: &Boot) -> (String, String) {
     let (status, body, text) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": boot.area_id,
-            "title": "probe wave",
+            "title": "probe track",
             "cwd": attached_repo_fixture("issue-682-force-spec-phase"),
             "attach_folder": true,
             "theme": { "fg": [255, 255, 255], "bg": [0, 0, 0] },
@@ -124,25 +124,25 @@ async fn create_wave(boot: &Boot) -> (String, String) {
     .await;
     assert!(
         status.is_success(),
-        "wave create must succeed: status={status} body={text}"
+        "track create must succeed: status={status} body={text}"
     );
-    let wave_id = body["id"].as_str().expect("wave id").to_string();
-    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    let track_id = body["id"].as_str().expect("track id").to_string();
+    let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let spec_card = cards
         .iter()
         .find(|c| c.kind == "codex")
-        .expect("wave create auto-mints a spec codex card");
-    (wave_id, spec_card.id.to_string())
+        .expect("track create auto-mints a spec codex card");
+    (track_id, spec_card.id.to_string())
 }
 
 /// Step-0 probe — pinned as a regression test. In replay boot (stub
-/// shared codex app-server) the wave-create `spec-harness-start`
+/// shared codex app-server) the track-create `spec-harness-start`
 /// operation fails at validate, leaving the spec card with no runtime
 /// row and no registered harness; `GET /spec/run` answers dormant.
 #[tokio::test]
-async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
+async fn probe_replay_boot_track_create_leaves_spec_card_inert() {
     let boot = boot().await;
-    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+    let (_track_id, spec_card_id) = create_track(&boot).await;
 
     let runtime = boot
         .repo
@@ -169,9 +169,9 @@ async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
 #[tokio::test]
 async fn area_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
     let boot = boot().await;
-    let (wave_id, spec_card_id) = create_wave(&boot).await;
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&wave_id)
+    let (track_id, spec_card_id) = create_track(&boot).await;
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(&track_id)
         .execute(boot.repo.pool())
         .await
         .unwrap();
@@ -210,16 +210,16 @@ async fn area_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
 #[tokio::test]
 async fn area_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
     let boot = boot().await;
-    let (wave_id, _) = create_wave(&boot).await;
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&wave_id)
+    let (track_id, _) = create_track(&boot).await;
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(&track_id)
         .execute(boot.repo.pool())
         .await
         .unwrap();
     let chat = boot
         .repo
         .card_create(NewCard {
-            wave_id: wave_id.clone().into(),
+            track_id: track_id.clone().into(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -229,7 +229,7 @@ async fn area_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
         .unwrap();
     boot.state
         .card_role_cache
-        .insert(chat.id.clone(), CardRole::Worker, chat.wave_id.clone());
+        .insert(chat.id.clone(), CardRole::Worker, chat.track_id.clone());
 
     replay::force_spec_phase(
         &boot.state,
@@ -278,7 +278,7 @@ async fn phase_changed_events(boot: &Boot, tag: HarnessPhaseTag) -> usize {
 #[tokio::test]
 async fn force_spec_phase_three_surfaces_agree() {
     let boot = boot().await;
-    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+    let (_track_id, spec_card_id) = create_track(&boot).await;
     let mut bus_rx = boot.bus.subscribe();
 
     let outcome = replay::force_spec_phase(
@@ -360,16 +360,16 @@ async fn force_spec_phase_three_surfaces_agree() {
 #[tokio::test]
 async fn force_spec_phase_rejects_non_spec_and_unknown_cards() {
     let boot = boot().await;
-    let (wave_id, _spec_card_id) = create_wave(&boot).await;
+    let (track_id, _spec_card_id) = create_track(&boot).await;
 
     let report_card = boot
         .repo
-        .cards_by_wave(&wave_id)
+        .cards_by_track(&track_id)
         .await
         .unwrap()
         .into_iter()
         .find(|c| c.kind != "codex")
-        .expect("wave create auto-mints a non-codex report card");
+        .expect("track create auto-mints a non-codex report card");
     let err = replay::force_spec_phase(
         &boot.state,
         boot.dyn_repo(),
@@ -405,7 +405,7 @@ async fn force_spec_phase_rejects_non_spec_and_unknown_cards() {
 #[tokio::test]
 async fn force_spec_phase_same_phase_twice_emits_one_event() {
     let boot = boot().await;
-    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+    let (_track_id, spec_card_id) = create_track(&boot).await;
 
     let first = replay::force_spec_phase(
         &boot.state,
@@ -467,7 +467,7 @@ async fn force_spec_phase_same_phase_twice_emits_one_event() {
 #[tokio::test]
 async fn force_spec_phase_rejects_wedged_with_bad_request() {
     let boot = boot().await;
-    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+    let (_track_id, spec_card_id) = create_track(&boot).await;
 
     let err = replay::force_spec_phase(
         &boot.state,
@@ -518,7 +518,7 @@ async fn force_spec_phase_rejects_wedged_with_bad_request() {
 #[tokio::test]
 async fn forced_harness_spec_input_enqueues_without_issuing_turns() {
     let boot = boot().await;
-    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+    let (_track_id, spec_card_id) = create_track(&boot).await;
 
     let outcome = replay::force_spec_phase(
         &boot.state,
@@ -584,7 +584,7 @@ async fn forced_harness_spec_input_enqueues_without_issuing_turns() {
 #[tokio::test]
 async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
     let boot = boot().await;
-    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+    let (_track_id, spec_card_id) = create_track(&boot).await;
 
     let outcome = replay::force_spec_phase(
         &boot.state,

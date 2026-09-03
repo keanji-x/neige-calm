@@ -16,7 +16,7 @@
   `knownCard`（`:1466`）不命中时 `:1468-1471` 的 effect 直接 `replace` 掉 `?card=`
   → **unknown card 的详情页在 URL 模型下永远打不开**，而现在能打开。
 - 且 `?card=` 命中 ⇒ `knownCard` ⇒ `onCloseBoard` 有值 ⇒ `boardOpen` 为真 ⇒
-  `wave/page/public.tsx:127-133` 强制关闭手机面板。`?panel=cards&card=y` 是自相矛盾的 URL。
+  `track/page/public.tsx:127-133` 强制关闭手机面板。`?panel=cards&card=y` 是自相矛盾的 URL。
 
 ⇒ 手机卡片详情 v1 **保持组件 state**，显式豁免。
 
@@ -27,7 +27,7 @@
 路由化会额外产生：a11y 契约整套消失、`/area/$areaId` 与手机二级列表不等价
 （`features/area/page/public.tsx:76-166` 有文档空态/会话/重命名且无 compact 分支）、
 桌面凭空多两个产品面、以及 `<div key={currentPath}>`（`shell/public.tsx:302`）导致
-`/wave/x → /pages → 回来` 整树重挂载丢滚动位置——**真实体验回退**。
+`/track/x → /pages → 回来` 整树重挂载丢滚动位置——**真实体验回退**。
 
 ⇒ **导航目的地进 URL，瞬时覆盖层不进 URL。** 这是本设计的中心原则。
 
@@ -41,8 +41,8 @@
 
 ### 0.4 r2：secondary 三元公式——逻辑错误
 
-r2 写成 `onWaveRoute ? (section === null) : (section === 'areas' && ...)`。
-从 `/wave/x` 点开 Areas 再选 area 时 pathname 仍是 wave，第一分支返回 false 并**整个跳过 area 分支**
+r2 写成 `onTrackRoute ? (section === null) : (section === 'areas' && ...)`。
+从 `/track/x` 点开 Areas 再选 area 时 pathname 仍是 track，第一分支返回 false 并**整个跳过 area 分支**
 ⇒ Areas 二级页会露出 dock。现行为本就是两个条件 OR（`shell/public.tsx:109-115`）。见 §2.1。
 
 ### 0.5 实现阶段：双路评审结论相反，靠**执行**裁决
@@ -51,9 +51,9 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'areas' && ...)`。
 第二路是对的，而且它是跑出来的不是读出来的。两条都已复现并修复：
 
 1. **非法 card 回弹会吞掉 `panel`**（违反 §1.4）。
-   `waveSearchFromLocation()` 在**解析原始 location 时**就执行 card/panel 互斥，
+   `trackSearchFromLocation()` 在**解析原始 location 时**就执行 card/panel 互斥，
    把 `{card:bad, panel:tasks}` 归一成只剩 card；随后 patch `{card: undefined}` 时 panel 已无从恢复。
-   实测 `sameWaveSearch({searchStr:'?card=bad&panel=tasks&from=area'},'w1',{card:undefined})` 返回 `{from:'area'}`。
+   实测 `sameTrackSearch({searchStr:'?card=bad&panel=tasks&from=area'},'w1',{card:undefined})` 返回 `{from:'area'}`。
    **互斥必须在重建输出时执行，不能在解析阶段。**
    原有测试只覆盖「重复 card 被拒后保留 panel」与「设置 card 时清 panel」，恰好绕开这个交叉点。
 
@@ -95,7 +95,7 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'areas' && ...)`。
 
 | 层级 | 承载 | 状态 |
 |---|---|---|
-| Today / Area / Wave / Settings | 既有路由 | 不动 |
+| Today / Area / Track / Settings | 既有路由 | 不动 |
 | Report 二级面板 | `?panel=outline\|cards\|tasks\|conversations` | **新** |
 | Report 返回来源 | `?from=pages\|area` | **新** |
 | 块锚点 `#$blockId`、桌面 card overlay `?card=` | 既有 | 不动 |
@@ -113,7 +113,7 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'areas' && ...)`。
 | report → panel | `push`，并写 `state: { ncPanelPushed: true }` |
 | panel A → panel B | `replace`（保持 marker） |
 | panel → report | marker 存在 **且** `canGoBack()` ⇒ `router.history.back()`；否则 `replace` |
-| report → 别的 wave | `push`（既有行为不变） |
+| report → 别的 track | `push`（既有行为不变） |
 
 `back()` 分支保证不留重复项；`replace` 分支覆盖冷启动深链（分享出去的 `?panel=cards`），
 **绝不无条件 `history.back()`**——那会直接退出应用。
@@ -124,18 +124,18 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'areas' && ...)`。
 ### 1.2 `?from=` 语义
 
 缺省（无 `from=`）回落 **`pages`**，即当前默认值（`shell/public.tsx:112`），避免行为回归。
-`from=area` 返回时恢复到哪个 area 由 `areaIdOf(waveId)` 从 workspace 派生（`shell/public.tsx:169-170` 已有映射）
+`from=area` 返回时恢复到哪个 area 由 `areaIdOf(trackId)` 从 workspace 派生（`shell/public.tsx:169-170` 已有映射）
 ⇒ **`mobileAreaRestoreId` 直接删除，派生优于存储**。
 
 ### 1.3 两个出口，职责分开
 
-r2 只给了「保留」的出口，没有任何出口能**写入** `from`——而 `from` 的唯一写入点是跨 wave 导航
+r2 只给了「保留」的出口，没有任何出口能**写入** `from`——而 `from` 的唯一写入点是跨 track 导航
 （`shell/public.tsx:242` MobilePages、`:254` MobileAreas）。必须两件事分开：
 
-1. **`NavTarget` 的 wave 分支增加 `panel?` / `from?`**，`useGo` 的 search 构造扩成三字段**显式构造**。
-   纪律不变：未传即清空，防止参数跨 wave 泄漏（`navigation.ts:45-49` 的既有理由）。
-2. **`useGoSameWave(expectedWaveId, patch, options?)`** 只负责**保留**，不负责设置：
-   - 携带 `expectedWaveId`，与当前 wave 不符时等同 `go()`（这样「去掉同 wave 判据」才有可变异对象）。
+1. **`NavTarget` 的 track 分支增加 `panel?` / `from?`**，`useGo` 的 search 构造扩成三字段**显式构造**。
+   纪律不变：未传即清空，防止参数跨 track 泄漏（`navigation.ts:45-49` 的既有理由）。
+2. **`useGoSameTrack(expectedTrackId, patch, options?)`** 只负责**保留**，不负责设置：
+   - 携带 `expectedTrackId`，与当前 track 不符时等同 `go()`（这样「去掉同 track 判据」才有可变异对象）。
    - **绝不 `search: prev => ({...prev, ...patch})`**——那会继承未知参数、非法数组与重复 key，
      破坏白名单式重建。必须从原始 location **重新解析**并只重建白名单三字段 `card`/`panel`/`from`。
    - 用 own-property 区分「未提及」与显式 `{ panel: undefined }`。
@@ -143,19 +143,19 @@ r2 只给了「保留」的出口，没有任何出口能**写入** `from`——
 
 ### 1.4 逐调用点决策表（含 hash，实现时逐条核对）
 
-`grep -n "name: 'wave'"` 全仓，共 9 个调用表达式：
+`grep -n "name: 'track'"` 全仓，共 9 个调用表达式：
 
 | 调用点 | panel | from | hash |
 |---|---|---|---|
 | `router/public.tsx:1472` 非法 card 回弹 | 保留 | 保留 | 保留（现行为清空，是回归修复） |
-| `:1488` 同 wave report link | 清空 | 保留 | 按既有 |
-| `:1491` 跨 wave report link | 清空 | 清空 | 按既有 |
+| `:1488` 同 track report link | 清空 | 保留 | 按既有 |
+| `:1491` 跨 track report link | 清空 | 清空 | 按既有 |
 | `:1496` Outline/Task 锚点 | 清空 | 保留 | 保留 |
 | `:1518` 建 terminal 后开 card | 清空 | 保留 | 按既有 |
 | `:1525` 桌面开 card | 清空 | 保留 | 按既有 |
 | `:1533,1538` 关 card | 清空 | 保留 | 按既有 |
-| `:1561` backlinks | 同 wave 保留 from / 跨 wave 全清 | | 按既有 |
-| `shell/public.tsx:214` 新建 wave 后跳转 | 清空 | 清空 | 清空 |
+| `:1561` backlinks | 同 track 保留 from / 跨 track 全清 | | 按既有 |
+| `shell/public.tsx:214` 新建 track 后跳转 | 清空 | 清空 | 清空 |
 
 `:1488` 与 `:1491` 现在是**两个分支同一句 `go()`**，改造时必须拆开。
 新增出口（4 个 `openPanel`、各 Back、Escape、shell 的 Pages/Areas 清 panel）同样逐个决策。
@@ -173,20 +173,20 @@ r2 只给了「保留」的出口，没有任何出口能**写入** `from`——
 
 | 事件 | 现调用点 | 替代 |
 |---|---|---|
-| `mobile-page-root` 发布 | `shell/public.tsx:326,349` | shell 直接 `setMobileSection(...)` + `useGoSameWave({panel: undefined}, {replace:true})` |
-| `mobile-page-root` 订阅 | `wave/page/public.tsx:149-153` | 面板由 props 驱动，订阅消失 |
-| `mobile-secondary` 发布 | `ui/mobile-page:4-6`、`mobile-areas.tsx:25-26`、`wave/page/public.tsx:155-158` | shell 派生（见下） |
+| `mobile-page-root` 发布 | `shell/public.tsx:326,349` | shell 直接 `setMobileSection(...)` + `useGoSameTrack({panel: undefined}, {replace:true})` |
+| `mobile-page-root` 订阅 | `track/page/public.tsx:149-153` | 面板由 props 驱动，订阅消失 |
+| `mobile-secondary` 发布 | `ui/mobile-page:4-6`、`mobile-areas.tsx:25-26`、`track/page/public.tsx:155-158` | shell 派生（见下） |
 | `mobile-secondary` 订阅 | `shell/public.tsx:153` | 同上 |
 
 **正确公式（两个条件 OR，不是三元）**：
 
 ```ts
 const secondary =
-     (onWaveRoute(currentPath) && mobileSection === null)
+     (onTrackRoute(currentPath) && mobileSection === null)
   || (mobileSection === 'areas' && selectedAreaId !== null);
 ```
 
-同时删掉 `shell/public.tsx:115` 的 `currentPath.includes('/wave/')`，改用 `routeParamFromPath`。
+同时删掉 `shell/public.tsx:115` 的 `currentPath.includes('/track/')`，改用 `routeParamFromPath`。
 
 ### 2.2 `selectedAreaId` 上提到 shell：必须连同转移语义一起搬
 
@@ -194,7 +194,7 @@ const secondary =
 **只上提 id 会把一次转移拆给两个所有者**，正是本设计要消灭的形状 ⇒ `motion` 改为由 id 变化派生，或一并上提。
 
 上提后**丢失了「组件卸载即重置」语义**。
-只有 `from=area` 返回时才由 wave 自己的 `areaId` 设置。
+只有 `from=area` 返回时才由 track 自己的 `areaId` 设置。
 `mobile-areas.tsx:25-26` 的卸载清理可安全删除——新公式已把 `mobileSection === 'areas'` 作为合取项。
 
 > **实现更正（本节原文写错，勿照旧文档回退）**
@@ -210,25 +210,25 @@ const secondary =
 >
 > 教训与 §0.4 同类：**一条「此后 X 不得发生」的断言，必须能指出哪个可达状态会违反它。**
 >
-> 另：§1.2 的 `areaIdOf(waveId)` 也不必要——`WaveRouteBody` 手上就有 `wave.areaId`，
+> 另：§1.2 的 `areaIdOf(trackId)` 也不必要——`TrackRouteBody` 手上就有 `track.areaId`，
 > 同一事实且不会在 workspace 加载中途查空。实现用了后者。
 
 ### 2.3 死掉的 state、context、死分支
 
 删：`mobileReportSource`、`mobileAreaRestoreId`、`mobileSecondaryOpen`、`MobileReportNavigationContext`。
 留：`mobileSection`、`mobileCardId`、`mobileCardMotion`（§0.1 豁免）。
-`wave/page/public.tsx` 的四个 setter 连写出现 9 次（`:167-202` 4 次、`:361-468` 5 次）收敛成 `openPanel(kind)` / `closePanel()`。
+`track/page/public.tsx` 的四个 setter 连写出现 9 次（`:167-202` 4 次、`:361-468` 5 次）收敛成 `openPanel(kind)` / `closePanel()`。
 删死分支 `shell/public.tsx:256,258`（`<Sidebar>` 只在 `narrowRail === false` 时渲染，两处恒真/永不执行）。
 
 **更正**：删掉 `MobileReportNavigationContext` **不会**减少 createContext allowlist 条目——
-allowlist 按文件只有一项，理由本就是仍保留的 New-wave context（`tools/architecture/allowlists.mjs:18-22`）。S8 移出范围。
+allowlist 按文件只有一项，理由本就是仍保留的 New-track context（`tools/architecture/allowlists.mjs:18-22`）。S8 移出范围。
 
 ### 2.4 分层（硬约束）
 
-`.dependency-cruiser.cjs:9` 的 `features-no-app` 是 **error 级**，`WavePage` 不能 import `app/**`
-（文件头 `wave/page/public.tsx:9-15` 也明写导航只能走 callback）。
-⇒ URL 一律由 `WaveRouteBody`（app 层）读取校验，把 `panel`/`mobileBackLabel`/`onOpenPanel`/`onClosePanel`/`onMobileBack`
-作为 props 注入；`WavePage` 保持纯渲染。`:135-147` 的 Escape 改为调用注入的 `onClosePanel`。
+`.dependency-cruiser.cjs:9` 的 `features-no-app` 是 **error 级**，`TrackPage` 不能 import `app/**`
+（文件头 `track/page/public.tsx:9-15` 也明写导航只能走 callback）。
+⇒ URL 一律由 `TrackRouteBody`（app 层）读取校验，把 `panel`/`mobileBackLabel`/`onOpenPanel`/`onClosePanel`/`onMobileBack`
+作为 props 注入；`TrackPage` 保持纯渲染。`:135-147` 的 Escape 改为调用注入的 `onClosePanel`。
 
 ### 2.5 焦点契约（纳入 v1，不留给实现期自由发挥）
 
@@ -241,12 +241,12 @@ allowlist 按文件只有一项，理由本就是仍保留的 New-wave context�
 
 ## 3. 收敛与正确性
 
-### 3.1 `userVisibleWaves(waves, areas)` 下沉 core —— 动机更正
+### 3.1 `userVisibleTracks(tracks, areas)` 下沉 core —— 动机更正
 
 **不是现网泄漏**：`areaListQueryOptions` 已在查询层 `visibleAreas`（`providers/queries.ts:220`），
 `useWorkspace` 只对这些 area fan-out（`:414`）。真实问题是**组件边界的第二层防御 sidebar 有、Pages 没有**
 （`sidebar.tsx:106-108` vs `mobile-pages.tsx:23-24`），与 `area.ts:55-63` 声明的意图不一致。
-收敛成 core 纯函数两处共用。测试构造 system area + 其下 wave，断言不出现。
+收敛成 core 纯函数两处共用。测试构造 system area + 其下 track，断言不出现。
 
 ### 3.2 `ui/viewport/public.ts` —— 唯一的 `useCompactViewport` + 收窄的门禁
 
@@ -303,13 +303,13 @@ v1 只做真 bug 修复：消费处一律 `var(--mobile-dock-h, 0px)` 兜底。
 
 **可抄的真实 router 先例**（r2 引用错了）：`responsive.contract.test.tsx:9,20` 把
 `@tanstack/react-router` 和 `navigation.ts` **整个 mock 掉**（`useGo: () => vi.fn()`），证明不了可驱动真实 router。
-正确先例是 `app/router/wave-cards-panel.test.tsx:161-163` 与 `read-fallbacks.contract.test.tsx:27-30`：
+正确先例是 `app/router/track-cards-panel.test.tsx:161-163` 与 `read-fallbacks.contract.test.tsx:27-30`：
 `createAppRouter` + `router.update({ history: createMemoryHistory(...) })` + `RouterProvider`，
 而 `createRootRoute` 渲染的就是 `ShellRoute → AppShell`（`router/public.tsx:394`），整条链路天然可达。
 
 保留 mock 版 `responsive.contract.test.tsx` 不动（它的低成本 `inert` 断言有价值），新集成测试另起文件。
 
-三层：**纯函数单测**（解析器含重复 key/非法值/空值、`dockSelection`、`useGoSameWave` 同/跨 wave 判据、返回标签、`userVisibleWaves`）
+三层：**纯函数单测**（解析器含重复 key/非法值/空值、`dockSelection`、`useGoSameTrack` 同/跨 track 判据、返回标签、`userVisibleTracks`）
 → **jsdom 集成**（真实 AppShell + memory history，断言 URL 与逐步 back 的 location）
 → **browser 截图**（只保留几何，渲染真实 AppShell）。
 
@@ -319,8 +319,8 @@ v1 只做真 bug 修复：消费处一律 `var(--mobile-dock-h, 0px)` 兜底。
 1. 删 `validateSearch` 的 `panel` 校验 → 非法值测试红（**测试必须真的经过 route validated search 才会红**）。
 2. `panel A → panel B` 的 `replace` 改 `push` → history 断言红。
 3. 关面板的 `back()` 分支改成无条件 `replace` → **重复条目断言红**（守卫 §0.3 的修复）。
-4. `useGoSameWave` 去掉同 wave 判据 → 跨 wave 参数泄漏测试红。
-5. `userVisibleWaves` 退化成 `visibleWaves` → system area 测试红。
+4. `useGoSameTrack` 去掉同 track 判据 → 跨 track 参数泄漏测试红。
+5. `userVisibleTracks` 退化成 `visibleTracks` → system area 测试红。
 6. 删 `shell/public.tsx:296` 的**模态** `inert`（不是 dock 的 `:314`）→ contract 测试红。
 7. 去掉 `var(--mobile-dock-h, 0px)` 的 `, 0px` → drawer 几何断言红。
 
@@ -332,7 +332,7 @@ v1 只做真 bug 修复：消费处一律 `var(--mobile-dock-h, 0px)` 兜底。
 
 **v1 不做**：B2 Today 内容恢复（但**必须删掉** `today/mobile.browser.test.tsx:24-27` 的
 **4 条**反向断言：Waiting on you / Running / Recent / Terminal——把功能缺失固化成通过条件，是地雷）；
-S5 WavePage 双实现收敛（§0.1 证明 card 详情绕不过它）；`/pages`·`/areas` 真路由化（§0.2，前置条件是 AreaPage 的 compact presentation）；
+S5 TrackPage 双实现收敛（§0.1 证明 card 详情绕不过它）；`/pages`·`/areas` 真路由化（§0.2，前置条件是 AreaPage 的 compact presentation）；
 S6 响应式范式、S8 allowlist 粒度（§2.3 已说明无关）、S9 `.page > :first-child` seam、N1 `!important`、N2 `--touch-target`、N5 optimizeDeps。
 
 **预估规模**：~700–900 行。

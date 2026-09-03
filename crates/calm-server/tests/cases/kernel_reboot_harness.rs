@@ -86,7 +86,7 @@ use std::path::PathBuf;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot, Observation};
-use calm_server::model::{NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -109,7 +109,7 @@ struct Seeded {
     runtime_id: String,
     lease_id: String,
     card_id: String,
-    wave_id: String,
+    track_id: String,
 }
 
 /// Seed the file DB with (a) a durable worker-session row carrying a
@@ -128,8 +128,8 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "reboot-e1".into(),
@@ -144,7 +144,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -156,7 +156,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         SNAPSHOT_WATERMARK,
-        vec![Observation::WaveGoal {
+        vec![Observation::TrackGoal {
             text: "survive the reboot".into(),
         }],
     );
@@ -194,14 +194,14 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     // only rewrites the row + emits one `workspace.released` event.
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', 'owner-none', NULL, ?5, ?6, ?6)"#,
     )
     .bind(&lease_id)
     .bind(card.id.as_str())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(format!("/tmp/neige-e1-lease/{}", card.id))
     .bind(STALE_BOOT_ID)
     .bind(now)
@@ -218,7 +218,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         runtime_id,
         lease_id,
         card_id: card.id.to_string(),
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
     }
 }
 
@@ -364,7 +364,7 @@ async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_d
         "durable HarnessSnapshot pending_queue must survive the reboot intact"
     );
 
-    // Touch wave_id so the field is used and the compiler keeps the invariant
+    // Touch track_id so the field is used and the compiler keeps the invariant
     // documented in `Seeded` honest.
-    assert!(!seeded.wave_id.is_empty());
+    assert!(!seeded.track_id.is_empty());
 }

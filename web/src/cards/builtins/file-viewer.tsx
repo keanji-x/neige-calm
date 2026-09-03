@@ -28,7 +28,7 @@ import {
 } from './file-viewer-markdown-toc';
 
 declare module '../../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     'file-viewer': FileViewerCardData;
   }
 }

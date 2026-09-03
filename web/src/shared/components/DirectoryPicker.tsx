@@ -454,7 +454,7 @@ export function DirectoryBrowser({
     // inside an outer `<Dialog>` — either pushed via `useModalView()` (which
     // swaps the dialog's title to "Choose a directory") or as the direct
     // child of a `<Dialog title=...>` (the codex "create here" shortcut in
-    // Wave.tsx). Nested ARIA dialogs are not allowed; the outer Dialog
+    // Track.tsx). Nested ARIA dialogs are not allowed; the outer Dialog
     // already provides the accessible name and the modal semantics. The
     // fallback inline path in DirectoryPicker also lands here, but it is
     // not modal, so a dialog role would be a lie in that case too.

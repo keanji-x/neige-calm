@@ -12,13 +12,13 @@ use crate::db::write_with_actor_events_typed;
 use crate::error::Result;
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
-use crate::model::WaveLifecycle;
+use crate::model::TrackLifecycle;
 use crate::model::now_ms;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
-use crate::wave_lifecycle::auto_transition_if_current_in_tx;
+use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 pub const DEFAULT_REAPER_RECONCILE_SECS: u64 = 30;
 
@@ -312,7 +312,7 @@ impl Reaper {
                             // ACTIVE → re-probed next tick → converge again
                             // (the in-tx `status IN (active)` CAS yields
                             // rows==0 → race-lost → Ok; `auto_transition`
-                            // no-ops since the wave is already Reviewing) →
+                            // no-ops since the track is already Reviewing) →
                             // then terminalize. Idempotent + re-drivable.
                             //
                             // FIX 3: carry the provider's Failed `reason` (it
@@ -429,9 +429,9 @@ impl Reaper {
     /// #741-4 (DR-2/DR-4/DR-5) — the dead-ROOT convergence scan. A sibling of
     /// [`Reaper::sweep_all`]: same boot gate (DR-5 — must not fire before the
     /// root backfill `0050` has settled), same reconcile loop. Drives a
-    /// POSITIVELY-dead root's wave `Draft|Planning → Failed` via the DR-1
+    /// POSITIVELY-dead root's track `Draft|Planning → Failed` via the DR-1
     /// kernel FSM edges. The soundness predicate (the CARDINAL SAFETY RULE:
-    /// never converge a live or merely just-created wave) is enforced inside
+    /// never converge a live or merely just-created track) is enforced inside
     /// [`SessionRepo::dead_root_candidates`]; this loop only emits.
     pub async fn sweep_dead_roots(&self) {
         if !reaper_boot_completed() {
@@ -454,7 +454,7 @@ impl Reaper {
                 converge_dead_root(self.repo.as_ref(), &self.events, &self.write, &candidate).await
             {
                 tracing::warn!(
-                    wave_id = %candidate.wave_id,
+                    track_id = %candidate.track_id,
                     lifecycle = candidate.lifecycle.as_db_str(),
                     error = %e,
                     "reaper: dead-root convergence failed; will retry next sweep"
@@ -467,12 +467,12 @@ impl Reaper {
 /// #741-4 (DR-3) — the task-less dead-root emitter. FRESH code, NOT a reuse of
 /// `converge_dead_worker`'s no-op NULL `spawn_op_id` fall-through: a dead root
 /// has no task row, so there is NO `TaskFailed` and NO task-status flip — only
-/// the `WaveLifecycleChanged{from → Failed}` lifecycle event, authored by
+/// the `TrackLifecycleChanged{from → Failed}` lifecycle event, authored by
 /// `ActorId::KernelDispatcher` (cardless → unrestricted emit, no recorder gate;
 /// DR-6).
 ///
 /// Drives the edge via `auto_transition_if_current_in_tx`, which is a CAS on
-/// the current lifecycle: if the wave already moved (a live writer raced us, or
+/// the current lifecycle: if the track already moved (a live writer raced us, or
 /// the candidate read is stale), it returns `None` and we treat that as a
 /// race-loss (`Ok(())`).
 pub(crate) async fn converge_dead_root(
@@ -481,14 +481,16 @@ pub(crate) async fn converge_dead_root(
     write: &WriteContext,
     candidate: &crate::db::prelude::DeadRootCandidate,
 ) -> Result<()> {
-    let wave_id = candidate.wave_id.clone();
+    let track_id = candidate.track_id.clone();
     let from = candidate.lifecycle;
-    let scope = EventScope::Wave {
-        wave: candidate.wave_id.clone(),
+    let scope = EventScope::Track {
+        track: candidate.track_id.clone(),
         area: candidate.area_id.clone(),
     };
     let agent_message = match from {
-        WaveLifecycle::Draft => "[auto] dead root: spec-harness start failed; wave never advanced",
+        TrackLifecycle::Draft => {
+            "[auto] dead root: spec-harness start failed; track never advanced"
+        }
         _ => "[auto] dead root: planner session lost mid-plan",
     }
     .to_string();
@@ -497,15 +499,15 @@ pub(crate) async fn converge_dead_root(
         Box::pin(async move {
             let Some(lifecycle_events) = auto_transition_if_current_in_tx(
                 tx,
-                &wave_id,
+                &track_id,
                 from,
-                WaveLifecycle::Failed,
+                TrackLifecycle::Failed,
                 &ActorId::KernelDispatcher,
                 Some(agent_message),
             )
             .await?
             else {
-                // Wave already moved (auto_transition no-op / current != from)
+                // Track already moved (auto_transition no-op / current != from)
                 // ⇒ race-lost. Return a race-lost error the outer match
                 // absorbs into Ok(()) so no partial/empty event batch lands.
                 return Err(race_lost_err());
@@ -540,16 +542,16 @@ pub(crate) async fn converge_dead_worker(
         release_reaped_worker_workspace_lease(repo, events, session).await?;
         return Ok(());
     };
-    let Some(wave) = repo.wave_get(session.wave_id.as_str()).await? else {
+    let Some(track) = repo.track_get(session.track_id.as_str()).await? else {
         release_reaped_worker_workspace_lease(repo, events, session).await?;
         return Ok(());
     };
 
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        area: wave.area_id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
+        area: track.area_id.clone(),
     };
-    let wave_id = wave.id.clone();
+    let track_id = track.id.clone();
     // FIX 3: the kernel `TaskFailed` carries the provider's interpreted Failed
     // reason (e.g. "terminal worker exited (outcome unknown; observed via
     // supervisor probe)") rather than the raw `-1` probe sentinel.
@@ -568,7 +570,7 @@ pub(crate) async fn converge_dead_worker(
             let rows = task_fail_from_worker_tx(
                 tx,
                 &task_id,
-                wave_id.as_str(),
+                track_id.as_str(),
                 TaskReporter::Kernel,
                 &status_detail_with_reason("spawn-failed", &reason),
                 now_ms(),
@@ -588,9 +590,9 @@ pub(crate) async fn converge_dead_worker(
             )];
             if let Some(auto_events) = auto_transition_if_current_in_tx(
                 tx,
-                &wave_id,
-                WaveLifecycle::Working,
-                WaveLifecycle::Reviewing,
+                &track_id,
+                TrackLifecycle::Working,
+                TrackLifecycle::Reviewing,
                 &ActorId::KernelDispatcher,
                 Some("[auto] worker died without reporting".to_string()),
             )

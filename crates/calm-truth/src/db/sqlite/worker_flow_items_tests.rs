@@ -4,18 +4,18 @@
 //! turns `card_id` NULL (FK `ON DELETE SET NULL`) instead of cascading
 //! the row away.
 use super::{
-    SqlxRepo, area_create_tx, card_create_with_id_tx, session_insert_tx, wave_create_tx,
+    SqlxRepo, area_create_tx, card_create_with_id_tx, session_insert_tx, track_create_tx,
     worker_flow_item_insert_tx, worker_flow_items_delete_by_card_tx,
 };
 use crate::db::RepoRead;
-use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme};
+use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
 };
 
-/// Seed a real area → wave → card chain through the typed `_tx` helpers
-/// (so the FKs target genuine rows) and return the card/wave ids.
+/// Seed a real area → track → card chain through the typed `_tx` helpers
+/// (so the FKs target genuine rows) and return the card/track ids.
 async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, String) {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
@@ -28,9 +28,9 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
     )
     .await
     .unwrap();
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -42,8 +42,8 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
     .unwrap();
@@ -51,7 +51,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
         &mut tx,
         "card-1".into(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "worker".into(),
             sort: None,
@@ -67,7 +67,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
         &mut tx,
         WorkerSession {
             id: WorkerSessionId::from(session_id),
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             provider: WorkerProviderKind::Codex,
             mode: SessionMode::Resumable,
             contract: WorkerContract::Executor,
@@ -96,14 +96,14 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    (card.id.to_string(), wave.id.to_string())
+    (card.id.to_string(), track.id.to_string())
 }
 
 #[tokio::test]
 async fn insert_list_paging_delete_and_set_null_on_card_delete() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let session_id = "rt-flow-item-1";
-    let (card_id, wave_id) = seed_card_and_session(&repo, session_id).await;
+    let (card_id, track_id) = seed_card_and_session(&repo, session_id).await;
 
     // Insert three flow items for the card via the `_tx` free fn.
     let mut ids = Vec::new();
@@ -117,7 +117,7 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
             &mut tx,
             Some(&card_id),
             Some(session_id),
-            Some(&wave_id),
+            Some(&track_id),
             Some(session_id),
             kind,
             &format!(r#"{{"kind":"{kind}","seq":{n}}}"#),
@@ -191,14 +191,14 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
 async fn delete_by_card_tx_purges_rows() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let session_id = "rt-flow-item-delete";
-    let (card_id, wave_id) = seed_card_and_session(&repo, session_id).await;
+    let (card_id, track_id) = seed_card_and_session(&repo, session_id).await;
     for n in 1..=2 {
         let mut tx = repo.pool().begin().await.unwrap();
         worker_flow_item_insert_tx(
             &mut tx,
             Some(&card_id),
             Some(session_id),
-            Some(&wave_id),
+            Some(&track_id),
             Some(session_id),
             "user_message",
             &format!(r#"{{"seq":{n}}}"#),

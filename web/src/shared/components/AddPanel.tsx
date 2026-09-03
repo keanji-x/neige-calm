@@ -3,7 +3,7 @@
 // Single "+" button → popover menu populated from `addPanelEntries()`. Each
 // menu item carries an optional `createSchema`: items with no schema fall
 // through to immediate kernel creation (today: terminal); items with a
-// schema bubble back up to the Wave page, which renders an inline config
+// schema bubble back up to the Track page, which renders an inline config
 // card via `SchemaForm`. The two-step "menu → config card → submit"
 // pattern keeps the visual style consistent across kinds and gives plugin
 // authors a declarative knob to collect input.
@@ -23,7 +23,7 @@
 // cleanup pass that renames them to primitive-neutral selectors lives
 // in a separate PR.
 //
-// Backwards-compatible alias — `app/router.tsx` and `pages/Wave.tsx`
+// Backwards-compatible alias — `app/router.tsx` and `pages/Track.tsx`
 // still import `AddPanelMenuItem` and the widened `AddPanelKind` from
 // this module. We re-export from here so call sites don't all need to
 // switch to the registry import in this PR.
@@ -35,7 +35,7 @@ import { PlusIcon } from './PlusIcon';
 
 export type { AddPanelMenuItem } from '../../cards/registry';
 
-// Backwards-compatible alias — `app/router.tsx` and `pages/Wave.tsx` still
+// Backwards-compatible alias — `app/router.tsx` and `pages/Track.tsx` still
 // import this name. Now widened to `string` because plugin-driven kinds
 // can appear in the menu too. The router casts back to its own dispatch
 // table on receipt.

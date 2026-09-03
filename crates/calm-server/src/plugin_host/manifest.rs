@@ -144,7 +144,7 @@ pub struct Manifest {
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
-    /// Wave `template_input` contract (#891 / #1110 S2). One plugin, one
+    /// Track `template_input` contract (#891 / #1110 S2). One plugin, one
     /// input shape — sibling of `exposes_tools`, not of a template
     /// descriptor. Same JSON-Schema subset as `plugin_host::template_input`.
     /// Absent: the plugin does not accept `template_input`.
@@ -176,7 +176,7 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Value>,
 
-    /// Trusted forge plugins may claim **kernel wave-template ids**. Wave
+    /// Trusted forge plugins may claim **kernel track-template ids**. Track
     /// create binds `template_id` to one of these so the kernel can copy the
     /// owning plugin into `plugin_scope` and validate `template_input` against
     /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
@@ -185,15 +185,15 @@ pub struct Manifest {
     ///
     /// **#1209 narrowed this capability, and this is the contract, not a
     /// note.** Declaring an id is *claiming an existing template*, never
-    /// *creating* one. The ids the kernel knows are the wave-template roster
+    /// *creating* one. The ids the kernel knows are the track-template roster
     /// (`crate::templates::TEMPLATES`: today
     /// `issue-development`, `small-change`, `investigation`), and
-    /// `POST /api/waves` admits an id **iff it is in that roster** — plugin
+    /// `POST /api/tracks` admits an id **iff it is in that roster** — plugin
     /// declarations do not widen the set. An id outside the roster is
     /// therefore inert: it is parsed, it is not rejected here, and it can
-    /// never be bound **through `POST /api/waves`** — the only production
-    /// writer of `waves.template_id` — because that create is a 400. The
-    /// repo-layer `wave_create` takes `template_id` / `plugin_scope`
+    /// never be bound **through `POST /api/tracks`** — the only production
+    /// writer of `tracks.template_id` — because that create is a 400. The
+    /// repo-layer `track_create` takes `template_id` / `plugin_scope`
     /// verbatim and enforces nothing; its non-route callers are all test
     /// fixtures passing `None` today, and a future in-process writer that
     /// wanted this guarantee would have to call the admission itself. Before
@@ -296,7 +296,7 @@ pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// exceed `2 × 15 s + slack`, whatever the manifest asks for.
 ///
 /// (Same shape as `trusted_forge_plugin`, one bit that gates both "may hold a
-/// wave scope" and "gets the forge credential passthrough". The general lesson:
+/// track scope" and "gets the forge credential passthrough". The general lesson:
 /// when a constant needs adjusting for the third time, stop adjusting it and
 /// look for the second constraint riding on it.)
 ///
@@ -718,7 +718,7 @@ pub struct ExposedTool {
     pub annotations: Option<Value>,
 }
 
-/// Wave-create handle that names a plugin-owned template id.
+/// Track-create handle that names a plugin-owned template id.
 ///
 /// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, spec instructions,
 /// and card kinds left the parser; `input_schema` lives on [`Manifest`].
@@ -733,7 +733,7 @@ pub struct TemplateDescriptor {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Permissions {
     /// Which `entity_kind` strings the plugin may overlay-write to (subset of
-    /// `["wave", "card"]`). Empty = no overlay writes.
+    /// `["track", "card"]`). Empty = no overlay writes.
     #[serde(default)]
     pub overlays_write: Vec<String>,
 
@@ -841,7 +841,7 @@ impl Manifest {
     /// `Manifest` deliberately tolerates unknown top-level keys, so without
     /// this the rename would be a **silent** contract break: an old manifest
     /// would parse, declare zero bindings, and `issue-development` would
-    /// quietly lose its `input_schema` — every `POST /api/waves` carrying
+    /// quietly lose its `input_schema` — every `POST /api/tracks` carrying
     /// `template_input` would then 400 with nothing pointing at the cause.
     /// Naming the new key in the error costs one extra `Value` parse of a file
     /// that is at most a few KB and is read once per install/reload.
@@ -998,7 +998,7 @@ impl Manifest {
             view.validate(i)?;
         }
 
-        // #1110 S2 — wave `template_input` lives on the Manifest, not a
+        // #1110 S2 — track `template_input` lives on the Manifest, not a
         // template descriptor. Error paths are `input_schema…` (no
         // `templates[i].` prefix).
         if let Some(schema) = self.input_schema.as_ref() {
@@ -1138,7 +1138,7 @@ impl Manifest {
         if !self.templates.is_empty() {
             return Err(ManifestError::invalid(
                 "templates",
-                only_app("cannot own a wave template"),
+                only_app("cannot own a track template"),
             ));
         }
         if self.input_schema.is_some() {
@@ -1679,14 +1679,14 @@ impl View {
             return Err(ManifestError::invalid(path("title"), "must be non-empty"));
         }
         // §10 #1 + #5: M3 scope enum is exactly `["card"]`. Be explicit about
-        // rejecting "wave" and "area" so the error message points at the
+        // rejecting "track" and "area" so the error message points at the
         // design doc, not just "unknown enum value".
         match self.scope.as_str() {
             "card" => {}
-            "wave" => {
+            "track" => {
                 return Err(ManifestError::invalid(
                     path("scope"),
-                    "wave-scope views are deferred past M3 (design doc §10 #5); \
+                    "track-scope views are deferred past M3 (design doc §10 #5); \
                      only \"card\" is accepted",
                 ));
             }
@@ -1722,14 +1722,14 @@ impl TemplateDescriptor {
 
 impl Permissions {
     fn validate(&self) -> Result<(), ManifestError> {
-        // overlays_write: each entry must be either "wave" or "card".
+        // overlays_write: each entry must be either "track" or "card".
         // No other entity kinds exist in the kernel today.
         for (i, kind) in self.overlays_write.iter().enumerate() {
-            if kind != "wave" && kind != "card" {
+            if kind != "track" && kind != "card" {
                 return Err(ManifestError::invalid(
                     format!("permissions.overlays_write[{i}]"),
                     format!(
-                        "must be \"wave\" or \"card\"; got `{kind}` \
+                        "must be \"track\" or \"card\"; got `{kind}` \
                          (kernel knows no other entity kinds)"
                     ),
                 ));
@@ -1908,7 +1908,7 @@ mod tests {
                 }
             ],
             "permissions": {
-                "overlays_write": ["wave", "card"],
+                "overlays_write": ["track", "card"],
                 "cards_create": true,
                 "cards_read_all": true,
                 "events_subscribe": ["*"],
@@ -2170,7 +2170,7 @@ mod tests {
         };
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
-                "wave-give-up",
+                "track-give-up",
                 Some(&template),
                 None,
             );
@@ -2193,7 +2193,7 @@ mod tests {
             .expect("issue-development template");
 
         // The fixed fixture id is the explicit normalization rule for the
-        // per-wave substitution performed by the production renderer.
+        // per-track substitution performed by the production renderer.
         // This independent, fully populated fixture is a legal final state for
         // the shipped schema and keeps every required and optional field in the
         // full-prompt contract.
@@ -2214,7 +2214,7 @@ mod tests {
         .expect("full golden template_input satisfies the shipped schema");
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
-                "wave-golden-985",
+                "track-golden-985",
                 Some(template),
                 Some(&template_input),
             );
@@ -2655,13 +2655,13 @@ mod tests {
     }
 
     #[test]
-    fn scope_wave_rejected() {
-        let json = hello_world().replace("\"scope\": \"card\"", "\"scope\": \"wave\"");
+    fn scope_track_rejected() {
+        let json = hello_world().replace("\"scope\": \"card\"", "\"scope\": \"track\"");
         let err = Manifest::parse(&json).unwrap_err();
         match err {
             ManifestError::Invalid { field, reason } => {
                 assert_eq!(field, "views[0].scope");
-                assert!(reason.contains("wave"), "reason: {reason}");
+                assert!(reason.contains("track"), "reason: {reason}");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -2749,7 +2749,7 @@ mod tests {
 
     #[test]
     fn bad_overlay_kind_rejected() {
-        let json = hello_world().replace("[\"wave\", \"card\"]", "[\"wave\", \"area\"]");
+        let json = hello_world().replace("[\"track\", \"card\"]", "[\"track\", \"area\"]");
         let err = Manifest::parse(&json).unwrap_err();
         match err {
             ManifestError::Invalid { field, .. } => {

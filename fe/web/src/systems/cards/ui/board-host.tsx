@@ -107,10 +107,10 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
   }, []);
 
   return (
-    <div ref={containerRef} className="wave-grid-wrap" data-nc-card-board="">
+    <div ref={containerRef} className="track-grid-wrap" data-nc-card-board="">
       {mounted && (
         <GridLayout
-          className="wave-grid"
+          className="track-grid"
           width={width}
           layout={layout}
           gridConfig={{
@@ -126,7 +126,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
           {items.map((item) => (
             <div
               key={item.card.id}
-              className="wave-card"
+              className="track-card"
               data-nc-card-cell=""
               data-nc-card-id={item.card.id}
             >

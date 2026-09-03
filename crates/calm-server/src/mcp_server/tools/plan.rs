@@ -1,4 +1,4 @@
-//! `calm.plan.*` — the spec card's durable per-wave task plan
+//! `calm.plan.*` — the spec card's durable per-track task plan
 //! (issue #644, PR-A).
 //!
 //! Task declarations live in report `task` blocks; the `tasks` table is
@@ -25,9 +25,9 @@
 //!
 //! ## Scope construction
 //!
-//! Wave identity is implicit from the calling card (same resolve chain
-//! as `wave_state.rs`); it is never a parameter. The `plan.updated`
-//! event is wave-scoped with actor `AiSpec`; the in-tx role gate
+//! Track identity is implicit from the calling card (same resolve chain
+//! as `track_state.rs`); it is never a parameter. The `plan.updated`
+//! event is track-scoped with actor `AiSpec`; the in-tx role gate
 //! refuses it from worker actors (`role_gate.rs` section 2.5).
 
 use crate::db::sqlite::{task_cancel_tx, task_get_tx};
@@ -45,8 +45,8 @@ use crate::mcp_server::tools::lifecycle_args::{
 };
 #[cfg(test)]
 use crate::model::TaskKind;
-use crate::model::{CardRole, Task, TaskStatus, Wave, now_ms};
-use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
+use crate::model::{CardRole, Task, TaskStatus, Track, now_ms};
+use crate::track_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use calm_types::report_blocks::tasks::GATE_TIMEOUT_MAX_SECS;
 pub use calm_types::report_blocks::tasks::{
     GateInput, GateStepInput, key_is_valid, validate_gate_shape,
@@ -320,7 +320,7 @@ fn validate_new_batch(batch: &[NormalizedTask]) -> Result<(), String> {
     // must name a sibling in this same batch.
     if let Some((key, dependency)) = unknown_deps(&batch_declarations, &[]).first() {
         return Err(format!(
-            "task {key}: unknown dependency `{dependency}` (must name an existing wave \
+            "task {key}: unknown dependency `{dependency}` (must name an existing track \
              task in this template)"
         ));
     }
@@ -375,10 +375,10 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
 /// Build the legacy fresh-row form of a normalized batch entry for validation
 /// tests. Production declarations are projected from report task blocks.
 #[cfg(test)]
-fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task {
+fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Task {
     Task {
-        id: format!("{wave_id}:{}", t.key),
-        wave_id: wave_id.to_string(),
+        id: format!("{track_id}:{}", t.key),
+        track_id: track_id.to_string(),
         key: t.key.clone(),
         kind: t.kind,
         goal: t.goal.clone(),
@@ -432,7 +432,7 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                             "key": {
                                 "type": "string",
                                 "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
-                                "description": "Stable per-wave task key; also the completion correlation id."
+                                "description": "Stable per-track task key; also the completion correlation id."
                             },
                             "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
                             "goal": { "type": "string", "minLength": 1, "description": "codex/claude: goal text; terminal: the command" },
@@ -458,11 +458,11 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                                             }
                                         }
                                     },
-                                    "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the wave cwd." },
+                                    "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the track cwd." },
                                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": GATE_TIMEOUT_MAX_SECS, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
                                 }
                             },
-                            "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a wave with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
+                            "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a track with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
                         }
                     }
                 },
@@ -498,12 +498,12 @@ async fn plan_upsert(
 fn plan_cancel_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_CANCEL.into(),
-        description: "Spec-only: cancel one still-pending task in the wave's plan. \
+        description: "Spec-only: cancel one still-pending task in the track's plan. \
              Canceling an already-canceled task is an idempotent success. In-flight \
              tasks (dispatched/running/verifying) cannot be interrupted — cancel or \
              rewire their successors instead. `message` is required and persisted as \
              `agent_message` on the `plan.updated` event. Optional `lifecycle` drives \
-             the wave state machine in the same atomic write."
+             the track state machine in the same atomic write."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -547,18 +547,18 @@ where
         .ok_or_else(|| RpcError::invalid_params("plan_cancel: missing `key` (non-empty)"))?
         .to_string();
 
-    let (_card, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
-    let task_id = format!("{}:{key}", wave.id.as_str());
+    let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
+    let task_id = format!("{}:{key}", track.id.as_str());
     let task = ctx
         .repo
         .task_get(&task_id)
         .await
         .map_err(|e| RpcError::internal(format!("plan_cancel: task_get: {e}")))?
         .ok_or_else(|| {
-            RpcError::invalid_params(format!("plan_cancel: unknown task `{key}` in this wave"))
+            RpcError::invalid_params(format!("plan_cancel: unknown task `{key}` in this track"))
         })?;
 
-    // A `lifecycle` equal to the wave's current state is the same-state
+    // A `lifecycle` equal to the track's current state is the same-state
     // idempotency shortcut: `validate_transition` blesses it for
     // lifecycle-authorized actors (spec-only tool, so always here) and
     // `apply_requested_transition_in_tx` would emit nothing — for
@@ -566,7 +566,7 @@ where
     // (#656 round 3, F2).
     let lifecycle_is_noop = write_args
         .lifecycle
-        .is_none_or(|target| target == wave.lifecycle);
+        .is_none_or(|target| target == track.lifecycle);
 
     match task.status {
         // §3.1 — already-canceled is idempotent success, no write, no
@@ -609,11 +609,11 @@ where
     after_pre_read().await;
 
     let actor = identity.to_actor_id();
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        area: wave.area_id.clone(),
+    let scope = EventScope::Track {
+        track: track.id.clone(),
+        area: track.area_id.clone(),
     };
-    let wave_id_typed = wave.id.clone();
+    let track_id_typed = track.id.clone();
     let message = write_args.message.clone();
     let lifecycle = write_args.lifecycle;
     let key_for_tx = key.clone();
@@ -626,7 +626,7 @@ where
         move |tx| {
             let task_id = task_id.clone();
             let key = key_for_tx.clone();
-            let wave_id_typed = wave_id_typed.clone();
+            let track_id_typed = track_id_typed.clone();
             let actor = actor.clone();
             let scope = scope.clone();
             let message = message.clone();
@@ -653,7 +653,7 @@ where
                 }
 
                 let mut events = Vec::new();
-                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id_typed).await? {
+                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id_typed).await? {
                     events.extend(
                         auto_events
                             .into_iter()
@@ -663,7 +663,7 @@ where
                 if let Some(target) = lifecycle
                     && let Some(lifecycle_events) = apply_requested_transition_in_tx(
                         tx,
-                        &wave_id_typed,
+                        &track_id_typed,
                         target,
                         &actor,
                         message.clone(),
@@ -684,7 +684,7 @@ where
                         actor,
                         scope,
                         Event::PlanUpdated {
-                            wave_id: wave_id_typed,
+                            track_id: track_id_typed,
                             changed_keys: vec![key.clone()],
                             agent_message: Some(message),
                         },
@@ -701,7 +701,7 @@ where
                 // instead; the retry resolves via the short-circuit.
                 if events.is_empty() {
                     return Err(CalmError::Conflict(format!(
-                        "task {key} or wave changed state concurrently; retry"
+                        "task {key} or track changed state concurrently; retry"
                     )));
                 }
                 Ok(((), events))
@@ -739,7 +739,7 @@ where
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_LIST.into(),
-        description: "Spec-only: read the wave's full task plan with per-task status. \
+        description: "Spec-only: read the track's full task plan with per-task status. \
              Gate commands are not echoed (only step names); each entry carries the \
              latest machine gate verdict as `gate_result` (on failure `status_detail` \
              is gate-red / gate-timeout / gate-infra). Read the worker output for a \
@@ -760,12 +760,12 @@ async fn plan_list(
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let (_card, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
+    let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let tasks = ctx
         .repo
-        .tasks_by_wave(wave.id.as_str())
+        .tasks_by_track(track.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("plan_list: tasks_by_wave: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("plan_list: tasks_by_track: {e}")))?;
 
     let tasks_json: Vec<Value> = tasks.iter().map(task_list_entry).collect();
     Ok(json!({ "tasks": tasks_json }))
@@ -836,14 +836,14 @@ fn map_plan_error(tool: &str, e: CalmError) -> RpcError {
     }
 }
 
-/// Look up the wave the calling card belongs to. Mirrors
-/// `wave_state::resolve_wave_for_identity`: the thread-mapped card must
+/// Look up the track the calling card belongs to. Mirrors
+/// `track_state::resolve_track_for_identity`: the thread-mapped card must
 /// exist while its daemon is active; a missing row is a
 /// delete-while-active race surfaced loud as `InternalError`.
-async fn resolve_wave_for_identity(
+async fn resolve_track_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
-) -> Result<(crate::model::Card, Wave), RpcError> {
+) -> Result<(crate::model::Card, Track), RpcError> {
     let card_id_str = identity.card_id.as_str().to_string();
     let card = ctx
         .repo
@@ -855,19 +855,19 @@ async fn resolve_wave_for_identity(
                 "plan: bound card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
-    let wave = ctx
+    let track = ctx
         .repo
-        .wave_get(card.wave_id.as_str())
+        .track_get(card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("plan: wave lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("plan: track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "plan: wave {} for card {} not found",
-                card.wave_id.as_str(),
+                "plan: track {} for card {} not found",
+                card.track_id.as_str(),
                 card_id_str
             ))
         })?;
-    Ok((card, wave))
+    Ok((card, track))
 }
 
 #[cfg(test)]
@@ -980,7 +980,7 @@ mod tests {
     }
 
     fn pending_row(key: &str, deps: &[&str]) -> Task {
-        task_row_from_normalized("wave-1", &normalized(key, deps), 1)
+        task_row_from_normalized("track-1", &normalized(key, deps), 1)
     }
 
     // -------------------------------------------------------- rule 1: key
@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn resolver_and_task_block_diagnostics_are_equivalent_for_batch_rules() {
         use calm_types::report_blocks::tasks::project_task_declarations;
-        use calm_types::wave_report::ReportBlock;
+        use calm_types::track_report::ReportBlock;
 
         // Exhaust the 4^3 dependency graphs over three keys (none, or
         // one edge to a/b/c). This is a small property test for the

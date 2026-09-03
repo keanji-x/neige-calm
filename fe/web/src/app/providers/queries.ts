@@ -2,7 +2,7 @@
 // slice.
 //
 // It lives under app/providers rather than under any one consumer because the
-// router renders the shell and both need the same area/wave reads: a queries
+// router renders the shell and both need the same area/track reads: a queries
 // module owned by either side would close a cycle that the `no-circular`
 // dependency-cruiser rule rejects. Feature slices receive the resulting data
 // and callbacks as props — `features/**` must not import `app/**`.
@@ -21,8 +21,8 @@ import {
   type Area, type AreaPatchBody, type FolderConflict, type NewAreaBody,
 } from '../../../../core/domain/area.ts';
 import {
-  deriveReportTasks, hasLiveTaskRun, waveBacklinksOperation, waveTaskVerdictsOperation,
-  type ReportBlock, type TaskVerdict, type WaveBacklinks,
+  deriveReportTasks, hasLiveTaskRun, trackBacklinksOperation, trackTaskVerdictsOperation,
+  type ReportBlock, type TaskVerdict, type TrackBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
   pluginsOperation, setPluginEnabledOperation, type PluginListItem,
@@ -35,16 +35,16 @@ import {
   type TodayLaunchpadWire, type TodaySummaryWire,
 } from '../../../../core/domain/today.ts';
 import {
-  createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
-  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
-  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInAreaOperation,
-  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
-  type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
-} from '../../../../core/domain/wave.ts';
+  createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
+  deleteCardOperation, deleteTrackOperation, overlaysByKindOperation, toTrack,
+  updateTrackOperation, trackActivityFrom, trackDetailOperation, trackTemplatesOperation, tracksInAreaOperation,
+  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewTrackBody,
+  type OverlayWire, type Track, type TrackDetailWire, type TrackPatchBody, type TrackTemplate,
+} from '../../../../core/domain/track.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
   specRunOperation, areaConversationsOperation, createAreaConversationOperation,
-  createWaveConversationOperation, waveConversationsOperation,
+  createTrackConversationOperation, trackConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -90,52 +90,52 @@ export const queryKeys = Object.freeze({
   serverVersion: () => ['server-version'] as const,
   areas: () => ['areas'] as const,
   areaFolders: (areaId: string) => ['area-folders', areaId] as const,
-  wavesInArea: (areaId: string) => ['waves', areaId] as const,
-  waveDetail: (waveId: string) => ['wave', waveId] as const,
-  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
+  tracksInArea: (areaId: string) => ['tracks', areaId] as const,
+  trackDetail: (trackId: string) => ['track', trackId] as const,
+  trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
   /* Exactly the shape `core/events/invalidation-plan` already plans for
-     `wave.report_edited` and every `task.*` event, so naming it this way is
-     what makes the TASKS panel live — see `waveReportPrefix` for the half of
-     that the plan cannot key by wave. */
-  waveReport: (waveId: string) => ['wave-report', waveId] as const,
+     `track.report_edited` and every `task.*` event, so naming it this way is
+     what makes the TASKS panel live — see `trackReportPrefix` for the half of
+     that the plan cannot key by track. */
+  trackReport: (trackId: string) => ['track-report', trackId] as const,
   /**
-   * The prefix `waveReport` extends, for the events the plan cannot key by
-   * wave.
+   * The prefix `trackReport` extends, for the events the plan cannot key by
+   * track.
    *
    * `task.dispatched` / `task.completed` / `task.failed` / `task.gate_result`
-   * carry no `wave_id` and no `card_id` **field**, so `derivedWaveId` — which
+   * carry no `track_id` and no `card_id` **field**, so `derivedTrackId` — which
    * reads named fields and nothing else — returns null and the plan emits the
-   * bare key. The wave id is not absent from those events: `idempotency_key`
-   * *is* the task id, and a task id is `"{wave_id}:{key}"`
-   * (`task_projection.rs`'s `format!("{wave_id}:{}", declaration.key)`, echoed
+   * bare key. The track id is not absent from those events: `idempotency_key`
+   * *is* the task id, and a task id is `"{track_id}:{key}"`
+   * (`task_projection.rs`'s `format!("{track_id}:{}", declaration.key)`, echoed
    * by all four kinds in `calm-types/src/event.rs`). The plan deliberately does
-   * not take it apart — `WaveId` is an opaque newtype with no format contract,
+   * not take it apart — `TrackId` is an opaque newtype with no format contract,
    * so parsing an id in the pure planning layer would be a guess dressed as a
    * fact, and a wrong split yields a key matching no cached query, i.e. a panel
    * that silently stops refreshing.
    *
    * Dropping the bare key instead would leave the four events that matter most
    * to this panel as the four that do not refresh it. A prefix invalidation
-   * reaches whichever wave report is cached — at most the open wave's — and
+   * reaches whichever track report is cached — at most the open track's — and
    * costs nothing when none is.
    */
-  waveReportPrefix: () => ['wave-report'] as const,
-  overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
+  trackReportPrefix: () => ['track-report'] as const,
+  overlaysByKind: (entityKind: 'track' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
   /* Settings › Plugins. Not reached by any event policy — see
      `pluginsQueryOptions` for why, and for what stands in for one. */
   plugins: () => ['plugins'] as const,
-  /* #1209 — the New wave picker's list. Not invalidated by any event: the
+  /* #1209 — the New track picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
      can move under them is a plugin starting or stopping, which changes an
-     `input_schema` the new-wave page reads. */
-  waveTemplates: () => ['wave-templates'] as const,
-  /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by wave:
+     `input_schema` the new-track page reads. */
+  trackTemplates: () => ['track-templates'] as const,
+  /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by track:
      the kernel's partial unique index makes `purpose = 'launchpad'` a
      singleton, and the id is what this query is fetching.
 
-     PR2 put it on `wave.report_edited`'s invalidation list, together with
-     `['wave', id]`. Both are needed and neither is generated: the first
+     PR2 put it on `track.report_edited`'s invalidation list, together with
+     `['track', id]`. Both are needed and neither is generated: the first
      carries the empty-state predicate, the second carries the document, and
      `PolicyMap` is exhaustive over event kinds rather than over query keys, so
      no golden would have reported their absence. */
@@ -152,7 +152,7 @@ export const queryKeys = Object.freeze({
    *
    * `AREA_CONVERSATIONS` in `core/events/invalidation-plan` is the bare key by
    * construction: no conversation-writing event carries a `area_id`, and an area
-   * chat wave's detail is never fetched, so no cached row can supply one
+   * chat track's detail is never fetched, so no cached row can supply one
    * either. Naming the prefix here is what lets the adapter map that plan key
    * instead of dropping it — without this entry the area drawer's `state` dots
    * never move until something else refetches the list.
@@ -162,11 +162,11 @@ export const queryKeys = Object.freeze({
    */
   areaConversationsPrefix: () => ['area-conversations'] as const,
   /**
-   * One wave's conversation list (#1189 §4.1), keyed by its wave.
+   * One track's conversation list (#1189 §4.1), keyed by its track.
    *
-   * `GET /api/waves/{wave_id}/conversations` is per-wave, and unlike the area
+   * `GET /api/tracks/{track_id}/conversations` is per-track, and unlike the area
    * list the id *is* derivable from the events: the plan emits
-   * `['wave-conversations', waveId]` whenever `derivedWaveId` resolves one.
+   * `['track-conversations', trackId]` whenever `derivedTrackId` resolves one.
    *
    * **The query that registers this key lands in S5; the mapping is here
    * first, and that is deliberate, not dead code.** Invalidating a key with no
@@ -176,23 +176,23 @@ export const queryKeys = Object.freeze({
    * adapter arm maps is silently never invalidated, which is exactly the defect
    * this pair of entries fixes for the area list.
    */
-  waveConversations: (waveId: string) => ['wave-conversations', waveId] as const,
+  trackConversations: (trackId: string) => ['track-conversations', trackId] as const,
   /**
-   * The prefix `waveConversations` extends, for the events that cannot name a
-   * wave.
+   * The prefix `trackConversations` extends, for the events that cannot name a
+   * track.
    *
    * The three `runtime.*` kinds carry only a `card_id`, and
-   * `findWaveOwningCard` answers from the cached wave details — so a card in a
-   * wave nobody has open resolves to null and the plan emits the bare key. That
-   * is the honest "some wave's list may have changed", and dropping it here
+   * `findTrackOwningCard` answers from the cached track details — so a card in a
+   * track nobody has open resolves to null and the plan emits the bare key. That
+   * is the honest "some track's list may have changed", and dropping it here
    * would leave a genuinely open list stale for precisely the transitions that
    * move a row's `state`.
    *
    * It is a fallback and not the house shape: invalidating this prefix on every
-   * runtime tick would refetch the list of every wave the user has open, which
-   * is why the plan keys by wave whenever it can.
+   * runtime tick would refetch the list of every track the user has open, which
+   * is why the plan keys by track whenever it can.
    */
-  waveConversationsPrefix: () => ['wave-conversations'] as const,
+  trackConversationsPrefix: () => ['track-conversations'] as const,
 });
 
 export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
@@ -287,24 +287,24 @@ export function useAreaConversationMutations(
 }
 
 /**
- * One wave's assistant conversations (#1189 §4.1).
+ * One track's assistant conversations (#1189 §4.1).
  *
- * The key it registers is `queryKeys.waveConversations(waveId)`, which the
+ * The key it registers is `queryKeys.trackConversations(trackId)`, which the
  * event bridge has mapped since S4 — so the list goes live the moment this
  * query mounts, with no second refresh path of its own.
  */
-export function waveConversationsQueryOptions(
-  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+export function trackConversationsQueryOptions(
+  transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
 ) {
   return {
-    queryKey: queryKeys.waveConversations(waveId),
+    queryKey: queryKeys.trackConversations(trackId),
     queryFn: (): Promise<Conversation[]> =>
-      runOperation(transport, waveConversationsOperation(waveId), unauthorized),
+      runOperation(transport, trackConversationsOperation(trackId), unauthorized),
   };
 }
 
 /**
- * The wave twin of `useAreaConversationMutations`, with the same two doors and
+ * The track twin of `useAreaConversationMutations`, with the same two doors and
  * the same reasons for them.
  *
  * Not shared with the area version through a parameterised helper: the two
@@ -313,34 +313,34 @@ export function waveConversationsQueryOptions(
  * plumbing at the cost of making "which list does a create write through to?"
  * a question you have to trace.
  */
-export function useWaveConversationMutations(
-  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+export function useTrackConversationMutations(
+  transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
 ): AreaConversationMutations {
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
-      runOperation(transport, createWaveConversationOperation(waveId, text, idempotencyKey), unauthorized),
+      runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated, for the same reason the area
          list is: the drawer switches to this row in the same tick and a list
          that does not hold it yet renders with no active row. */
-      client.setQueryData<Conversation[]>(queryKeys.waveConversations(waveId), (current) => {
+      client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
         const rows = current ?? [];
         return rows.some((candidate) => candidate.id === row.id)
           ? rows.map((candidate) => candidate.id === row.id ? row : candidate)
           : [...rows, row];
       });
-      void client.invalidateQueries({ queryKey: queryKeys.waveConversations(waveId) });
-      /* The card is new on the wave, so the wave's own detail — which is where
+      void client.invalidateQueries({ queryKey: queryKeys.trackConversations(trackId) });
+      /* The card is new on the track, so the track's own detail — which is where
          the CARDS panel, the grid and the Today open-request all read cards
          from — is now one card short of the truth. */
-      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+      void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
     },
   });
   return {
     create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
     refresh: () => client.fetchQuery({
-      ...waveConversationsQueryOptions(transport, waveId, unauthorized),
+      ...trackConversationsQueryOptions(transport, trackId, unauthorized),
       staleTime: 0,
     }),
   };
@@ -373,49 +373,49 @@ export function areaListQueryOptions(transport: ApiTransportPort, unauthorized: 
   };
 }
 
-export function waveOverlaysQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+export function trackOverlaysQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.overlaysByKind('wave'),
-    queryFn: (): Promise<OverlayWire[]> => runOperation(transport, overlaysByKindOperation('wave'), unauthorized),
+    queryKey: queryKeys.overlaysByKind('track'),
+    queryFn: (): Promise<OverlayWire[]> => runOperation(transport, overlaysByKindOperation('track'), unauthorized),
   };
 }
 
-export function wavesInAreaQueryOptions(transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel) {
+export function tracksInAreaQueryOptions(transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.wavesInArea(areaId),
-    queryFn: async (): Promise<Wave[]> =>
-      (await runOperation(transport, wavesInAreaOperation(areaId), unauthorized)).map((wire) => toWave(wire)),
+    queryKey: queryKeys.tracksInArea(areaId),
+    queryFn: async (): Promise<Track[]> =>
+      (await runOperation(transport, tracksInAreaOperation(areaId), unauthorized)).map((wire) => toTrack(wire)),
   };
 }
 
-export function waveDetailQueryOptions(transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel) {
+export function trackDetailQueryOptions(transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.waveDetail(waveId),
-    queryFn: (): Promise<WaveDetailWire> => runOperation(transport, waveDetailOperation(waveId), unauthorized),
+    queryKey: queryKeys.trackDetail(trackId),
+    queryFn: (): Promise<TrackDetailWire> => runOperation(transport, trackDetailOperation(trackId), unauthorized),
   };
 }
 
 /**
- * Who cites this wave (§8.3).
+ * Who cites this track (§8.3).
  *
  * Its own cache entry rather than a field on the detail: backlinks are written
- * by *other* waves, so they go stale on edits this wave never sees, and folding
+ * by *other* tracks, so they go stale on edits this track never sees, and folding
  * them into the detail would tie the document's freshness to theirs.
  */
-export function waveBacklinksQueryOptions(transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel) {
+export function trackBacklinksQueryOptions(transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.waveBacklinks(waveId),
-    queryFn: (): Promise<WaveBacklinks> => runOperation(transport, waveBacklinksOperation(waveId), unauthorized),
+    queryKey: queryKeys.trackBacklinks(trackId),
+    queryFn: (): Promise<TrackBacklinks> => runOperation(transport, trackBacklinksOperation(trackId), unauthorized),
   };
 }
 
 /**
- * The wave's task verdicts (§8.3) — what the kernel's task projection says
+ * The track's task verdicts (§8.3) — what the kernel's task projection says
  * about each declared task: schedulable, status, and the worker card it was
  * dispatched onto.
  *
  * Its own cache entry rather than a field on the detail for the same reason
- * the backlinks are: the wave detail is a card read, and these change on every
+ * the backlinks are: the track detail is a card read, and these change on every
  * dispatch and every gate result without any card being written. It is also
  * the key the event plan already names, which is what makes the panel live.
  *
@@ -425,26 +425,26 @@ export function waveBacklinksQueryOptions(transport: ApiTransportPort, waveId: s
  * worker adapter emits during its spawn. See `hasLiveTaskRun` for the full
  * accounting per worker kind, and for why this is a poll and not a new event.
  */
-export function waveTaskVerdictsQueryOptions(
-  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+export function trackTaskVerdictsQueryOptions(
+  transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
   /* The declarations this report actually has, because the timer below is
      about the *rows* the panel draws and a verdict is not a row — see
-     `taskVerdictsRefetchInterval`. They arrive with the wave detail, which is
+     `taskVerdictsRefetchInterval`. They arrive with the track detail, which is
      already in hand when this query is created. */
   blocks: readonly ReportBlock[] | null,
 ) {
   return {
-    queryKey: queryKeys.waveReport(waveId),
-    queryFn: (): Promise<TaskVerdict[]> => runOperation(transport, waveTaskVerdictsOperation(waveId), unauthorized),
+    queryKey: queryKeys.trackReport(trackId),
+    queryFn: (): Promise<TaskVerdict[]> => runOperation(transport, trackTaskVerdictsOperation(trackId), unauthorized),
     /*
      * See `taskVerdictsRefetchInterval` for when the timer runs at all.
      *
      * 3 seconds is priced off the endpoint, not chosen for roundness. Measured
-     * on `GET /api/waves/{id}/report` (debug build, in-memory SQLite, this
+     * on `GET /api/tracks/{id}/report` (debug build, in-memory SQLite, this
      * box): a 3-task / 2-prose report answers in p50 14.8 ms, a 24-task /
      * 12-prose one in p50 104 ms — the cost is dominated by the per-declaration
      * projection, as `taskVerdictInvalidatingKinds` describes. At the measured
-     * worst case that is ~3.5% of one core, for one open wave, only while
+     * worst case that is ~3.5% of one core, for one open track, only while
      * something is running; and it is O(1) in the number of workers, which is
      * the property the rejected fix (letting `codex.hook` invalidate this key)
      * did not have — hooks arrive about twice per tool call *per worker*.
@@ -468,10 +468,10 @@ const TASK_VERDICT_RECOVERY_POLL_MS = 15_000;
  *
  * Bounded because the two things that make this read fail are not alike. A
  * restarting or briefly unreachable server is transient and a minute of retries
- * clears it. But `GET /api/waves/{id}/report` also fails *permanently* for a
- * wave that no longer exists (`resolve_report_for_wave` → `NotFound`) and for a
- * wave whose `wave-report` card is missing (the same function's invariant
- * violation → 500, `wave_report.rs`), and neither of those is going to get
+ * clears it. But `GET /api/tracks/{id}/report` also fails *permanently* for a
+ * track that no longer exists (`resolve_report_for_track` → `NotFound`) and for a
+ * track whose `track-report` card is missing (the same function's invariant
+ * violation → 500, `track_report.rs`), and neither of those is going to get
  * better by being asked again. An unconditional poll on "no data" would leave a
  * stale or deleted tab hitting a dead route every few seconds for as long as it
  * stayed open.
@@ -481,9 +481,9 @@ const TASK_VERDICT_RECOVERY_ATTEMPTS = 4;
 /**
  * The timer, over both of the states this query can be in.
  *
- * **Data in hand** — poll only while the wave holds a task inside the eventless
+ * **Data in hand** — poll only while the track holds a task inside the eventless
  * window, and stop the moment none does (`false` is react-query's "no timer").
- * A settled wave, a wave that never dispatched anything, and a wave whose page
+ * A settled track, a track that never dispatched anything, and a track whose page
  * is closed all cost exactly nothing. This branch also covers a *failed
  * refetch*: react-query keeps the last good data, so a live run stays live
  * across a blip and the timer that will re-fetch it keeps running.
@@ -491,7 +491,7 @@ const TASK_VERDICT_RECOVERY_ATTEMPTS = 4;
  * **No data at all** — the initial load failed and react-query exhausted its
  * retries, so `data` is `undefined`, `hasLiveTaskRun` is vacuously false, and
  * the query would sit there with no timer forever: nothing in the page ever
- * asks again, and a wave that was mid-dispatch when the load failed would show
+ * asks again, and a track that was mid-dispatch when the load failed would show
  * declaration words and no click-through until the tab was reloaded. A bounded
  * recovery poll converges without turning a permanently dead route into a
  * permanent load — see `TASK_VERDICT_RECOVERY_ATTEMPTS`. `errorUpdateCount` is
@@ -552,12 +552,12 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  *
  * **`onSuccess` deliberately does not touch the document's keys.** A 200 means
  * the message was enqueued, not that the agent has written anything — the write
- * lands later as a `wave.report_edited` event, which the bridge turns into
- * `['today-launchpad']` and `['wave', id]`. Refetching either here would fetch
+ * lands later as a `track.report_edited` event, which the bridge turns into
+ * `['today-launchpad']` and `['track', id]`. Refetching either here would fetch
  * the *old* report, and worse, it would hide a broken invalidation chain behind
  * a lucky refresh: the page would appear to update after a press even with both
  * keys missing from the policy, which is the exact defect §6 exists to prevent.
- * An earlier version invalidated `['wave', id]` here while this comment claimed
+ * An earlier version invalidated `['track', id]` here while this comment claimed
  * it did not; the code was what moved.
  *
  * What IS true immediately is that the launchpad now carries a conversation, so
@@ -584,7 +584,7 @@ export function useTodaySummaryMutation(
     mutationFn: (): Promise<TodaySummaryWire> =>
       runOperation(transport, todaySummaryOperation(), unauthorized),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: queryKeys.waveConversationsPrefix() });
+      void client.invalidateQueries({ queryKey: queryKeys.trackConversationsPrefix() });
     },
   });
   return {
@@ -602,43 +602,43 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
 }
 
 /**
- * #1209 — templates for the new-wave page.
+ * #1209 — templates for the new-track page.
  *
  * `retry: false` and a plain failure are the point: the page degrades to
  * Blank-only when this read fails, and a retrying query would leave the entry
- * point spinning instead. Creating a wave must never depend on this list.
+ * point spinning instead. Creating a track must never depend on this list.
  */
-export function waveTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+export function trackTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.waveTemplates(),
-    queryFn: (): Promise<WaveTemplate[]> => runOperation(transport, waveTemplatesOperation(), unauthorized),
+    queryKey: queryKeys.trackTemplates(),
+    queryFn: (): Promise<TrackTemplate[]> => runOperation(transport, trackTemplatesOperation(), unauthorized),
     retry: false,
   };
 }
 
-export type WaveTemplates = Readonly<{
-  /** Never `undefined`: for the new-wave page, pending and failed both read
+export type TrackTemplates = Readonly<{
+  /** Never `undefined`: for the new-track page, pending and failed both read
    *  as "Blank only". */
-  templates: WaveTemplate[];
+  templates: TrackTemplate[];
   /** A notice for the page, not a blocker. `null` while pending. */
   error: string | null;
-  /** `false` while the first read is still in flight — see `useWaveTemplates`. */
+  /** `false` while the first read is still in flight — see `useTrackTemplates`. */
   loaded: boolean;
   refetch: () => void;
 }>;
 
 /**
- * The new-wave page's template list, collapsed to the two things the page
+ * The new-track page's template list, collapsed to the two things the page
  * can act on. A hook and not raw `useQuery` at the call site so the shell's
  * contract tests keep mocking exactly one module (`providers/queries`) —
  * the same shape `useWorkspace` and the mutation hooks already have.
  */
-export function useWaveTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): WaveTemplates {
-  const query = useQuery(waveTemplatesQueryOptions(transport, unauthorized));
+export function useTrackTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackTemplates {
+  const query = useQuery(trackTemplatesQueryOptions(transport, unauthorized));
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
-    // `[]` must not be readable as "loaded and empty" — the New wave picker
+    // `[]` must not be readable as "loaded and empty" — the New track picker
     // renders a different affordance for "no templates" than for "not yet".
     //
     // A **failed** read is not loaded either. The first cut wrote
@@ -648,7 +648,7 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
     //
     // #1300 S1 removed the Settings editor, which was this field's other
     // consumer. It stays because the picker is a consumer in its own right —
-    // `new-wave/public.tsx` branches on it — not as a leftover.
+    // `new-track/public.tsx` branches on it — not as a leftover.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
@@ -656,64 +656,64 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
 
 export type Workspace = Readonly<{
   areas: Area[];
-  wavesByArea: ReadonlyMap<string, Wave[]>;
-  waves: Wave[];
+  tracksByArea: ReadonlyMap<string, Track[]>;
+  tracks: Track[];
   areasLoading: boolean;
   overlaysLoading: boolean;
   areasError: Error | null;
   overlaysError: Error | null;
-  waveErrorsByArea: ReadonlyMap<string, Error>;
-  wavesLoadingByArea: ReadonlyMap<string, boolean>;
+  trackErrorsByArea: ReadonlyMap<string, Error>;
+  tracksLoadingByArea: ReadonlyMap<string, boolean>;
   retryAreas: () => void;
   retryOverlays: () => void;
-  retryWaves: (areaId: string) => void;
+  retryTracks: (areaId: string) => void;
 }>;
 
 /**
- * INV-APP-084 — the area → waves fan-out is a page-level `useQueries`, never a
+ * INV-APP-084 — the area → tracks fan-out is a page-level `useQueries`, never a
  * route loader await. One slow area must not block the calendar; each area's
- * list also stays its own cache entry, so a wave moving between areas
+ * list also stays its own cache entry, so a track moving between areas
  * invalidates two lists instead of the whole workspace.
  *
- * The workspace-wide wave-overlay read is folded in here so every surface —
+ * The workspace-wide track-overlay read is folded in here so every surface —
  * sidebar buckets, Today's counters, area lists — sees the same
- * `anyCardNeedsInput` / progress / eta / now, rather than only the wave the
+ * `anyCardNeedsInput` / progress / eta / now, rather than only the track the
  * user happens to have open.
  */
 export function useWorkspace(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Workspace {
   const areasQuery = useQuery(areaListQueryOptions(transport, unauthorized));
-  const overlaysQuery = useQuery(waveOverlaysQueryOptions(transport, unauthorized));
+  const overlaysQuery = useQuery(trackOverlaysQueryOptions(transport, unauthorized));
   const areas = areasQuery.data ?? [];
   const overlays = overlaysQuery.data ?? [];
-  const waveQueries = useQueries({
-    queries: areas.map((area) => wavesInAreaQueryOptions(transport, area.id, unauthorized)),
+  const trackQueries = useQueries({
+    queries: areas.map((area) => tracksInAreaQueryOptions(transport, area.id, unauthorized)),
   });
-  const wavesByArea = new Map<string, Wave[]>();
-  const waveErrorsByArea = new Map<string, Error>();
-  const wavesLoadingByArea = new Map<string, boolean>();
-  const waves: Wave[] = [];
+  const tracksByArea = new Map<string, Track[]>();
+  const trackErrorsByArea = new Map<string, Error>();
+  const tracksLoadingByArea = new Map<string, boolean>();
+  const tracks: Track[] = [];
   for (const [index, area] of areas.entries()) {
-    const query = waveQueries[index];
-    wavesLoadingByArea.set(area.id, query?.isLoading ?? false);
-    if (query?.error instanceof Error) waveErrorsByArea.set(area.id, query.error);
+    const query = trackQueries[index];
+    tracksLoadingByArea.set(area.id, query?.isLoading ?? false);
+    if (query?.error instanceof Error) trackErrorsByArea.set(area.id, query.error);
     if (query?.data !== undefined) {
-      const rows = query.data.map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
-      wavesByArea.set(area.id, rows);
-      waves.push(...rows);
+      const rows = query.data.map((track) => ({ ...track, ...trackActivityFrom(track.id, overlays) }));
+      tracksByArea.set(area.id, rows);
+      tracks.push(...rows);
     }
   }
   return {
-    areas, wavesByArea, waves, areasLoading: areasQuery.isLoading,
+    areas, tracksByArea, tracks, areasLoading: areasQuery.isLoading,
     overlaysLoading: overlaysQuery.isLoading,
     areasError: areasQuery.error instanceof Error ? areasQuery.error : null,
     overlaysError: overlaysQuery.error instanceof Error ? overlaysQuery.error : null,
-    waveErrorsByArea,
-    wavesLoadingByArea,
+    trackErrorsByArea,
+    tracksLoadingByArea,
     retryAreas: () => { void areasQuery.refetch(); },
     retryOverlays: () => { void overlaysQuery.refetch(); },
-    retryWaves: (areaId) => {
+    retryTracks: (areaId) => {
       const index = areas.findIndex((area) => area.id === areaId);
-      if (index >= 0) void waveQueries[index]?.refetch();
+      if (index >= 0) void trackQueries[index]?.refetch();
     },
   };
 }
@@ -754,9 +754,9 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>
       runOperation(transport, { ...deleteAreaOperation(areaId), signal }, unauthorized),
     onSuccess: (_result, { areaId }) => {
-      // The area is gone; its wave list can never resolve again, so drop it
+      // The area is gone; its track list can never resolve again, so drop it
       // instead of leaving a permanently-stale entry behind.
-      client.removeQueries({ queryKey: queryKeys.wavesInArea(areaId) });
+      client.removeQueries({ queryKey: queryKeys.tracksInArea(areaId) });
     },
     // Abort only ends the client wait: the server may already have committed.
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
@@ -768,23 +768,23 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
   };
 }
 
-export type WaveMutations = Readonly<{
-  create: (body: NewWaveBody) => Promise<Wave>;
-  patch: (waveId: string, areaId: string, body: WavePatchBody) => Promise<Wave>;
-  setPinned: (waveId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
-  createTerminal: (waveId: string, body: NewTerminalCardBody) => Promise<CardWire>;
-  createCodex: (waveId: string, body: NewCodexCardBody) => Promise<CardWire>;
-  createCard: (waveId: string, body: NewCardBody) => Promise<CardWire>;
-  removeCard: (waveId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
-  remove: (waveId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
+export type TrackMutations = Readonly<{
+  create: (body: NewTrackBody) => Promise<Track>;
+  patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
+  setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
+  createTerminal: (trackId: string, body: NewTerminalCardBody) => Promise<CardWire>;
+  createCodex: (trackId: string, body: NewCodexCardBody) => Promise<CardWire>;
+  createCard: (trackId: string, body: NewCardBody) => Promise<CardWire>;
+  removeCard: (trackId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
+  remove: (trackId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
-export function useWaveMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): WaveMutations {
+export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (body: NewWaveBody) => runOperation(transport, createWaveOperation(body), unauthorized),
-    onSuccess: (wave, body) => {
-      void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(wave.area_id) });
+    mutationFn: (body: NewTrackBody) => runOperation(transport, createTrackOperation(body), unauthorized),
+    onSuccess: (track, body) => {
+      void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
       // Explicit `attach_folder` still mints a area_folders row. Drop any
       // cached list so a later folders read cannot serve a stale empty array.
       if (body.attach_folder) {
@@ -793,27 +793,27 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
     },
   });
   const patch = useMutation({
-    mutationFn: ({ waveId, body }: { waveId: string; areaId: string; body: WavePatchBody }) =>
-      runOperation(transport, updateWaveOperation(waveId, body), unauthorized),
-    onSuccess: (wave, variables) => {
-      // Prefer the area the server just reported: a patch can move the wave.
-      void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(wave.area_id) });
-      if (wave.area_id !== variables.areaId) {
-        void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(variables.areaId) });
+    mutationFn: ({ trackId, body }: { trackId: string; areaId: string; body: TrackPatchBody }) =>
+      runOperation(transport, updateTrackOperation(trackId, body), unauthorized),
+    onSuccess: (track, variables) => {
+      // Prefer the area the server just reported: a patch can move the track.
+      void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
+      if (track.area_id !== variables.areaId) {
+        void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(variables.areaId) });
       }
-      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
+      void client.invalidateQueries({ queryKey: queryKeys.trackDetail(variables.trackId) });
     },
   });
   const remove = useMutation({
-    mutationFn: ({ waveId, signal }: { waveId: string; areaId: string; signal?: AbortSignal }) =>
-      runOperation(transport, { ...deleteWaveOperation(waveId), signal }, unauthorized),
+    mutationFn: ({ trackId, signal }: { trackId: string; areaId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteTrackOperation(trackId), signal }, unauthorized),
     onSuccess: (_result, variables) => {
-      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
+      client.removeQueries({ queryKey: queryKeys.trackDetail(variables.trackId) });
     },
     // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
     onSettled: (_result, _error, variables) => {
-      void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(variables.areaId) });
-      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
+      void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(variables.areaId) });
+      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('track') });
     },
   });
   /*
@@ -824,26 +824,26 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
    * top of this section, not an exception to it.
    */
   const addCardToDetail = (card: CardWire): void => {
-    client.setQueryData(queryKeys.waveDetail(card.wave_id), (previous: WaveDetailWire | undefined) => {
+    client.setQueryData(queryKeys.trackDetail(card.track_id), (previous: TrackDetailWire | undefined) => {
       if (previous === undefined) return previous;
       if (previous.cards.some((existing) => existing.id === card.id)) return previous;
       return { ...previous, cards: [...previous.cards, card] };
     });
-    void client.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+    void client.invalidateQueries({ queryKey: queryKeys.trackDetail(card.track_id) });
   };
   const createTerminal = useMutation({
-    mutationFn: ({ waveId, body }: { waveId: string; body: NewTerminalCardBody }) =>
-      runOperation(transport, createTerminalCardOperation(waveId, body), unauthorized),
+    mutationFn: ({ trackId, body }: { trackId: string; body: NewTerminalCardBody }) =>
+      runOperation(transport, createTerminalCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
   const createCodex = useMutation({
-    mutationFn: ({ waveId, body }: { waveId: string; body: NewCodexCardBody }) =>
-      runOperation(transport, createCodexCardOperation(waveId, body), unauthorized),
+    mutationFn: ({ trackId, body }: { trackId: string; body: NewCodexCardBody }) =>
+      runOperation(transport, createCodexCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
   const createCard = useMutation({
-    mutationFn: ({ waveId, body }: { waveId: string; body: NewCardBody }) =>
-      runOperation(transport, createCardOperation(waveId, body), unauthorized),
+    mutationFn: ({ trackId, body }: { trackId: string; body: NewCardBody }) =>
+      runOperation(transport, createCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
   /*
@@ -856,36 +856,36 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
    * nothing about whether the server committed.
    */
   const removeCard = useMutation({
-    mutationFn: ({ cardId, signal }: { waveId: string; cardId: string; signal?: AbortSignal }) =>
+    mutationFn: ({ cardId, signal }: { trackId: string; cardId: string; signal?: AbortSignal }) =>
       runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
-    onSuccess: (_result, { waveId, cardId }) => {
-      client.setQueryData(queryKeys.waveDetail(waveId), (previous: WaveDetailWire | undefined) => {
+    onSuccess: (_result, { trackId, cardId }) => {
+      client.setQueryData(queryKeys.trackDetail(trackId), (previous: TrackDetailWire | undefined) => {
         if (previous === undefined) return previous;
         const cards = previous.cards.filter((existing) => existing.id !== cardId);
         return cards.length === previous.cards.length ? previous : { ...previous, cards };
       });
     },
-    onSettled: (_result, _error, { waveId }) => {
-      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
-      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
+    onSettled: (_result, _error, { trackId }) => {
+      void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
+      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('track') });
     },
   });
-  const patchWave = async (waveId: string, areaId: string, body: WavePatchBody) =>
-    toWave(await patch.mutateAsync({ waveId, areaId, body }));
+  const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>
+    toTrack(await patch.mutateAsync({ trackId, areaId, body }));
   return {
-    create: async (body) => toWave(await create.mutateAsync(body)),
-    patch: patchWave,
-    createTerminal: async (waveId, body) => createTerminal.mutateAsync({ waveId, body }),
-    createCodex: async (waveId, body) => createCodex.mutateAsync({ waveId, body }),
-    createCard: async (waveId, body) => createCard.mutateAsync({ waveId, body }),
-    removeCard: async (waveId, cardId, signal) => {
-      await removeCard.mutateAsync({ waveId, cardId, signal });
+    create: async (body) => toTrack(await create.mutateAsync(body)),
+    patch: patchTrack,
+    createTerminal: async (trackId, body) => createTerminal.mutateAsync({ trackId, body }),
+    createCodex: async (trackId, body) => createCodex.mutateAsync({ trackId, body }),
+    createCard: async (trackId, body) => createCard.mutateAsync({ trackId, body }),
+    removeCard: async (trackId, cardId, signal) => {
+      await removeCard.mutateAsync({ trackId, cardId, signal });
     },
     // `pinned_at` is both the flag and the ordering key, so unpinning is a
     // null write rather than a delete of some separate row.
-    setPinned: (waveId, areaId, pinned, nowMs) =>
-      patchWave(waveId, areaId, { pinned_at: pinned ? nowMs : null }),
-    remove: async (waveId, areaId, signal) => { await remove.mutateAsync({ waveId, areaId, signal }); },
+    setPinned: (trackId, areaId, pinned, nowMs) =>
+      patchTrack(trackId, areaId, { pinned_at: pinned ? nowMs : null }),
+    remove: async (trackId, areaId, signal) => { await remove.mutateAsync({ trackId, areaId, signal }); },
   };
 }
 

@@ -102,14 +102,14 @@ describe('isPersistableQueryKey (allowlist)', () => {
   it("accepts ['areas']", () => {
     expect(isPersistableQueryKey({ queryKey: ['areas'] })).toBe(true);
   });
-  it("accepts ['waves', <id>]", () => {
-    expect(isPersistableQueryKey({ queryKey: ['waves', 'c1'] })).toBe(true);
+  it("accepts ['tracks', <id>]", () => {
+    expect(isPersistableQueryKey({ queryKey: ['tracks', 'c1'] })).toBe(true);
   });
-  it("accepts ['wave', <id>]", () => {
-    expect(isPersistableQueryKey({ queryKey: ['wave', 'w1'] })).toBe(true);
+  it("accepts ['track', <id>]", () => {
+    expect(isPersistableQueryKey({ queryKey: ['track', 'w1'] })).toBe(true);
   });
   it("accepts ['overlays', <kind>]", () => {
-    expect(isPersistableQueryKey({ queryKey: ['overlays', 'wave'] })).toBe(true);
+    expect(isPersistableQueryKey({ queryKey: ['overlays', 'track'] })).toBe(true);
   });
   it("accepts ['overlay', <id>]", () => {
     expect(isPersistableQueryKey({ queryKey: ['overlay', 'o1'] })).toBe(true);

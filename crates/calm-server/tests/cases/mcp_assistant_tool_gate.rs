@@ -55,21 +55,21 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
     // Report write channel — carries lifecycle, hence spec-only (§3.2).
     "calm.report.write",
     "calm.report.edit",
-    // Cross-wave / cross-area report discovery reads.
+    // Cross-track / cross-area report discovery reads.
     "calm.area.outline",
     "calm.report.links.backlinks",
-    // Wave state + verdict.
-    "calm.wave.state",
+    // Track state + verdict.
+    "calm.track.state",
     "calm.task.verdict",
-    // #1211 S3 — naming the wave is a spec judgement about what the track is;
+    // #1211 S3 — naming the track is a spec judgement about what the track is;
     // an assistant has no plan of its own to name.
-    "calm.wave.rename",
-    // Wave filesystem + history drill-ins (Spec|Worker, never Assistant).
-    "calm.wave.ls",
-    "calm.wave.cat",
-    "calm.wave.diff",
-    "calm.wave.cat_at",
-    "calm.wave.log",
+    "calm.track.rename",
+    // Track filesystem + history drill-ins (Spec|Worker, never Assistant).
+    "calm.track.ls",
+    "calm.track.cat",
+    "calm.track.diff",
+    "calm.track.cat_at",
+    "calm.track.log",
     // Dispatch. Retired no-op shim today, still spec-only.
     "calm.task.dispatch",
     // Planning, review, admin.
@@ -78,11 +78,11 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
     "calm.plan.list",
     "calm.review.round",
     "calm.ratify.request",
-    "calm.admin.wave_gc",
+    "calm.admin.track_gc",
     "calm.admin.vacuum",
     // Hidden deprecated aliases delegate to the handler above, so the role
     // refusal must survive the rename path too.
-    "calm.get_wave_state",
+    "calm.get_track_state",
     "calm.update_task_meta",
     "calm.dispatch_request",
 ];
@@ -202,7 +202,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
 #[tokio::test]
 async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
     let boot = boot_with_role(CardRole::Assistant).await;
-    seed_wave_report_card(&boot).await;
+    seed_track_report_card(&boot).await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
     handshake(&mut rd, &mut wr, &boot.raw_token).await;
 
@@ -238,7 +238,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
          `if_doc_rev` source a block-channel write has: {payload:#?}"
     );
     // G1 — `taskDiagnostics` is dispatched-task runtime state (status,
-    // gate result, worker card id, child wave id): the very class
+    // gate result, worker card id, child track id): the very class
     // `calm.plan.list` stays Spec-only to withhold. Opening `report.read`
     // to the assistant must not smuggle it out the side.
     assert!(
@@ -289,7 +289,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
 #[tokio::test]
 async fn spec_token_still_gets_task_diagnostics_from_the_report_read() {
     let boot = boot_with_role(CardRole::Spec).await;
-    seed_wave_report_card(&boot).await;
+    seed_track_report_card(&boot).await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
     handshake(&mut rd, &mut wr, &boot.raw_token).await;
 
@@ -324,7 +324,7 @@ async fn spec_token_still_gets_task_diagnostics_from_the_report_read() {
 }
 
 /// `boot_with_role` mints cards straight through `card_with_codex_create_tx`
-/// and so skips the wave-report card `routes::waves::create_wave` mints. Add
+/// and so skips the track-report card `routes::tracks::create_track` mints. Add
 /// it back the way production does — `card_create_with_id_tx` with
 /// `CardRole::ReportCard`, writing through the SAME role cache the booted
 /// server gates on (#1189 review round 2, G6: a report card with no cached
@@ -338,7 +338,7 @@ async fn spec_token_still_gets_task_diagnostics_from_the_report_read() {
 /// every `docRev` assertion is vacuous). The body carries a live task fence
 /// so `taskDiagnostics` is non-empty and the G1 trim below has something
 /// real to withhold.
-async fn seed_wave_report_card(boot: &support::mcp::CardBoot) -> String {
+async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
     let report_card_id = calm_server::model::new_id();
     let mut tx = boot
         .sqlx
@@ -350,11 +350,11 @@ async fn seed_wave_report_card(boot: &support::mcp::CardBoot) -> String {
         &mut tx,
         report_card_id.clone(),
         calm_server::model::NewCard {
-            wave_id: boot.wave_id.clone(),
+            track_id: boot.track_id.clone(),
             title: None,
-            kind: "wave-report".into(),
+            kind: "track-report".into(),
             sort: Some(-1.0),
-            payload: serde_json::to_value(calm_server::wave_report::WaveReportPayload::initial())
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
                 .unwrap(),
         },
         calm_server::model::CardRole::ReportCard,
@@ -362,18 +362,18 @@ async fn seed_wave_report_card(boot: &support::mcp::CardBoot) -> String {
         &boot.card_role_cache,
     )
     .await
-    .expect("mint wave-report card");
+    .expect("mint track-report card");
     tx.commit().await.expect("commit report card tx");
 
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
-        .expect("home wave exists");
+        .expect("home track exists");
     let write = calm_server::state::WriteContext::new(
         boot.card_role_cache.clone(),
-        boot.wave_area_cache.clone(),
+        boot.track_area_cache.clone(),
     );
     let body = format!(
         "# Goal\n\nship it\n\n{}",
@@ -390,18 +390,18 @@ async fn seed_wave_report_card(boot: &support::mcp::CardBoot) -> String {
     );
     let mut card = report_card;
     for (doc_rev, summary) in [(0u64, "seed"), (1u64, "seeded")] {
-        let current: calm_server::wave_report::WaveReportPayload =
+        let current: calm_server::track_report::TrackReportPayload =
             serde_json::from_value(card.payload.clone()).expect("report payload");
-        card = calm_server::wave_report::persist_report(
+        card = calm_server::track_report::persist_report(
             boot.sqlx.as_ref(),
             &boot.events,
             &write,
             calm_server::ids::ActorId::Kernel,
             calm_server::event::EditAuthor::Spec,
-            wave.clone(),
+            track.clone(),
             card,
             current,
-            calm_server::wave_report::WaveReportPayload::new(summary, &body),
+            calm_server::track_report::TrackReportPayload::new(summary, &body),
             doc_rev,
             None,
             None,

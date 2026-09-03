@@ -1,0 +1,82 @@
+import type {
+  WorkerSessionState,
+  CardRole,
+  TrackFsRunStatus,
+  TrackLifecycle,
+} from '../api/generated-events';
+
+export type ViewerChipTone =
+  | 'neutral'
+  | 'accent'
+  | 'warning'
+  | 'success'
+  | 'danger';
+
+export function ViewerChip({
+  label,
+  tone = 'neutral',
+}: {
+  label: string;
+  tone?: ViewerChipTone;
+}) {
+  return (
+    <span className="track-fs-viewer-chip" data-tone={tone}>
+      {label}
+    </span>
+  );
+}
+
+export const runStatusTones = {
+  completed: 'success',
+  failed: 'danger',
+  running: 'accent',
+  requested: 'accent',
+  unknown: 'neutral',
+} satisfies Record<TrackFsRunStatus, ViewerChipTone>;
+
+export const runtimeStatusTones = {
+  starting: 'accent',
+  running: 'accent',
+  idle: 'neutral',
+  turn_pending: 'warning',
+  failed: 'danger',
+  exited: 'success',
+  superseded: 'neutral',
+} satisfies Record<WorkerSessionState, ViewerChipTone>;
+
+export const trackLifecycleTones = {
+  draft: 'neutral',
+  planning: 'accent',
+  dispatching: 'accent',
+  working: 'accent',
+  blocked: 'warning',
+  reviewing: 'accent',
+  done: 'success',
+  canceled: 'danger',
+  failed: 'danger',
+} satisfies Record<TrackLifecycle, ViewerChipTone>;
+
+export const cardRoleTones = {
+  worker: 'neutral',
+  spec: 'accent',
+  reportcard: 'success',
+  // #1189 — track-scoped assistant conversation card.
+  assistant: 'accent',
+} satisfies Record<CardRole, ViewerChipTone>;
+
+export function verdictTone(status: string): ViewerChipTone {
+  switch (status) {
+    case 'accepted':
+    case 'approved':
+    case 'completed':
+    case 'done':
+      return 'success';
+    case 'rejected':
+    case 'failed':
+      return 'danger';
+    case 'blocked':
+      return 'warning';
+    default:
+      return 'neutral';
+  }
+}

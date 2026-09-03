@@ -10,7 +10,7 @@ use tokio::time::{Instant, sleep};
 pub struct EventRow {
     pub id: i64,
     pub scope_kind: String,
-    pub scope_wave: Option<String>,
+    pub scope_track: Option<String>,
     pub scope_card: Option<String>,
     pub payload: Value,
 }
@@ -26,7 +26,7 @@ type RawEventRow = (
 
 pub async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     let rows: Vec<RawEventRow> = sqlx::query_as(
-        "SELECT id, scope_kind, scope_area, scope_wave, scope_card, payload \
+        "SELECT id, scope_kind, scope_area, scope_track, scope_card, payload \
              FROM events WHERE kind = ?1 ORDER BY id ASC",
     )
     .bind(kind)
@@ -35,10 +35,10 @@ pub async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     .expect("event rows");
     rows.into_iter()
         .map(
-            |(id, scope_kind, _scope_area, scope_wave, scope_card, payload)| EventRow {
+            |(id, scope_kind, _scope_area, scope_track, scope_card, payload)| EventRow {
                 id,
                 scope_kind,
-                scope_wave,
+                scope_track,
                 scope_card,
                 payload: serde_json::from_str(&payload).expect("event payload json"),
             },
@@ -105,7 +105,7 @@ pub struct OperationRow {
 pub struct CommittedEventRow {
     pub actor: ActorId,
     pub scope_kind: String,
-    pub scope_wave: Option<String>,
+    pub scope_track: Option<String>,
     pub scope_card: Option<String>,
     pub payload: Value,
 }
@@ -134,7 +134,7 @@ pub async fn event_payloads(repo: &SqlxRepo, kind: &str) -> Vec<Value> {
 
 pub async fn committed_event_rows(repo: &SqlxRepo) -> Vec<CommittedEventRow> {
     let rows: Vec<RawCommittedEventRow> = sqlx::query_as(
-        "SELECT actor, scope_kind, scope_wave, scope_card, payload \
+        "SELECT actor, scope_kind, scope_track, scope_card, payload \
          FROM events WHERE kind = 'worktree.committed' ORDER BY id ASC",
     )
     .fetch_all(repo.pool())
@@ -142,10 +142,10 @@ pub async fn committed_event_rows(repo: &SqlxRepo) -> Vec<CommittedEventRow> {
     .expect("worktree.committed event rows");
     rows.into_iter()
         .map(
-            |(actor, scope_kind, scope_wave, scope_card, payload)| CommittedEventRow {
+            |(actor, scope_kind, scope_track, scope_card, payload)| CommittedEventRow {
                 actor: serde_json::from_str(&actor).expect("event actor json"),
                 scope_kind,
-                scope_wave,
+                scope_track,
                 scope_card,
                 payload: serde_json::from_str(&payload).expect("event payload json"),
             },

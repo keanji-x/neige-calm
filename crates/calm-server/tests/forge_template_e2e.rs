@@ -13,7 +13,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
-    session_mark_wave_root_tx, session_mcp_token_set_tx, session_projection_active_for_card_tx,
+    session_mark_track_root_tx, session_mcp_token_set_tx, session_projection_active_for_card_tx,
     session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
@@ -24,13 +24,13 @@ use calm_server::event::{
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
 };
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
 use calm_server::mcp_server::{
     AppContext, McpServer, ToolCallIdentity, ToolRegistry, build_default_registry,
 };
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewPlugin, NewWave, WaveLifecycle, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewPlugin, NewTrack, TrackLifecycle, new_id, now_ms,
 };
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
@@ -46,7 +46,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use calm_types::worker::WorkerSessionId;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -54,7 +54,7 @@ use support::event_queries::{EventRow, event_rows, wait_for_event_count};
 use support::forge_env::{EnvGuard, FORGE_ENV_LOCK, ForgeTestEnv};
 use support::gh_shim::write_gh_shim;
 use support::git_helpers::{
-    clone_for_wave, configure_repo_identity, git_ref_exists, init_bare_origin, run_git,
+    clone_for_track, configure_repo_identity, git_ref_exists, init_bare_origin, run_git,
     run_git_capture, stage_git_change,
 };
 use support::mcp::{
@@ -88,19 +88,19 @@ struct Fixture {
     events: EventBus,
     write: WriteContext,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     review_ctx: Arc<AppContext>,
     review_registry: Arc<ToolRegistry>,
     socket_path: PathBuf,
     raw_token: String,
     thread_id: String,
-    wave_id: String,
+    track_id: String,
     area_id: String,
     spec_card_id: String,
     worker_card_id: String,
     lease_id: String,
     lease_abs: PathBuf,
-    wave_cwd: PathBuf,
+    track_cwd: PathBuf,
     origin_repo: PathBuf,
     _runtime: Arc<OperationRuntime>,
     _socket_tmp: TempDir,
@@ -111,13 +111,13 @@ struct Caller {
     card_id: String,
     raw_token: String,
     thread_id: String,
-    wave_id: String,
+    track_id: String,
     lease_id: String,
     lease_abs: PathBuf,
 }
 
 #[tokio::test]
-async fn git_forge_template_registers_and_wave_create_binds() {
+async fn git_forge_template_registers_and_track_create_binds() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -126,7 +126,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
 
     let fx = boot_fixture().await;
 
-    let app = wave_router_for_fixture(&fx);
+    let app = track_router_for_fixture(&fx);
 
     // #891 / #1110 S2 — the shipped plugin Manifest declares an
     // `input_schema` with required fields, so the happy-path bind must
@@ -138,13 +138,13 @@ async fn git_forge_template_registers_and_wave_create_binds() {
         "issue_number": 888,
         "merge_policy": "auto-merge"
     });
-    let wave_dir = wave_cwd_tempdir("wf").expect("template wave cwd");
-    let (status, body) = post_wave(
+    let track_dir = track_cwd_tempdir("wf").expect("template track cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
-            "title": "bound template wave",
-            "cwd": wave_dir.path().display().to_string(),
+            "title": "bound template track",
+            "cwd": track_dir.path().display().to_string(),
             "attach_folder": true,
             "template_id": TEMPLATE_ID,
             "template_input": bound_input.clone(),
@@ -156,25 +156,25 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     assert_eq!(body["template_id"], TEMPLATE_ID);
     assert_eq!(body["plugin_scope"], PLUGIN_ID);
     assert_eq!(body["template_input"], bound_input);
-    let wave_id = body["id"].as_str().expect("created wave id");
-    let stored: Option<String> = sqlx::query_scalar("SELECT template_id FROM waves WHERE id = ?1")
-        .bind(wave_id)
+    let track_id = body["id"].as_str().expect("created track id");
+    let stored: Option<String> = sqlx::query_scalar("SELECT template_id FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_one(fx.repo.pool())
         .await
         .expect("select template_id");
     assert_eq!(stored.as_deref(), Some(TEMPLATE_ID));
     let stored_scope: Option<String> =
-        sqlx::query_scalar("SELECT plugin_scope FROM waves WHERE id = ?1")
-            .bind(wave_id)
+        sqlx::query_scalar("SELECT plugin_scope FROM tracks WHERE id = ?1")
+            .bind(track_id)
             .fetch_one(fx.repo.pool())
             .await
             .expect("select plugin_scope");
     assert_eq!(stored_scope.as_deref(), Some(PLUGIN_ID));
-    let detail = get_wave_detail(app.clone(), wave_id).await;
-    assert_eq!(detail["wave"]["template_input"], bound_input);
+    let detail = get_track_detail(app.clone(), track_id).await;
+    assert_eq!(detail["track"]["template_input"], bound_input);
     let stored_input: Option<String> =
-        sqlx::query_scalar("SELECT template_input FROM waves WHERE id = ?1")
-            .bind(wave_id)
+        sqlx::query_scalar("SELECT template_input FROM tracks WHERE id = ?1")
+            .bind(track_id)
             .fetch_one(fx.repo.pool())
             .await
             .expect("select template_input");
@@ -185,8 +185,8 @@ async fn git_forge_template_registers_and_wave_create_binds() {
 
     // #891 — `template_input` without `template_id` is a 400 before any
     // DB write.
-    let orphan_input_dir = wave_cwd_tempdir("wf-input-orphan").expect("orphan input cwd");
-    let (status, body) = post_wave(
+    let orphan_input_dir = track_cwd_tempdir("wf-input-orphan").expect("orphan input cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
@@ -207,8 +207,8 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     // #891 slice ② — the shipped schema has required fields, so a bound
     // create WITHOUT `template_input` is a 400 naming them (fail before any
     // DB write).
-    let required_dir = wave_cwd_tempdir("wf-input-required").expect("required input cwd");
-    let (status, body) = post_wave(
+    let required_dir = track_cwd_tempdir("wf-input-required").expect("required input cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
@@ -227,16 +227,16 @@ async fn git_forge_template_registers_and_wave_create_binds() {
         assert!(error.contains(field), "missing {field} in body={body}");
     }
     // #891 slice ② review fix — the 400 must short-circuit before any DB
-    // write: no wave row may exist for the rejected create.
+    // write: no track row may exist for the rejected create.
     assert_eq!(
-        wave_count_by_title(&fx.repo, "bound without required input").await,
+        track_count_by_title(&fx.repo, "bound without required input").await,
         0,
-        "missing-input 400 must not create a wave row"
+        "missing-input 400 must not create a track row"
     );
 
     // Input present but missing a required field → 400 naming it.
-    let partial_dir = wave_cwd_tempdir("wf-input-partial").expect("partial input cwd");
-    let (status, body) = post_wave(
+    let partial_dir = track_cwd_tempdir("wf-input-partial").expect("partial input cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
@@ -263,14 +263,14 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     // #891 slice ② r2 — partial-input 400 must also short-circuit before
     // any DB write.
     assert_eq!(
-        wave_count_by_title(&fx.repo, "bound with partial input").await,
+        track_count_by_title(&fx.repo, "bound with partial input").await,
         0,
-        "partial-input 400 must not create a wave row"
+        "partial-input 400 must not create a track row"
     );
 
     // Enum violation against the shipped merge_policy → 400 naming the field.
-    let invalid_dir = wave_cwd_tempdir("wf-input-invalid").expect("invalid input cwd");
-    let (status, body) = post_wave(
+    let invalid_dir = track_cwd_tempdir("wf-input-invalid").expect("invalid input cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
@@ -297,16 +297,16 @@ async fn git_forge_template_registers_and_wave_create_binds() {
         "body={body}"
     );
     // #891 slice ② review fix — schema-violation 400 likewise leaves no
-    // wave row behind.
+    // track row behind.
     assert_eq!(
-        wave_count_by_title(&fx.repo, "bound with invalid input").await,
+        track_count_by_title(&fx.repo, "bound with invalid input").await,
         0,
-        "schema-violation 400 must not create a wave row"
+        "schema-violation 400 must not create a track row"
     );
 
     // INV-1110-003 — extra key against additionalProperties:false is still 400.
-    let extra_dir = wave_cwd_tempdir("wf-input-extra").expect("extra-key input cwd");
-    let (status, body) = post_wave(
+    let extra_dir = track_cwd_tempdir("wf-input-extra").expect("extra-key input cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
@@ -333,9 +333,9 @@ async fn git_forge_template_registers_and_wave_create_binds() {
         "body={body}"
     );
     assert_eq!(
-        wave_count_by_title(&fx.repo, "bound with extra input key").await,
+        track_count_by_title(&fx.repo, "bound with extra input key").await,
         0,
-        "extra-key 400 must not create a wave row"
+        "extra-key 400 must not create a track row"
     );
 
     // #891 / #1110 S2 — F2 fail-closed still holds for schema-less plugins:
@@ -358,8 +358,8 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     }
 
     // Bound + input against a schema-less plugin → 400 fail-closed.
-    let no_schema_dir = wave_cwd_tempdir("wf-input-noschema").expect("no-schema input cwd");
-    let (status, body) = post_wave(
+    let no_schema_dir = track_cwd_tempdir("wf-input-noschema").expect("no-schema input cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
@@ -377,11 +377,11 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     assert!(error.contains("does not declare"), "body={body}");
     assert!(error.contains("plugin"), "body={body}");
     // #891 slice ② r2 — schema-less fail-closed 400 likewise leaves no
-    // wave row behind.
+    // track row behind.
     assert_eq!(
-        wave_count_by_title(&fx.repo, "input against schema-less template").await,
+        track_count_by_title(&fx.repo, "input against schema-less template").await,
         0,
-        "schema-less-input 400 must not create a wave row"
+        "schema-less-input 400 must not create a track row"
     );
 
     // Schema-less bound create without input stays valid (design §1.4 row 4).
@@ -394,12 +394,12 @@ async fn git_forge_template_registers_and_wave_create_binds() {
             .expect("lifecycle lock is free");
         fx.plugin_host.registry_insert(&g, schemaless, None);
     }
-    let no_input_dir = wave_cwd_tempdir("wf-noschema-ok").expect("schema-less bind cwd");
-    let (status, body) = post_wave(
+    let no_input_dir = track_cwd_tempdir("wf-noschema-ok").expect("schema-less bind cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
-            "title": "schema-less bound wave",
+            "title": "schema-less bound track",
             "cwd": no_input_dir.path().display().to_string(),
             "attach_folder": true,
             "template_id": TEMPLATE_ID,
@@ -420,12 +420,12 @@ async fn git_forge_template_registers_and_wave_create_binds() {
         fx.plugin_host.registry_insert(&g, shipped, None);
     }
 
-    let missing_dir = wave_cwd_tempdir("wf-missing").expect("missing template cwd");
-    let (status, body) = post_wave(
+    let missing_dir = track_cwd_tempdir("wf-missing").expect("missing template cwd");
+    let (status, body) = post_track(
         app.clone(),
         json!({
             "area_id": fx.area_id,
-            "title": "missing template wave",
+            "title": "missing template track",
             "cwd": missing_dir.path().display().to_string(),
             "attach_folder": true,
             "template_id": "missing-template",
@@ -442,7 +442,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     // the "untrusted ⇒ 201 with a null plugin_scope" leg further down in this
     // same test.
     let error = body["error"].as_str().unwrap_or("");
-    assert!(error.contains("known wave template"), "body={body}");
+    assert!(error.contains("known track template"), "body={body}");
     assert!(
         !error.contains("registered trusted template"),
         "body={body}"
@@ -451,12 +451,12 @@ async fn git_forge_template_registers_and_wave_create_binds() {
 
     drop(trusted);
     let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "other.plugin");
-    let untrusted_dir = wave_cwd_tempdir("wf-untrusted").expect("untrusted template cwd");
-    let (status, body) = post_wave(
+    let untrusted_dir = track_cwd_tempdir("wf-untrusted").expect("untrusted template cwd");
+    let (status, body) = post_track(
         app,
         json!({
             "area_id": fx.area_id,
-            "title": "untrusted template wave",
+            "title": "untrusted template track",
             "cwd": untrusted_dir.path().display().to_string(),
             "attach_folder": true,
             "template_id": TEMPLATE_ID,
@@ -518,7 +518,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     );
     let issue_read_rows = wait_for_event_count(&fx.repo, "forge.issue.read", 1).await;
     let issue_read = issue_read_rows[0].clone();
-    assert_wave_event(&issue_read, &fx.wave_id);
+    assert_track_event(&issue_read, &fx.track_id);
     assert_eq!(issue_read.payload["issue_number"], json!(810));
     let issue_artifact_path = issue_read.payload["artifact_path"]
         .as_str()
@@ -544,7 +544,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     .await;
     assert_tool_succeeded(&scan_resp, "gh.pr.list");
     let scan = wait_for_event_count(&fx.repo, "forge.scan.completed", 1).await;
-    assert_wave_event(&scan[0], &fx.wave_id);
+    assert_track_event(&scan[0], &fx.track_id);
     assert_eq!(scan[0].payload["overlapping_prs"], json!([]));
 
     run_git(&fx.lease_abs, ["checkout", "-b", head]);
@@ -577,7 +577,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_tool_succeeded(&create_resp, "gh.pr.create");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let opened = opened_rows[0].clone();
-    assert_wave_event(&opened, &fx.wave_id);
+    assert_track_event(&opened, &fx.track_id);
     assert_eq!(opened.payload["pr_number"], 1);
     assert_eq!(opened.payload["head_sha"], head_sha);
     let pr_number = opened.payload["pr_number"].as_u64().expect("pr number");
@@ -603,7 +603,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     );
     let diff_rows = wait_for_event_count(&fx.repo, "forge.pr.diff.read", 1).await;
     let diff = diff_rows[0].clone();
-    assert_wave_event(&diff, &fx.wave_id);
+    assert_track_event(&diff, &fx.track_id);
     assert_eq!(diff.payload["pr_number"], pr_number);
     assert_eq!(diff.payload["base_sha"], base_sha);
     assert_eq!(diff.payload["head_sha"], head_sha);
@@ -627,7 +627,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         1,
         "gh.pr.checks must persist exactly one forge.pr.checks event"
     );
-    assert_wave_event(&checks, &fx.wave_id);
+    assert_track_event(&checks, &fx.track_id);
     assert_eq!(checks.payload["pr_number"], pr_number);
     assert_eq!(checks.payload["conclusion"], "success");
 
@@ -646,7 +646,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_tool_succeeded(&merge_resp, "gh.pr.merge");
     let merged_rows = wait_for_event_count(&fx.repo, "forge.pr.merged", 1).await;
     let merged = merged_rows[0].clone();
-    assert_wave_event(&merged, &fx.wave_id);
+    assert_track_event(&merged, &fx.track_id);
     assert_eq!(merged.payload["head_sha"], head_sha);
     assert_eq!(merged.payload["subject"]["pr_number"], pr_number);
     let merge_sha = merged.payload["merge_sha"]
@@ -664,12 +664,12 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_tool_succeeded(&issue_resp, "gh.issue.close");
     let issue_rows = wait_for_event_count(&fx.repo, "forge.issue.closed", 1).await;
     let issue_closed = issue_rows[0].clone();
-    assert_wave_event(&issue_closed, &fx.wave_id);
+    assert_track_event(&issue_closed, &fx.track_id);
     assert_eq!(issue_closed.payload["issue_number"], 810);
 
-    transition_wave_to_done(&fx).await;
-    let done = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["to"] == "done"
+    transition_track_to_done(&fx).await;
+    let done = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
+        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["to"] == "done"
     })
     .await;
     assert_eq!(done.payload["from"], "reviewing");
@@ -795,7 +795,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
 
     let merged_rows = wait_for_event_count(&fx.repo, "forge.pr.merged", 1).await;
     let merged = merged_rows[0].clone();
-    assert_wave_event(&merged, &fx.wave_id);
+    assert_track_event(&merged, &fx.track_id);
     assert_eq!(merged.payload["head_sha"], head_sha);
     assert_eq!(merged.payload["subject"]["pr_number"], pr_number);
     let merge_sha = merged.payload["merge_sha"]
@@ -885,7 +885,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
 
     let result_path = results_dir.path().join("merge-never-ran.result");
     let payload = ForgeActionPayload {
-        wave_id: fx.wave_id.clone(),
+        track_id: fx.track_id.clone(),
         card_id: "card-1".into(),
         subject: Some(
             serde_json::from_value(json!({
@@ -1044,7 +1044,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
 
     let issue_rows = wait_for_event_count(&fx.repo, "forge.issue.closed", 1).await;
     let issue_closed = issue_rows[0].clone();
-    assert_wave_event(&issue_closed, &fx.wave_id);
+    assert_track_event(&issue_closed, &fx.track_id);
     assert_eq!(issue_closed.payload["issue_number"], issue_number);
     assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
 
@@ -1089,9 +1089,9 @@ async fn dual_review_converges_then_merges() {
 
     let merged = merge_reviewed_pr(&fx, 44, &pr, "760").await;
     let issue_closed = close_issue(&fx, 46, &pr.repo_arg, 760).await;
-    transition_wave_to_done(&fx).await;
-    let done = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["to"] == "done"
+    transition_track_to_done(&fx).await;
+    let done = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
+        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["to"] == "done"
     })
     .await;
 
@@ -1111,7 +1111,7 @@ async fn dual_review_converges_then_merges() {
     );
     assert!(merged.id < issue_closed.id, "merge must precede close");
     assert!(issue_closed.id < done.id, "close must precede done");
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -1144,20 +1144,20 @@ async fn cap_exhausted_give_up_fails_terminal() {
     )
     .await;
 
-    transition_wave_along(
+    transition_track_along(
         &fx,
         &[
-            WaveLifecycle::Planning,
-            WaveLifecycle::Dispatching,
-            WaveLifecycle::Working,
-            WaveLifecycle::Reviewing,
-            WaveLifecycle::Failed,
+            TrackLifecycle::Planning,
+            TrackLifecycle::Dispatching,
+            TrackLifecycle::Working,
+            TrackLifecycle::Reviewing,
+            TrackLifecycle::Failed,
         ],
         "scripted give-up after cap exhaustion",
     )
     .await;
-    let failed = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["to"] == "failed"
+    let failed = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
+        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["to"] == "failed"
     })
     .await;
     assert_eq!(failed.payload["from"], "reviewing");
@@ -1170,7 +1170,7 @@ async fn cap_exhausted_give_up_fails_terminal() {
             .all(|row| row.payload["subject"]["pr_number"] != json!(pr.pr_number)),
         "give-up subject must not merge"
     );
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -1197,13 +1197,13 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         "Review ask-human E2E",
     )
     .await;
-    transition_wave_along(
+    transition_track_along(
         &fx,
         &[
-            WaveLifecycle::Planning,
-            WaveLifecycle::Dispatching,
-            WaveLifecycle::Working,
-            WaveLifecycle::Reviewing,
+            TrackLifecycle::Planning,
+            TrackLifecycle::Dispatching,
+            TrackLifecycle::Working,
+            TrackLifecycle::Reviewing,
         ],
         "ready for capped review",
     )
@@ -1213,20 +1213,20 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 1, false),
     )
     .await;
-    transition_wave_along(
+    transition_track_along(
         &fx,
-        &[WaveLifecycle::Working],
+        &[TrackLifecycle::Working],
         "ask human after capped review",
     )
     .await;
     let request = request_ratification(&fx, "cap_exhausted").await;
 
-    let lifecycle = event_rows(&fx.repo, "wave.lifecycle_changed").await;
+    let lifecycle = event_rows(&fx.repo, "track.lifecycle_changed").await;
     let reviewing_to_working = lifecycle
         .iter()
         .find(|row| {
             row.id > cap_round.id
-                && row.scope_wave.as_deref() == Some(&fx.wave_id)
+                && row.scope_track.as_deref() == Some(&fx.track_id)
                 && row.payload["from"] == "reviewing"
                 && row.payload["to"] == "working"
         })
@@ -1235,7 +1235,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         .iter()
         .find(|row| {
             row.id > reviewing_to_working.id
-                && row.scope_wave.as_deref() == Some(&fx.wave_id)
+                && row.scope_track.as_deref() == Some(&fx.track_id)
                 && row.payload["from"] == "working"
                 && row.payload["to"] == "blocked"
         })
@@ -1243,7 +1243,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
     assert!(working_to_blocked.id < request.id);
     assert!(
         lifecycle.iter().all(|row| {
-            !(row.scope_wave.as_deref() == Some(&fx.wave_id)
+            !(row.scope_track.as_deref() == Some(&fx.track_id)
                 && row.payload["from"] == "reviewing"
                 && row.payload["to"] == "blocked")
         }),
@@ -1254,26 +1254,26 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
         "merge must be absent while latest subject round is unconverged before grant"
     );
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     let (status, body) = post_ratify(&fx, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let resolved = wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["decision"] == "grant"
+        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["decision"] == "grant"
     })
     .await;
-    let unblocked = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
+    let unblocked = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
         row.id > request.id
-            && row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["from"] == "blocked"
             && row.payload["to"] == "working"
     })
     .await;
     assert!(unblocked.id < resolved.id);
 
-    transition_wave_along(
+    transition_track_along(
         &fx,
-        &[WaveLifecycle::Reviewing],
+        &[TrackLifecycle::Reviewing],
         "resume review after grant",
     )
     .await;
@@ -1286,9 +1286,9 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
     .await;
     let merged = merge_reviewed_pr(&fx, 64, &pr, "760").await;
     close_issue(&fx, 66, &pr.repo_arg, 762).await;
-    transition_wave_along(
+    transition_track_along(
         &fx,
-        &[WaveLifecycle::Done],
+        &[TrackLifecycle::Done],
         "done after ratified convergence",
     )
     .await;
@@ -1296,7 +1296,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
     assert!(resolved.id < converged.id);
     assert!(converged.id < merged.id);
     assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -1313,12 +1313,12 @@ async fn review_round_recovers_into_pending_queue() {
     let _env = setup_forge_env();
 
     let fx = boot_fixture().await;
-    transition_wave_along(
+    transition_track_along(
         &fx,
         &[
-            WaveLifecycle::Planning,
-            WaveLifecycle::Dispatching,
-            WaveLifecycle::Working,
+            TrackLifecycle::Planning,
+            TrackLifecycle::Dispatching,
+            TrackLifecycle::Working,
         ],
         "recovery ratify setup",
     )
@@ -1329,7 +1329,7 @@ async fn review_round_recovers_into_pending_queue() {
     let (status, body) = post_ratify(&fx, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["decision"] == "grant"
+        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["decision"] == "grant"
     })
     .await;
 
@@ -1346,7 +1346,7 @@ async fn review_round_recovers_into_pending_queue() {
         repo,
         fx.events.clone(),
         fx.card_role_cache.clone(),
-        fx.wave_area_cache.clone(),
+        fx.track_area_cache.clone(),
         daemon,
         &registry,
         runtime,
@@ -1423,7 +1423,7 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     let block = ShimBlock::new(&state, "pr_merge");
 
     // The later `NO_CONTENT` teardown assertion depends on *every* forge op of
-    // this wave being terminal, so the parked checks op must be awaited here.
+    // this track being terminal, so the parked checks op must be awaited here.
     run_pr_checks(&fx, 74, &pr.repo_arg, pr.pr_number).await;
     let merge_resp = call_tool(
         &fx,
@@ -1444,7 +1444,7 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
 
     let release_count_before = event_rows(&fx.repo, "workspace.released").await.len();
-    let status = delete_wave(&fx).await;
+    let status = delete_track(&fx).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(workspace_lease_state(&fx.repo, &fx.lease_id).await, "held");
     assert_event_count_stays(&fx.repo, "workspace.released", release_count_before).await;
@@ -1456,14 +1456,14 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     block.release();
     wait_for_operation_phase(&fx.repo, &op_id, "succeeded").await;
     let merged = wait_for_event_matching(&fx.repo, "forge.pr.merged", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id)
+        row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["subject"]["pr_number"] == json!(pr.pr_number)
     })
     .await;
     assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
     close_issue(&fx, 76, &pr.repo_arg, 763).await;
 
-    let status = delete_wave(&fx).await;
+    let status = delete_track(&fx).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let released_rows =
         wait_for_event_count(&fx.repo, "workspace.released", release_count_before + 1).await;
@@ -1484,18 +1484,18 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     assert_eq!(
         workspace_lease_state_optional(&fx.repo, &fx.lease_id).await,
         None,
-        "wave delete cascades released workspace lease rows after persisting workspace.released"
+        "track delete cascades released workspace lease rows after persisting workspace.released"
     );
     assert!(
         !git_ref_exists(
-            &fx.wave_cwd,
-            &format!("refs/heads/neige/{}/{}", fx.wave_id, fx.worker_card_id),
+            &fx.track_cwd,
+            &format!("refs/heads/neige/{}/{}", fx.track_id, fx.worker_card_id),
         ),
-        "wave teardown must remove the released worker branch"
+        "track teardown must remove the released worker branch"
     );
     assert!(
         !fx.lease_abs.exists(),
-        "wave teardown must remove the released worker checkout"
+        "track teardown must remove the released worker checkout"
     );
 
     let release_count = event_rows(&fx.repo, "workspace.released").await.len();
@@ -1520,12 +1520,12 @@ async fn boot_fixture() -> Fixture {
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
-    let wave_cwd = tmp.path().join("wave-cwd");
-    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+    let track_cwd = tmp.path().join("track-cwd");
+    std::fs::create_dir_all(&track_cwd).expect("create track cwd");
 
     let origin_repo = tmp.path().join("origin.git");
     init_bare_origin(&origin_repo, &tmp.path().join("seed"));
-    clone_for_wave(&origin_repo, &wave_cwd);
+    clone_for_track(&origin_repo, &track_cwd);
 
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -1534,9 +1534,9 @@ async fn boot_fixture() -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let events = EventBus::new();
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
     let area = repo
         .area_create(NewArea {
@@ -1546,27 +1546,27 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "forge-template-e2e".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
-    repo.seed_wave_area_cache(&wave_area_cache)
+        .expect("create track");
+    repo.seed_track_area_cache(&track_area_cache)
         .await
-        .expect("seed wave/area cache");
+        .expect("seed track/area cache");
 
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1574,16 +1574,16 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create spec card");
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
         .await;
-    seed_spec_runtime(&sqlx_repo, &wave.id, &spec_card.id).await;
+    seed_spec_runtime(&sqlx_repo, &track.id, &spec_card.id).await;
 
     let caller =
-        create_worker_caller(&sqlx_repo, &card_role_cache, wave.id.clone(), &wave_cwd).await;
+        create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone(), &track_cwd).await;
     provision_worker_worktree(
-        &wave_cwd,
-        &caller.wave_id,
+        &track_cwd,
+        &caller.track_id,
         &caller.card_id,
         &caller.lease_abs,
     );
@@ -1629,9 +1629,9 @@ async fn boot_fixture() -> Fixture {
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let review_ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: sqlx_repo
+        track_vcs: sqlx_repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: write.clone(),
         daemon_token_hash: None,
@@ -1664,19 +1664,19 @@ async fn boot_fixture() -> Fixture {
         events,
         write,
         card_role_cache,
-        wave_area_cache,
+        track_area_cache,
         review_ctx,
         review_registry,
         socket_path,
         raw_token: caller.raw_token,
         thread_id: caller.thread_id,
-        wave_id: caller.wave_id,
+        track_id: caller.track_id,
         area_id: area.id.to_string(),
         spec_card_id: spec_card.id.to_string(),
         worker_card_id: caller.card_id,
         lease_id: caller.lease_id,
         lease_abs: caller.lease_abs,
-        wave_cwd,
+        track_cwd,
         origin_repo,
         _runtime: runtime,
         _socket_tmp: socket_tmp,
@@ -1687,15 +1687,15 @@ async fn boot_fixture() -> Fixture {
 async fn create_worker_caller(
     sqlx_repo: &Arc<SqlxRepo>,
     card_role_cache: &CardRoleCache,
-    wave_id: WaveId,
-    wave_cwd: &Path,
+    track_id: TrackId,
+    track_cwd: &Path,
 ) -> Caller {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_abs = wave_cwd
+    let lease_abs = track_cwd
         .join(".claude")
         .join("worktrees")
-        .join(wave_id.as_str())
+        .join(track_id.as_str())
         .join(&card_id);
     let lease_path = lease_abs.display().to_string();
 
@@ -1705,7 +1705,7 @@ async fn create_worker_caller(
         card_id.clone(),
         &runtime_id,
         None,
-        wave_id.clone(),
+        track_id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -1734,7 +1734,7 @@ async fn create_worker_caller(
             token.into_inner()
         }
     };
-    let lease_id = insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), &lease_path).await;
+    let lease_id = insert_workspace_lease(&mut tx, &card_id, track_id.as_str(), &lease_path).await;
     tx.commit().await.expect("commit card tx");
 
     let thread_id = format!("thread-{card_id}");
@@ -1744,13 +1744,13 @@ async fn create_worker_caller(
         card_id,
         raw_token,
         thread_id,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         lease_id,
         lease_abs,
     }
 }
 
-async fn seed_spec_runtime(sqlx_repo: &SqlxRepo, wave_id: &WaveId, spec_card_id: &CardId) {
+async fn seed_spec_runtime(sqlx_repo: &SqlxRepo, track_id: &TrackId, spec_card_id: &CardId) {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("spec-thread".into());
@@ -1774,13 +1774,13 @@ async fn seed_spec_runtime(sqlx_repo: &SqlxRepo, wave_id: &WaveId, spec_card_id:
     )
     .await
     .expect("start spec runtime");
-    session_mark_wave_root_tx(&mut tx, wave_id, &WorkerSessionId::from(SPEC_SESSION_ID))
+    session_mark_track_root_tx(&mut tx, track_id, &WorkerSessionId::from(SPEC_SESSION_ID))
         .await
         .expect("mark spec root session");
     tx.commit().await.expect("commit spec tx");
 }
 
-fn wave_router_for_fixture(fx: &Fixture) -> axum::Router {
+fn track_router_for_fixture(fx: &Fixture) -> axum::Router {
     let repo: Arc<dyn Repo> = fx.repo.clone();
     let state = AppState::from_parts(
         repo,
@@ -1789,9 +1789,9 @@ fn wave_router_for_fixture(fx: &Fixture) -> axum::Router {
         fx.plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         Some(fx.card_role_cache.clone()),
-        Some(fx.wave_area_cache.clone()),
+        Some(fx.track_area_cache.clone()),
     );
-    calm_server::routes::waves::router()
+    calm_server::routes::tracks::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -1807,7 +1807,7 @@ fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
         fx.plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         Some(fx.card_role_cache.clone()),
-        Some(fx.wave_area_cache.clone()),
+        Some(fx.track_area_cache.clone()),
     );
     calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -1816,12 +1816,12 @@ fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
         .with_state(state)
 }
 
-async fn get_wave_detail(app: axum::Router, wave_id: &str) -> Value {
+async fn get_track_detail(app: axum::Router, track_id: &str) -> Value {
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/waves/{wave_id}"))
+                .uri(format!("/api/tracks/{track_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1829,15 +1829,15 @@ async fn get_wave_detail(app: axum::Router, wave_id: &str) -> Value {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).expect("wave detail json")
+    serde_json::from_slice(&bytes).expect("track detail json")
 }
 
-async fn post_wave(app: axum::Router, body: Value) -> (StatusCode, Value) {
+async fn post_track(app: axum::Router, body: Value) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/waves")
+                .uri("/api/tracks")
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
@@ -1850,14 +1850,14 @@ async fn post_wave(app: axum::Router, body: Value) -> (StatusCode, Value) {
     (status, json)
 }
 
-// #891 slice ② review fix — rejected creates must leave zero wave rows;
+// #891 slice ② review fix — rejected creates must leave zero track rows;
 // titles are unique per case in this file, so a by-title count is decisive.
-async fn wave_count_by_title(repo: &SqlxRepo, title: &str) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE title = ?1")
+async fn track_count_by_title(repo: &SqlxRepo, title: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE title = ?1")
         .bind(title)
         .fetch_one(repo.pool())
         .await
-        .expect("count waves by title")
+        .expect("count tracks by title")
 }
 
 async fn boot_plugin_host(
@@ -1902,21 +1902,21 @@ async fn boot_plugin_host(
 async fn insert_workspace_lease(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     path: &str,
 ) -> String {
     let now = now_ms();
     let lease_id = calm_server::model::new_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(path)
     .bind("test-lease-owner")
     .bind(now + 60_000)
@@ -2036,7 +2036,7 @@ fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
-        wave_id: Some(fx.wave_id.clone()),
+        track_id: Some(fx.track_id.clone()),
         area_id: fx.area_id.clone(),
         thread_id: "spec-thread".into(),
     }
@@ -2218,12 +2218,12 @@ async fn post_ratify(fx: &Fixture, decision: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
-async fn delete_wave(fx: &Fixture) -> StatusCode {
+async fn delete_track(fx: &Fixture) -> StatusCode {
     app_router_for_fixture(fx)
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/waves/{}", fx.wave_id))
+                .uri(format!("/api/tracks/{}", fx.track_id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2232,10 +2232,10 @@ async fn delete_wave(fx: &Fixture) -> StatusCode {
         .status()
 }
 
-async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message: &str) {
-    let wave_id = WaveId::from(fx.wave_id.clone());
-    let scope = EventScope::Wave {
-        wave: wave_id.clone(),
+async fn transition_track_along(fx: &Fixture, targets: &[TrackLifecycle], message: &str) {
+    let track_id = TrackId::from(fx.track_id.clone());
+    let scope = EventScope::Track {
+        track: track_id.clone(),
         area: AreaId::from(fx.area_id.clone()),
     };
     let actor = ActorId::AiSpec(CardId::from(fx.spec_card_id.clone()));
@@ -2247,7 +2247,7 @@ async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message:
         &fx.events,
         &fx.write,
         move |tx| {
-            let wave_id = wave_id.clone();
+            let track_id = track_id.clone();
             let scope = scope.clone();
             let actor = actor.clone();
             let targets = targets.clone();
@@ -2256,9 +2256,9 @@ async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message:
                 let mut events = Vec::new();
                 for target in targets {
                     let lifecycle_events =
-                        calm_server::wave_lifecycle::apply_requested_transition_in_tx(
+                        calm_server::track_lifecycle::apply_requested_transition_in_tx(
                             tx,
-                            &wave_id,
+                            &track_id,
                             target,
                             &actor,
                             message.clone(),
@@ -2278,17 +2278,17 @@ async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message:
         },
     )
     .await
-    .expect("transition wave lifecycle");
+    .expect("transition track lifecycle");
 }
 
 async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
-    let wave_id = WaveId::from(fx.wave_id.clone());
-    let scope = EventScope::Wave {
-        wave: wave_id,
+    let track_id = TrackId::from(fx.track_id.clone());
+    let scope = EventScope::Track {
+        track: track_id,
         area: AreaId::from(fx.area_id.clone()),
     };
     let task_key = format!("impl-review-{slice_id}");
-    let idempotency_key = format!("{}:{task_key}", fx.wave_id);
+    let idempotency_key = format!("{}:{task_key}", fx.track_id);
     let agent_message = format!("[scheduler] dispatching task {task_key}");
     let (_, event_ids) = write_with_actor_events_typed::<(), _>(
         fx.repo.as_ref(),
@@ -2316,7 +2316,7 @@ async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
                             ActorId::KernelDispatcher,
                             scope,
                             Event::TaskContextFrozen {
-                                wave_id: WaveId::default(),
+                                track_id: TrackId::default(),
                                 task_key: String::new(),
                                 idempotency_key: String::new(),
                                 task_id: idempotency_key,
@@ -2341,8 +2341,8 @@ async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
         .into_iter()
         .find(|row| row.id == event_id)
         .expect("scripted impl dispatch row");
-    assert_eq!(dispatch.scope_kind, "wave");
-    assert_eq!(dispatch.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(dispatch.scope_kind, "track");
+    assert_eq!(dispatch.scope_track.as_deref(), Some(fx.track_id.as_str()));
     dispatch
 }
 
@@ -2402,7 +2402,8 @@ async fn drive_pr_to_diff(
     .await;
     assert_tool_succeeded(&create_resp, "gh.pr.create");
     let opened = wait_for_event_matching(&fx.repo, "forge.pr.opened", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["head_sha"] == json!(head_sha)
+        row.scope_track.as_deref() == Some(&fx.track_id)
+            && row.payload["head_sha"] == json!(head_sha)
     })
     .await;
     let pr_number = opened.payload["pr_number"].as_u64().expect("pr number");
@@ -2421,7 +2422,7 @@ async fn drive_pr_to_diff(
     .await;
     assert_tool_succeeded(&diff_resp, "gh.pr.diff");
     let diff = wait_for_event_matching(&fx.repo, "forge.pr.diff.read", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id)
+        row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["pr_number"] == json!(pr_number)
             && row.payload["head_sha"] == json!(head_sha)
     })
@@ -2439,9 +2440,9 @@ async fn drive_pr_to_diff(
 ///
 /// `gh.pr.checks` lowers to a **parked** forge action: `tools/call` returns
 /// `{op_id, parked: true}` as soon as the op is submitted, long before the op
-/// reaches a terminal phase. Every forge action is targeted at the wave (see
-/// `target_from_payload`), so an un-awaited checks op keeps the wave-global
-/// teardown fence (`any_wave_has_active_forge_action`) armed and makes any
+/// reaches a terminal phase. Every forge action is targeted at the track (see
+/// `target_from_payload`), so an un-awaited checks op keeps the track-global
+/// teardown fence (`any_track_has_active_forge_action`) armed and makes any
 /// later "teardown succeeds" assertion flaky. Awaiting the `forge.pr.checks`
 /// event is the happens-before edge: the phase flip to `succeeded` and the
 /// event append share one transaction, so a visible event proves the op is
@@ -2457,7 +2458,7 @@ async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) ->
     .await;
     assert_tool_succeeded(&checks_resp, "gh.pr.checks");
     wait_for_event_matching(&fx.repo, "forge.pr.checks", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id)
+        row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["pr_number"] == json!(pr_number)
     })
     .await
@@ -2486,7 +2487,7 @@ async fn merge_reviewed_pr(
     .await;
     assert_tool_succeeded(&merge_resp, "gh.pr.merge");
     let merged = wait_for_event_matching(&fx.repo, "forge.pr.merged", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id)
+        row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["subject"]["pr_number"] == json!(pr.pr_number)
     })
     .await;
@@ -2504,7 +2505,7 @@ async fn close_issue(fx: &Fixture, id: i64, repo_arg: &str, issue_number: u64) -
     .await;
     assert_tool_succeeded(&issue_resp, "gh.issue.close");
     wait_for_event_matching(&fx.repo, "forge.issue.closed", |row| {
-        row.scope_wave.as_deref() == Some(&fx.wave_id)
+        row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["issue_number"] == json!(issue_number)
     })
     .await
@@ -2784,17 +2785,17 @@ async fn wait_for_event_matching(
     }
 }
 
-fn assert_wave_event(row: &EventRow, wave_id: &str) {
-    assert_eq!(row.scope_kind, "wave");
-    assert_eq!(row.scope_wave.as_deref(), Some(wave_id));
+fn assert_track_event(row: &EventRow, track_id: &str) {
+    assert_eq!(row.scope_kind, "track");
+    assert_eq!(row.scope_track.as_deref(), Some(track_id));
     assert!(row.scope_card.is_none());
-    assert_eq!(row.payload["wave_id"], wave_id);
+    assert_eq!(row.payload["track_id"], track_id);
 }
 
-async fn transition_wave_to_done(fx: &Fixture) {
-    let wave_id = WaveId::from(fx.wave_id.clone());
-    let scope = EventScope::Wave {
-        wave: wave_id.clone(),
+async fn transition_track_to_done(fx: &Fixture) {
+    let track_id = TrackId::from(fx.track_id.clone());
+    let scope = EventScope::Track {
+        track: track_id.clone(),
         area: AreaId::from(fx.area_id.clone()),
     };
     let actor = ActorId::Kernel;
@@ -2804,22 +2805,22 @@ async fn transition_wave_to_done(fx: &Fixture) {
         &fx.events,
         &fx.write,
         move |tx| {
-            let wave_id = wave_id.clone();
+            let track_id = track_id.clone();
             let scope = scope.clone();
             let actor = actor.clone();
             Box::pin(async move {
                 let mut events = Vec::new();
                 for (target, message) in [
-                    (WaveLifecycle::Planning, "e2e planning"),
-                    (WaveLifecycle::Dispatching, "e2e dispatching"),
-                    (WaveLifecycle::Working, "e2e working"),
-                    (WaveLifecycle::Reviewing, "e2e reviewing"),
-                    (WaveLifecycle::Done, "e2e done"),
+                    (TrackLifecycle::Planning, "e2e planning"),
+                    (TrackLifecycle::Dispatching, "e2e dispatching"),
+                    (TrackLifecycle::Working, "e2e working"),
+                    (TrackLifecycle::Reviewing, "e2e reviewing"),
+                    (TrackLifecycle::Done, "e2e done"),
                 ] {
                     if let Some(lifecycle_events) =
-                        calm_server::wave_lifecycle::apply_requested_transition_in_tx(
+                        calm_server::track_lifecycle::apply_requested_transition_in_tx(
                             tx,
-                            &wave_id,
+                            &track_id,
                             target,
                             &actor,
                             message.to_string(),
@@ -2838,7 +2839,7 @@ async fn transition_wave_to_done(fx: &Fixture) {
         },
     )
     .await
-    .expect("transition wave to done");
+    .expect("transition track to done");
 }
 
 fn manifest_path() -> PathBuf {
@@ -2850,11 +2851,11 @@ fn read_manifest() -> Manifest {
     Manifest::parse(&raw).expect("git-forge manifest parses")
 }
 
-fn provision_worker_worktree(repo: &Path, wave_id: &str, card_id: &str, target: &Path) {
+fn provision_worker_worktree(repo: &Path, track_id: &str, card_id: &str, target: &Path) {
     ensure_worktree_root_excluded(repo);
     let parent = target.parent().expect("worker worktree target parent");
     std::fs::create_dir_all(parent).expect("create worker worktree parent");
-    let branch = format!("neige/{wave_id}/{card_id}");
+    let branch = format!("neige/{track_id}/{card_id}");
     run_git(
         repo,
         ["worktree", "add", "-b", branch.as_str(), path_str(target)],
@@ -2974,12 +2975,12 @@ fn setup_forge_env() -> ForgeTestEnv {
     }
 }
 
-/// #1147 S3 — `POST /api/waves` now validates an attached `cwd`: absolute,
+/// #1147 S3 — `POST /api/tracks` now validates an attached `cwd`: absolute,
 /// existing, inside a Git work tree. Every `cwd` this file posts is a throwaway
 /// directory nothing ever reads, so make it a real (empty) repository. Used
 /// even where the create is expected to 400 on `template_input` binding first,
 /// so no site depends on which check fires first.
-fn wave_cwd_tempdir(prefix: &str) -> std::io::Result<TempDir> {
+fn track_cwd_tempdir(prefix: &str) -> std::io::Result<TempDir> {
     let dir = short_tempdir(prefix)?;
     run_git(dir.path(), ["init", "-b", "main"]);
     Ok(dir)

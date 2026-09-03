@@ -1,5 +1,5 @@
 //! Regression anchor: codex `PermissionRequest` hook ingest → role gate →
-//! card FSM → wave-scoped `any_card_needs_input` overlay, end-to-end at the
+//! card FSM → track-scoped `any_card_needs_input` overlay, end-to-end at the
 //! kernel level (no real codex CLI involved).
 //!
 //! Two cases live in this file:
@@ -16,9 +16,9 @@
 //!      observation (the bridge runs as a subprocess of codex regardless
 //!      of card role and can't easily know the role at fire time); other
 //!      events from `AiCodex(spec_card)` are still refused, and
-//!      `WaveUpdated` is still gated separately at the top of the
+//!      `TrackUpdated` is still gated separately at the top of the
 //!      function. This test pins the regression: without the carveout,
-//!      the FSM never observes `permission_request`, and the wave
+//!      the FSM never observes `permission_request`, and the track
 //!      `any_card_needs_input` overlay never flips.
 //!
 //! Patterns lifted from:
@@ -38,11 +38,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -74,8 +74,8 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -90,7 +90,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -104,15 +104,15 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     // Override: `card_create` seeds `Worker`; for the Spec-card case we
     // need the cache to report `Spec`, mirroring what the real
     // `card_with_codex_create_tx` would have written.
-    cache.insert(card.id.clone(), role, wave.id.clone());
+    cache.insert(card.id.clone(), role, track.id.clone());
 
-    let wave_area_cache = WaveAreaCache::new();
-    // The wave-area cache is write-through populated in `wave_create_tx`,
+    let track_area_cache = TrackAreaCache::new();
+    // The track-area cache is write-through populated in `track_create_tx`,
     // but our SqlxRepo instance holds its own cache; we re-seed the one
     // we'll thread through `AppState` and the FSM so the role gate's
-    // worker-scope cross-check (and our wave-scoped overlay aggregate)
-    // can both resolve `wave -> area` without going to the DB.
-    wave_area_cache.insert(wave.id.clone(), area.id.clone());
+    // worker-scope cross-check (and our track-scoped overlay aggregate)
+    // can both resolve `track -> area` without going to the DB.
+    track_area_cache.insert(track.id.clone(), area.id.clone());
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -126,11 +126,11 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
             std::env::temp_dir().join("calm-plugins-data-perm-req-overlay"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     // Spawn the FSM projector *before* we POST the hook, so it's
@@ -140,7 +140,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     calm_server::card_fsm::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wave_area_cache),
+        calm_server::state::WriteContext::new(cache.clone(), track_area_cache),
     );
     // Give the spawn a tick to subscribe — matches the unit-test pattern
     // in `card_fsm::tests`.
@@ -151,7 +151,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
         .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state);
 
-    (app, repo, card.id.to_string(), wave.id.to_string())
+    (app, repo, card.id.to_string(), track.id.to_string())
 }
 
 /// POST the `PermissionRequest` hook for `card_id` and assert 204.
@@ -184,14 +184,14 @@ async fn post_permission_request(app: &axum::Router, card_id: &str) {
     );
 }
 
-/// Poll `overlays_for("wave", wave_id)` until the
+/// Poll `overlays_for("track", track_id)` until the
 /// `any_card_needs_input` overlay shows `value: true`, or the deadline
 /// expires. Returns the overlay payload on success; panics with a
 /// descriptive message on timeout.
-async fn await_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &str) -> Value {
+async fn await_track_needs_input(repo: &Arc<dyn Repo>, track_id: &str) -> Value {
     let poll = async {
         loop {
-            let overlays = repo.overlays_for("wave", wave_id).await.unwrap();
+            let overlays = repo.overlays_for("track", track_id).await.unwrap();
             if let Some(o) = overlays.iter().find(|o| o.kind == "any_card_needs_input")
                 && o.payload.get("value").and_then(Value::as_bool) == Some(true)
             {
@@ -205,10 +205,10 @@ async fn await_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &str) -> Value {
         Err(_) => {
             // Re-read overlays for the failure message so the caller sees
             // exactly what the projection landed on (or didn't).
-            let overlays = repo.overlays_for("wave", wave_id).await.unwrap();
+            let overlays = repo.overlays_for("track", track_id).await.unwrap();
             panic!(
                 "timed out waiting for `any_card_needs_input` overlay with `value: true` \
-                 on wave {wave_id}; current wave overlays: {overlays:?}",
+                 on track {track_id}; current track overlays: {overlays:?}",
             );
         }
     }
@@ -216,9 +216,9 @@ async fn await_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &str) -> Value {
 
 /// Poll the card-scoped `status` overlay until it reads `AwaitingInput`,
 /// or the deadline expires. This isolates "FSM observed the transition"
-/// from "FSM observed but the wave aggregator broke" — if the card
-/// overlay flipped but the wave one didn't, the bug is in
-/// `recompute_wave_needs_input`; if neither flipped, the bug is upstream
+/// from "FSM observed but the track aggregator broke" — if the card
+/// overlay flipped but the track one didn't, the bug is in
+/// `recompute_track_needs_input`; if neither flipped, the bug is upstream
 /// of the FSM (e.g. the role gate refusing the write).
 async fn await_card_awaiting_input(repo: &Arc<dyn Repo>, card_id: &str) {
     let poll = async {
@@ -242,22 +242,22 @@ async fn await_card_awaiting_input(repo: &Arc<dyn Repo>, card_id: &str) {
 }
 
 #[tokio::test]
-async fn worker_card_permission_request_flips_wave_needs_input() {
-    let (app, repo, card_id, wave_id) = setup(CardRole::Worker).await;
+async fn worker_card_permission_request_flips_track_needs_input() {
+    let (app, repo, card_id, track_id) = setup(CardRole::Worker).await;
 
     post_permission_request(&app, &card_id).await;
 
     // Card-scoped status flips first (the FSM writes it before the
-    // wave-scoped aggregate).
+    // track-scoped aggregate).
     await_card_awaiting_input(&repo, &card_id).await;
-    // Wave-scoped aggregate follows.
-    let payload = await_wave_needs_input(&repo, &wave_id).await;
+    // Track-scoped aggregate follows.
+    let payload = await_track_needs_input(&repo, &track_id).await;
     assert_eq!(payload["value"], Value::Bool(true));
 }
 
 #[tokio::test]
-async fn spec_card_permission_request_flips_wave_needs_input() {
-    let (app, repo, card_id, wave_id) = setup(CardRole::Spec).await;
+async fn spec_card_permission_request_flips_track_needs_input() {
+    let (app, repo, card_id, track_id) = setup(CardRole::Spec).await;
 
     // The POST itself returns 204 today: `routes::codex::ingest_hook`
     // uses `log_pure_event`, which on a role-gate violation rolls the
@@ -274,6 +274,6 @@ async fn spec_card_permission_request_flips_wave_needs_input() {
     // never sees the CodexHook event, and neither overlay flips —
     // the first await below times out with a descriptive message.
     await_card_awaiting_input(&repo, &card_id).await;
-    let payload = await_wave_needs_input(&repo, &wave_id).await;
+    let payload = await_track_needs_input(&repo, &track_id).await;
     assert_eq!(payload["value"], Value::Bool(true));
 }

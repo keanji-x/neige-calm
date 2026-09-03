@@ -19,20 +19,20 @@ use crate::workspace_materialize::materialize_managed_workspace;
 struct Fixture {
     root: tempfile::TempDir,
     workspace: PathBuf,
-    wave_id: String,
+    track_id: String,
 }
 
-/// A freshly materialized managed workspace at `<root>/<area>/<wave>` — the
-/// exact shape `POST /api/waves` produces.
+/// A freshly materialized managed workspace at `<root>/<area>/<track>` — the
+/// exact shape `POST /api/tracks` produces.
 fn materialized() -> Fixture {
     let root = tempfile::TempDir::new().unwrap();
-    let wave_id = format!("w{}", uuid::Uuid::new_v4().simple());
-    let workspace = root.path().join("area-1").join(&wave_id);
-    materialize_managed_workspace(root.path(), &workspace, &wave_id).unwrap();
+    let track_id = format!("w{}", uuid::Uuid::new_v4().simple());
+    let workspace = root.path().join("area-1").join(&track_id);
+    materialize_managed_workspace(root.path(), &workspace, &track_id).unwrap();
     Fixture {
         root,
         workspace,
-        wave_id,
+        track_id,
     }
 }
 
@@ -63,7 +63,7 @@ fn a_freshly_materialized_workspace_is_pristine() {
     assert_eq!(
         workspace_pristine(&fx.workspace),
         PristineVerdict::Pristine,
-        "the shape `POST /api/waves` produces must be re-pointable from second \
+        "the shape `POST /api/tracks` produces must be re-pointable from second \
          zero; if it is not, the workspace is a default nobody can ever change"
     );
     drop(fx.root);
@@ -98,7 +98,7 @@ fn excluded_worker_output_is_dirty() {
         .workspace
         .join(".claude")
         .join("worktrees")
-        .join(&fx.wave_id)
+        .join(&fx.track_id)
         .join("card-1");
     std::fs::create_dir_all(&lease).unwrap();
     std::fs::write(lease.join("out.txt"), b"worker output\n").unwrap();

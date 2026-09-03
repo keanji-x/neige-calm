@@ -14,11 +14,11 @@ use crate::db::{Repo, write_in_tx_typed};
 use crate::dispatcher;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
-use crate::ids::{CardId, WaveId};
+use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::SharedCodexAppServer;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 
 pub use config::HarnessConfig;
 pub use lock::PushLockGuard;
@@ -101,7 +101,7 @@ pub async fn spawn_recovered_harness(
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
     runtime: WorkerSessionProjection,
@@ -112,16 +112,16 @@ pub async fn spawn_recovered_harness(
     };
     let role = repo.card_role_get(card.id.as_str()).await?;
     if role == Some(CardRole::Spec) {
-        let wave = repo
-            .wave_get(card.wave_id.as_str())
+        let track = repo
+            .track_get(card.track_id.as_str())
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-        if wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
+            .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
+        if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
             tracing::warn!(
                 runtime_id = %runtime.id,
                 card_id = %card.id,
-                wave_id = %wave.id,
-                "recovered spec harness is disabled for area chat wave; skipping runtime"
+                track_id = %track.id,
+                "recovered spec harness is disabled for area chat track; skipping runtime"
             );
             return Ok(RecoveryOutcome::Skipped);
         }
@@ -134,8 +134,8 @@ pub async fn spawn_recovered_harness(
     // the spec card alone. `replay_harness_events_since` filters with
     // `event_warrants_spec_push_with_role`, i.e. task completions, gate
     // verdicts, report edits, forge/workspace notifications — the stream the
-    // live dispatcher pushes only to the wave's spec harness. A conversation
-    // harness (area chat or wave assistant) is never a live recipient of any of
+    // live dispatcher pushes only to the track's spec harness. A conversation
+    // harness (area chat or track assistant) is never a live recipient of any of
     // it, so replaying it here would not be "catching up": it would inject a
     // backlog the conversation was never meant to see, starting from watermark
     // 0 on a freshly minted assistant, and hard-fire a turn before the user has
@@ -151,7 +151,7 @@ pub async fn spawn_recovered_harness(
         replay_harness_events_since(
             repo.clone(),
             &runtime.card_id,
-            &card.wave_id,
+            &card.track_id,
             catch_up_watermark,
             &mut snapshot,
         )
@@ -206,7 +206,7 @@ pub async fn spawn_recovered_harness(
     };
     let handle = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: card.wave_id,
+        track_id: card.track_id,
         card_id: CardId::from(runtime.card_id.clone()),
         // Normalize blank/whitespace thread IDs to `None` before the
         // fallback chain: a row with `thread_id = ''` would otherwise win as
@@ -225,7 +225,7 @@ pub async fn spawn_recovered_harness(
         repo,
         events,
         card_role_cache,
-        wave_area_cache,
+        track_area_cache,
         daemon,
         config: HarnessConfig::default(),
         snapshot,
@@ -239,13 +239,13 @@ pub async fn spawn_recovered_harness(
 async fn replay_harness_events_since(
     repo: Arc<dyn Repo>,
     card_id: &str,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     watermark: i64,
     snapshot: &mut HarnessSnapshot,
 ) -> Result<()> {
     let rows = repo
-        .events_for_wave(
-            wave_id.as_str(),
+        .events_for_track(
+            track_id.as_str(),
             &[
                 "task.completed",
                 "task.failed",
@@ -253,7 +253,7 @@ async fn replay_harness_events_since(
                 // landed while the kernel was down replay like live
                 // pushes.
                 "task.gate_result",
-                "wave.report_edited",
+                "track.report_edited",
                 "workspace.leased",
                 "workspace.released",
                 "forge.scan.completed",
@@ -284,7 +284,7 @@ async fn replay_harness_events_since(
         if dispatcher::is_gated_self_report(repo.as_ref(), &row.event).await {
             continue;
         }
-        let Some(obs) = dispatcher::harness_observation_from_event(wave_id, &row.event) else {
+        let Some(obs) = dispatcher::harness_observation_from_event(track_id, &row.event) else {
             continue;
         };
         snapshot.pending_queue.push(obs);
@@ -298,7 +298,7 @@ async fn replay_harness_events_since(
     if replayed > 0 {
         tracing::info!(
             card_id,
-            wave_id = %wave_id,
+            track_id = %track_id,
             watermark,
             replayed,
             "harness recovery: replayed spec push catch-up events into pending queue",
@@ -349,7 +349,7 @@ pub async fn recover_harnesses_on_boot(
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_area_cache: WaveAreaCache,
+    track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
 ) -> Result<usize> {
@@ -361,7 +361,7 @@ pub async fn recover_harnesses_on_boot(
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
-            wave_area_cache.clone(),
+            track_area_cache.clone(),
             daemon.clone(),
             registry,
             runtime,
@@ -394,7 +394,7 @@ pub struct DeferredRecoveryParams {
     pub repo: Arc<dyn Repo>,
     pub events: EventBus,
     pub card_role_cache: CardRoleCache,
-    pub wave_area_cache: WaveAreaCache,
+    pub track_area_cache: TrackAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
     pub registry: HarnessRegistry,
     /// Fixtures-only deterministic-race hook (#953 test 8): fired once per
@@ -481,7 +481,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 params.repo.clone(),
                 params.events.clone(),
                 params.card_role_cache.clone(),
-                params.wave_area_cache.clone(),
+                params.track_area_cache.clone(),
                 params.daemon.clone(),
                 &params.registry,
                 runtime,
@@ -523,7 +523,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
 pub fn initial_snapshot_with_goal(goal: Option<String>) -> HarnessSnapshot {
     let pending_queue = goal
         .filter(|text| !text.trim().is_empty())
-        .map(|text| vec![Observation::WaveGoal { text }])
+        .map(|text| vec![Observation::TrackGoal { text }])
         .unwrap_or_default();
     HarnessSnapshot::initial(0, pending_queue)
 }
@@ -557,13 +557,13 @@ mod tests {
 
         let handle = SpecHarness::run(SpecHarnessParams {
             runtime_id: runtime_id.clone(),
-            wave_id: WaveId::from("wave-install-failure".to_string()),
+            track_id: TrackId::from("track-install-failure".to_string()),
             card_id: CardId::from("card-install-failure".to_string()),
             thread_id: None,
             repo,
             events: EventBus::new(),
             card_role_cache: CardRoleCache::new(),
-            wave_area_cache: WaveAreaCache::new(),
+            track_area_cache: TrackAreaCache::new(),
             daemon,
             config: HarnessConfig::default(),
             snapshot: HarnessSnapshot::initial(0, vec![]),
@@ -576,7 +576,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if handle
-                    .observe(Observation::WaveGoal {
+                    .observe(Observation::TrackGoal {
                         text: "leaked?".into(),
                     })
                     .is_err()
@@ -601,12 +601,12 @@ mod tests {
     };
     use crate::event::EventScope;
     use crate::ids::ActorId;
-    use crate::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+    use crate::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
     use crate::session_projection_repo::{
         AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
     };
     use crate::shared_codex_appserver::SharedCodexAppServer;
-    use crate::wave_area_cache::WaveAreaCache;
+    use crate::track_area_cache::TrackAreaCache;
     use calm_truth::decision_gate::PermissiveGate;
     use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
     use serde_json::json;
@@ -615,7 +615,7 @@ mod tests {
     async fn workspace_leased_replays_into_recovered_harness_and_issues_turn() {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let role_cache = CardRoleCache::new();
-        let wave_area_cache = WaveAreaCache::new();
+        let track_area_cache = TrackAreaCache::new();
         let area = repo
             .area_create(NewArea {
                 name: "workspace replay".into(),
@@ -624,8 +624,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "workspace replay".into(),
@@ -638,14 +638,14 @@ mod tests {
             })
             .await
             .unwrap();
-        wave_area_cache.insert(wave.id.clone(), area.id.clone());
+        track_area_cache.insert(track.id.clone(), area.id.clone());
 
         let mut tx = repo.pool().begin().await.unwrap();
         let spec_card = card_create_with_id_tx(
             &mut tx,
             new_id(),
             NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -661,7 +661,7 @@ mod tests {
             &mut tx,
             new_id(),
             NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -678,14 +678,14 @@ mod tests {
         let lease_id = "lease-replay".to_string();
         let workspace_path = "/tmp/workspace-replay".to_string();
         let workspace_event = Event::WorkspaceLeased {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             card_id: worker_card.id.clone(),
             lease_id: lease_id.clone(),
             path: workspace_path.clone(),
         };
         let scope = EventScope::Card {
             card: worker_card.id.clone(),
-            wave: wave.id.clone(),
+            track: track.id.clone(),
             area: area.id.clone(),
         };
         let mut tx = repo.pool().begin().await.unwrap();
@@ -731,7 +731,7 @@ mod tests {
         replay_harness_events_since(
             repo.clone(),
             spec_card.id.as_str(),
-            &wave.id,
+            &track.id,
             0,
             &mut snapshot,
         )
@@ -740,7 +740,7 @@ mod tests {
         assert_eq!(
             snapshot.pending_queue,
             vec![Observation::WorkspaceLeased {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 card_id: worker_card.id.clone(),
                 lease_id: lease_id.clone(),
                 path: workspace_path.clone(),
@@ -770,7 +770,7 @@ mod tests {
             repo.clone(),
             EventBus::new(),
             role_cache,
-            wave_area_cache,
+            track_area_cache,
             daemon.clone(),
             &registry,
             runtime,
@@ -810,7 +810,7 @@ mod tests {
     async fn review_round_replays_into_recovered_harness_and_issues_turn() {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let role_cache = CardRoleCache::new();
-        let wave_area_cache = WaveAreaCache::new();
+        let track_area_cache = TrackAreaCache::new();
         let area = repo
             .area_create(NewArea {
                 name: "review replay".into(),
@@ -819,8 +819,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "review replay".into(),
@@ -833,14 +833,14 @@ mod tests {
             })
             .await
             .unwrap();
-        wave_area_cache.insert(wave.id.clone(), area.id.clone());
+        track_area_cache.insert(track.id.clone(), area.id.clone());
 
         let mut tx = repo.pool().begin().await.unwrap();
         let spec_card = card_create_with_id_tx(
             &mut tx,
             new_id(),
             NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -855,7 +855,7 @@ mod tests {
         tx.commit().await.unwrap();
 
         let review_event = Event::ReviewRound {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             subject: ReviewSubject {
                 phase: "impl".into(),
                 slice_id: "5b".into(),
@@ -876,10 +876,10 @@ mod tests {
                 },
             ],
             root_cause: Some("tests failing".into()),
-            idempotency_key: format!("review.round:{}:impl:5b:760:1", wave.id),
+            idempotency_key: format!("review.round:{}:impl:5b:760:1", track.id),
         };
-        let scope = EventScope::Wave {
-            wave: wave.id.clone(),
+        let scope = EventScope::Track {
+            track: track.id.clone(),
             area: area.id.clone(),
         };
         let mut tx = repo.pool().begin().await.unwrap();
@@ -925,7 +925,7 @@ mod tests {
         replay_harness_events_since(
             repo.clone(),
             spec_card.id.as_str(),
-            &wave.id,
+            &track.id,
             0,
             &mut snapshot,
         )
@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(
             snapshot.pending_queue,
             vec![Observation::ReviewRound {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 phase: "impl".into(),
                 slice_id: "5b".into(),
                 pr_number: Some(760),
@@ -968,7 +968,7 @@ mod tests {
             repo.clone(),
             EventBus::new(),
             role_cache,
-            wave_area_cache,
+            track_area_cache,
             daemon.clone(),
             &registry,
             runtime,

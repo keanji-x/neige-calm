@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::RouteRepo;
 use crate::error::CalmError;
-use crate::wave_report_read::load_report_read_snapshot;
+use crate::track_report_read::load_report_read_snapshot;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -22,8 +22,8 @@ pub struct BacklinkQuote {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Backlink {
-    pub src_wave_id: String,
-    pub src_wave_title: String,
+    pub src_track_id: String,
+    pub src_track_title: String,
     pub src_block_id: String,
     pub dst_block_id: Option<String>,
     pub label: String,
@@ -67,7 +67,7 @@ struct WireBudget {
 }
 
 fn rest_wire_bytes(page: &BacklinkPage) -> Option<usize> {
-    let response = crate::routes::waves::WaveBacklinksResponse::from(page.clone());
+    let response = crate::routes::tracks::TrackBacklinksResponse::from(page.clone());
     Some(serde_json::to_vec(&response).ok()?.len())
 }
 
@@ -175,32 +175,32 @@ fn quote_for_link(plain: &str, link: &calm_types::report_links::ScannedLink) -> 
     }
 }
 
-pub async fn backlinks_for_wave(
+pub async fn backlinks_for_track(
     repo: &dyn RouteRepo,
-    wave_id: &str,
+    track_id: &str,
 ) -> Result<BacklinkPage, CalmError> {
-    backlinks_for_wave_with_byte_cap(repo, wave_id, MAX_BACKLINK_BYTES).await
+    backlinks_for_track_with_byte_cap(repo, track_id, MAX_BACKLINK_BYTES).await
 }
 
-async fn backlinks_for_wave_with_byte_cap(
+async fn backlinks_for_track_with_byte_cap(
     repo: &dyn RouteRepo,
-    wave_id: &str,
+    track_id: &str,
     max_bytes: usize,
 ) -> Result<BacklinkPage, CalmError> {
-    let target_wave = repo
-        .wave_get(wave_id)
+    let target_track = repo
+        .track_get(track_id)
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+        .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     let mut report_cards = repo
-        .wave_report_cards_by_area(target_wave.area_id.as_str())
+        .track_report_cards_by_area(target_track.area_id.as_str())
         .await?;
-    report_cards.sort_by(|left, right| left.wave_id.as_str().cmp(right.wave_id.as_str()));
+    report_cards.sort_by(|left, right| left.track_id.as_str().cmp(right.track_id.as_str()));
     let target_card = report_cards
         .iter()
-        .find(|card| card.wave_id.as_str() == wave_id)
+        .find(|card| card.track_id.as_str() == track_id)
         .ok_or_else(|| {
             CalmError::Internal(format!(
-                "report_backlinks: wave {wave_id} has no wave-report card (invariant violation)"
+                "report_backlinks: track {track_id} has no track-report card (invariant violation)"
             ))
         })?;
     let target_card_id = target_card.id.clone();
@@ -210,11 +210,11 @@ async fn backlinks_for_wave_with_byte_cap(
         .iter()
         .map(|block| block.id.as_str())
         .collect();
-    let waves: HashMap<_, _> = repo
-        .waves_by_area(target_wave.area_id.as_str())
+    let tracks: HashMap<_, _> = repo
+        .tracks_by_area(target_track.area_id.as_str())
         .await?
         .into_iter()
-        .map(|wave| (wave.id.as_str().to_owned(), wave.title))
+        .map(|track| (track.id.as_str().to_owned(), track.title))
         .collect();
 
     let mut backlinks = Vec::new();
@@ -228,10 +228,10 @@ async fn backlinks_for_wave_with_byte_cap(
     let max_skipped_sources = non_target_sources;
     let mut wire_budget = WireBudget::new(max_skipped_sources);
     'cards: for card in report_cards {
-        let source_title = waves.get(card.wave_id.as_str()).ok_or_else(|| {
+        let source_title = tracks.get(card.track_id.as_str()).ok_or_else(|| {
             CalmError::Internal(format!(
-                "report_backlinks: source wave {} vanished mid-read",
-                card.wave_id
+                "report_backlinks: source track {} vanished mid-read",
+                card.track_id
             ))
         })?;
         let snapshot = match load_report_read_snapshot(repo, card.id.as_str()).await {
@@ -252,13 +252,13 @@ async fn backlinks_for_wave_with_byte_cap(
             {
                 let scan = calm_types::report_links::scan_links(markdown);
                 for link in scan.links {
-                    if link.dst_wave_id != wave_id {
+                    if link.dst_track_id != track_id {
                         continue;
                     }
                     let quote = quote_for_link(&scan.plain, &link);
                     let backlink = Backlink {
-                        src_wave_id: card.wave_id.as_str().to_string(),
-                        src_wave_title: source_title.clone(),
+                        src_track_id: card.track_id.as_str().to_string(),
+                        src_track_title: source_title.clone(),
                         src_block_id: block.id.clone(),
                         dst_block_id: link
                             .dst_block_id
@@ -303,10 +303,10 @@ mod tests {
     use crate::db::{RepoSyncDomainRaw, RouteRepo, ServerRepoReadExt};
     use crate::event::{EditAuthor, EventBus};
     use crate::ids::ActorId;
-    use crate::model::{NewArea, NewWave, RequestTheme};
+    use crate::model::{NewArea, NewTrack, RequestTheme};
     use crate::state::WriteContext;
-    use crate::wave_area_cache::WaveAreaCache;
-    use crate::wave_report::{ReportBlock, WaveReportPayload, persist_report};
+    use crate::track_area_cache::TrackAreaCache;
+    use crate::track_report::{ReportBlock, TrackReportPayload, persist_report};
     use serde_json::json;
 
     async fn area(repo: &SqlxRepo, name: &str) -> crate::model::Area {
@@ -319,8 +319,8 @@ mod tests {
         .unwrap()
     }
 
-    async fn wave(repo: &SqlxRepo, area_id: &str, title: &str) -> crate::model::Wave {
-        repo.wave_create(NewWave {
+    async fn track(repo: &SqlxRepo, area_id: &str, title: &str) -> crate::model::Track {
+        repo.track_create(NewTrack {
             area_id: area_id.into(),
             title: title.into(),
             sort: None,
@@ -335,36 +335,36 @@ mod tests {
         .unwrap()
     }
 
-    async fn report(repo: &SqlxRepo, wave_id: &str, payload: serde_json::Value) {
-        report_as(repo, wave_id, payload, EditAuthor::Kernel).await;
+    async fn report(repo: &SqlxRepo, track_id: &str, payload: serde_json::Value) {
+        report_as(repo, track_id, payload, EditAuthor::Kernel).await;
     }
 
     async fn report_as(
         repo: &SqlxRepo,
-        wave_id: &str,
+        track_id: &str,
         payload: serde_json::Value,
         author: EditAuthor,
     ) {
-        let initial = WaveReportPayload::initial();
+        let initial = TrackReportPayload::initial();
         let card = repo
             .card_create(crate::model::NewCard {
-                wave_id: wave_id.into(),
-                kind: "wave-report".into(),
+                track_id: track_id.into(),
+                kind: "track-report".into(),
                 sort: Some(-1.0),
                 payload: serde_json::to_value(&initial).unwrap(),
                 title: Some("Report".into()),
             })
             .await
             .unwrap();
-        let wave = repo.wave_get(wave_id).await.unwrap().unwrap();
-        let next: WaveReportPayload = serde_json::from_value(payload).unwrap();
+        let track = repo.track_get(track_id).await.unwrap().unwrap();
+        let next: TrackReportPayload = serde_json::from_value(payload).unwrap();
         persist_report(
             repo,
             &EventBus::new(),
-            &WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
+            &WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             ActorId::Kernel,
             author,
-            wave,
+            track,
             card,
             initial,
             next,
@@ -386,7 +386,7 @@ mod tests {
     }
 
     fn target_payload() -> serde_json::Value {
-        serde_json::to_value(WaveReportPayload {
+        serde_json::to_value(TrackReportPayload {
             schema_version: 2,
             doc_rev: 0,
             summary: String::new(),
@@ -487,11 +487,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backlink_found_across_two_waves_in_one_area() {
+    async fn backlink_found_across_two_tracks_in_one_area() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -500,12 +500,12 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
         assert_eq!(found.backlinks.len(), 1);
-        assert_eq!(found.backlinks[0].src_wave_id, source.id.as_str());
-        assert_eq!(found.backlinks[0].src_wave_title, "Source");
+        assert_eq!(found.backlinks[0].src_track_id, source.id.as_str());
+        assert_eq!(found.backlinks[0].src_track_title, "Source");
         assert_eq!(found.backlinks[0].label, "target");
         assert_eq!(
             found.backlinks[0].quote,
@@ -523,15 +523,15 @@ mod tests {
     async fn task_backlinks_scan_declared_text_fields_not_canonical_json() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         let target_card = repo
-            .cards_by_wave(target.id.as_str())
+            .cards_by_track(target.id.as_str())
             .await
             .unwrap()
             .into_iter()
-            .find(|card| card.kind == "wave-report")
+            .find(|card| card.kind == "track-report")
             .unwrap();
         let target_block_id = load_report_read_snapshot(&repo, target_card.id.as_str())
             .await
@@ -547,7 +547,7 @@ mod tests {
         let fence = calm_types::report_blocks::render_data_block("task", &task).unwrap();
         report_as(&repo, source.id.as_str(), v1(fence), EditAuthor::Spec).await;
 
-        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
         assert_eq!(found.backlinks.len(), 1);
@@ -563,8 +563,8 @@ mod tests {
         let repo = fresh_repo().await;
         let target_area = area(&repo, "target area").await;
         let other_area = area(&repo, "other area").await;
-        let target = wave(&repo, target_area.id.as_str(), "Target").await;
-        let outside = wave(&repo, other_area.id.as_str(), "Outside").await;
+        let target = track(&repo, target_area.id.as_str(), "Target").await;
+        let outside = track(&repo, other_area.id.as_str(), "Outside").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -573,7 +573,7 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
         assert!(found.backlinks.is_empty());
@@ -583,8 +583,8 @@ mod tests {
     async fn missing_destination_block_degrades_without_dropping_backlink() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -593,7 +593,7 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
         assert_eq!(found.backlinks.len(), 1);
@@ -604,8 +604,8 @@ mod tests {
     async fn v1_report_without_blocks_or_crdt_yields_backlinks() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Legacy").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Legacy").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -616,14 +616,14 @@ mod tests {
         sqlx::query(
             "UPDATE cards SET body_crdt = NULL, \
              payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
-             WHERE wave_id = ?1 AND kind = 'wave-report'",
+             WHERE track_id = ?1 AND kind = 'track-report'",
         )
         .bind(source.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
 
-        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
         assert_eq!(found.backlinks.len(), 1);
@@ -634,8 +634,8 @@ mod tests {
     async fn links_inside_fenced_code_blocks_do_not_yield_backlinks() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -647,7 +647,7 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
         assert!(found.backlinks.is_empty());
@@ -657,9 +657,9 @@ mod tests {
     async fn unreadable_source_report_does_not_blind_other_backlinks() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let corrupt = wave(&repo, area.id.as_str(), "Corrupt").await;
-        let healthy = wave(&repo, area.id.as_str(), "Healthy").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let corrupt = track(&repo, area.id.as_str(), "Corrupt").await;
+        let healthy = track(&repo, area.id.as_str(), "Healthy").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(&repo, corrupt.id.as_str(), v1("ignored")).await;
         report(
@@ -670,16 +670,18 @@ mod tests {
         .await;
         sqlx::query(
             "UPDATE cards SET body_crdt = X'00', payload = json_remove(payload, '$.blocks') \
-             WHERE wave_id = ?1",
+             WHERE track_id = ?1",
         )
         .bind(corrupt.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
 
-        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
+        let found = backlinks_for_track(&repo, target.id.as_str())
+            .await
+            .unwrap();
         assert_eq!(found.backlinks.len(), 1);
-        assert_eq!(found.backlinks[0].src_wave_id, healthy.id.as_str());
+        assert_eq!(found.backlinks[0].src_track_id, healthy.id.as_str());
         assert_eq!(found.skipped_sources, 1);
     }
 
@@ -687,20 +689,20 @@ mod tests {
     async fn every_non_target_source_unreadable_is_an_error() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let corrupt = wave(&repo, area.id.as_str(), "Corrupt").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let corrupt = track(&repo, area.id.as_str(), "Corrupt").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(&repo, corrupt.id.as_str(), v1("ignored")).await;
         sqlx::query(
             "UPDATE cards SET body_crdt = X'00', payload = json_remove(payload, '$.blocks') \
-             WHERE wave_id = ?1",
+             WHERE track_id = ?1",
         )
         .bind(corrupt.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
 
-        let error = backlinks_for_wave(&repo, target.id.as_str())
+        let error = backlinks_for_track(&repo, target.id.as_str())
             .await
             .expect_err("all unreadable sources must fail");
         assert!(
@@ -712,8 +714,8 @@ mod tests {
     async fn backlink_byte_cap_bounds_rest_and_mcp_wire_envelopes() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         // Control characters expand to six bytes in structured JSON and are escaped again in the
         // MCP text copy. This crosses the real 64 KiB cap with a much smaller CRDT fixture than a
@@ -725,11 +727,13 @@ mod tests {
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
-        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
+        let found = backlinks_for_track(&repo, target.id.as_str())
+            .await
+            .unwrap();
         assert!(found.truncated);
         assert!(found.backlinks.len() < MAX_BACKLINK_ENTRIES);
         assert!(
-            serde_json::to_vec(&crate::routes::waves::WaveBacklinksResponse::from(
+            serde_json::to_vec(&crate::routes::tracks::TrackBacklinksResponse::from(
                 found.clone()
             ))
             .unwrap()
@@ -750,8 +754,8 @@ mod tests {
     async fn backlink_byte_cap_is_enforced_when_rest_quote_is_the_tighter_envelope() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         let before = "甲".repeat(QUOTE_BEFORE_CHARS);
         let after = "乙".repeat(QUOTE_AFTER_CHARS);
@@ -761,8 +765,10 @@ mod tests {
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
-        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
-        let rest_bytes = serde_json::to_vec(&crate::routes::waves::WaveBacklinksResponse::from(
+        let found = backlinks_for_track(&repo, target.id.as_str())
+            .await
+            .unwrap();
+        let rest_bytes = serde_json::to_vec(&crate::routes::tracks::TrackBacklinksResponse::from(
             found.clone(),
         ))
         .unwrap()
@@ -789,8 +795,8 @@ mod tests {
     #[test]
     fn quote_is_present_on_rest_dto_and_absent_from_mcp_payload() {
         let backlink = Backlink {
-            src_wave_id: "source".into(),
-            src_wave_title: "Source \"quoted\"".into(),
+            src_track_id: "source".into(),
+            src_track_title: "Source \"quoted\"".into(),
             src_block_id: "b_1234\\tail".into(),
             dst_block_id: None,
             label: "target\n\u{0001}".into(),
@@ -809,7 +815,7 @@ mod tests {
             skipped_sources: 0,
         };
 
-        let rest = serde_json::to_value(crate::routes::waves::WaveBacklinksResponse::from(
+        let rest = serde_json::to_value(crate::routes::tracks::TrackBacklinksResponse::from(
             page.clone(),
         ))
         .unwrap();
@@ -857,8 +863,8 @@ mod tests {
     async fn backlink_entry_cap_returns_exactly_500_entries() {
         let repo = fresh_repo().await;
         let area = area(&repo, "one").await;
-        let target = wave(&repo, area.id.as_str(), "Target").await;
-        let source = wave(&repo, area.id.as_str(), "Source").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         let body = (0..=MAX_BACKLINK_ENTRIES)
             .map(|index| format!("[{index}](neige://wave/{})", target.id))
@@ -866,7 +872,7 @@ mod tests {
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
-        let found = backlinks_for_wave_with_byte_cap(&repo, target.id.as_str(), usize::MAX)
+        let found = backlinks_for_track_with_byte_cap(&repo, target.id.as_str(), usize::MAX)
             .await
             .unwrap();
         assert_eq!(found.backlinks.len(), MAX_BACKLINK_ENTRIES);

@@ -19,8 +19,8 @@ async fn t1_denied_decision_rolls_back_state_and_event() {
 }
 
 #[tokio::test]
-async fn t1_gate_can_read_wave_root_inside_tx() {
-    calm_truth_test_harness::t1_gate_can_read_wave_root_inside_tx().await;
+async fn t1_gate_can_read_track_root_inside_tx() {
+    calm_truth_test_harness::t1_gate_can_read_track_root_inside_tx().await;
 }
 
 #[tokio::test]

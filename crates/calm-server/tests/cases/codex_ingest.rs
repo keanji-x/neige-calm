@@ -15,7 +15,7 @@ use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, session_supersede_active_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{Card, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::model::{Card, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -303,9 +303,9 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card = create_codex_card(repo.as_ref()).await;
     let cache = calm_server::card_role_cache::CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -319,11 +319,11 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     // Scope β: the actor middleware must be present — the `ingest_hook`
     // handler now extracts `Actor` from request extensions to honor the
@@ -349,8 +349,8 @@ async fn create_codex_card(repo: &SqlxRepo) -> Card {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -364,7 +364,7 @@ async fn create_codex_card(repo: &SqlxRepo) -> Card {
         .await
         .unwrap();
     repo.card_create(NewCard {
-        wave_id: wave.id.clone(),
+        track_id: track.id.clone(),
         title: None,
         kind: "codex".into(),
         sort: None,

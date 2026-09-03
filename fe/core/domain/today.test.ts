@@ -25,9 +25,9 @@ describe('the Today summary trigger (#1253 D5)', () => {
     expect(operation.body).toBeUndefined();
   });
 
-  it('decodes the wave and the conversation card the server answers with', () => {
-    const parsed = todaySummaryOperation().responseSchema.parse({ wave_id: 'lp', card_id: 'conv-1' });
-    expect(parsed).toEqual({ wave_id: 'lp', card_id: 'conv-1' });
+  it('decodes the track and the conversation card the server answers with', () => {
+    const parsed = todaySummaryOperation().responseSchema.parse({ track_id: 'lp', card_id: 'conv-1' });
+    expect(parsed).toEqual({ track_id: 'lp', card_id: 'conv-1' });
   });
 
   /* The read the page load uses is a GET, and it stays one. Stated here beside

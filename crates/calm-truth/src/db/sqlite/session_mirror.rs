@@ -4,11 +4,11 @@ use super::session_row::{
     runtime_message, runtime_status_transition_allowed, session_state_transition_at_tx,
 };
 use super::{
-    derive_session_identity, session_get_tx, session_insert_tx, session_mark_wave_root_tx,
+    derive_session_identity, session_get_tx, session_insert_tx, session_mark_track_root_tx,
     session_mcp_token_set_tx, session_projection_by_id_tx,
 };
 use crate::error::CalmError;
-use crate::ids::{CardId, WaveId};
+use crate::ids::{CardId, TrackId};
 use crate::session_projection_repo::{
     Result as WorkerSessionProjectionResult, RuntimeId, ThreadAttribution,
     Tx as WorkerSessionProjectionTx, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
@@ -37,11 +37,11 @@ fn runtime_session_error(err: CalmError) -> WorkerSessionProjectionRepoError {
     runtime_message(err.to_string())
 }
 
-async fn worker_session_wave_id_for_card_tx(
+async fn worker_session_track_id_for_card_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
-) -> WorkerSessionProjectionResult<WaveId> {
-    let row = sqlx::query("SELECT wave_id FROM cards WHERE id = ?1")
+) -> WorkerSessionProjectionResult<TrackId> {
+    let row = sqlx::query("SELECT track_id FROM cards WHERE id = ?1")
         .bind(card_id)
         .fetch_optional(&mut **tx)
         .await?;
@@ -50,14 +50,14 @@ async fn worker_session_wave_id_for_card_tx(
             "card {card_id} missing while mirroring runtime session"
         )));
     };
-    Ok(WaveId(row.try_get("wave_id")?))
+    Ok(TrackId(row.try_get("track_id")?))
 }
 
-fn worker_session_from_runtime_init(init: &WorkerSessionInit, wave_id: WaveId) -> WorkerSession {
+fn worker_session_from_runtime_init(init: &WorkerSessionInit, track_id: TrackId) -> WorkerSession {
     let (provider, mode, contract) = derive_session_identity(&init.kind);
     WorkerSession {
         id: WorkerSessionId(init.id.clone()),
-        wave_id,
+        track_id,
         provider,
         mode,
         contract,
@@ -99,7 +99,7 @@ async fn session_refresh_deferred_placeholder_tx(
             WorkerContract::Planner | WorkerContract::Executor
         )
         || !refreshable_state
-        || existing.wave_id != desired.wave_id
+        || existing.track_id != desired.track_id
         || existing.card_id != desired.card_id
         || existing.provider != desired.provider
         || existing.mode != desired.mode
@@ -260,11 +260,11 @@ pub(super) async fn session_repoint_current_links_tx(
     // Runtime/session identity invariant: whenever a runtime/session becomes
     // current for a card, cards.session_id must follow it. Active sessions
     // also inherit the card MCP token when doing so cannot violate ws_token_idx.
-    // Planner sessions that are live own waves.root_session_id for recorder
+    // Planner sessions that are live own tracks.root_session_id for recorder
     // gating.
     session_mirror_card_mcp_token_tx(tx, card_id, session).await?;
     if session.contract == WorkerContract::Planner && session.state.is_active_authority() {
-        session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
+        session_mark_track_root_tx(tx, &session.track_id, &session.id)
             .await
             .map_err(runtime_session_error)?;
     }
@@ -275,8 +275,8 @@ async fn session_start_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     init: &WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
-    let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
-    let session = worker_session_from_runtime_init(init, wave_id);
+    let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
+    let session = worker_session_from_runtime_init(init, track_id);
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
     session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
     Ok(session)
@@ -313,8 +313,8 @@ pub async fn session_prepare_deferred_spec_tx(
     if let Some(existing_id) = existing_active_id {
         session_supersede_active_tx(tx, &existing_id, init.now_ms).await?;
     }
-    let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
-    let session = worker_session_from_runtime_init(init, wave_id);
+    let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
+    let session = worker_session_from_runtime_init(init, track_id);
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
     session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
     Ok(session)
@@ -368,7 +368,7 @@ pub async fn session_delete_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
 ) -> WorkerSessionProjectionResult<()> {
-    sqlx::query("UPDATE waves SET root_session_id = NULL WHERE root_session_id = ?1")
+    sqlx::query("UPDATE tracks SET root_session_id = NULL WHERE root_session_id = ?1")
         .bind(id)
         .execute(&mut **tx)
         .await?;

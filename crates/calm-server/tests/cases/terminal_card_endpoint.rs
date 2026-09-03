@@ -1,4 +1,4 @@
-//! Integration tests for `POST /api/waves/:wave_id/terminal-cards` —
+//! Integration tests for `POST /api/tracks/:track_id/terminal-cards` —
 //! the atomic terminal-card endpoint introduced in #13 PR2.
 //!
 //! Boots a real Axum router (in-memory `SqlxRepo`) + the actual
@@ -15,7 +15,7 @@
 //!     `card.updated`.
 //!   * `post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls_back`
 //!     — 500 to the client, and the operation compensation removes the rows.
-//!   * `post_terminal_card_atomic_404_on_unknown_wave` — 404 + no leaked
+//!   * `post_terminal_card_atomic_404_on_unknown_track` — 404 + no leaked
 //!     rows.
 //!   * `post_terminal_card_same_idempotency_key_returns_same_card` — same
 //!     key and payload returns 201 with the same card body.
@@ -34,7 +34,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::terminal_adapter::TerminalAdapter;
 use calm_server::operation::{
@@ -53,17 +53,17 @@ use sqlx::Row;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-/// #1147 S6 — every wave has a materialized workspace, and a terminal card with
-/// no `cwd` now lands in it. A fixture wave with an empty `workspace_path` is
+/// #1147 S6 — every track has a materialized workspace, and a terminal card with
+/// no `cwd` now lands in it. A fixture track with an empty `workspace_path` is
 /// not a state any creation route can produce, and the kernel refuses to open a
 /// terminal in one rather than inheriting the server's cwd — so these fixtures
-/// carry a path, exactly as production waves do.
+/// carry a path, exactly as production tracks do.
 const FIXTURE_WORKSPACE: &str = "/neige-fixture-workspace";
 
 struct Boot {
     app: axum::Router,
     state: AppState,
-    wave_id: String,
+    track_id: String,
     events: EventBus,
     repo: Arc<dyn Repo>,
     _tmp: TempDir,
@@ -102,8 +102,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "endpoint-test".into(),
@@ -135,7 +135,7 @@ async fn boot() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -161,7 +161,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         state,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         events,
         repo,
         _tmp: tmp,
@@ -207,7 +207,7 @@ fn install_spawn_runtime_with_hook(
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         hook,
     ));
     let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
@@ -217,7 +217,7 @@ fn install_spawn_runtime_with_hook(
         state.pending_codex_threads.clone(),
         state.pending_codex_threads_spawn_serial.clone(),
         state.card_role_cache.clone(),
-        state.wave_area_cache.clone(),
+        state.track_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let completion = OperationCompletionBus::new();
@@ -257,8 +257,8 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "endpoint-test".into(),
@@ -290,7 +290,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -307,7 +307,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
     Boot {
         app,
         state,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         events,
         repo,
         _tmp: tmp,
@@ -346,13 +346,13 @@ async fn post_with_idempotency(
 
 async fn post_codex_card(
     app: axum::Router,
-    wave_id: &str,
+    track_id: &str,
     body: Value,
     idempotency_key: Option<&str>,
 ) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/api/waves/{wave_id}/codex-cards"))
+        .uri(format!("/api/tracks/{track_id}/codex-cards"))
         .header("content-type", "application/json");
     if let Some(key) = idempotency_key {
         req = req.header("Idempotency-Key", key);
@@ -416,7 +416,7 @@ async fn delete(app: axum::Router, uri: String) -> StatusCode {
 async fn post_terminal_card_same_idempotency_key_returns_same_card() {
     let boot = boot_happy().await;
     let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
-    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
 
     let (first_status, first_card) = post_with_idempotency(
         boot.app.clone(),
@@ -448,12 +448,17 @@ async fn post_terminal_card_idempotency_key_reused_by_codex_operation_uses_fresh
         "cwd": "",
         "theme": {"fg": [216,219,226], "bg": [15,20,24]},
     });
-    let (codex_status, codex_card) =
-        post_codex_card(boot.app.clone(), &boot.wave_id, codex_body, Some(codex_key)).await;
+    let (codex_status, codex_card) = post_codex_card(
+        boot.app.clone(),
+        &boot.track_id,
+        codex_body,
+        Some(codex_key),
+    )
+    .await;
     assert_eq!(codex_status, StatusCode::CREATED, "body={codex_card:?}");
 
     let terminal_body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
-    let terminal_uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let terminal_uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
     let (terminal_status, terminal_card) = post_with_idempotency(
         boot.app.clone(),
         terminal_uri,
@@ -506,7 +511,7 @@ async fn post_terminal_card_idempotency_key_reused_by_codex_operation_uses_fresh
 async fn post_terminal_card_rejects_malformed_idempotency_key() {
     let boot = boot_happy().await;
     let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
-    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
     let mut req = Request::builder()
         .method("POST")
         .uri(uri)
@@ -527,34 +532,34 @@ async fn post_terminal_card_rejects_malformed_idempotency_key() {
 }
 
 #[tokio::test]
-async fn post_terminal_card_idempotency_retry_skips_validation_after_wave_delete() {
+async fn post_terminal_card_idempotency_retry_skips_validation_after_track_delete() {
     let boot = boot_happy().await;
     let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
-    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
 
     let (first_status, first_card) = post_with_idempotency(
         boot.app.clone(),
         uri.clone(),
         body.clone(),
-        Some("terminal-route-retry-after-wave-delete"),
+        Some("terminal-route-retry-after-track-delete"),
     )
     .await;
     assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
 
-    let delete_status = delete(boot.app.clone(), format!("/api/waves/{}", boot.wave_id)).await;
+    let delete_status = delete(boot.app.clone(), format!("/api/tracks/{}", boot.track_id)).await;
     assert_eq!(delete_status, StatusCode::NO_CONTENT);
 
     let (retry_status, retry_card) = post_with_idempotency(
         boot.app.clone(),
         uri,
         body,
-        Some("terminal-route-retry-after-wave-delete"),
+        Some("terminal-route-retry-after-track-delete"),
     )
     .await;
     assert_eq!(
         retry_status,
         StatusCode::CREATED,
-        "retry must return the stored operation instead of revalidating the deleted wave: {retry_card:?}"
+        "retry must return the stored operation instead of revalidating the deleted track: {retry_card:?}"
     );
     assert_eq!(
         strip_runtime(retry_card.clone()),
@@ -566,7 +571,7 @@ async fn post_terminal_card_idempotency_retry_skips_validation_after_wave_delete
 async fn post_terminal_card_prepare_forbidden_returns_403_and_marks_failed() {
     let boot = boot_happy().await;
     let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
-    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
 
     let (status, response) = post_with_actor(boot.app.clone(), uri, body, "ai:codex").await;
     assert_eq!(
@@ -591,7 +596,7 @@ async fn post_terminal_card_prepare_forbidden_returns_403_and_marks_failed() {
     let detail: Value = serde_json::from_str(&detail_text).unwrap();
     assert_eq!(detail["last_error_class"], "forbidden");
 
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert!(
         cards.is_empty(),
         "prepare-time Forbidden must roll back the opened transaction"
@@ -621,7 +626,7 @@ async fn post_terminal_card_atomic_returns_card_with_linked_payload() {
 
     let (status, card) = post(
         boot.app.clone(),
-        format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        format!("/api/tracks/{}/terminal-cards", boot.track_id),
         json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
@@ -656,7 +661,7 @@ async fn post_terminal_card_atomic_emits_single_card_added_event() {
 
     let (status, _card) = post(
         boot.app.clone(),
-        format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        format!("/api/tracks/{}/terminal-cards", boot.track_id),
         json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
@@ -727,7 +732,7 @@ async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls
 
     let (status, body) = post(
         boot.app.clone(),
-        format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        format!("/api/tracks/{}/terminal-cards", boot.track_id),
         json!({ "program": "/bin/sh", "cwd": "", "env": {}, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
@@ -771,14 +776,14 @@ async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls
         other => panic!("expected CardAdded, got {other:?}"),
     };
     match &deleted[0].event {
-        Event::CardDeleted { id, wave_id } => {
+        Event::CardDeleted { id, track_id } => {
             assert_eq!(id, &added_card.id);
-            assert_eq!(wave_id.as_str(), boot.wave_id.as_str());
+            assert_eq!(track_id.as_str(), boot.track_id.as_str());
         }
         other => panic!("expected CardDeleted, got {other:?}"),
     }
 
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert_eq!(
         cards.len(),
         0,
@@ -830,7 +835,7 @@ async fn post_terminal_card_spawn_failure_reaps_renderer_before_rollback() {
     );
     let Boot {
         state,
-        wave_id,
+        track_id,
         events,
         repo,
         _tmp,
@@ -845,7 +850,7 @@ async fn post_terminal_card_spawn_failure_reaps_renderer_before_rollback() {
     let boot = Boot {
         app,
         state,
-        wave_id,
+        track_id,
         events,
         repo,
         _tmp,
@@ -854,7 +859,7 @@ async fn post_terminal_card_spawn_failure_reaps_renderer_before_rollback() {
 
     let (status, body) = post(
         boot.app.clone(),
-        format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        format!("/api/tracks/{}/terminal-cards", boot.track_id),
         json!({ "program": "/bin/sh", "cwd": "/tmp", "env": {}, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
@@ -902,9 +907,9 @@ async fn post_terminal_card_spawn_failure_reaps_renderer_before_rollback() {
         .expect("card payload has terminal_id")
         .to_string();
     match &deleted[0].event {
-        Event::CardDeleted { id, wave_id } => {
+        Event::CardDeleted { id, track_id } => {
             assert_eq!(id, &added_card.id);
-            assert_eq!(wave_id.as_str(), boot.wave_id.as_str());
+            assert_eq!(track_id.as_str(), boot.track_id.as_str());
         }
         other => panic!("expected CardDeleted, got {other:?}"),
     }
@@ -931,20 +936,20 @@ async fn post_terminal_card_spawn_failure_reaps_renderer_before_rollback() {
 }
 
 #[tokio::test]
-async fn post_terminal_card_atomic_404_on_unknown_wave() {
+async fn post_terminal_card_atomic_404_on_unknown_track() {
     // No daemon spawn happens on the 404 path, so the stub binary is fine.
     let boot = boot().await;
 
     let (status, body) = post(
         boot.app.clone(),
-        "/api/waves/wave_does_not_exist/terminal-cards".to_string(),
+        "/api/tracks/track_does_not_exist/terminal-cards".to_string(),
         json!({ "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body:?}");
 
-    // No card and no terminal row leaked under the original wave either.
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    // No card and no terminal row leaked under the original track either.
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
     assert!(cards.is_empty(), "no rows must leak on 404: {cards:?}");
 }
 
@@ -953,9 +958,9 @@ async fn post_terminal_card_atomic_defaults_program_to_shell() {
     let boot = boot_happy().await;
     let (status, card) = post(
         boot.app.clone(),
-        format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        format!("/api/tracks/{}/terminal-cards", boot.track_id),
         // Only required field (#177): theme. Every other field falls back to
-        // its default (program → $SHELL, cwd → the wave's workspace since
+        // its default (program → $SHELL, cwd → the track's workspace since
         // #1147 S6, env → {}).
         json!({ "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
@@ -988,6 +993,6 @@ async fn post_terminal_card_atomic_defaults_program_to_shell() {
     }
     assert_eq!(
         term.cwd, FIXTURE_WORKSPACE,
-        "#1147 S6 — the default cwd is the wave's workspace, not $HOME"
+        "#1147 S6 — the default cwd is the track's workspace, not $HOME"
     );
 }

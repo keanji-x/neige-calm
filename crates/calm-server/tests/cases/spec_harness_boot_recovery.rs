@@ -12,8 +12,8 @@ use calm_server::harness::{
     HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams, recover_harnesses_deferred,
     recover_harnesses_on_boot, spawn_recovered_harness,
 };
-use calm_server::ids::{ActorId, CardId, WaveId};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
+use calm_server::ids::{ActorId, CardId, TrackId};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::operation::TxOutput;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -30,7 +30,7 @@ fn app_state_for_boot_test_with_role_cache(
     role_cache: calm_server::card_role_cache::CardRoleCache,
 ) -> AppState {
     let events = EventBus::new();
-    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -57,7 +57,7 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
     )
 }
 
-/// A wave's spec card, minted with the role production gives it.
+/// A track's spec card, minted with the role production gives it.
 ///
 /// `Repo::card_create` defaults to `CardRole::Worker`, which used to be
 /// invisible in the replay tests below: `spawn_recovered_harness` replayed the
@@ -66,22 +66,22 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
 /// (`Dispatcher::resolve_spec_card`) — so a Worker-role row no longer stands in
 /// for a spec card, and these fixtures have to write the role they mean.
 ///
-/// The payload comes from `routes::waves::spec_harness_card_payload`, the same
+/// The payload comes from `routes::tracks::spec_harness_card_payload`, the same
 /// function the mint route calls, rather than a hand-written
 /// `{"schemaVersion": 1}`: the production shape also carries `codex_source` and
 /// `spec_harness`, and a fixture that omits them would be silently unlike every
 /// real spec card the moment anything backend-side starts reading either key.
-async fn seed_spec_card_row(repo: &SqlxRepo, wave_id: &WaveId) -> calm_server::model::Card {
+async fn seed_spec_card_row(repo: &SqlxRepo, track_id: &TrackId) -> calm_server::model::Card {
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: calm_server::routes::waves::spec_harness_card_payload(None),
+            payload: calm_server::routes::tracks::spec_harness_card_payload(None),
         },
         CardRole::Spec,
         false,
@@ -108,8 +108,8 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "plain chat recovery".into(),
@@ -122,14 +122,14 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(wave.id.as_str())
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(track.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
     let chat = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -139,7 +139,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         .unwrap();
     let pty = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -189,7 +189,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
-        repo.wave_area_cache().clone(),
+        repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
         &registry,
         recovered.into_iter().next().unwrap(),
@@ -215,8 +215,8 @@ async fn direct_recovery_boundary_rejects_area_chat_spec_runtime() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "chat spec".into(),
@@ -229,8 +229,8 @@ async fn direct_recovery_boundary_rejects_area_chat_spec_runtime() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(wave.id.as_str())
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(track.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
@@ -242,7 +242,7 @@ async fn direct_recovery_boundary_rejects_area_chat_spec_runtime() {
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -286,7 +286,7 @@ async fn direct_recovery_boundary_rejects_area_chat_spec_runtime() {
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
-        repo.wave_area_cache().clone(),
+        repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
         &registry,
         runtime,
@@ -300,7 +300,7 @@ async fn direct_recovery_boundary_rejects_area_chat_spec_runtime() {
     assert!(registry.get(&runtime_id).is_none());
 }
 
-/// Seed an area/wave/card + recoverable SharedSpec runtime row; returns the
+/// Seed an area/track/card + recoverable SharedSpec runtime row; returns the
 /// runtime id.
 async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &str) -> String {
     let area = repo
@@ -311,8 +311,8 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: tag.into(),
@@ -327,7 +327,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -381,10 +381,10 @@ async fn boot_recovery_skips_area_chat_spec_and_recovers_later_valid_runtime() {
     repo.card_role_cache().insert(
         declined_card.id.clone(),
         CardRole::Spec,
-        declined_card.wave_id.clone(),
+        declined_card.track_id.clone(),
     );
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(declined_card.wave_id.as_str())
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(declined_card.track_id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
@@ -395,7 +395,7 @@ async fn boot_recovery_skips_area_chat_spec_and_recovers_later_valid_runtime() {
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
-        repo.wave_area_cache().clone(),
+        repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
         &registry,
     )
@@ -421,8 +421,8 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "boot".into(),
@@ -437,7 +437,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -448,7 +448,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
-        vec![Observation::WaveGoal {
+        vec![Observation::TrackGoal {
             text: "recover me".into(),
         }],
     );
@@ -483,7 +483,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         &registry,
     )
@@ -535,7 +535,7 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
         repo.clone(),
         state.events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         state.shared_codex_appserver.clone(),
         &state.harness,
         user_runtime,
@@ -566,7 +566,7 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
     // accepts observations and its registry slot is intact.
     tokio::time::sleep(Duration::from_millis(100)).await;
     user_handle
-        .observe(Observation::WaveGoal {
+        .observe(Observation::TrackGoal {
             text: "still mine".into(),
         })
         .expect("user harness must stay alive through deferred recovery");
@@ -603,12 +603,12 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     // inside the eligibility→claim window.
     let user_handle = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
-        wave_id: WaveId::from(
+        track_id: TrackId::from(
             repo.card_get(&runtime.card_id)
                 .await
                 .unwrap()
                 .unwrap()
-                .wave_id
+                .track_id
                 .to_string(),
         ),
         card_id: CardId::from(runtime.card_id.clone()),
@@ -616,7 +616,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         repo: repo.clone(),
         events: events.clone(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::initial(0, vec![]),
@@ -648,7 +648,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         repo: repo.clone(),
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
         registry: registry.clone(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -663,7 +663,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     // try_reserve lost against the user's registration: no shutdown-replace
     // — the user's run loop still accepts observations and holds the slot.
     user_handle
-        .observe(Observation::WaveGoal {
+        .observe(Observation::TrackGoal {
             text: "user wins the claim".into(),
         })
         .expect("user harness must never be shutdown-replaced by deferred recovery");
@@ -714,7 +714,7 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
         repo: repo.clone(),
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
         registry: registry.clone(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -767,8 +767,8 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "boot-deferred".into(),
@@ -783,7 +783,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -834,7 +834,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         daemon.clone(),
         &registry,
     )
@@ -867,8 +867,8 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "boot-replay".into(),
@@ -881,23 +881,23 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         })
         .await
         .unwrap();
-    let card = seed_spec_card_row(&repo, &wave.id).await;
+    let card = seed_spec_card_row(&repo, &track.id).await;
     let bus = EventBus::new();
     let role_cache = calm_server::card_role_cache::CardRoleCache::new();
-    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let missed_id = repo
         .log_pure_event(
             ActorId::User,
-            EventScope::Wave {
-                wave: wave.id.clone(),
+            EventScope::Track {
+                track: track.id.clone(),
                 area: area.id.clone(),
             },
             None,
             &bus,
             &role_cache,
             &area_cache,
-            Event::WaveReportEdited {
-                wave_id: wave.id.clone(),
+            Event::TrackReportEdited {
+                track_id: track.id.clone(),
                 card_id: card.id.clone(),
                 author: EditAuthor::User,
                 author_plugin_id: None,
@@ -914,16 +914,16 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let queued_id = repo
         .log_pure_event(
             ActorId::User,
-            EventScope::Wave {
-                wave: wave.id.clone(),
+            EventScope::Track {
+                track: track.id.clone(),
                 area: area.id.clone(),
             },
             None,
             &bus,
             &role_cache,
             &area_cache,
-            Event::WaveReportEdited {
-                wave_id: wave.id.clone(),
+            Event::TrackReportEdited {
+                track_id: track.id.clone(),
                 card_id: card.id.clone(),
                 author: EditAuthor::User,
                 author_plugin_id: None,
@@ -969,7 +969,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         repo.clone(),
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         &registry,
     )
@@ -996,7 +996,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
 }
 
 #[tokio::test]
-async fn boot_recovery_skips_terminal_waves() {
+async fn boot_recovery_skips_terminal_tracks() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(NewArea {
@@ -1006,8 +1006,8 @@ async fn boot_recovery_skips_terminal_waves() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "boot-terminal".into(),
@@ -1020,14 +1020,14 @@ async fn boot_recovery_skips_terminal_waves() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET lifecycle = 'done' WHERE id = ?1")
-        .bind(wave.id.as_str())
+    sqlx::query("UPDATE tracks SET lifecycle = 'done' WHERE id = ?1")
+        .bind(track.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1038,7 +1038,7 @@ async fn boot_recovery_skips_terminal_waves() {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
-        vec![Observation::WaveGoal {
+        vec![Observation::TrackGoal {
             text: "do not recover".into(),
         }],
     );
@@ -1072,7 +1072,7 @@ async fn boot_recovery_skips_terminal_waves() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         &registry,
     )
@@ -1093,8 +1093,8 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "boot-phantom".into(),
@@ -1109,7 +1109,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -1120,7 +1120,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let placeholder_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         1,
-        vec![Observation::WaveGoal {
+        vec![Observation::TrackGoal {
             text: "must not recover".into(),
         }],
     );
@@ -1161,7 +1161,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         &registry,
     )
@@ -1175,7 +1175,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
 async fn force_new_thread_recovery_after_phase2_crash() {
     let tmp = TempDir::new().unwrap();
     let db_url = sqlite_url(&tmp, "phase2-crash.db");
-    let (card_id, wave_id, old_runtime_id, placeholder_id, op_id) = {
+    let (card_id, track_id, old_runtime_id, placeholder_id, op_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
             .area_create(NewArea {
@@ -1185,8 +1185,8 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
                 title: "phase2 crash".into(),
@@ -1201,7 +1201,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             .unwrap();
         let card = repo
             .card_create(NewCard {
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -1220,11 +1220,11 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         let now = now_ms();
         let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
             actor: ActorId::User,
-            wave_id: wave.id.to_string(),
+            track_id: track.id.to_string(),
             spec_card_id: card.id.clone(),
             report_card_id: None,
             sort: None,
-            cwd: wave.workspace.path.clone(),
+            cwd: track.workspace.path.clone(),
             goal: Some("recover after crash".into()),
             reset_harness_items: false,
             force_new_thread: true,
@@ -1240,10 +1240,10 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         );
         output.data = json!({
             "card_id": card.id.to_string(),
-            "wave_id": wave.id.to_string(),
+            "track_id": track.id.to_string(),
             "runtime_id": placeholder_id.clone(),
             "runtime_deferred": true,
-            "cwd": wave.workspace.path.clone(),
+            "cwd": track.workspace.path.clone(),
             "goal": "recover after crash",
             "report_card_id": null,
             "snapshot": serde_json::to_value(&placeholder_snapshot).unwrap(),
@@ -1315,7 +1315,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
 
         (
             card.id.to_string(),
-            wave.id.to_string(),
+            track.id.to_string(),
             old_runtime_id,
             placeholder_id,
             op_id,
@@ -1327,7 +1327,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
     role_cache.insert(
         CardId::from(card_id.clone()),
         CardRole::Spec,
-        WaveId::from(wave_id.clone()),
+        TrackId::from(track_id.clone()),
     );
     let state = app_state_for_boot_test_with_role_cache(repo.clone(), role_cache)
         .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
@@ -1408,8 +1408,8 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "gate-replay".into(),
@@ -1422,12 +1422,12 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         })
         .await
         .unwrap();
-    let card = seed_spec_card_row(&repo, &wave.id).await;
+    let card = seed_spec_card_row(&repo, &track.id).await;
 
     // One gated and one ungated tasks row.
     let mk_task = |key: &str, gate: Option<String>| calm_server::model::Task {
-        id: format!("{}:{key}", wave.id.as_str()),
-        wave_id: wave.id.as_str().to_string(),
+        id: format!("{}:{key}", track.id.as_str()),
+        track_id: track.id.as_str().to_string(),
         key: key.to_string(),
         kind: calm_server::model::TaskKind::Codex,
         goal: "g".into(),
@@ -1479,10 +1479,10 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 
     let bus = EventBus::new();
     let role_cache = calm_server::card_role_cache::CardRoleCache::new();
-    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&area_cache).await.unwrap();
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
+    let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&area_cache).await.unwrap();
+    let scope = EventScope::Track {
+        track: track.id.clone(),
         area: area.id.clone(),
     };
     for event in [
@@ -1579,7 +1579,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         repo.clone(),
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_area_cache::WaveAreaCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
         &registry,
     )
@@ -1649,11 +1649,11 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 
 /// #1189 A1 — a kernel restart mid-conversation.
 ///
-/// Two halves of one bug, on one ordinary (non-area-chat) wave:
+/// Two halves of one bug, on one ordinary (non-area-chat) track:
 ///
 /// * **the selector.** `session_projection_recover_harnesses_on_boot`'s second
 ///   `OR` arm was written for area chat (`executor` + `role = 'worker'` +
-///   `plain_chat`) and a wave assistant matches none of its three conjuncts. A
+///   `plain_chat`) and a track assistant matches none of its three conjuncts. A
 ///   restart during an assistant turn therefore left the `worker_sessions` row
 ///   alive with no run loop behind it: `GET /spec/run` answers dormant and the
 ///   user's reply never arrives.
@@ -1663,7 +1663,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 ///   the live dispatcher only ever pushes to the card whose role is
 ///   `CardRole::Spec` (`Dispatcher::resolve_spec_card`). A freshly minted
 ///   assistant starts at watermark 0, so the first recovery would have queued
-///   the wave's entire spec backlog into a conversation.
+///   the track's entire spec backlog into a conversation.
 ///
 /// The fixture keeps all four recovery classes side by side so a fix that
 /// widened the selector too far is red as well: the real codex worker must stay
@@ -1679,8 +1679,8 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "assistant recovery".into(),
@@ -1693,9 +1693,9 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         })
         .await
         .unwrap();
-    // An area chat wave alongside it: the #1098 recovery class must keep working.
-    let chat_wave = repo
-        .wave_create(NewWave {
+    // An area chat track alongside it: the #1098 recovery class must keep working.
+    let chat_track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "area chat".into(),
@@ -1708,15 +1708,15 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(chat_wave.id.as_str())
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(chat_track.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let mk = |wave_id: WaveId, payload: serde_json::Value| NewCard {
-        wave_id,
+    let mk = |track_id: TrackId, payload: serde_json::Value| NewCard {
+        track_id,
         title: None,
         kind: "codex".into(),
         sort: None,
@@ -1726,19 +1726,19 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     let spec_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
-        mk(wave.id.clone(), json!({"schemaVersion": 1})),
+        mk(track.id.clone(), json!({"schemaVersion": 1})),
         CardRole::Spec,
         false,
         repo.card_role_cache(),
     )
     .await
     .unwrap();
-    // The wave assistant, exactly as `spec_harness_start_adapter` mints it.
+    // The track assistant, exactly as `spec_harness_start_adapter` mints it.
     let assistant_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         mk(
-            wave.id.clone(),
+            track.id.clone(),
             json!({"schemaVersion": 1, "harness_profile": "assistant"}),
         ),
         CardRole::Assistant,
@@ -1747,11 +1747,11 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     )
     .await
     .unwrap();
-    // A real dispatched codex worker on the same wave: never harness-recovered.
+    // A real dispatched codex worker on the same track: never harness-recovered.
     let worker_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
-        mk(wave.id.clone(), json!({"schemaVersion": 1})),
+        mk(track.id.clone(), json!({"schemaVersion": 1})),
         CardRole::Worker,
         true,
         repo.card_role_cache(),
@@ -1762,7 +1762,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         &mut tx,
         new_id(),
         mk(
-            chat_wave.id.clone(),
+            chat_track.id.clone(),
             json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
         ),
         CardRole::Worker,
@@ -1826,13 +1826,13 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     }
     tx.commit().await.unwrap();
 
-    // Spec-push backlog accumulated on the wave while the kernel was down.
+    // Spec-push backlog accumulated on the track while the kernel was down.
     let bus = EventBus::new();
     let role_cache = repo.card_role_cache().clone();
-    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&area_cache).await.unwrap();
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
+    let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&area_cache).await.unwrap();
+    let scope = EventScope::Track {
+        track: track.id.clone(),
         area: area.id.clone(),
     };
     repo.log_pure_event(
@@ -1843,7 +1843,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         &role_cache,
         &area_cache,
         Event::TaskCompleted {
-            idempotency_key: format!("{}:only", wave.id.as_str()),
+            idempotency_key: format!("{}:only", track.id.as_str()),
             result: json!({ "ok": true }),
             artifacts: Vec::new(),
             agent_message: None,
@@ -1858,8 +1858,8 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         &bus,
         &role_cache,
         &area_cache,
-        Event::WaveReportEdited {
-            wave_id: wave.id.clone(),
+        Event::TrackReportEdited {
+            track_id: track.id.clone(),
             card_id: spec_card.id.clone(),
             author: EditAuthor::User,
             author_plugin_id: None,
@@ -1891,7 +1891,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     expected.sort();
     assert_eq!(
         selected, expected,
-        "boot recovery must select the spec harness, the wave assistant and the \
+        "boot recovery must select the spec harness, the track assistant and the \
          area chat — and must not select the dispatched codex worker \
          ({worker_runtime_id})"
     );

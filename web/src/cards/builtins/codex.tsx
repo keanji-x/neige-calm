@@ -13,7 +13,7 @@
 //     publishes the result as `Overlay { entity_kind:"card", kind:"status",
 //     payload:{state} }`. The card subscribes to overlay.set on its own
 //     topic and renders the dot from that — there is intentionally no
-//     local FSM here, so wave-union (the kernel computes it server-side)
+//     local FSM here, so track-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
 import {
@@ -56,7 +56,7 @@ import {
 type WorkerSessionState = components['schemas']['WorkerSessionState'];
 
 declare module '../../types' {
-  interface WaveCardDataMap {
+  interface TrackCardDataMap {
     codex: CodexCardData;
     claude: ClaudeCardData;
   }
@@ -539,8 +539,8 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   accessibleName: () => 'Codex',
   create: {
     mode: 'atomic',
-    async submit(waveId, input, ctx) {
-      const card = await createCodexCard(waveId, {
+    async submit(trackId, input, ctx) {
+      const card = await createCodexCard(trackId, {
         title: input.title || undefined,
         cwd: input.cwd || undefined,
         prompt: input.prompt || undefined,
@@ -617,8 +617,8 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
   accessibleName: () => 'Claude',
   create: {
     mode: 'atomic',
-    async submit(waveId, input, ctx) {
-      const card = await createClaudeCard(waveId, {
+    async submit(trackId, input, ctx) {
+      const card = await createClaudeCard(trackId, {
         title: input.title || undefined,
         cwd: input.cwd || undefined,
         prompt: input.prompt || undefined,

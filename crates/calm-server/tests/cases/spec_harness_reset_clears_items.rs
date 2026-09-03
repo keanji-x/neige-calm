@@ -7,12 +7,12 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -34,8 +34,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "reset clears items".into(),
@@ -50,14 +50,14 @@ async fn boot() -> Boot {
         .unwrap();
 
     let role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    wave_area_cache.insert(wave.id.clone(), area.id);
+    let track_area_cache = TrackAreaCache::new();
+    track_area_cache.insert(track.id.clone(), area.id);
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -83,11 +83,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join(format!("calm-plugins-data-reset-clears-items-{}", new_id())),
             Vec::new(),
             events,
-            calm_server::state::WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     )
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo.clone(),
@@ -161,7 +161,7 @@ async fn reset_spec_card_clears_persisted_harness_items() {
             .harness_item_insert(
                 "runtime-before-reset",
                 boot.spec_card.id.as_str(),
-                boot.spec_card.wave_id.as_str(),
+                boot.spec_card.track_id.as_str(),
                 "thread-before-reset",
                 Some("turn-before-reset"),
                 Some(&item_uuid),
@@ -215,20 +215,20 @@ async fn reset_spec_card_clears_persisted_harness_items() {
             matches!(
                 (scope, event),
                 (
-                    EventScope::Card { card, wave, .. },
+                    EventScope::Card { card, track, .. },
                     Event::HarnessTranscriptCleared {
                         runtime_id,
                         card_id,
-                        wave_id,
+                        track_id,
                         cleared_item_count,
                         cleared_params_bytes,
                         card_age_ms_at_clear: cleared_age,
                     },
                 ) if runtime_id == &active.id
                     && card_id == &boot.spec_card.id
-                    && wave_id == &boot.spec_card.wave_id
+                    && track_id == &boot.spec_card.track_id
                     && card == &boot.spec_card.id
-                    && wave == &boot.spec_card.wave_id
+                    && track == &boot.spec_card.track_id
                     && *cleared_item_count == Some(expected_item_count)
                     && *cleared_params_bytes == Some(expected_params_bytes)
                     // The card was backdated a week; the age must reflect
@@ -250,17 +250,17 @@ async fn reset_spec_card_clears_persisted_harness_items() {
 }
 
 #[tokio::test]
-async fn reset_plain_chat_card_on_area_chat_wave_succeeds_without_spec_goal() {
+async fn reset_plain_chat_card_on_area_chat_track_succeeds_without_spec_goal() {
     let boot = boot().await;
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(boot.spec_card.wave_id.as_str())
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(boot.spec_card.track_id.as_str())
         .execute(boot.repo.pool())
         .await
         .unwrap();
     let chat = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.spec_card.wave_id.clone(),
+            track_id: boot.spec_card.track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -270,7 +270,7 @@ async fn reset_plain_chat_card_on_area_chat_wave_succeeds_without_spec_goal() {
         .unwrap();
     boot.state
         .card_role_cache
-        .insert(chat.id.clone(), CardRole::Worker, chat.wave_id.clone());
+        .insert(chat.id.clone(), CardRole::Worker, chat.track_id.clone());
 
     let (status, body) = post_empty(
         boot.app.clone(),
@@ -292,7 +292,7 @@ async fn reset_plain_chat_card_on_area_chat_wave_succeeds_without_spec_goal() {
         serde_json::from_value(active.handle_state_json.unwrap()).unwrap();
     assert!(
         snapshot.pending_queue.is_empty(),
-        "plain chat must not inherit the wave title as a goal"
+        "plain chat must not inherit the track title as a goal"
     );
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();

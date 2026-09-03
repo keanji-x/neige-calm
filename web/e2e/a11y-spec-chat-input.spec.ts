@@ -9,20 +9,20 @@
 
 import { test, expect } from '@playwright/test';
 
-import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
+import { createUserArea, createTrackInArea, resetReplayServer } from './helpers/reset';
 import { SPEC_CHAT_COPY, forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 test.describe('spec chat input path', () => {
-  let waveId: string;
+  let trackId: string;
   let specCardId: string;
 
   test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
     const area = await createUserArea(request, 'AtlasSpecInput');
-    const wave = await createWaveInArea(request, area.id, 'Spec input test');
-    waveId = wave.id;
-    specCardId = await getSpecCardId(request, waveId);
+    const track = await createTrackInArea(request, area.id, 'Spec input test');
+    trackId = track.id;
+    specCardId = await getSpecCardId(request, trackId);
   });
 
   test('Enter sends the draft: 200, textarea clears, echo lands, phase stays put', async ({
@@ -34,7 +34,7 @@ test.describe('spec chat input path', () => {
     // spec pins the happy path.
     await forceSpecPhase(request, specCardId, 'idle');
 
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await page.goto(`/calm/track/${trackId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec input test' }),
     ).toBeVisible();

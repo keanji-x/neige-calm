@@ -6,7 +6,7 @@ use std::time::Duration;
 use calm_server::db::RouteRepo;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, Terminal};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewTrack, Terminal};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::terminal_renderer::{
     ClientPumpContext, RendererConfig, RendererEntry, TerminalRendererRegistry, run_client_pump,
@@ -825,7 +825,7 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
     let _ = supervisor.wait().await;
 }
 
-/// Minimal area → wave → card → terminal chain so `terminal_set_exit` has a row
+/// Minimal area → track → card → terminal chain so `terminal_set_exit` has a row
 /// to write to.
 async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
     let area = repo
@@ -836,8 +836,8 @@ async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "renderer-e2e".into(),
@@ -849,10 +849,10 @@ async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
             theme: RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "terminal".into(),
             sort: None,

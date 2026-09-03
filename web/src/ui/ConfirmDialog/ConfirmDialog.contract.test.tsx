@@ -55,7 +55,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={() => {}}
         onCancel={() => {}}
       />,
@@ -75,7 +75,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,
@@ -99,7 +99,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,
@@ -131,7 +131,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,
@@ -157,7 +157,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,
@@ -191,7 +191,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         confirmDisabled
         onConfirm={onConfirm}
         onCancel={onCancel}
@@ -224,7 +224,7 @@ describe('ConfirmDialog behavioral contract', () => {
     render(
       <ConfirmDialog
         open
-        title="Delete wave"
+        title="Delete track"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,

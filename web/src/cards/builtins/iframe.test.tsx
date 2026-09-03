@@ -35,7 +35,7 @@ import type { IframeCardData } from './iframe';
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
     id: 'iframe_1',
-    wave_id: 'wave_1',
+    track_id: 'track_1',
     kind: 'iframe',
     sort: 0,
     payload: { url: 'https://example.com' },

@@ -10,7 +10,7 @@ use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::db::{Repo, RepoSyncDomainRaw};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
     SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
@@ -45,8 +45,8 @@ async fn seed_card(repo: &SqlxRepo, name: &str) -> String {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "e2e".into(),
@@ -61,7 +61,7 @@ async fn seed_card(repo: &SqlxRepo, name: &str) -> String {
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "terminal".into(),
             sort: None,

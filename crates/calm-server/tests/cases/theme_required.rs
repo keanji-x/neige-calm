@@ -1,5 +1,5 @@
 //! Issue #177 (PR1 of split / closes #256) — `theme` is a required
-//! field on every card-creation DTO and on `NewWave`. A body missing
+//! field on every card-creation DTO and on `NewTrack`. A body missing
 //! `theme` is rejected at the deserialize step (422). This is the
 //! root-cause defence against the "spawn without theme" bug observed in
 //! PR #193: forcing the field at the type layer means a forgetful
@@ -21,7 +21,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -33,7 +33,7 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     area_id: String,
-    wave_id: String,
+    track_id: String,
     _tmp: TempDir,
 }
 
@@ -52,8 +52,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "theme-required-test".into(),
@@ -85,7 +85,7 @@ async fn boot() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -102,7 +102,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         area_id: area.id.to_string(),
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         _tmp: tmp,
     }
 }
@@ -133,14 +133,14 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
     (status, json, text)
 }
 
-/// `POST /api/waves` with a body that omits the `theme` field must
+/// `POST /api/tracks` with a body that omits the `theme` field must
 /// return 422 BEFORE any DB work happens. The 422 is the kernel's
 /// fail-loud signal to clients that PR1-#177 made theme required end-
 /// to-end. If this test starts succeeding (200 / 201) the type-layer
 /// guard has regressed and the original "spawn-without-theme" bug
 /// can resurface.
 #[tokio::test]
-async fn post_waves_without_theme_is_rejected_with_422() {
+async fn post_tracks_without_theme_is_rejected_with_422() {
     let boot = boot().await;
     // Body includes every other required field (cwd, attach_folder) so
     // the 422 fires on the missing `theme` and not some other field. The
@@ -149,7 +149,7 @@ async fn post_waves_without_theme_is_rejected_with_422() {
     // even if 422 still happens (for a different reason).
     let (status, _body, text) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": boot.area_id,
             "title": "no theme here",
@@ -169,19 +169,19 @@ async fn post_waves_without_theme_is_rejected_with_422() {
     );
 }
 
-/// `POST /api/waves` with `theme: null` must also be rejected — JSON
+/// `POST /api/tracks` with `theme: null` must also be rejected — JSON
 /// `null` should NOT deserialize into `RequestTheme` (no `Option`,
 /// no `#[serde(default)]`). Companion to the missing-field test
 /// above; together they pin the root-cause defence.
 #[tokio::test]
-async fn post_waves_with_null_theme_is_rejected_with_422() {
+async fn post_tracks_with_null_theme_is_rejected_with_422() {
     let boot = boot().await;
     // Body includes every other required field so the 422 fires on
     // `theme: null` and not a missing field. The body-substring assertion
     // pins `theme` as the rejected field.
     let (status, _body, text) = post(
         boot.app.clone(),
-        "/api/waves",
+        "/api/tracks",
         json!({
             "area_id": boot.area_id,
             "title": "null theme",
@@ -202,7 +202,7 @@ async fn post_waves_with_null_theme_is_rejected_with_422() {
     );
 }
 
-/// `POST /api/waves/:wave_id/codex-cards` without theme must 422.
+/// `POST /api/tracks/:track_id/codex-cards` without theme must 422.
 /// Codex cards are the primary user-facing card-create route — this
 /// is the path the original bug shipped through (`useTodayTerminal.ts`
 /// calling `createCodexCard({})`).
@@ -211,7 +211,7 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
     let (status, _body, text) = post(
         boot.app.clone(),
-        &format!("/api/waves/{}/codex-cards", boot.wave_id),
+        &format!("/api/tracks/{}/codex-cards", boot.track_id),
         json!({ "cwd": "/tmp" }),
     )
     .await;
@@ -222,14 +222,14 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
     );
 }
 
-/// `POST /api/waves/:wave_id/terminal-cards` without theme must 422.
+/// `POST /api/tracks/:track_id/terminal-cards` without theme must 422.
 /// Terminal-card route — same fail-loud contract.
 #[tokio::test]
 async fn post_terminal_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
     let (status, _body, text) = post(
         boot.app.clone(),
-        &format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        &format!("/api/tracks/{}/terminal-cards", boot.track_id),
         json!({ "program": "/bin/sh" }),
     )
     .await;

@@ -1,6 +1,6 @@
 // Report block renderers (issue #960 PR3 S2).
 //
-// A wave report is a sequence of typed blocks. `prose` renders through the
+// A track report is a sequence of typed blocks. `prose` renders through the
 // existing calm-prose markdown pipeline; `chart.candles` / `table` / `app`
 // break out of the 616px prose measure to the full 748px document width
 // while sharing the same left edge (flush-left — never centered
@@ -19,7 +19,7 @@ import {
   tableBlockPayloadSchema,
   taskBlockPayloadSchema,
   type ReportBlock,
-} from '../../cards/builtins/wave-report';
+} from '../../cards/builtins/track-report';
 import { ReportTableBlock } from './table';
 import { ReportAppBlock } from './app';
 import { BLOCK_ID_PATTERN } from '../report-link-ids';
@@ -66,9 +66,9 @@ function UnsupportedBlock({ block }: { block: ReportBlock }) {
 export function reportUrlTransform(url: string): string {
   const match = url.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
   if (!match) return defaultUrlTransform(url);
-  const [, waveId, blockId] = match;
+  const [, trackId, blockId] = match;
   return blockId && !BLOCK_ID_PATTERN.test(blockId)
-    ? `neige://wave/${waveId}`
+    ? `neige://wave/${trackId}`
     : url;
 }
 
@@ -78,12 +78,12 @@ export function ReportLink({
 }: React.ComponentPropsWithoutRef<'a'>) {
   const match = href?.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
   if (!match) return <a href={href}>{children}</a>;
-  const [, waveId, blockId] = match;
+  const [, trackId, blockId] = match;
   const hash = blockId && BLOCK_ID_PATTERN.test(blockId) ? blockId : undefined;
   return (
     <Link
-      to="/wave/$waveId"
-      params={{ waveId }}
+      to="/track/$trackId"
+      params={{ trackId }}
       hash={hash}
     >
       {children}
@@ -95,7 +95,7 @@ export const ReportBlockView = memo(function ReportBlockView({
   block,
   taskVerdict,
   taskActions,
-  waveId,
+  trackId,
 }: {
   block: ReportBlock;
   taskVerdict?: TaskVerdict;
@@ -107,7 +107,7 @@ export const ReportBlockView = memo(function ReportBlockView({
     pending?: boolean;
     error?: string;
   };
-  waveId?: string;
+  trackId?: string;
 }) {
   switch (block.kind) {
     case 'prose': {
@@ -197,7 +197,7 @@ export const ReportBlockView = memo(function ReportBlockView({
       return (
         <div id={block.id} className="report-block report-block--breakout">
           <ReportTaskBlock payload={parsed.data} verdict={taskVerdict}
-            waveId={waveId}
+            trackId={trackId}
             onRelease={taskActions?.release} onDelete={taskActions?.delete}
             onClearTombstone={taskActions?.clearTombstone}
             onRestoreAutomation={taskActions?.restoreAutomation}

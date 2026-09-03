@@ -8,10 +8,10 @@ import { useState } from '../shared/state';
 import { areaOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
 import { CardHead } from '../cards/CardHead';
-import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
-import { lifecycleLabel } from '../shared/components/WaveLifecycleBadge';
-import { waveDisplayTitle } from '../shared/waveTitle';
-import type { Area, Route, Wave } from '../types';
+import { isRunning, trackNeedsUserAttention } from '../shared/lifecycle';
+import { lifecycleLabel } from '../shared/components/TrackLifecycleBadge';
+import { trackDisplayTitle } from '../shared/trackTitle';
+import type { Area, Route, Track } from '../types';
 import { useXtermWheelTargetRef } from '../input/useXtermWheelTarget';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -24,13 +24,13 @@ const XtermView = lazy(() =>
 // Calendar helpers.
 //
 // The mockup ported a synthetic `SURF_SCHEDULE` keyed on the design's
-// hand-written wave ids (`w-001` etc); under real kernel data those ids
+// hand-written track ids (`w-001` etc); under real kernel data those ids
 // never appear, so hour-scheduled events stay an empty list until a
 // scheduling plugin lands (drop-in: derive `CalEvent[]` from overlays
 // where `kind === "scheduled"` and `payload = { date, hour, dur }`).
 //
 // Issue #250 PR 5 — until then, the rail's dots and agenda surface live
-// wave activity: any wave whose `[createdAt, terminalAt ?? now]` window
+// track activity: any track whose `[createdAt, terminalAt ?? now]` window
 // overlaps a calendar day shows up on that day, colour-keyed by area.
 // The user can finally see "what was I working on Tuesday?" without a
 // scheduling layer.
@@ -74,29 +74,29 @@ const fmtHour = (h: number) => {
   const hh = (h + 11) % 12 + 1;
   return hh + p;
 };
-interface CalEvent { wave: Wave; date: Date; h: number; dur: number; }
+interface CalEvent { track: Track; date: Date; h: number; dur: number; }
 
 /**
- * Issue #250 PR 5 — every wave whose `[createdAt, terminalAt ?? nowMs]`
+ * Issue #250 PR 5 — every track whose `[createdAt, terminalAt ?? nowMs]`
  * interval overlaps the local day that owns `day`. Used to drive
  * per-day area-colour dots on the week / month grids and to populate
  * the selected-day agenda when no hour-scheduled `CalEvent` is present.
  *
  * The predicate uses inclusive endpoints (`createdAt <= endOfDay AND
- * end >= startOfDay`) so a wave created at 23:59 still surfaces on
+ * end >= startOfDay`) so a track created at 23:59 still surfaces on
  * that day even if its first card lands a millisecond later. Stable
  * sort by `createdAt` so the dot ordering matches creation order
  * (oldest first, leftmost dot — matches how the eye scans).
  */
-export function activeWavesOn(
-  waves: Wave[],
+export function activeTracksOn(
+  tracks: Track[],
   day: Date,
   nowMs: number,
-): Wave[] {
+): Track[] {
   const dayStart = startOfDay(day).getTime();
   const dayEnd = endOfDay(day).getTime();
-  const out: Wave[] = [];
-  for (const w of waves) {
+  const out: Track[] = [];
+  for (const w of tracks) {
     const end = w.terminalAt ?? nowMs;
     if (w.createdAt <= dayEnd && end >= dayStart) out.push(w);
   }
@@ -116,7 +116,7 @@ export function activeWavesOn(
 // ============================================================
 
 export function TodayPage({
-  waves,
+  tracks,
   areas,
   onGo,
   todayTerminalId,
@@ -124,7 +124,7 @@ export function TodayPage({
   onResetTodayTerminal,
   nowMs,
 }: {
-  waves: Wave[];
+  tracks: Track[];
   areas: Area[];
   onGo: (r: Route) => void;
   /** When defined, the home panel hosts a live `<XtermView>` for this id. */
@@ -134,7 +134,7 @@ export function TodayPage({
   /**
    * Issue #250 PR 5 — pinned "now" for tests. Production leaves this
    * undefined and the calendar derives `today0` from `new Date()` and
-   * its active-wave predicate from `Date.now()`. Tests pin both so
+   * its active-track predicate from `Date.now()`. Tests pin both so
    * the assertions don't drift across midnight or DST boundaries.
    */
   nowMs?: number;
@@ -148,13 +148,13 @@ export function TodayPage({
   // No scheduling plugin yet — the calendar renders its shell with an
   // empty list of hour-bucketed events. When a plugin defines a
   // `scheduled` overlay this is the single line that should fold it
-  // in; the dots / agenda surfacing live wave activity (issue #250 PR
+  // in; the dots / agenda surfacing live track activity (issue #250 PR
   // 5) runs in parallel and doesn't need the scheduling layer.
   const events = useMemo<CalEvent[]>(() => [], []);
 
   return (
     <div className="today-page">
-      <TodayClock waves={waves} />
+      <TodayClock tracks={tracks} />
       <div className="today-grid">
         <section className="today-main">
           <TodayTerminalPanel
@@ -168,7 +168,7 @@ export function TodayPage({
             today0={today0}
             events={events}
             areas={areas}
-            waves={waves}
+            tracks={tracks}
             onGo={onGo}
             nowMs={nowMs}
           />
@@ -179,14 +179,14 @@ export function TodayPage({
 }
 
 /**
- * Issue #250 PR 5 — agenda row shared by the live wave-activity branch
+ * Issue #250 PR 5 — agenda row shared by the live track-activity branch
  * and the (future) hour-scheduled `CalEvent` branch. Two visual variants
  * driven off whether `hourLabel` is supplied:
  *
  *   * **scheduled event** (`hourLabel` defined) — keeps the design's
  *     `40px / 3px / 1fr` grid with the time gutter on the left. Single-
  *     line body: title + dot flag(s) for waiting/running.
- *   * **wave** (`hourLabel` undefined) — drops the time gutter (waves
+ *   * **track** (`hourLabel` undefined) — drops the time gutter (tracks
  *     are day-level, not hour-bucketed; the empty 40px column made the
  *     area bar look stranded). Grid collapses to `3px / 1fr` and the
  *     body becomes a two-line column: title on top, human-readable
@@ -201,37 +201,37 @@ export function TodayPage({
  * and axe checks don't lose it.
  */
 function CalEventRow({
-  wave,
+  track,
   hourLabel,
   areas,
   onGo,
 }: {
-  wave: Wave;
+  track: Track;
   /** Pre-formatted hour string (`"3pm"`) for scheduled events; omit
-   *  for live wave activity which isn't hour-bucketed. The presence /
-   *  absence of this prop also selects the `cal-event--wave` layout
+   *  for live track activity which isn't hour-bucketed. The presence /
+   *  absence of this prop also selects the `cal-event--track` layout
    *  modifier (no hour gutter, lifecycle text below the title). */
   hourLabel?: string;
   areas: Area[];
   onGo: (r: Route) => void;
 }) {
-  const c = areaOf(wave.areaId, areas);
-  const isWaiting = waveNeedsUserAttention(wave);
-  const eventRunning = isRunning(wave.lifecycle);
-  const isWave = hourLabel === undefined;
+  const c = areaOf(track.areaId, areas);
+  const isWaiting = trackNeedsUserAttention(track);
+  const eventRunning = isRunning(track.lifecycle);
+  const isTrack = hourLabel === undefined;
   // Reuse the canonical lifecycle phrase so the calendar agrees with
-  // <WaveLifecycleBadge> / Area buckets — no parallel mapping table.
-  const lifecycleText = lifecycleLabel(wave.lifecycle);
+  // <TrackLifecycleBadge> / Area buckets — no parallel mapping table.
+  const lifecycleText = lifecycleLabel(track.lifecycle);
   // The dot flags are visual; the full lifecycle state goes into the
   // button's aria-label so screen readers and axe checks see the same
   // information whether or not the lifecycle text line is shown.
-  const displayTitle = waveDisplayTitle(wave.title);
+  const displayTitle = trackDisplayTitle(track.title);
   const stateBits: string[] = [];
   if (isWaiting) stateBits.push('waiting on you');
   if (eventRunning) stateBits.push('running');
   const areaName = c?.name ?? 'Unknown area';
   const label =
-    `Wave ${displayTitle}` +
+    `Track ${displayTitle}` +
     (stateBits.length > 0 ? `, ${stateBits.join(', ')}` : '') +
     `, ${lifecycleText}` +
     `, in area ${areaName}`;
@@ -239,14 +239,14 @@ function CalEventRow({
     <button
       className={
         'cal-event' +
-        (isWave ? ' cal-event--wave' : '') +
+        (isTrack ? ' cal-event--track' : '') +
         (isWaiting ? ' waiting' : '') +
         (eventRunning ? ' running' : '')
       }
       aria-label={label}
-      onClick={() => onGo({ name: 'wave', id: wave.id })}
+      onClick={() => onGo({ name: 'track', id: track.id })}
     >
-      {!isWave && (
+      {!isTrack && (
         <span className="cal-event-time num" aria-hidden="true">
           {hourLabel}
         </span>
@@ -266,7 +266,7 @@ function CalEventRow({
             <span className="cal-event-flag run" aria-hidden="true" />
           )}
         </span>
-        {isWave && (
+        {isTrack && (
           <span
             className={
               'cal-event-lifecycle' +
@@ -286,7 +286,7 @@ function CalEventRow({
 // Replaces the original mockup's static `SurfTerminal` (later renamed
 // `TodayTerminal` in the class-name cleanup pass) with an actual live
 // shell. The terminal binds to a single per-browser card hosted inside
-// the kernel-owned system area + "Today" wave (resolved by
+// the kernel-owned system area + "Today" track (resolved by
 // `useTodayTerminal` upstream and passed in as `terminalId`). Issue
 // #175 hides the system area from the sidebar; the user only ever
 // interacts with the terminal here. While the resolver runs we show a
@@ -378,7 +378,7 @@ function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
 
 // ---------------- Clock ----------------
 
-function TodayClock({ waves }: { waves: Wave[] }) {
+function TodayClock({ tracks }: { tracks: Track[] }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -391,10 +391,10 @@ function TodayClock({ waves }: { waves: Wave[] }) {
   const h12 = (hh + 11) % 12 + 1;
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
 
-  const runningCount = waves.filter((w) => isRunning(w.lifecycle)).length;
+  const runningCount = tracks.filter((w) => isRunning(w.lifecycle)).length;
   // Issue #254 — same OR'd predicate as the Sidebar's "Waiting on you"
   // section so the two surfaces agree on what counts.
-  const waitingCount = waves.filter((w) => waveNeedsUserAttention(w)).length;
+  const waitingCount = tracks.filter((w) => trackNeedsUserAttention(w)).length;
 
   return (
     <header className="today-clock">
@@ -428,14 +428,14 @@ function CalendarCard({
   today0,
   events,
   areas,
-  waves,
+  tracks,
   onGo,
   nowMs,
 }: {
   today0: Date;
   events: CalEvent[];
   areas: Area[];
-  waves: Wave[];
+  tracks: Track[];
   onGo: (r: Route) => void;
   /** Tests pin this so the "active on day" predicate doesn't drift
    *  during assertions. Defaults to live `Date.now()` in production. */
@@ -449,14 +449,14 @@ function CalendarCard({
   const eventAgenda = events
     .filter((e) => sameDay(e.date, selected))
     .sort((a, b) => a.h - b.h);
-  // Issue #250 PR 5 — live wave activity on the selected day. Independent
+  // Issue #250 PR 5 — live track activity on the selected day. Independent
   // of `events` (which stays the future scheduling-plugin slot); both
   // lists co-exist in the agenda so a day with scheduled work *and* an
-  // open wave shows both rather than letting the schedule layer
+  // open track shows both rather than letting the schedule layer
   // monopolise the surface.
-  const waveAgenda = useMemo(
-    () => activeWavesOn(waves, selected, now),
-    [waves, selected, now],
+  const trackAgenda = useMemo(
+    () => activeTracksOn(tracks, selected, now),
+    [tracks, selected, now],
   );
 
   const selLabel = sameDay(selected, today0)
@@ -492,7 +492,7 @@ function CalendarCard({
           selected={selected}
           setSelected={setSelected}
           events={events}
-          waves={waves}
+          tracks={tracks}
           areas={areas}
           nowMs={now}
         />
@@ -504,7 +504,7 @@ function CalendarCard({
           monthCursor={monthCursor}
           setMonthCursor={setMonthCursor}
           events={events}
-          waves={waves}
+          tracks={tracks}
           areas={areas}
           nowMs={now}
         />
@@ -512,20 +512,20 @@ function CalendarCard({
 
       <div className="cal-agenda-head">{selLabel}</div>
       <div className="cal-agenda">
-        {eventAgenda.length === 0 && waveAgenda.length === 0 && (
+        {eventAgenda.length === 0 && trackAgenda.length === 0 && (
           <div className="cal-empty">Nothing scheduled.</div>
         )}
         {eventAgenda.map((e, i) => (
           <CalEventRow
             key={`evt-${i}`}
-            wave={e.wave}
+            track={e.track}
             hourLabel={fmtHour(e.h)}
             areas={areas}
             onGo={onGo}
           />
         ))}
-        {waveAgenda.map((w) => (
-          <CalEventRow key={`wave-${w.id}`} wave={w} areas={areas} onGo={onGo} />
+        {trackAgenda.map((w) => (
+          <CalEventRow key={`track-${w.id}`} track={w} areas={areas} onGo={onGo} />
         ))}
       </div>
     </section>
@@ -537,7 +537,7 @@ function CalWeek({
   selected,
   setSelected,
   events,
-  waves,
+  tracks,
   areas,
   nowMs,
 }: {
@@ -545,7 +545,7 @@ function CalWeek({
   selected: Date;
   setSelected: (d: Date) => void;
   events: CalEvent[];
-  waves: Wave[];
+  tracks: Track[];
   areas: Area[];
   nowMs: number;
 }) {
@@ -569,18 +569,18 @@ function CalWeek({
       <div className="cal-week-grid">
         {days.map((d, i) => {
           // Two dot sources: hour-scheduled events (future scheduling
-          // plugin) and active wave activity (issue #250 PR 5). De-dup
-          // by `wave.id` so a wave with both a scheduled event and an
+          // plugin) and active track activity (issue #250 PR 5). De-dup
+          // by `track.id` so a track with both a scheduled event and an
           // overlapping activity window contributes one dot, not two.
           const evs = events.filter((e) => sameDay(e.date, d));
           const activeIds = new Set<string>();
           const activeColors: { id: string; color: string | undefined }[] = [];
           for (const e of evs) {
-            if (activeIds.has(e.wave.id)) continue;
-            activeIds.add(e.wave.id);
-            activeColors.push({ id: e.wave.id, color: areaOf(e.wave.areaId, areas)?.color });
+            if (activeIds.has(e.track.id)) continue;
+            activeIds.add(e.track.id);
+            activeColors.push({ id: e.track.id, color: areaOf(e.track.areaId, areas)?.color });
           }
-          for (const w of activeWavesOn(waves, d, nowMs)) {
+          for (const w of activeTracksOn(tracks, d, nowMs)) {
             if (activeIds.has(w.id)) continue;
             activeIds.add(w.id);
             activeColors.push({ id: w.id, color: areaOf(w.areaId, areas)?.color });
@@ -621,7 +621,7 @@ function CalMonth({
   monthCursor,
   setMonthCursor,
   events,
-  waves,
+  tracks,
   areas,
   nowMs,
 }: {
@@ -631,7 +631,7 @@ function CalMonth({
   monthCursor: Date;
   setMonthCursor: (d: Date) => void;
   events: CalEvent[];
-  waves: Wave[];
+  tracks: Track[];
   areas: Area[];
   nowMs: number;
 }) {
@@ -670,18 +670,18 @@ function CalMonth({
       </div>
       <div className="cal-month-grid">
         {visible.map((d, i) => {
-          // Merge hour-scheduled events with active wave activity (issue
-          // #250 PR 5); de-dup by wave id and cap to 3 dots so the cell
+          // Merge hour-scheduled events with active track activity (issue
+          // #250 PR 5); de-dup by track id and cap to 3 dots so the cell
           // doesn't overflow.
           const evs = events.filter((e) => sameDay(e.date, d));
           const seenIds = new Set<string>();
           const dotColors: { id: string; color: string | undefined }[] = [];
           for (const e of evs) {
-            if (seenIds.has(e.wave.id)) continue;
-            seenIds.add(e.wave.id);
-            dotColors.push({ id: e.wave.id, color: areaOf(e.wave.areaId, areas)?.color });
+            if (seenIds.has(e.track.id)) continue;
+            seenIds.add(e.track.id);
+            dotColors.push({ id: e.track.id, color: areaOf(e.track.areaId, areas)?.color });
           }
-          for (const w of activeWavesOn(waves, d, nowMs)) {
+          for (const w of activeTracksOn(tracks, d, nowMs)) {
             if (seenIds.has(w.id)) continue;
             seenIds.add(w.id);
             dotColors.push({ id: w.id, color: areaOf(w.areaId, areas)?.color });

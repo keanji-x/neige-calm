@@ -1,9 +1,9 @@
-// Bring one card into view, once, wherever the wave is currently rendering
+// Bring one card into view, once, wherever the track is currently rendering
 // cards.
 //
 // The caller is a report task block's "Open worker output" link, which lands on
-// `/wave/$waveId#<workerCardId>`. Both card views mount a scroll root and stamp
-// `data-card-id` on every tile (`WaveGrid`, `WaveList`), so the reveal is the
+// `/track/$trackId#<workerCardId>`. Both card views mount a scroll root and stamp
+// `data-card-id` on every tile (`TrackGrid`, `TrackList`), so the reveal is the
 // same operation in both — a second copy in each would be two places to forget
 // the latch.
 //
@@ -11,7 +11,7 @@
 // `[revealCardId, cardKeys]`, which reads as "retry when the cards arrive" but
 // actually means "re-fire whenever the card list changes at all": the hash
 // stays in the URL for the life of the page, so every later card added or
-// removed anywhere in the wave yanked the viewport back to the linked card.
+// removed anywhere in the track yanked the viewport back to the linked card.
 // Running on every render and latching on the id instead retries until the tile
 // exists and then stops for good — the retry and the one-shot are the same
 // mechanism, so neither can be fixed without the other.
@@ -20,10 +20,10 @@ import { useEffect, useRef, type RefObject } from 'react';
 
 /**
  * Attribute that drives the arrival flash. Defined in `calm.css` beside
- * `.wave-card`.
+ * `.track-card`.
  *
  * An attribute rather than a class, because `react-grid-layout` computes the
- * grid item's `className` itself (`react-grid-item wave-card react-draggable
+ * grid item's `className` itself (`react-grid-item track-card react-draggable
  * …`) and rewrites it on every re-render — an imperatively added class was
  * silently wiped moments after being set, which jsdom could not show because
  * the RGL stub there does not manage className. React never removes a `data-*`

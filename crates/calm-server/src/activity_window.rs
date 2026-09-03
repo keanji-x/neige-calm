@@ -32,7 +32,7 @@
 //! > NULL ancestor cols via the column default. **We do NOT best-effort
 //! > backfill from payload joins.**
 //!
-//! The join below is on `events.scope_wave`, so every row written before
+//! The join below is on `events.scope_track`, so every row written before
 //! migration 0007 is invisible to it, whatever its kind. A window that spans
 //! the upgrade point reports less activity than actually happened, with no
 //! error and no warning.
@@ -53,12 +53,12 @@
 //!
 //! So what is actually known is stated instead, with its carrier:
 //!
-//! * **Verified by execution, per kind**: `wave.report_edited` and
-//!   `wave.lifecycle_changed` are driven through their production REST routes
+//! * **Verified by execution, per kind**: `track.report_edited` and
+//!   `track.lifecycle_changed` are driven through their production REST routes
 //!   and counted, by
 //!   `today_summary::a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity`.
 //! * **Assumed, and unpinned**: that every `task.completed` / `task.failed`
-//!   emitter uses a wave or card scope. Spot reads support it and no
+//!   emitter uses a track or card scope. Spot reads support it and no
 //!   counter-example is known, but no test drives one and no enumeration of
 //!   them should be trusted.
 //!
@@ -68,13 +68,13 @@
 //!
 //! # Counts only — this is what bounds the prompt
 //!
-//! Every field of [`WorkspaceActivityWindow`] is an integer. No wave titles, no
+//! Every field of [`WorkspaceActivityWindow`] is an integer. No track titles, no
 //! area names, no detail lists, and nothing else of variable length. That is
 //! not tidiness: the prompt this feeds goes through `POST /api/cards/{id}/spec/input`,
 //! which rejects anything over `MAX_SPEC_INPUT_CHARS` (32,768) — so the
 //! rendered prompt's length has to have a bound that can be computed without
 //! running it. Template text plus five integers has one. A "just for context"
-//! list of wave titles does not, and re-introducing one means also
+//! list of track titles does not, and re-introducing one means also
 //! re-introducing a deterministic character budget and its 32,768 / 32,769 /
 //! CJK boundary cases (design D4).
 
@@ -102,8 +102,8 @@ use crate::error::Result;
 /// would silently decay to zero past the horizon; there is no permanent
 /// substitute (design D4).
 pub const ACTIVITY_KINDS: [&str; 4] = [
-    "wave.lifecycle_changed",
-    "wave.report_edited",
+    "track.lifecycle_changed",
+    "track.report_edited",
     "task.completed",
     "task.failed",
 ];
@@ -111,11 +111,11 @@ pub const ACTIVITY_KINDS: [&str; 4] = [
 /// The one statement this projection runs.
 ///
 /// **One query, not two, and that is a correctness property rather than a
-/// tidiness one.** The per-kind counts and the distinct-wave count are read in
+/// tidiness one.** The per-kind counts and the distinct-track count are read in
 /// a single pass over a single snapshot, so they cannot disagree. Two
 /// statements sharing the same FROM/WHERE *text* are still two snapshots: an
 /// event landing between them yields a window reporting one event across two
-/// waves, which is not a state the workspace was ever in, and nothing about the
+/// tracks, which is not a state the workspace was ever in, and nothing about the
 /// result would look wrong.
 ///
 /// `SUM(e.kind = ?n)` is SQLite's boolean-as-integer, and `COALESCE` covers the
@@ -123,14 +123,14 @@ pub const ACTIVITY_KINDS: [&str; 4] = [
 ///
 /// * `?1`/`?2` — the half-open window, `[start, end)`. See INV-TODAYDOC-006:
 ///   an event at the boundary belongs to the later day and to that day only.
-/// * `?3` — the wave to exclude, or NULL.
+/// * `?3` — the track to exclude, or NULL.
 /// * `?4`..`?7` — [`ACTIVITY_KINDS`], bound positionally, and bound twice: once
 ///   to restrict the rows and once to bucket them, so a kind can never be
 ///   counted into a column the query did not ask for.
 ///
-/// The join runs through `waves` and `areas` rather than trusting
+/// The join runs through `tracks` and `areas` rather than trusting
 /// `events.scope_area`: the scope columns are a snapshot taken at write time,
-/// while `waves.area_id` is current, and a wave whose row is gone should not
+/// while `tracks.area_id` is current, and a track whose row is gone should not
 /// contribute activity to a page that cannot link to it.
 ///
 /// `areas.kind = 'user'` is the visibility filter, and it is the same predicate
@@ -141,9 +141,9 @@ const ACTIVITY_QUERY: &str = r#"
            COALESCE(SUM(e.kind = ?5), 0) AS report,
            COALESCE(SUM(e.kind = ?6), 0) AS completed,
            COALESCE(SUM(e.kind = ?7), 0) AS failed,
-           COUNT(DISTINCT w.id)          AS waves
+           COUNT(DISTINCT w.id)          AS tracks
       FROM events e
-      JOIN waves w ON w.id = e.scope_wave
+      JOIN tracks w ON w.id = e.scope_track
       JOIN areas c ON c.id = w.area_id
      WHERE e.at >= ?1
        AND e.at <  ?2
@@ -155,23 +155,23 @@ const ACTIVITY_QUERY: &str = r#"
 /// One window's worth of activity. Integers only — see the module docs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceActivityWindow {
-    pub wave_lifecycle_changed: i64,
-    pub wave_report_edited: i64,
+    pub track_lifecycle_changed: i64,
+    pub track_report_edited: i64,
     pub task_completed: i64,
     pub task_failed: i64,
-    /// How many distinct waves contributed any of the counted events.
+    /// How many distinct tracks contributed any of the counted events.
     ///
-    /// Distinct waves, not a sum: it answers "how broad was the day", which the
+    /// Distinct tracks, not a sum: it answers "how broad was the day", which the
     /// four counts cannot, and it is still one integer.
-    pub waves_touched: i64,
+    pub tracks_touched: i64,
 }
 
 impl WorkspaceActivityWindow {
-    /// Total counted events. `waves_touched` is not added in — it is a
+    /// Total counted events. `tracks_touched` is not added in — it is a
     /// dimension of the same rows, not more of them.
     pub fn total_events(&self) -> i64 {
-        self.wave_lifecycle_changed
-            + self.wave_report_edited
+        self.track_lifecycle_changed
+            + self.track_report_edited
             + self.task_completed
             + self.task_failed
     }
@@ -184,34 +184,34 @@ impl WorkspaceActivityWindow {
 
 /// Aggregate workspace activity over the half-open window `[start_ms, end_ms)`.
 ///
-/// `exclude_wave` is the **reflexive exclusion**, and it is defence in depth
+/// `exclude_track` is the **reflexive exclusion**, and it is defence in depth
 /// rather than a load-bearing wall — stating that precisely is part of the
-/// design's ruling (D4). Writing the summary is itself a `wave.report_edited`
-/// on the launchpad wave, so without an exclusion each run would feed the next
+/// design's ruling (D4). Writing the summary is itself a `track.report_edited`
+/// on the launchpad track, so without an exclusion each run would feed the next
 /// one its own footprint. But the launchpad lives in the system area and
 /// `c.kind = 'user'` above has already dropped it, so deleting this predicate
 /// turns no test red *through the join*. What pins it is
-/// `reflexive_exclusion_drops_the_named_wave_before_the_visibility_join` in
+/// `reflexive_exclusion_drops_the_named_track_before_the_visibility_join` in
 /// this module, which drives the predicate directly on raw allowlisted rows in
 /// a user area — i.e. before the visibility filter can mask it. The predicate
 /// becomes load-bearing the day the visibility join widens or the launchpad
 /// moves out of the system area.
 ///
-/// The exclusion is by **wave**, so a human hand-editing Today's report does
+/// The exclusion is by **track**, so a human hand-editing Today's report does
 /// not register as activity either. That is intended (design D4).
 pub async fn workspace_activity_window(
     pool: &Pool<Sqlite>,
     start_ms: i64,
     end_ms: i64,
-    exclude_wave: Option<&str>,
+    exclude_track: Option<&str>,
 ) -> Result<WorkspaceActivityWindow> {
     let [lifecycle, report, completed, failed] = ACTIVITY_KINDS;
 
-    let (wave_lifecycle_changed, wave_report_edited, task_completed, task_failed, waves_touched) =
+    let (track_lifecycle_changed, track_report_edited, task_completed, task_failed, tracks_touched) =
         sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(ACTIVITY_QUERY)
             .bind(start_ms)
             .bind(end_ms)
-            .bind(exclude_wave)
+            .bind(exclude_track)
             .bind(lifecycle)
             .bind(report)
             .bind(completed)
@@ -220,11 +220,11 @@ pub async fn workspace_activity_window(
             .await?;
 
     Ok(WorkspaceActivityWindow {
-        wave_lifecycle_changed,
-        wave_report_edited,
+        track_lifecycle_changed,
+        track_report_edited,
         task_completed,
         task_failed,
-        waves_touched,
+        tracks_touched,
     })
 }
 
@@ -316,13 +316,13 @@ mod tests {
     #[test]
     fn the_allowlist_spells_the_kernel_s_own_event_kinds() {
         use crate::event::Event;
-        use crate::model::WaveLifecycle;
+        use crate::model::TrackLifecycle;
 
-        let lifecycle = Event::WaveLifecycleChanged {
-            id: crate::ids::WaveId::from("w".to_string()),
+        let lifecycle = Event::TrackLifecycleChanged {
+            id: crate::ids::TrackId::from("w".to_string()),
             area_id: crate::ids::AreaId::from("c".to_string()),
-            from: WaveLifecycle::Draft,
-            to: WaveLifecycle::Planning,
+            from: TrackLifecycle::Draft,
+            to: TrackLifecycle::Planning,
             agent_message: None,
         };
         let completed = Event::TaskCompleted {
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(
             [
                 lifecycle.kind_tag(),
-                "wave.report_edited",
+                "track.report_edited",
                 completed.kind_tag(),
                 failed.kind_tag(),
             ],
@@ -370,9 +370,9 @@ mod tests {
             .unwrap();
         }
 
-        async fn wave(&self, id: &str, area_id: &str) {
+        async fn track(&self, id: &str, area_id: &str) {
             sqlx::query(
-                "INSERT INTO waves(id,area_id,title,sort,lifecycle,created_at,updated_at) \
+                "INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at) \
                  VALUES(?1,?2,?1,1,'draft',1,1)",
             )
             .bind(id)
@@ -389,16 +389,16 @@ mod tests {
         /// emitters actually write is pinned elsewhere — by
         /// `the_allowlist_spells_the_kernel_s_own_event_kinds` above for the
         /// strings, and by `today_summary::the_projection_counts_a_real_report_edit`
-        /// (an end-to-end drive of `POST /api/waves/{id}/report`) for the row
+        /// (an end-to-end drive of `POST /api/tracks/{id}/report`) for the row
         /// shape.
-        async fn event(&self, kind: &str, wave_id: &str, at: i64) {
+        async fn event(&self, kind: &str, track_id: &str, at: i64) {
             sqlx::query(
-                "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_wave) \
-                 VALUES(?1,'{}','user',?2,'wave',?3)",
+                "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+                 VALUES(?1,'{}','user',?2,'track',?3)",
             )
             .bind(kind)
             .bind(at)
-            .bind(wave_id)
+            .bind(track_id)
             .execute(self.repo.pool())
             .await
             .unwrap();
@@ -421,33 +421,34 @@ mod tests {
     async fn a_boundary_event_belongs_to_the_later_day_and_only_to_it() {
         let f = Fixture::new().await;
         f.area("area-user", "user").await;
-        f.wave("wave-1", "area-user").await;
+        f.track("track-1", "area-user").await;
 
         let midnight = 1_700_000_000_000;
         let day = 86_400_000;
-        f.event("wave.report_edited", "wave-1", midnight).await;
+        f.event("track.report_edited", "track-1", midnight).await;
 
         let today = f.window(midnight, midnight + day).await;
-        assert_eq!(today.wave_report_edited, 1, "{today:?}");
-        assert_eq!(today.waves_touched, 1, "{today:?}");
+        assert_eq!(today.track_report_edited, 1, "{today:?}");
+        assert_eq!(today.tracks_touched, 1, "{today:?}");
 
         let yesterday = f.window(midnight - day, midnight).await;
         assert_eq!(
-            yesterday.wave_report_edited, 0,
+            yesterday.track_report_edited, 0,
             "an event at the boundary must not also count for the day that \
              ends there: {yesterday:?}"
         );
-        assert_eq!(yesterday.waves_touched, 0, "{yesterday:?}");
+        assert_eq!(yesterday.tracks_touched, 0, "{yesterday:?}");
 
         // The instant before the boundary belongs to the earlier day, which is
         // what makes the two windows a partition rather than a gap.
-        f.event("wave.report_edited", "wave-1", midnight - 1).await;
+        f.event("track.report_edited", "track-1", midnight - 1)
+            .await;
         assert_eq!(
-            f.window(midnight - day, midnight).await.wave_report_edited,
+            f.window(midnight - day, midnight).await.track_report_edited,
             1
         );
         assert_eq!(
-            f.window(midnight, midnight + day).await.wave_report_edited,
+            f.window(midnight, midnight + day).await.track_report_edited,
             1
         );
     }
@@ -455,14 +456,14 @@ mod tests {
     /// Each allowlisted kind lands in its own field, and a kind outside the
     /// allowlist contributes nothing.
     ///
-    /// The negative is the load-bearing half, and it needs a wave of its own.
+    /// The negative is the load-bearing half, and it needs a track of its own.
     ///
     /// The per-kind columns are `SUM(e.kind = ?n)`, so they are indifferent to
     /// the `kind IN (...)` conjunct — dropping it changes only which rows reach
     /// `COUNT(DISTINCT w.id)`. A first version of this case put its unlisted
-    /// events on waves that already had listed ones, which made `waves_touched`
+    /// events on tracks that already had listed ones, which made `tracks_touched`
     /// indifferent too: **the mutation that deletes the restriction measured
-    /// 8/8 green.** `wave-3` exists so that deleting it counts a wave whose
+    /// 8/8 green.** `track-3` exists so that deleting it counts a track whose
     /// entire day consisted of kinds this projection does not count — and
     /// `harness.item.added` is deliberately one of them, since it is
     /// high-frequency AND pruned after 30 days, i.e. exactly the decay the
@@ -471,34 +472,34 @@ mod tests {
     async fn each_kind_lands_in_its_own_field_and_unlisted_kinds_are_ignored() {
         let f = Fixture::new().await;
         f.area("area-user", "user").await;
-        f.wave("wave-1", "area-user").await;
-        f.wave("wave-2", "area-user").await;
+        f.track("track-1", "area-user").await;
+        f.track("track-2", "area-user").await;
         // The discriminator. It carries ONLY unlisted kinds, so it is the one
-        // wave whose presence in `waves_touched` can distinguish a query that
+        // track whose presence in `tracks_touched` can distinguish a query that
         // restricts by kind from one that does not — see the note below.
-        f.wave("wave-3", "area-user").await;
+        f.track("track-3", "area-user").await;
 
-        f.event("wave.lifecycle_changed", "wave-1", 10).await;
-        f.event("wave.report_edited", "wave-1", 11).await;
-        f.event("wave.report_edited", "wave-2", 12).await;
-        f.event("task.completed", "wave-2", 13).await;
-        f.event("task.failed", "wave-2", 14).await;
-        f.event("harness.item.added", "wave-1", 15).await;
-        f.event("card.updated", "wave-2", 16).await;
-        f.event("harness.item.added", "wave-3", 17).await;
-        f.event("card.updated", "wave-3", 18).await;
+        f.event("track.lifecycle_changed", "track-1", 10).await;
+        f.event("track.report_edited", "track-1", 11).await;
+        f.event("track.report_edited", "track-2", 12).await;
+        f.event("task.completed", "track-2", 13).await;
+        f.event("task.failed", "track-2", 14).await;
+        f.event("harness.item.added", "track-1", 15).await;
+        f.event("card.updated", "track-2", 16).await;
+        f.event("harness.item.added", "track-3", 17).await;
+        f.event("card.updated", "track-3", 18).await;
 
         let window = f.window(0, 100).await;
         assert_eq!(
             window,
             WorkspaceActivityWindow {
-                wave_lifecycle_changed: 1,
-                wave_report_edited: 2,
+                track_lifecycle_changed: 1,
+                track_report_edited: 2,
                 task_completed: 1,
                 task_failed: 1,
-                // Two, not three: `wave-3` had a busy day of kinds this
+                // Two, not three: `track-3` had a busy day of kinds this
                 // projection does not count, and a day of those is not a day.
-                waves_touched: 2,
+                tracks_touched: 2,
             }
         );
         assert!(!window.is_empty());
@@ -508,26 +509,26 @@ mod tests {
     /// The system area is not activity, which is what INV-TODAYDOC-007's
     /// "empty window" is able to mean at all.
     ///
-    /// The launchpad wave lives there, and so does everything the kernel does
+    /// The launchpad track lives there, and so does everything the kernel does
     /// on its own behalf. If these rows counted, no workspace would ever have
     /// an empty day and the gate would be unreachable.
     #[tokio::test]
     async fn only_user_visible_areas_count_as_activity() {
         let f = Fixture::new().await;
         f.area("area-system", "system").await;
-        f.wave("wave-launchpad", "area-system").await;
-        f.event("wave.report_edited", "wave-launchpad", 10).await;
+        f.track("track-launchpad", "area-system").await;
+        f.event("track.report_edited", "track-launchpad", 10).await;
 
         let window = f.window(0, 100).await;
         assert!(
             window.is_empty(),
-            "a system-area wave must not make the day look busy: {window:?}"
+            "a system-area track must not make the day look busy: {window:?}"
         );
     }
 
     /// The reflexive exclusion, driven where it can actually be observed.
     ///
-    /// The wave here sits in a **user** area, so the visibility join lets it
+    /// The track here sits in a **user** area, so the visibility join lets it
     /// through and the exclusion predicate is the only thing that can drop it.
     /// In production it is not: the launchpad is in the system area and the
     /// case above already removes it, which is why the design calls this
@@ -535,23 +536,23 @@ mod tests {
     /// endpoint is the design's own instruction — the alternative was writing
     /// an invariant that cannot be falsified.
     #[tokio::test]
-    async fn reflexive_exclusion_drops_the_named_wave_before_the_visibility_join() {
+    async fn reflexive_exclusion_drops_the_named_track_before_the_visibility_join() {
         let f = Fixture::new().await;
         f.area("area-user", "user").await;
-        f.wave("wave-self", "area-user").await;
-        f.wave("wave-other", "area-user").await;
-        f.event("wave.report_edited", "wave-self", 10).await;
-        f.event("wave.report_edited", "wave-other", 11).await;
+        f.track("track-self", "area-user").await;
+        f.track("track-other", "area-user").await;
+        f.event("track.report_edited", "track-self", 10).await;
+        f.event("track.report_edited", "track-other", 11).await;
 
-        let excluded = workspace_activity_window(f.repo.pool(), 0, 100, Some("wave-self"))
+        let excluded = workspace_activity_window(f.repo.pool(), 0, 100, Some("track-self"))
             .await
             .unwrap();
-        assert_eq!(excluded.wave_report_edited, 1, "{excluded:?}");
-        assert_eq!(excluded.waves_touched, 1, "{excluded:?}");
+        assert_eq!(excluded.track_report_edited, 1, "{excluded:?}");
+        assert_eq!(excluded.tracks_touched, 1, "{excluded:?}");
 
         let kept = f.window(0, 100).await;
         assert_eq!(
-            kept.wave_report_edited, 2,
+            kept.track_report_edited, 2,
             "without the exclusion both rows count — otherwise the case above \
              proves nothing: {kept:?}"
         );

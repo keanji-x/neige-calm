@@ -1,6 +1,6 @@
-use super::{SqlxRepo, area_create_tx, card_create_with_id_tx, card_delete_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, card_create_with_id_tx, card_delete_tx, track_create_tx};
 use crate::db::{RepoOutOfDomain, RepoRead};
-use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme};
+use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme};
 
 async fn seed_card(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
@@ -14,9 +14,9 @@ async fn seed_card(repo: &SqlxRepo) -> String {
     )
     .await
     .unwrap();
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -28,8 +28,8 @@ async fn seed_card(repo: &SqlxRepo) -> String {
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
     .unwrap();
@@ -37,7 +37,7 @@ async fn seed_card(repo: &SqlxRepo) -> String {
         &mut tx,
         "card-cursor".into(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "worker".into(),
             sort: None,

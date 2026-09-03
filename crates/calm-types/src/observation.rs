@@ -12,19 +12,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::{EditAuthor, RatifyDecision};
-use crate::ids::{CardId, WaveId};
+use crate::ids::{CardId, TrackId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Observation {
-    WaveGoal {
+    TrackGoal {
         text: String,
     },
-    /// A `wave.report_edited` the dispatcher decided warrants waking the
+    /// A `track.report_edited` the dispatcher decided warrants waking the
     /// spec (`dispatcher::SPEC_WAKE_AUTHORS` — `user` / `plugin` /
     /// `assistant`, never the spec's own writes).
     ReportEdited {
-        wave_id: WaveId,
+        track_id: TrackId,
         body_sha256: String,
         body: String,
         /// #1252 S0 R1/F2 — who made the edit. The spec system prompt tells
@@ -54,7 +54,7 @@ pub enum Observation {
         error: String,
     },
     WorkerHookStop {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         kind: HookKind,
         #[serde(default)]
@@ -72,7 +72,7 @@ pub enum Observation {
     /// verdict for one gate attempt. Hard-fired: for a gated task this
     /// REPLACES the suppressed worker self-report as the spec's wake-up
     /// (the spec hears the gate, not the claim). `idempotency_key` is
-    /// the task id (`"{wave_id}:{key}"`); `key` is the plan key used in
+    /// the task id (`"{track_id}:{key}"`); `key` is the plan key used in
     /// the turn-text paths (`plan/<key>/gate.log`, `runs/<task.id>.md`).
     TaskGateResult {
         idempotency_key: String,
@@ -86,50 +86,50 @@ pub enum Observation {
         attempt: i64,
     },
     WorkspaceLeased {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         lease_id: String,
         path: String,
     },
     WorkspaceReleased {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         lease_id: String,
     },
     ForgePrMerged {
-        wave_id: WaveId,
+        track_id: TrackId,
         pr_number: u64,
     },
     ForgeScanCompleted {
-        wave_id: WaveId,
+        track_id: TrackId,
         overlapping_prs: Vec<u64>,
     },
     ForgePrOpened {
-        wave_id: WaveId,
+        track_id: TrackId,
         pr_number: u64,
     },
     ForgePrChecks {
-        wave_id: WaveId,
+        track_id: TrackId,
         pr_number: u64,
         conclusion: String,
     },
     ForgeIssueClosed {
-        wave_id: WaveId,
+        track_id: TrackId,
         issue_number: u64,
     },
     WorktreeProvisioned {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         path: String,
     },
     WorktreeCommitted {
-        wave_id: WaveId,
+        track_id: TrackId,
         card_id: CardId,
         commit_sha: String,
         branch: String,
     },
     ReviewRound {
-        wave_id: WaveId,
+        track_id: TrackId,
         phase: String,
         slice_id: String,
         pr_number: Option<u64>,
@@ -139,11 +139,11 @@ pub enum Observation {
         converged: bool,
     },
     RatifyRequested {
-        wave_id: WaveId,
+        track_id: TrackId,
         reason: String,
     },
     RatifyResolved {
-        wave_id: WaveId,
+        track_id: TrackId,
         decision: RatifyDecision,
     },
 }
@@ -173,7 +173,7 @@ impl Observation {
             | Observation::ReviewRound { .. }
             | Observation::RatifyRequested { .. }
             | Observation::RatifyResolved { .. } => true,
-            Observation::WaveGoal { .. }
+            Observation::TrackGoal { .. }
             | Observation::ReportEdited { .. }
             | Observation::WorkspaceLeased { .. }
             | Observation::WorkspaceReleased { .. } => false,
@@ -189,7 +189,7 @@ impl Observation {
 
     pub fn to_turn_text(&self) -> String {
         match self {
-            Observation::WaveGoal { text } => text.clone(),
+            Observation::TrackGoal { text } => text.clone(),
             Observation::UserMessage { text } => format!("User says:\n{text}"),
             // #1252 S0 R1/F2. `None` is only reachable for observations
             // queued before the `author` field existed; it must render the
@@ -198,30 +198,30 @@ impl Observation {
             // today names its author in the same `author = "..."` spelling
             // the spec system prompt uses.
             Observation::ReportEdited { author: None, .. } => {
-                "The user edited the wave report. Re-read the wave state.".to_string()
+                "The user edited the track report. Re-read the track state.".to_string()
             }
             Observation::ReportEdited {
                 author: Some(author),
                 ..
             } => format!(
-                "The wave report was edited (author = \"{}\"). Re-read the wave state.",
+                "The track report was edited (author = \"{}\"). Re-read the track state.",
                 author.wire_str()
             ),
             Observation::TaskCompleted {
                 idempotency_key, ..
             } => format!(
-                "A dispatched task completed (idempotency_key={idempotency_key}). Re-read the wave state to incorporate its result."
+                "A dispatched task completed (idempotency_key={idempotency_key}). Re-read the track state to incorporate its result."
             ),
             Observation::TaskFailed {
                 idempotency_key,
                 error,
             } => format!(
-                "A dispatched task failed (idempotency_key={idempotency_key}): {error}. Re-read the wave state and decide how to proceed."
+                "A dispatched task failed (idempotency_key={idempotency_key}): {error}. Re-read the track state and decide how to proceed."
             ),
             Observation::WorkerHookStop {
                 idempotency_key, ..
             } => format!(
-                "A worker card finished a turn. Re-read the wave state to incorporate any changes.\n(hook_id={idempotency_key})"
+                "A worker card finished a turn. Re-read the track state to incorporate any changes.\n(hook_id={idempotency_key})"
             ),
             // §6.5 turn text. `failing_step` is absent on
             // timeout/infra verdicts (no step sentinel attributed) —
@@ -252,38 +252,38 @@ impl Observation {
                 )
             }
             Observation::WorkspaceLeased { path, .. } => {
-                format!("A worker workspace was provisioned at {path}. Re-read the wave state.")
+                format!("A worker workspace was provisioned at {path}. Re-read the track state.")
             }
             Observation::WorkspaceReleased { .. } => {
-                "A worker workspace lease was released. Re-read the wave state.".to_string()
+                "A worker workspace lease was released. Re-read the track state.".to_string()
             }
             Observation::ForgePrMerged { pr_number, .. } => {
-                format!("Forge PR #{pr_number} was merged. Re-read the wave state.")
+                format!("Forge PR #{pr_number} was merged. Re-read the track state.")
             }
             Observation::ForgeScanCompleted {
                 overlapping_prs, ..
             } => format!(
-                "Forge scan completed with overlapping PRs {:?}. Re-read the wave state.",
+                "Forge scan completed with overlapping PRs {:?}. Re-read the track state.",
                 overlapping_prs
             ),
             Observation::ForgePrOpened { pr_number, .. } => {
-                format!("Forge PR #{pr_number} was opened. Re-read the wave state.")
+                format!("Forge PR #{pr_number} was opened. Re-read the track state.")
             }
             Observation::ForgePrChecks {
                 pr_number,
                 conclusion,
                 ..
             } => format!(
-                "Forge checks completed for PR #{pr_number} with conclusion {conclusion}. Re-read the wave state."
+                "Forge checks completed for PR #{pr_number} with conclusion {conclusion}. Re-read the track state."
             ),
             Observation::ForgeIssueClosed { issue_number, .. } => {
-                format!("Forge issue #{issue_number} was closed. Re-read the wave state.")
+                format!("Forge issue #{issue_number} was closed. Re-read the track state.")
             }
             Observation::WorktreeProvisioned { path, .. } => {
-                format!("A worker git worktree was provisioned at {path}. Re-read the wave state.")
+                format!("A worker git worktree was provisioned at {path}. Re-read the track state.")
             }
             Observation::WorktreeCommitted { branch, .. } => {
-                format!("A worker git worktree committed branch {branch}. Re-read the wave state.")
+                format!("A worker git worktree committed branch {branch}. Re-read the track state.")
             }
             Observation::ReviewRound {
                 phase,
@@ -304,11 +304,11 @@ impl Observation {
                     .map(|sha| format!(" at {sha}"))
                     .unwrap_or_default();
                 format!(
-                    "Review round {n}/{cap} for {subject}{head} recorded converged={converged}. Re-read the wave state."
+                    "Review round {n}/{cap} for {subject}{head} recorded converged={converged}. Re-read the track state."
                 )
             }
             Observation::RatifyRequested { reason, .. } => {
-                format!("Ratification was requested: {reason}. Re-read the wave state.")
+                format!("Ratification was requested: {reason}. Re-read the track state.")
             }
             Observation::RatifyResolved { decision, .. } => {
                 let decision = match decision {
@@ -316,7 +316,7 @@ impl Observation {
                     RatifyDecision::Deny => "deny",
                 };
                 format!(
-                    "Ratification was resolved with decision={decision}. Re-read the wave state."
+                    "Ratification was resolved with decision={decision}. Re-read the track state."
                 )
             }
         }
@@ -351,7 +351,7 @@ mod tests {
 
     fn report_edited(author: Option<EditAuthor>) -> Observation {
         Observation::ReportEdited {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             body_sha256: "sha".into(),
             body: "body".into(),
             author,
@@ -359,7 +359,7 @@ mod tests {
     }
 
     /// #1252 S0 R1/F2 — the spec system prompt tells the agent the waking
-    /// `wave.report_edited` carries an `author` of `user` / `plugin` /
+    /// `track.report_edited` carries an `author` of `user` / `plugin` /
     /// `assistant`. The turn text used to hardcode "The user edited …", so a
     /// plugin- or assistant-authored edit woke the spec with a sentence that
     /// contradicted the event and the prompt both.
@@ -392,7 +392,7 @@ mod tests {
     fn legacy_report_edited_without_author_deserializes_and_keeps_old_text() {
         let legacy = serde_json::json!({
             "type": "report_edited",
-            "wave_id": "wave-1",
+            "track_id": "track-1",
             "body_sha256": "sha",
             "body": "body",
         });
@@ -401,14 +401,14 @@ mod tests {
         assert_eq!(obs, report_edited(None));
         assert_eq!(
             obs.to_turn_text(),
-            "The user edited the wave report. Re-read the wave state."
+            "The user edited the track report. Re-read the track state."
         );
     }
 
     #[test]
     fn review_and_ratify_observations_are_hard_fire() {
         let review = Observation::ReviewRound {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             phase: "impl".into(),
             slice_id: "5b".into(),
             pr_number: Some(760),
@@ -426,14 +426,14 @@ mod tests {
         );
 
         let requested = Observation::RatifyRequested {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             reason: "cap_exhausted".into(),
         };
         assert!(requested.is_hard_fire());
         assert!(requested.to_turn_text().contains("cap_exhausted"));
 
         let resolved = Observation::RatifyResolved {
-            wave_id: WaveId::from("wave-1"),
+            track_id: TrackId::from("track-1"),
             decision: RatifyDecision::Grant,
         };
         assert!(resolved.is_hard_fire());

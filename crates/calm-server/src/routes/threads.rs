@@ -62,7 +62,7 @@ pub async fn resolve_card_for_thread(
         thread_id,
         card_id,
         role,
-        wave_id: Some(card.wave_id.to_string()),
+        track_id: Some(card.track_id.to_string()),
     }))
 }
 
@@ -86,5 +86,5 @@ pub struct ThreadCardResolution {
     pub thread_id: String,
     pub card_id: String,
     pub role: CardRole,
-    pub wave_id: Option<String>,
+    pub track_id: Option<String>,
 }

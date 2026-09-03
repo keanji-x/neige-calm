@@ -9,22 +9,22 @@
 #     5. TOC 抽取两套（report-outline.ts mdast ↔ file-viewer-markdown-toc.tsx 手写正则）
 #     6. area 调色板 6 色（NewTaskForm ↔ Sidebar，取色策略刻意不同）
 #     7. readHostThemeRgb()（NewTaskForm ↔ useTodayTerminal）
-#     8. 可编辑标题（Area EditableTitle ↔ Wave 行内重命名；#288 抑制器只在 Area 侧）
-#     9. pin 按钮（Sidebar 内部 WaveRow ↔ shared/components/WaveRow）
-#    10. "Delete wave?" 确认文案（Area.tsx ↔ Sidebar.tsx）
-#   死代码（标注「不迁移」）: WaveContext、useSpecCurrentRun.latestTool、isCompletedMessageItem 的未用参数
+#     8. 可编辑标题（Area EditableTitle ↔ Track 行内重命名；#288 抑制器只在 Area 侧）
+#     9. pin 按钮（Sidebar 内部 TrackRow ↔ shared/components/TrackRow）
+#    10. "Delete track?" 确认文案（Area.tsx ↔ Sidebar.tsx）
+#   死代码（标注「不迁移」）: TrackContext、useSpecCurrentRun.latestTool、isCompletedMessageItem 的未用参数
 #
 # 覆盖文件:
-#   pages/: WaveReportPage, report-blocks/{index,candles,table,app,task}, report-outline,
+#   pages/: TrackReportPage, report-blocks/{index,candles,table,app,task}, report-outline,
 #           report-link-ids, SpecConversation, specChatItems, useSpecChatHistory,
-#           useSpecCurrentRun, Today, Area, Wave, Settings, _shared
-#   shared/components/: Sidebar, NewTaskForm, DirectoryPicker, SchemaForm, AddPanel, WaveRow,
-#           WaveCard, WaveGlyph, WaveLifecycleBadge, CardStatusDot, CardExitBadge, ProgressBar,
-#           Crumbs, ConnectionIndicator, TitleBar, WaveContext, helpers, issueUrl, 图标组件
+#           useSpecCurrentRun, Today, Area, Track, Settings, _shared
+#   shared/components/: Sidebar, NewTaskForm, DirectoryPicker, SchemaForm, AddPanel, TrackRow,
+#           TrackCard, TrackGlyph, TrackLifecycleBadge, CardStatusDot, CardExitBadge, ProgressBar,
+#           Crumbs, ConnectionIndicator, TitleBar, TrackContext, helpers, issueUrl, 图标组件
 #   hooks/useTodayTerminal.ts ; editor/** (README/index/types) ; LoginPage.tsx
 #   （calm.css 的 report 排版/布局片段作为契约出处一并引用）
-# 不覆盖(其它 agent 负责): ui/, app/, cards/, XtermView, WaveGrid, WaveList, input/,
-#       wave-fs-viewers/, hooks/useOverlayState*, eslint-rules/, e2e/
+# 不覆盖(其它 agent 负责): ui/, app/, cards/, XtermView, TrackGrid, TrackList, input/,
+#       track-fs-viewers/, hooks/useOverlayState*, eslint-rules/, e2e/
 
 # ============================================================
 # §1 report 页外壳 —— 三栏 grid / rail / 抽屉 / 活动面板
@@ -37,11 +37,11 @@
     report 页必须是单一 grid 容器的三栏布局(rail | center | drawer),折叠态用
     grid-template-columns 归零而不是卸载节点;抽屉关闭时第三栏宽度为 0 但 SpecConversation 仍挂载。
   why: >
-    calm.css 注释与 WaveReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
+    calm.css 注释与 TrackReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
     (transition: grid-template-columns);测试 "opens the drawer without unmounting the report document"
     与 "keeps the draft alive when the drawer closes and reopens" 锁定"持久挂载"语义 —— 卸载会丢草稿。
-  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:903-910,1060-1075
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2123
+  source: web/src/calm.css:1704-1726 + web/src/pages/TrackReportPage.tsx:903-910,1060-1075
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2123
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -110,8 +110,8 @@
   why: >
     折叠会 hidden 掉当前按钮,焦点会掉到 body;railFocusTransferPending ref 保证只有用户操作路径转移焦点,
     首屏 / localStorage 恢复不抢焦点。
-  source: web/src/pages/WaveReportPage.tsx:859-872,988-1013
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1069-1098
+  source: web/src/pages/TrackReportPage.tsx:859-872,988-1013
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:1069-1098
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -126,10 +126,10 @@
     rail 折叠状态、Outline/Backlinks/Files 三个分区各自的折叠状态、以及会话抽屉开合状态,必须分别持久化到
     localStorage 的五个独立 key,跨 remount 恢复。
   why: >
-    五个 key 常量在 WaveReportPage 顶部逐一声明;测试 "persists each collapsible rail section independently"
+    五个 key 常量在 TrackReportPage 顶部逐一声明;测试 "persists each collapsible rail section independently"
     与 "persists the drawer state across remounts" 锁定"独立"这一点(合并成一个 key 会丢失细粒度)。
-  source: web/src/pages/WaveReportPage.tsx:57-64,130-137
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1090,2201
+  source: web/src/pages/TrackReportPage.tsx:57-64,130-137
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:1090,2201
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -146,8 +146,8 @@
   why: >
     源码注释 "localStorage may throw in private browsing or under quota pressure";三个 reader 的
     fallback 值各不相同且是有意的(窄屏默认收 rail、抽屉默认关)。
-  source: web/src/pages/WaveReportPage.tsx:96-137
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1128
+  source: web/src/pages/TrackReportPage.tsx:96-137
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:1128
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -163,8 +163,8 @@
     且当服务端还有更早分页(hasEarlier)时文案必须降级为"At least N earlier turns"。
   why: >
     "does not claim an exact omitted count while earlier pages remain" —— 未加载完的历史里精确计数是谎言。
-  source: web/src/pages/WaveReportPage.tsx:192-243
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:462,491
+  source: web/src/pages/TrackReportPage.tsx:192-243
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:462,491
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -177,12 +177,12 @@
   family: report-shell
   statement: >
     活动面板有三个互斥空/载入态:初次加载中("Loading conversation activity…")、有 spec 卡但无 user 轮次
-    (一个"打开会话"图标按钮)、以及无 spec 卡("This wave has no Spec Agent.")。
+    (一个"打开会话"图标按钮)、以及无 spec 卡("This track has no Spec Agent.")。
   why: >
     "distinguishes both activity empty states" 与 "does not claim the conversation is empty before
     initial history loads" —— 加载中误报空态是曾经的 bug。
-  source: web/src/pages/WaveReportPage.tsx:214-262
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:438,521
+  source: web/src/pages/TrackReportPage.tsx:214-262
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:438,521
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -198,8 +198,8 @@
   why: >
     面板用 `.hide` class 做位移淡出而非 display:none,节点仍在 DOM 与 AT 树里;不设 tabIndex 会留下
     不可见的 tab 停靠点。SpecConversation 开抽屉时把焦点接管到 textarea(见 INV-SPECCONVO-004)。
-  source: web/src/pages/WaveReportPage.tsx:240-245,266,291
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:346
+  source: web/src/pages/TrackReportPage.tsx:240-245,266,291
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:346
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -215,8 +215,8 @@
   why: >
     两条入口语义不同(openConversationAt vs openConversation);"does not repeat target scrolling when
     reopened without a target" 锁定"目标只消费一次"。
-  source: web/src/pages/WaveReportPage.tsx:780-796
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:346,389
+  source: web/src/pages/TrackReportPage.tsx:780-796
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:346,389
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -231,7 +231,7 @@
     切换 spec 卡(specCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
-  source: web/src/pages/WaveReportPage.tsx:899-901
+  source: web/src/pages/TrackReportPage.tsx:899-901
   authoritative_test: NONE
   owner_slice: features/report/shell
   intentional_omission: false
@@ -244,12 +244,12 @@
   kind: invariant
   family: report-shell
   statement: >
-    wave.id 变化时必须在 render 阶段同步把 selectedFilePath 重置为 'report.md',不得放进 useEffect。
+    track.id 变化时必须在 render 阶段同步把 selectedFilePath 重置为 'report.md',不得放进 useEffect。
   why: >
-    源码注释:"Sync reset during render so a new wave never renders with the old file path." effect 版本会
-    先用旧 path + 新 waveId 发一次请求(测试 "does not query the previous file path under a new wave id")。
-  source: web/src/pages/WaveReportPage.tsx:748-752
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1933,1986
+    源码注释:"Sync reset during render so a new track never renders with the old file path." effect 版本会
+    先用旧 path + 新 trackId 发一次请求(测试 "does not query the previous file path under a new track id")。
+  source: web/src/pages/TrackReportPage.tsx:748-752
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:1933,1986
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -261,14 +261,14 @@
   kind: capability
   family: report-shell
   statement: >
-    同一 wave 上出现多张 wave-report 卡时,必须显示 `DuplicateReportBanner`
+    同一 track 上出现多张 track-report 卡时,必须显示 `DuplicateReportBanner`
     "Multiple report cards found. Showing the earliest." 横幅,并渲染 `selectReportCards`
     按 sort 升序排完后的第一张(sort 最小的那一张)。
   why: >
-    后端有 `idx_cards_one_report_per_wave` 唯一索引,但历史数据/竞态仍可能出现多张;静默挑一张会让用户
+    后端有 `idx_cards_one_report_per_track` 唯一索引,但历史数据/竞态仍可能出现多张;静默挑一张会让用户
     看到"报告内容莫名其妙变了"。
-  source: web/src/pages/WaveReportPage.tsx:118-120,197-202,779-781,1035-1037
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1040,1051,1054-1055
+  source: web/src/pages/TrackReportPage.tsx:118-120,197-202,779-781,1035-1037
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:1040,1051,1054-1055
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -284,8 +284,8 @@
     "版本不支持,请刷新",且大纲面板同步显示 "Outline unavailable for this report version."
   why: >
     前端渲染未来 schema 的块会静默出错;显式版本墙 + 大纲同步降级,避免用户以为报告是空的。
-  source: web/src/pages/WaveReportPage.tsx:308-313,546-551,1040-1043
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:855-888
+  source: web/src/pages/TrackReportPage.tsx:308-313,546-551,1040-1043
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:855-888
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -301,8 +301,8 @@
   why: >
     可滚动区域不可聚焦则键盘用户无法翻页;两处都带 eslint-disable 注释显式声明这是有意为之
     ("scrollable report document must be keyboard-focusable")。
-  source: web/src/pages/WaveReportPage.tsx:913-918 + web/src/pages/SpecConversation.tsx:568-574
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:318
+  source: web/src/pages/TrackReportPage.tsx:913-918 + web/src/pages/SpecConversation.tsx:568-574
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:318
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -318,8 +318,8 @@
     必须停用(enabled={!filesCollapsed})。
   why: >
     "toggles dotfile rows in the Files rail without hiding siblings";折叠时停查询避免为看不见的面板拉取列表。
-  source: web/src/pages/WaveReportPage.tsx:943-967
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:943
+  source: web/src/pages/TrackReportPage.tsx:943-967
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:943
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -334,8 +334,8 @@
     rail 三个分区的顺序必须是 Outline → Backlinks → Files,且不再有 Event 分区。
   why: >
     "renders the three rail sections in order with Event line removed" —— Event 行是被显式删掉的历史遗留。
-  source: web/src/pages/WaveReportPage.tsx:814-884
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1144
+  source: web/src/pages/TrackReportPage.tsx:814-884
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:1144
   owner_slice: features/report/shell
   intentional_omission: true
   runtime_layer: features
@@ -350,8 +350,8 @@
     报告页头必须有署名行(固定 "Spec Agent" 头像 + 相对时间 updatedAt),aria-label="Report metadata"。
   why: >
     报告是 agent 的产出物,署名把"谁写的/多久前"固定在文档顶部;测试锁定相对时间格式化。
-  source: web/src/pages/WaveReportPage.tsx:176-189,993-994
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:905
+  source: web/src/pages/TrackReportPage.tsx:176-189,993-994
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:905
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -389,7 +389,7 @@
   why: >
     dispatcher 里逐 case 手写该 class;prose 走 616px 正文测量,图表类走 748px —— 这是"图/表是版面事件"的实现面。
   source: web/src/pages/report-blocks/index.tsx:113-189
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:752
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:752
   owner_slice: features/report/blocks
   intentional_omission: false
   runtime_layer: features
@@ -404,8 +404,8 @@
     深链到达时高亮动画必须先移除再在 requestAnimationFrame 中重新添加 `report-block--highlight`。
   why: >
     连续点击同一目标时不 remove/re-add,CSS animation 不会重放,用户看不到第二次高亮。
-  source: web/src/pages/WaveReportPage.tsx:172-179 + web/src/calm.css:2187-2189
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:679
+  source: web/src/pages/TrackReportPage.tsx:172-179 + web/src/calm.css:2187-2189
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:679
   owner_slice: features/report/layout
   intentional_omission: false
   runtime_layer: features
@@ -442,8 +442,8 @@
     前端 zod schema 必须与 Rust 侧的上限/形状严格对齐(caps 与 strict shape),不得放宽。
   why: >
     测试名 "enforces the Rust-parity caps and strict shapes" —— 前端宽于后端会渲染出后端永远拒收的东西。
-    schema 定义来自 cards/builtins/wave-report，由 report-blocks 渲染入口消费。
-  source: web/src/pages/report-blocks/index.tsx:15-27; web/src/cards/builtins/wave-report.tsx:26-163
+    schema 定义来自 cards/builtins/track-report，由 report-blocks 渲染入口消费。
+  source: web/src/pages/report-blocks/index.tsx:15-27; web/src/cards/builtins/track-report.tsx:26-163
   authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:565
   owner_slice: features/report/blocks
   intentional_omission: false
@@ -461,7 +461,7 @@
     "degrades an unknown block kind to a placeholder without dropping siblings" —— 深链锚点和大纲编号依赖
     每个块都在 DOM 里占位。
   source: web/src/pages/report-blocks/index.tsx:58-64
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:822
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:822
   owner_slice: features/report/blocks
   intentional_omission: false
   runtime_layer: features
@@ -802,13 +802,13 @@
   statement: >
     task 卡渲染目标、完成条件、排队/执行状态与诊断；等待人工放行时提供按钮。墓碑形态
     显示「不做」记录及 declared_by + tombstoned_by 双署名审计线索，并把撤回记录与恢复
-    自动化作为两个独立按钮。双署名只在同一个 wave 内成立：fork 复制块时两个署名一起
+    自动化作为两个独立按钮。双署名只在同一个 track 内成立：fork 复制块时两个署名一起
     归一化为 "spec"（985-doc-as-plan.md §7.2 / #1111），从模板 fork 出来的墓碑一律
     显示成 AI 留下的。
   why: >
     三句对外概念契约要求系统署名不成为输入或 UI 名词；状态来自读时投影，已交付卡只读。
-  source: web/src/pages/report-blocks/task.tsx:126-184 + web/src/pages/WaveReportPage.tsx:436-471
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:891
+  source: web/src/pages/report-blocks/task.tsx:126-184 + web/src/pages/TrackReportPage.tsx:436-471
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:891
   owner_slice: features/report/blocks
   intentional_omission: false
   runtime_layer: features
@@ -825,7 +825,7 @@
   why: >
     状态投影是服务端 (#985) 的职责；前端重算会与服务端裁决漂移，但必须如实显示服务端投影。
   source: web/src/pages/report-blocks/task.tsx:31-45,121-123,162-177
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:891
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:891
   owner_slice: features/report/blocks
   intentional_omission: false
   runtime_layer: features
@@ -876,7 +876,7 @@
   kind: invariant
   family: report-links
   statement: >
-    `neige://wave/<id>` 必须渲染为 TanStack Router 的 `<Link to="/wave/$waveId">` 而不是原生 <a>,
+    `neige://wave/<id>` 必须渲染为 TanStack Router 的 `<Link to="/track/$trackId">` 而不是原生 <a>,
     以便解析 basepath;非 neige 链接保持原生 <a>。
   why: >
     专门有一个真路由测试文件锁定 "resolves the route path, basepath, params, and hash from Link.to" ——
@@ -898,8 +898,8 @@
   why: >
     "renders a neige link in a flat-body report as an in-app link" + 路由测试的
     "resolves links from the production flat-report fallback"。
-  source: web/src/pages/WaveReportPage.tsx:422-443
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2382 + web/src/pages/report-blocks/report-links-router.test.tsx:81
+  source: web/src/pages/TrackReportPage.tsx:422-443
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2382 + web/src/pages/report-blocks/report-links-router.test.tsx:81
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -916,8 +916,8 @@
     "does not scroll again when only the blocks array identity changes" —— 每次轮询回来的新数组引用会让
     页面反复自动跳走。同时 "scrolls when the hash target arrives after the report starts loading" 要求
     块 id 变化时能重跑一次。
-  source: web/src/pages/WaveReportPage.tsx:464-470
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2500,2533
+  source: web/src/pages/TrackReportPage.tsx:464-470
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2500,2533
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -932,8 +932,8 @@
     hash 指向不存在的块时必须静默不动(revealReportBlock 早退),页面照常渲染。
   why: >
     "renders normally when the hash names a missing block" —— 报告块会随 agent 改写消失,旧链接不能炸页面。
-  source: web/src/pages/WaveReportPage.tsx:166-173
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2470
+  source: web/src/pages/TrackReportPage.tsx:166-173
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2470
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -949,8 +949,8 @@
   why: >
     源码注释:"Deliberately bypass TanStack Router: this local scroll marker does not need to trigger route
     state or the deep-link arrival effect." 走路由会二次触发到达 effect 并污染历史栈。
-  source: web/src/pages/WaveReportPage.tsx:560-573
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:679
+  source: web/src/pages/TrackReportPage.tsx:560-573
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:679
   owner_slice: features/report/shell
   intentional_omission: true
   runtime_layer: features
@@ -962,12 +962,12 @@
   kind: capability
   family: report-backlinks
   statement: >
-    反链按来源 wave 分组渲染,链接带来源块锚点(hash=src_block_id);来源即当前 wave 时组标题必须显示
-    "This wave (self-reference)"。
+    反链按来源 track 分组渲染,链接带来源块锚点(hash=src_block_id);来源即当前 track 时组标题必须显示
+    "This track (self-reference)"。
   why: >
-    "labels self-references distinctly" —— 自引用显示 wave 自己的标题会让人以为是别的 wave。
-  source: web/src/pages/WaveReportPage.tsx:628-700
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2229,2324
+    "labels self-references distinctly" —— 自引用显示 track 自己的标题会让人以为是别的 track。
+  source: web/src/pages/TrackReportPage.tsx:628-700
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2229,2324
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -983,8 +983,8 @@
     没有 quote 时退回 backlink.label。
   why: >
     引文是服务端(#975)扫描出的片段,前端只负责三段式 wire;省略号标记截断位置,漏掉会让用户以为引文是完整句子。
-  source: web/src/pages/WaveReportPage.tsx:613-625
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2229
+  source: web/src/pages/TrackReportPage.tsx:613-625
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2229
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -1002,8 +1002,8 @@
     #1148 第三轮:原来第三段引的 846 是 `pending: taskActionMutation.isPending`,与本条无关;
     「只在当前报告确有结构化 blocks 时」的真载体是 949-952 那个
     `hasRenderedBlocks={reportCard?.blocks != null}` 的传参点,已重指。
-  source: web/src/pages/WaveReportPage.tsx:637-642,704-708,949-952
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2559,2596,2618
+  source: web/src/pages/TrackReportPage.tsx:637-642,704-708,949-952
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2559,2596,2618
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -1020,8 +1020,8 @@
   why: >
     "keeps the backlinks section visible with an empty state" + "surfaces backlink loading errors inline" ——
     出错时显示"没有反链"会让用户以为数据真的空。
-  source: web/src/pages/WaveReportPage.tsx:660-678
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2370,2462
+  source: web/src/pages/TrackReportPage.tsx:660-678
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:2370,2462
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -1041,8 +1041,8 @@
   why: >
     "keeps the draft when the persistently mounted drawer closes and reopens" —— 用户打字到一半去看报告
     再回来,草稿没了是最刺痛的丢失。
-  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/WaveReportPage.tsx:1058-1073
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:579 + web/src/pages/WaveReportPage.test.tsx:2182
+  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/TrackReportPage.tsx:1058-1073
+  authoritative_test: web/src/pages/SpecConversation.test.tsx:579 + web/src/pages/TrackReportPage.test.tsx:2182
   owner_slice: features/spec/conversation
   intentional_omission: false
   runtime_layer: features
@@ -1055,7 +1055,7 @@
   family: spec-conversation
   statement: >
     状态芯片与 Reset 按钮只在抽屉打开且存在 spec 卡时渲染;整个输入栏(composer)在无 spec 卡时不渲染,
-    正文改为 "Spec Agent is unavailable for this wave."
+    正文改为 "Spec Agent is unavailable for this track."
   why: >
     "shows the status chip and Reset only while the drawer is open" + "renders an unavailable empty state
     and no composer without a spec card" —— 关闭的抽屉里留活控件会被 tab 到。
@@ -1130,7 +1130,7 @@
   why: >
     目标可能已被分页挤出窗口;不消费目标会在下次 rerender 反复重滚(测试 "does not repeat target scrolling")。
   source: web/src/pages/SpecConversation.tsx:370-386,602-606
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:389
+  authoritative_test: web/src/pages/TrackReportPage.test.tsx:389
   owner_slice: features/spec/conversation
   intentional_omission: false
   runtime_layer: features
@@ -1776,8 +1776,8 @@
   kind: invariant
   family: spec-chat-items
   statement: >
-    用户消息解析必须先剥掉以 "## Wave state changes since your last turn" 开头、以 "\n\n---\n\n" 结束的
-    wave diff 前置块,再找 "User says:\n" 标记;标记之后的全部文本(含后续系统观察)都算气泡内容。
+    用户消息解析必须先剥掉以 "## Track state changes since your last turn" 开头、以 "\n\n---\n\n" 结束的
+    track diff 前置块,再找 "User says:\n" 标记;标记之后的全部文本(含后续系统观察)都算气泡内容。
   why: >
     源码注释:"Batched turns can append system observations after the user text; v1 intentionally keeps
     everything after the first marker as the bubble." diff 块是内核注入的上下文,不是用户说的话。
@@ -1796,11 +1796,11 @@
   statement: >
     没有 "User says:" 标记的用户消息,若以 SYSTEM_LABELS 表中任一前缀开头,必须归为 system 条目并带该
     前缀映射的短标签;否则归为 user 且 clamp=true。前缀条目数不设上限(同一标签可有多条句式前缀:
-    "报告被编辑" 就同时收 "The user edited the wave report" 与带作者的 "The wave report was edited"),
+    "报告被编辑" 就同时收 "The user edited the track report" 与带作者的 "The track report was edited"),
     但标签集合恒为四类:worker 完成/报告被编辑/任务完成/任务失败。
   why: >
-    这四类是内核代用户注入的系统提示,显示成"你说的话"会误导;剩下的无标记文本(如 wave-goal)是长文,
-    默认折叠("renders wave-goal fallback as a clamped user bubble")。内核对同一类观察可能换句式
+    这四类是内核代用户注入的系统提示,显示成"你说的话"会误导;剩下的无标记文本(如 track-goal)是长文,
+    默认折叠("renders track-goal fallback as a clamped user bubble")。内核对同一类观察可能换句式
     (#1252 给 report_edited 加了 author),所以约束落在标签集合上,而不是前缀条数。
   source: web/src/pages/specChatItems.ts:83-95,206-228
   authoritative_test: web/src/pages/specChatItems.test.ts:123
@@ -1905,10 +1905,10 @@
   kind: invariant
   family: today-calendar
   statement: >
-    `activeWavesOn` 的判据是区间重叠且端点闭合:`createdAt <= endOfDay(day) && (terminalAt ?? nowMs) >= startOfDay(day)`;
+    `activeTracksOn` 的判据是区间重叠且端点闭合:`createdAt <= endOfDay(day) && (terminalAt ?? nowMs) >= startOfDay(day)`;
     排序按 createdAt 升序、id 做稳定 tiebreak。
   why: >
-    源码注释:"inclusive endpoints … so a wave created at 23:59 still surfaces on that day even if its first
+    源码注释:"inclusive endpoints … so a track created at 23:59 still surfaces on that day even if its first
     card lands a millisecond later";升序 = 最老的点在最左,"matches how the eye scans"。
   source: web/src/pages/Today.tsx:79-108
   authoritative_test: web/src/pages/Today.test.tsx:68,84,98,107
@@ -1923,11 +1923,11 @@
   kind: invariant
   family: today-calendar
   statement: >
-    小时级排程事件列表(CalEvent[])目前恒为空数组,是留给未来排程插件的接入点;它与"活跃 wave"两条来源
+    小时级排程事件列表(CalEvent[])目前恒为空数组,是留给未来排程插件的接入点;它与"活跃 track"两条来源
     必须并存于同一议程,不得互相取代。
   why: >
     源码注释:"the mockup ported a synthetic SURF_SCHEDULE … under real kernel data those ids never appear"
-    + "both lists co-exist in the agenda so a day with scheduled work *and* an open wave shows both rather
+    + "both lists co-exist in the agenda so a day with scheduled work *and* an open track shows both rather
     than letting the schedule layer monopolise the surface." 这是"故意留空"的接缝,重写时极易被当成死代码删掉。
   source: web/src/pages/Today.tsx:23-37,147-153,449-460,515-529
   authoritative_test: NONE
@@ -1942,10 +1942,10 @@
   kind: invariant
   family: today-calendar
   statement: >
-    周/月格子的圆点必须先合并"排程事件"与"活跃 wave"两个来源并按 wave.id 去重,再截断:周视图最多 4 个点,
+    周/月格子的圆点必须先合并"排程事件"与"活跃 track"两个来源并按 track.id 去重,再截断:周视图最多 4 个点,
     月视图最多 3 个。
   why: >
-    "caps week dots at 4 and month dots at 3 per cell" —— 不去重会让同一个 wave 画两个点;不截断会撑破格子。
+    "caps week dots at 4 and month dots at 3 per cell" —— 不去重会让同一个 track 画两个点;不截断会撑破格子。
   source: web/src/pages/Today.tsx:570-608,672-711
   authoritative_test: web/src/pages/Today.test.tsx:398,421
   owner_slice: features/today/page
@@ -1959,10 +1959,10 @@
   kind: capability
   family: today-calendar
   statement: >
-    议程行有两种布局变体:排程事件(有 hourLabel)保留 40px 时间槽;wave 行(无 hourLabel)去掉时间槽、
-    加 `cal-event--wave` 修饰,并在标题下方显示 lifecycleLabel,两行都单行省略号截断。
+    议程行有两种布局变体:排程事件(有 hourLabel)保留 40px 时间槽;track 行(无 hourLabel)去掉时间槽、
+    加 `cal-event--track` 修饰,并在标题下方显示 lifecycleLabel,两行都单行省略号截断。
   why: >
-    源码注释:"waves are day-level, not hour-bucketed; the empty 40px column made the area bar look stranded"
+    源码注释:"tracks are day-level, not hour-bucketed; the empty 40px column made the area bar look stranded"
     + "Both lines clamp … so a long title / status string can't reflow the rail."
   source: web/src/pages/Today.tsx:181-282
   authoritative_test: web/src/pages/Today.test.tsx:248,343
@@ -1978,7 +1978,7 @@
   family: today-calendar
   statement: >
     议程行右侧的 waiting/running 小圆点是纯视觉冗余(aria-hidden),完整的 lifecycle 短语必须同时折进
-    按钮的 aria-label,格式为 "Wave <title>[, waiting on you][, running], <lifecycle>, in area <area>"。
+    按钮的 aria-label,格式为 "Track <title>[, waiting on you][, running], <lifecycle>, in area <area>"。
   why: >
     源码注释:"it's redundant with the lifecycle text but lets a colorblind / fast-scanning eye spot
     blocked / running rows … The full lifecycle phrase is still folded into `aria-label` so screen readers
@@ -1998,10 +1998,10 @@
   statement: >
     日历的 lifecycle 文案必须复用 `lifecycleLabel()`,不得另建映射表。
   why: >
-    源码注释:"Reuse the canonical lifecycle phrase so the calendar agrees with <WaveLifecycleBadge> /
+    源码注释:"Reuse the canonical lifecycle phrase so the calendar agrees with <TrackLifecycleBadge> /
     Area buckets — no parallel mapping table."
   source: web/src/pages/Today.tsx:222-224
-  authoritative_test: web/src/shared/components/WaveLifecycleBadge.test.tsx:35
+  authoritative_test: web/src/shared/components/TrackLifecycleBadge.test.tsx:35
   owner_slice: features/today/page
   intentional_omission: false
   runtime_layer: features
@@ -2014,9 +2014,9 @@
   family: today-calendar
   statement: >
     日历支持周/月两个视图(aria-pressed 切换)、上/下周与上/下月导航、点选某天、以及"Nothing scheduled."
-    空态(排程事件与活跃 wave 都为空时);月视图必须裁掉最后一整行全是他月的空行。
+    空态(排程事件与活跃 track 都为空时);月视图必须裁掉最后一整行全是他月的空行。
   why: >
-    "shows the empty state on a day with no active waves and no events";裁行的原因在源码注释里:
+    "shows the empty state on a day with no active tracks and no events";裁行的原因在源码注释里:
     "avoid a dangling empty row"。
   source: web/src/pages/Today.tsx:468-533,638-645
   authoritative_test: web/src/pages/Today.test.tsx:169,370
@@ -2050,7 +2050,7 @@
   statement: >
     Today 时钟每秒刷新,显示 12 小时制 + AM/PM + 星期全称,以及 running 与 waiting 两个计数。
   why: >
-    源码注释(#254):waiting 用的是与 Sidebar "Waiting on you" 完全相同的 `waveNeedsUserAttention`
+    源码注释(#254):waiting 用的是与 Sidebar "Waiting on you" 完全相同的 `trackNeedsUserAttention`
     谓词 —— "so the two surfaces agree on what counts"。
   source: web/src/pages/Today.tsx:381-423
   authoritative_test: NONE
@@ -2122,11 +2122,11 @@
   kind: invariant
   family: today-terminal-hook
   statement: >
-    引导链必须幂等复用同一套资源:system area(内核单例,#175)→ 标题为 'Today' 的内部 wave → 该 wave 下
+    引导链必须幂等复用同一套资源:system area(内核单例,#175)→ 标题为 'Today' 的内部 track → 该 track 下
     第一张带 terminal_id 的终端卡;只有这三步都落空才创建新卡。
   why: >
     源码注释:"so the kernel doesn't accumulate orphan cards";system area 被 `GET /api/areas` 过滤掉,
-    用户看不见,所以按标题查 wave 没有命名冲突风险。
+    用户看不见,所以按标题查 track 没有命名冲突风险。
   source: web/src/hooks/useTodayTerminal.ts:86-137,165-197
   authoritative_test: NONE
   owner_slice: features/today/terminal
@@ -2142,7 +2142,7 @@
   statement: >
     inFlightRef 必须保证同一时刻只有一次解析在跑;整条链只在一个 async resolver 里完成,不拆成多个 mutation。
   why: >
-    源码注释:"the 'ensureSystemArea → ensure TodayWave → ensureTerminalCard' chain is read-then-write three
+    源码注释:"the 'ensureSystemArea → ensure TodayTrack → ensureTerminalCard' chain is read-then-write three
     times over, and modeling it as a single async resolver keeps the idempotency invariants in one place."
   source: web/src/hooks/useTodayTerminal.ts:18-24,58,62-63,140-142
   authoritative_test: NONE
@@ -2157,7 +2157,7 @@
   kind: invariant
   family: today-terminal-hook
   statement: >
-    创建 Today wave / 终端卡时必须带上宿主主题 RGB,读取源是 `<html data-theme>` 而不是 useTheme()。
+    创建 Today track / 终端卡时必须带上宿主主题 RGB,读取源是 `<html data-theme>` 而不是 useTheme()。
   why: >
     源码注释(#177):"so the Today terminal's daemon answers codex's OSC 10/11 probe with matching colors"
     + "rather than via `useTheme()` so this hook stays cheap and doesn't re-render on theme toggle."
@@ -2175,13 +2175,13 @@
   kind: invariant
   family: today-terminal-hook
   statement: >
-    `createWave` 的 body 只有 `area_id`、`title`、`theme` 三个键 —— **没有 cwd，也没有
+    `createTrack` 的 body 只有 `area_id`、`title`、`theme` 三个键 —— **没有 cwd，也没有
     attach_folder**，于是走内核的 managed 分支：由内核分配并初始化一个真能被 worker 取租约的目录。
     这条不变量说的是「缺席」，所以按「在场的恰好是哪几个键」来陈述，否则 source-anchor 无从锚定。
   why: >
     #1147 S3 把这条反了过来。原文是「cwd 固定传 '/'，system area 被豁免出 area_folders 认领命名空间」，
-    豁免那半仍然成立，但 '/' 从来就不是一个工作区:该 wave 上任何 `kind: codex` 任务都会在
-    `git_repo_root_for_wave_cwd` 里死掉、只留一句 `spawn-failed`,正是 #1147 开的那个 bug。
+    豁免那半仍然成立，但 '/' 从来就不是一个工作区:该 track 上任何 `kind: codex` 任务都会在
+    `git_repo_root_for_track_cwd` 里死掉、只留一句 `spawn-failed`,正是 #1147 开的那个 bug。
     S3 之后显式 cwd 的含义是「attach 这个已存在的仓库」并且会被校验,'/' 会直接 400。
   source: web/src/hooks/useTodayTerminal.ts:177-206
   authoritative_test: NONE
@@ -2235,9 +2235,9 @@
   kind: invariant
   family: area-page
   statement: >
-    area 名称在页面上只出现一次(作为 h1),不得加 eyebrow 行、色块或 wave 计数。
+    area 名称在页面上只出现一次(作为 h1),不得加 eyebrow 行、色块或 track 计数。
   why: >
-    源码注释:"the sidebar already carries the area's color swatch + wave count, so reprinting either here
+    源码注释:"the sidebar already carries the area's color swatch + track count, so reprinting either here
     is redundant noise. 'Less is more' — the page opens directly on the title."
   source: web/src/pages/Area.tsx:23-30
   authoritative_test: NONE
@@ -2252,10 +2252,10 @@
   kind: invariant
   family: area-page
   statement: >
-    删 area 与删 wave 用两种不同的确认模式:area 走 DeleteButton 的 Pattern A(stay-open-while-pending,
-    Confirm 在 await 期间禁用),wave 行走 Pattern B(close-then-await,不做 pending 门控)。
+    删 area 与删 track 用两种不同的确认模式:area 走 DeleteButton 的 Pattern A(stay-open-while-pending,
+    Confirm 在 await 期间禁用),track 行走 Pattern B(close-then-await,不做 pending 门控)。
   why: >
-    源码注释:"The wave row already vanishes from the list on completion … which acts as its own 'succeeded'
+    源码注释:"The track row already vanishes from the list on completion … which acts as its own 'succeeded'
     signal — gating the dialog with `confirmDisabled` would duplicate that affordance."
     测试用例名直接写了 (Pattern A)/(Pattern B)。
   source: web/src/pages/Area.tsx:67-85,131-141,191-208 + web/src/pages/_shared.tsx:60-136
@@ -2271,11 +2271,11 @@
   kind: invariant
   family: area-page
   statement: >
-    页面级的删 wave ConfirmDialog 必须无条件挂载、用 `open={pendingDeleteWave !== null}` 驱动,
-    每次重开都要指向"最近一次点击"的那个 wave。
+    页面级的删 track ConfirmDialog 必须无条件挂载、用 `open={pendingDeleteTrack !== null}` 驱动,
+    每次重开都要指向"最近一次点击"的那个 track。
   why: >
     源码注释:"Mounted unconditionally with `open` driven by the pending state so Dialog's focus restore on
-    close lands us back where we were." 测试 "reopening after Cancel targets the most recently clicked wave"。
+    close lands us back where we were." 测试 "reopening after Cancel targets the most recently clicked track"。
   source: web/src/pages/Area.tsx:191-208
   authoritative_test: web/src/pages/Area.test.tsx:344
   owner_slice: features/area/page
@@ -2289,10 +2289,10 @@
   kind: capability
   family: area-page
   statement: >
-    wave 列表必须包在 `<section aria-label="Waves">` 地标里。
+    track 列表必须包在 `<section aria-label="Tracks">` 地标里。
   why: >
-    源码注释:"role-scoped locators (axe scans + Playwright getByRole('region', { name: 'Waves' })) can
-    disambiguate WaveRow buttons from the sidebar's 'Today' nav button."
+    源码注释:"role-scoped locators (axe scans + Playwright getByRole('region', { name: 'Tracks' })) can
+    disambiguate TrackRow buttons from the sidebar's 'Today' nav button."
   source: web/src/pages/Area.tsx:168-189
   authoritative_test: NONE
   owner_slice: features/area/page
@@ -2306,9 +2306,9 @@
   kind: capability
   family: area-page
   statement: >
-    area 为空时显示 "This Area is quiet. Start a Wave below." 空态。
+    area 为空时显示 "This Area is quiet. Start a Track below." 空态。
   why: >
-    没有 wave 的 area 页会是一片空白;这行文案同时指向底部/标题栏的创建入口。
+    没有 track 的 area 页会是一片空白;这行文案同时指向底部/标题栏的创建入口。
   source: web/src/pages/Area.tsx:157-166
   authoritative_test: NONE
   owner_slice: features/area/page
@@ -2408,11 +2408,11 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-AREA-NEWWAVE-012
+- id: INV-AREA-NEWTRACK-012
   kind: invariant
   family: area-page
   statement: >
-    NewWaveDialog 必须是受控 Dialog(open 由 AreaPage 持有),触发它的标题栏 `+` 按钮在打开期间保持挂载。
+    NewTrackDialog 必须是受控 Dialog(open 由 AreaPage 持有),触发它的标题栏 `+` 按钮在打开期间保持挂载。
   why: >
     源码注释:"the title-row `+` button is the visible trigger, and it stays mounted while the Dialog is open
     so Dialog's focus-restore lands keyboard users back on the `+` button after close."
@@ -2425,15 +2425,15 @@
   test_tier: browser
   migration: pending
 
-- id: INV-AREA-NEWWAVE-013
+- id: INV-AREA-NEWTRACK-013
   kind: invariant
   family: area-page
   statement: >
-    NewWaveDialog 用 `title="New wave" hideTitleRow` —— 有可访问名但不渲染可见标题行;关闭方式是表单
+    NewTrackDialog 用 `title="New track" hideTitleRow` —— 有可访问名但不渲染可见标题行;关闭方式是表单
     Cancel、Esc、遮罩点击。
   why: >
     源码注释(#891 signoff round 2):"the owner wants the dialog to read as one cohesive card … the visible
-    'New wave' head is gone but the accessible name stays."
+    'New track' head is gone but the accessible name stays."
   source: web/src/pages/Area.tsx:479-491
   authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: features/area/page
@@ -2443,7 +2443,7 @@
   test_tier: browser
   migration: pending
 
-- id: INV-AREA-NEWWAVE-014
+- id: INV-AREA-NEWTRACK-014
   kind: invariant
   family: area-page
   statement: >
@@ -2462,7 +2462,7 @@
   test_tier: browser
   migration: pending
 
-- id: INV-AREA-NEWWAVE-015
+- id: INV-AREA-NEWTRACK-015
   kind: invariant
   family: area-page
   statement: >
@@ -2478,7 +2478,7 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-AREA-NEWWAVE-016
+- id: INV-AREA-NEWTRACK-016
   kind: invariant
   family: area-page
   statement: >
@@ -2497,12 +2497,12 @@
   test_tier: browser
   migration: pending
 
-- id: CAP-AREA-NEWWAVE-017
+- id: CAP-AREA-NEWTRACK-017
   kind: capability
   family: area-page
   statement: >
-    Workflow 选择器提供两项:"None / plain wave" 与 "Issue dev / issue → PR autoflow";每项是"名称 +
-    静音描述"两段内容,中间靠一个 `{' '}` 文本节点保证降级引擎与 AT 读出来是 "None plain wave"。
+    Workflow 选择器提供两项:"None / plain track" 与 "Issue dev / issue → PR autoflow";每项是"名称 +
+    静音描述"两段内容,中间靠一个 `{' '}` 文本节点保证降级引擎与 AT 读出来是 "None plain track"。
   why: >
     源码注释:"rich option content is a base-select capability; fallback popups flatten it to inline text,
     which is why the description is kept short"。
@@ -2519,11 +2519,11 @@
   kind: capability
   family: area-page
   statement: >
-    每个 wave 行(在 onPinWave 提供时)渲染 hover 显形的 pin 按钮,label 在 "Pin wave"/"Unpin wave" 间切换;
-    未提供 onPinWave 时完全不渲染。
+    每个 track 行(在 onPinTrack 提供时)渲染 hover 显形的 pin 按钮,label 在 "Pin track"/"Unpin track" 间切换;
+    未提供 onPinTrack 时完全不渲染。
   why: >
-    与 Sidebar 的 onPinWave 契约镜像("Mirrors the sidebar's onPinWave contract"),两处必须行为一致。
-  source: web/src/pages/Area.tsx:62-65,184 + web/src/shared/components/WaveRow.tsx:120-132
+    与 Sidebar 的 onPinTrack 契约镜像("Mirrors the sidebar's onPinTrack contract"),两处必须行为一致。
+  source: web/src/pages/Area.tsx:62-65,184 + web/src/shared/components/TrackRow.tsx:120-132
   authoritative_test: web/src/pages/Area.test.tsx:380,392,404,416,431
   owner_slice: features/area/page
   intentional_omission: false
@@ -2533,217 +2533,217 @@
   migration: pending
 
 # ============================================================
-# §12 Wave 页 —— 视图模式 / 重命名 / 加卡
+# §12 Track 页 —— 视图模式 / 重命名 / 加卡
 # ============================================================
 
-- id: INV-WAVE-001
+- id: INV-TRACK-001
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     视图模式有三个值 grid|list|report,存在 kernel overlay
-    `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')`,
+    `(plugin_id='kernel', entity_kind='view', entity_id=<trackId>, kind='view-mode')`,
     且必须与 layout overlay 分开存。
   why: >
     源码注释(#56 slice 9):"Kept separate from the layout overlay so users in list-only mode never have to
     mint a layout row just to flip the toggle."
-  source: web/src/pages/Wave.tsx:44-67,253-274
-  authoritative_test: web/src/pages/Wave.test.tsx:631
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:44-67,253-274
+  authoritative_test: web/src/pages/Track.test.tsx:631
+  owner_slice: features/track/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVE-002
+- id: INV-TRACK-002
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     视图模式默认是 report;overlay 里存的未知字符串必须被 `isViewMode` 挡掉并回落 report。
   why: >
-    源码注释:"Backend mints a wave-report card for every wave at create time … so this default is safe"
-    (引 wave_report.rs + migration 0013/0014 的唯一索引);isViewMode 是"未来 schema 漂移"的护栏。
-  source: web/src/pages/Wave.tsx:57-60,259-267
-  authoritative_test: web/src/pages/Wave.test.tsx:442,533
-  owner_slice: features/wave/page
+    源码注释:"Backend mints a track-report card for every track at create time … so this default is safe"
+    (引 track_report.rs + migration 0013/0014 的唯一索引);isViewMode 是"未来 schema 漂移"的护栏。
+  source: web/src/pages/Track.tsx:57-60,259-267
+  authoritative_test: web/src/pages/Track.test.tsx:442,533
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: CAP-WAVE-003
+- id: CAP-TRACK-003
   kind: capability
-  family: wave-page
+  family: track-page
   statement: >
     视图切换是单个循环按钮,顺序 grid → list → report → grid;aria-label/title 同时说明"当前是什么、
     点一下变成什么"。
   why: >
     "renders one cycle button with report selected by default" + "clicks through report, grid, and list
     before cycling back to report"。
-  source: web/src/pages/Wave.tsx:62-97
-  authoritative_test: web/src/pages/Wave.test.tsx:442,468
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:62-97
+  authoritative_test: web/src/pages/Track.test.tsx:442,468
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVE-004
+- id: INV-TRACK-004
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     从 report 视图成功新增一张 worker 卡后必须自动切到 grid;新增失败时绝不切换视图。
   why: >
-    源码注释:"WaveReportPage filters spec/wave-report out via excludeReportCards" —— 不切就看不见新卡。
+    源码注释:"TrackReportPage filters spec/track-report out via excludeReportCards" —— 不切就看不见新卡。
     "Error paths intentionally do NOT switch — the inline error sits in the current header / modal,
     switching modes would hide it."
-  source: web/src/pages/Wave.tsx:276-283,156-194
-  authoritative_test: web/src/pages/Wave.test.tsx:681,725,760
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:276-283,156-194
+  authoritative_test: web/src/pages/Track.test.tsx:681,725,760
+  owner_slice: features/track/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVE-005
+- id: INV-TRACK-005
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     grid/list 视图渲染的是 `excludeReportCards` 过滤后的卡片;移除卡片时必须用 originalIndex 映射回
     未过滤数组的下标。
   why: >
     过滤后的下标与内核数组下标不同,直接透传会删错卡。
-  source: web/src/pages/Wave.tsx:247-251,479-499
+  source: web/src/pages/Track.tsx:247-251,479-499
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: CAP-WAVE-006
+- id: CAP-TRACK-006
   kind: capability
-  family: wave-page
+  family: track-page
   statement: >
-    report 模式下 AddPanel 与删除按钮仍然可见;即使是"只有 worker 卡"的 wave 也要显示视图切换按钮和 AddPanel;
+    report 模式下 AddPanel 与删除按钮仍然可见;即使是"只有 worker 卡"的 track 也要显示视图切换按钮和 AddPanel;
     显式 report 模式但没有 report 卡时显示 report 空态。
   why: >
     三条测试逐一锁定("keeps AddPanel visible in report mode" / "shows the report toggle and AddPanel even
-    for worker-only waves" / "renders the report empty state when explicit report mode has no report card")。
-  source: web/src/pages/Wave.tsx:348-502
-  authoritative_test: web/src/pages/Wave.test.tsx:555,577,606
-  owner_slice: features/wave/page
+    for worker-only tracks" / "renders the report empty state when explicit report mode has no report card")。
+  source: web/src/pages/Track.tsx:348-502
+  authoritative_test: web/src/pages/Track.test.tsx:555,577,606
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-WAVE-007
+- id: INV-TRACK-007
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     加卡有两条错误通道:无 schema 的直接创建走 `directAddError`(渲染在页头),有 schema 的走 `modalError`
     (渲染在 Dialog 内且模态保持打开);每次新尝试必须同时清空两条通道。
   why: >
     源码注释:"Reset both error channels on every new attempt so a stale error from a previous failed add
     doesn't linger past the next click." 测试 "shows a codex create 500 inline and keeps the modal open"。
-  source: web/src/pages/Wave.tsx:151-194,445-452,526-530,540-544
-  authoritative_test: web/src/pages/Wave.test.tsx:390
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:151-194,445-452,526-530,540-544
+  authoritative_test: web/src/pages/Track.test.tsx:390
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-WAVE-008
+- id: INV-TRACK-008
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     createSchema 只有一个 `directory` 字段时必须跳过 SchemaForm,直接在 wide Dialog 里渲染
     DirectoryBrowser("Create here" 即创建)。
   why: >
     源码注释:"skip the SchemaForm wrapper entirely and let the user pick a directory = create.
     Today only codex hits this path."
-  source: web/src/pages/Wave.tsx:503-533
+  source: web/src/pages/Track.tsx:503-533
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: INV-WAVE-009
+- id: INV-TRACK-009
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
     formatCreateCardError 必须区分:CalmApiError 有 message 用 message,5xx 无 message 用
     "Failed to create card",其余状态码用 "Request failed (<status>)"。
   why: >
     空 message 的 500 直接显示 "Request failed (500)" 对用户无意义;分级是有意的。
-  source: web/src/pages/Wave.tsx:99-111
-  authoritative_test: web/src/pages/Wave.test.tsx:390
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:99-111
+  authoritative_test: web/src/pages/Track.test.tsx:390
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVE-010
+- id: INV-TRACK-010
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
-    wave 标题重命名的键盘入口是 span + role="button" + tabIndex=0,Enter/F2 进入编辑,Escape 取消、
-    Enter/blur 提交;退出编辑时把焦点还给 display span。aria-label 只是标题,"Rename wave" 在 sr-only
+    track 标题重命名的键盘入口是 span + role="button" + tabIndex=0,Enter/F2 进入编辑,Escape 取消、
+    Enter/blur 提交;退出编辑时把焦点还给 display span。aria-label 只是标题,"Rename track" 在 sr-only
     兄弟 span 里通过 aria-describedby 引用。
   why: >
     与 AreaPage 的 EditableTitle 同一套 #56 followup 可访问名拆分("parity with AreaPage's heading");
-    "drops the keyboard affordance entirely when onRenameWave is absent" 锁定无回调时不加任何 role/tabIndex。
-  source: web/src/pages/Wave.tsx:196-243,378-431
-  authoritative_test: web/src/pages/Wave.test.tsx:214,253,272,299,319,350
-  owner_slice: features/wave/page
+    "drops the keyboard affordance entirely when onRenameTrack is absent" 锁定无回调时不加任何 role/tabIndex。
+  source: web/src/pages/Track.tsx:196-243,378-431
+  authoritative_test: web/src/pages/Track.test.tsx:214,253,272,299,319,350
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-WAVE-011
+- id: INV-TRACK-011
   kind: invariant
-  family: wave-page
+  family: track-page
   statement: >
-    WaveGrid 与 WaveList 必须 lazy 载入,fallback 文案按模式区分("Loading grid…"/"Loading list…")。
+    TrackGrid 与 TrackList 必须 lazy 载入,fallback 文案按模式区分("Loading grid…"/"Loading list…")。
   why: >
-    源码注释:"WaveGrid pulls in react-grid-layout (~50 KB minified) … an empty wave (no cards yet) doesn't
+    源码注释:"TrackGrid pulls in react-grid-layout (~50 KB minified) … an empty track (no cards yet) doesn't
     pay the grid cost at all on first paint. The flash on first navigation is intentional."
-  source: web/src/pages/Wave.tsx:28-42,472-478
+  source: web/src/pages/Track.tsx:28-42,472-478
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: CAP-WAVE-012
+- id: CAP-TRACK-012
   kind: capability
-  family: wave-page
+  family: track-page
   statement: >
-    wave 头部只保留一个状态药丸(WaveLifecycleBadge);百分比只在 0 < progress < 1 时显示。
+    track 头部只保留一个状态药丸(TrackLifecycleBadge);百分比只在 0 < progress < 1 时显示。
   why: >
-    源码注释(#145):"After the WaveLifecycle unification (drop WaveStatus) this is the sole status-pill on
-    the wave header — the legacy secondary status pill, plus the card-aggregate FSM dot/verb, used to
+    源码注释(#145):"After the TrackLifecycle unification (drop TrackStatus) this is the sole status-pill on
+    the track header — the legacy secondary status pill, plus the card-aggregate FSM dot/verb, used to
     re-derive the same signal and have been folded back into the lifecycle."
-  source: web/src/pages/Wave.tsx:245,433-444
+  source: web/src/pages/Track.tsx:245,433-444
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -2973,12 +2973,12 @@
   kind: invariant
   family: sidebar
   statement: >
-    路由到某个 wave 时必须自动展开它所属的 area(effect 依赖 activeWaveId + activeAreaId);
-    但同一 wave 上的重渲染不得覆盖用户手动折叠的结果,离开 wave 路由时不得改动任何展开态。
+    路由到某个 track 时必须自动展开它所属的 area(effect 依赖 activeTrackId + activeAreaId);
+    但同一 track 上的重渲染不得覆盖用户手动折叠的结果,离开 track 路由时不得改动任何展开态。
   why: >
     四条测试组成完整语义:auto-expands on navigation / keeps a manually collapsed active area collapsed on
-    same-wave rerender / re-expands when navigating to another wave in it / does not touch expansion state
-    when leaving a wave route。expandArea(而非 toggle)+ 依赖 activeWaveId 是实现这套语义的关键。
+    same-track rerender / re-expands when navigating to another track in it / does not touch expansion state
+    when leaving a track route。expandArea(而非 toggle)+ 依赖 activeTrackId 是实现这套语义的关键。
   source: web/src/shared/components/Sidebar.tsx:93-100,161-179
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:273,290,309,330,363
   owner_slice: app/shell/sidebar
@@ -2992,9 +2992,9 @@
   kind: invariant
   family: sidebar
   statement: >
-    活动 wave 数据晚于路由到达时也必须触发自动展开(activeAreaId 从 waves 里现算,且是 effect 依赖)。
+    活动 track 数据晚于路由到达时也必须触发自动展开(activeAreaId 从 tracks 里现算,且是 effect 依赖)。
   why: >
-    "auto-expands when the active wave arrives after the route" —— 首屏路由先到、waves 后到是常态。
+    "auto-expands when the active track arrives after the route" —— 首屏路由先到、tracks 后到是常态。
   source: web/src/shared/components/Sidebar.tsx:162-179
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:395
   owner_slice: app/shell/sidebar
@@ -3008,10 +3008,10 @@
   kind: capability
   family: sidebar
   statement: >
-    活动 wave 行必须 scrollIntoView({block:'nearest', behavior:'smooth'});ref 用 state 回调
-    (setActiveWaveRowEl)以便节点挂载后触发 effect。
+    活动 track 行必须 scrollIntoView({block:'nearest', behavior:'smooth'});ref 用 state 回调
+    (setActiveTrackRowEl)以便节点挂载后触发 effect。
   why: >
-    "scrolls the active wave row into view" —— 长 area 列表里活动行常在视口外;用 ref-as-state 是因为
+    "scrolls the active track row into view" —— 长 area 列表里活动行常在视口外;用 ref-as-state 是因为
     普通 ref 变化不会触发 effect。
   source: web/src/shared/components/Sidebar.tsx:154-156,170-185
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:417
@@ -3026,12 +3026,12 @@
   kind: invariant
   family: sidebar
   statement: >
-    pin 不是"搬家":pinned wave 必须同时出现在 Pinned 区和它所属 area 的展开列表里;若同时需要关注,
+    pin 不是"搬家":pinned track 必须同时出现在 Pinned 区和它所属 area 的展开列表里;若同时需要关注,
     也同时出现在 "Waiting on you" 区。三个区的渲染顺序必须是 Waiting on you → Pinned → Areas。
   why: >
-    源码注释:"Pinned waves intentionally appear in both the quick-access Pinned section and their area's
-    inline list; pinning is not relocation, and the wave still belongs to this area." +
-    "Waiting includes pinned attention waves intentionally"。
+    源码注释:"Pinned tracks intentionally appear in both the quick-access Pinned section and their area's
+    inline list; pinning is not relocation, and the track still belongs to this area." +
+    "Waiting includes pinned attention tracks intentionally"。
   source: web/src/shared/components/Sidebar.tsx:211-230,272-330
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:90,101 + web/src/shared/components/Sidebar.expand.test.tsx:208
   owner_slice: app/shell/sidebar
@@ -3045,7 +3045,7 @@
   kind: invariant
   family: sidebar
   statement: >
-    Pinned 区按 pinnedAt 升序(最早 pin 的在最上);无任何 pinned wave 时整个区块不渲染。
+    Pinned 区按 pinnedAt 升序(最早 pin 的在最上);无任何 pinned track 时整个区块不渲染。
   why: >
     源码注释:"oldest first so the order is stable and user-determined (first pin = top)."
   source: web/src/shared/components/Sidebar.tsx:211-215,298-320
@@ -3061,12 +3061,12 @@
   kind: invariant
   family: sidebar
   statement: >
-    "Waiting on you" 与每个 area 的 warn 徽标必须用同一个 `waveNeedsUserAttention` 谓词(lifecycle ∪
-    kernel-card-FSM 的 OR),包括 pinned 的关注 wave。
+    "Waiting on you" 与每个 area 的 warn 徽标必须用同一个 `trackNeedsUserAttention` 谓词(lifecycle ∪
+    kernel-card-FSM 的 OR),包括 pinned 的关注 track。
   why: >
     源码注释(#254):"Catches both 'Spec Agent said blocked/reviewing/failed' AND 'a worker card hit an
     AwaitingInput/Errored hook before Spec Agent could drive lifecycle'. The latter is the regression hole
-    #248's deletion of the wave-level FSM union left open."
+    #248's deletion of the track-level FSM union left open."
   source: web/src/shared/components/Sidebar.tsx:216-223,330-334
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:162,172
   owner_slice: app/shell/sidebar
@@ -3080,7 +3080,7 @@
   kind: invariant
   family: sidebar
   statement: >
-    area 行右边缘只有一个徽标位:waiting>0 时显示 warn 红计数,否则显示 muted 总数,无 wave 时不显示;
+    area 行右边缘只有一个徽标位:waiting>0 时显示 warn 红计数,否则显示 muted 总数,无 track 时不显示;
     徽标 aria-hidden。
   why: >
     源码注释:"Single right-edge badge slot: warn-red waiting count beats muted total count."
@@ -3098,9 +3098,9 @@
   kind: invariant
   family: sidebar
   statement: >
-    pin 按钮 hover 才显形,但 wave 已 pin 时必须常驻可见。
+    pin 按钮 hover 才显形,但 track 已 pin 时必须常驻可见。
   why: >
-    源码注释:"always visible when the wave is already pinned so unpin is discoverable on touch."
+    源码注释:"always visible when the track is already pinned so unpin is discoverable on touch."
     触屏没有 hover。
   source: web/src/shared/components/Sidebar.tsx:610-614,644-656
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:125,139
@@ -3115,11 +3115,11 @@
   kind: capability
   family: sidebar
   statement: >
-    Sidebar 用两个共享 ConfirmDialog(一个删 area、一个删 wave),由 pendingDelete/pendingDeleteWave
-    驱动文案;删 wave 走 close-then-await,删 area 走 await-then-close。
+    Sidebar 用两个共享 ConfirmDialog(一个删 area、一个删 track),由 pendingDelete/pendingDeleteTrack
+    驱动文案;删 track 走 close-then-await,删 area 走 await-then-close。
   why: >
-    "Per-row × on a sidebar WaveRow shows a confirm dialog and calls onDeleteWave on confirm" /
-    "Cancel closes the dialog without invoking onDeleteWave";单例对话框保证焦点还原落点稳定。
+    "Per-row × on a sidebar TrackRow shows a confirm dialog and calls onDeleteTrack on confirm" /
+    "Cancel closes the dialog without invoking onDeleteTrack";单例对话框保证焦点还原落点稳定。
   source: web/src/shared/components/Sidebar.tsx:149-203,434-459
   authoritative_test: web/src/shared/components/Sidebar.test.tsx:85,104
   owner_slice: app/shell/sidebar
@@ -3135,11 +3135,11 @@
   statement: >
     Sidebar 必须有四个具唯一可访问名的地标:aside "Navigation" 内含 nav "Sidebar navigation"、
     section "Waiting on you"、section "Pinned"、nav "Areas";area 展开列表另有
-    `role="group" aria-label="Waves in <area>"`。
+    `role="group" aria-label="Tracks in <area>"`。
   why: >
     源码注释:"Both landmarks have unique accessible names so the `landmark-unique` axe rule stays green" +
     "Scoping role queries by these landmarks disambiguates buttons that share an accessible name across
-    sections — e.g. a wave titled 'Today' vs. the Today nav button."
+    sections — e.g. a track titled 'Today' vs. the Today nav button."
   source: web/src/shared/components/Sidebar.tsx:224-239,253-260,275,299,322,401-407
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:118
   owner_slice: app/shell/sidebar
@@ -3153,7 +3153,7 @@
   kind: invariant
   family: sidebar
   statement: >
-    chevron 的 `aria-controls` 只在实际渲染了内联 wave 列表时才设置(展开 且 有 wave)。
+    chevron 的 `aria-controls` 只在实际渲染了内联 track 列表时才设置(展开 且 有 track)。
   why: >
     指向不存在元素的 aria-controls 是 a11y 错误;空 area 展开时不渲染列表容器。
   source: web/src/shared/components/Sidebar.tsx:335-337,353-365,401-407
@@ -3205,7 +3205,7 @@
   kind: capability
   family: sidebar
   statement: >
-    area 色块在该 area 有 running wave 时加 `pulse` 类;wave 行在 needsAttention 时加 `attention` 类
+    area 色块在该 area 有 running track 时加 `pulse` 类;track 行在 needsAttention 时加 `attention` 类
     (供 warn 色标题样式)。
   why: >
     "pinned attention row carries the attention class for warn title styling" 等三条测试对
@@ -3223,10 +3223,10 @@
   kind: capability
   family: sidebar
   statement: >
-    Waiting/Pinned 区的行显示 "area名 · wave标题" 作为 title 提示并渲染 area 名副标签;内联 area 列表里
-    的行不重复 area 名(area 传 null)。找不到 area 的 wave 必须不渲染 area 文本 span。
+    Waiting/Pinned 区的行显示 "area名 · track标题" 作为 title 提示并渲染 area 名副标签;内联 area 列表里
+    的行不重复 area 名(area 传 null)。找不到 area 的 track 必须不渲染 area 文本 span。
   why: >
-    "wave with no matching area renders without the area text span" —— 渲染空 span 会留下一个孤立的分隔符。
+    "track with no matching area renders without the area text span" —— 渲染空 span 会留下一个孤立的分隔符。
   source: web/src/shared/components/Sidebar.tsx:277-320,408-424,657-664
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:213
   owner_slice: app/shell/sidebar
@@ -3244,13 +3244,13 @@
   kind: invariant
   family: new-task-form
   statement: >
-    NewTaskForm 是全应用唯一知道如何 POST 一个格式正确 `NewWave` body 的地方;任何新建入口都必须复用它,
+    NewTaskForm 是全应用唯一知道如何 POST 一个格式正确 `NewTrack` body 的地方;任何新建入口都必须复用它,
     不得重实现 cwd/area 推断。
   why: >
     文件头引 issue #250 原话:"all creation entrypoints must go through the same configuration card"。
   source: web/src/shared/components/NewTaskForm.tsx:1-9
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3261,14 +3261,14 @@
   kind: invariant
   family: new-task-form
   statement: >
-    任务描述即 wave.title:非空标题会被内核当作 spec daemon 的初始 prompt,空标题则启动 daemon 但不自动提交
+    任务描述即 track.title:非空标题会被内核当作 spec daemon 的初始 prompt,空标题则启动 daemon 但不自动提交
     prompt;刻意不提供独立的 "prompt" 字段。
   why: >
-    源码注释:"title-as-prompt keeps the wave-row label and the prompt in lock-step when a prompt exists."
-    测试 "posts createWave with an empty title when task description is blank" 锁定空标题合法。
+    源码注释:"title-as-prompt keeps the track-row label and the prompt in lock-step when a prompt exists."
+    测试 "posts createTrack with an empty title when task description is blank" 锁定空标题合法。
   source: web/src/shared/components/NewTaskForm.tsx:11-17
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:198
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3285,7 +3285,7 @@
     error toast."
   source: web/src/shared/components/NewTaskForm.tsx:18-21,346-348,709-713,1031-1033
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:90
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3303,7 +3303,7 @@
     "NewTaskForm — race guard" 一组测试。
   source: web/src/shared/components/NewTaskForm.tsx:133-135,267-344
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:495
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3319,7 +3319,7 @@
     源码注释:"that would flicker the 'auto-matched to X' banner mid-typing."
   source: web/src/shared/components/NewTaskForm.tsx:275-278
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:115
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3337,7 +3337,7 @@
     another hit"。
   source: web/src/shared/components/NewTaskForm.tsx:206-215,304-312,727-746
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:358,425
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3349,13 +3349,13 @@
   family: new-task-form
   statement: >
     三种 areaChoice 对应三条提交路径:auto → attach_folder=false;existing → 单次 POST + attach_folder=true
-    (内核在同一 tx 里认领文件夹);new → 先 POST /api/areas 再 POST wave(两步)。
+    (内核在同一 tx 里认领文件夹);new → 先 POST /api/areas 再 POST track(两步)。
   why: >
-    源码注释:"the server doesn't yet expose an atomic 'create area + first wave' endpoint; if the wave POST
+    源码注释:"the server doesn't yet expose an atomic 'create area + first track' endpoint; if the track POST
     fails … the area is left in place and a retry reuses it"(带 TODO(#250) 收敛为原子端点)。
   source: web/src/shared/components/NewTaskForm.tsx:22-44,420-448
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158,236
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3373,7 +3373,7 @@
     UUID … If the area isn't in our local cache … we fall back to the generic phrasing."
   source: web/src/shared/components/NewTaskForm.tsx:46-55,1091-1142
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:284,316
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3390,7 +3390,7 @@
     body 是 unknown(刻意不让 wire 类型泄漏到处都是);盲信形状会在服务端换 body 时崩掉错误提示本身。
   source: web/src/shared/components/NewTaskForm.tsx:1144-1166
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:284
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3407,7 +3407,7 @@
     (landing on the Dialog Close button), so the contract is 'Dialog focuses for us, we don't double-focus'."
   source: web/src/shared/components/NewTaskForm.tsx:96-108,254-265
   authoritative_test: web/src/pages/Area.test.tsx:530
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3426,7 +3426,7 @@
     (Area.tsx 用 key 重挂),所以每个 callback 最多绑一个元素。
   source: web/src/shared/components/NewTaskForm.tsx:228-252
   authoritative_test: web/src/pages/Area.test.tsx:530
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3444,7 +3444,7 @@
     eslint-disable 注释说明这是有意为之。
   source: web/src/shared/components/NewTaskForm.tsx:500-508,555-566,677-682
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:560,569
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3461,7 +3461,7 @@
     the same UI state."
   source: web/src/shared/components/NewTaskForm.tsx:136-140,192-199,1035-1048
   authoritative_test: NONE
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3479,7 +3479,7 @@
     visible Browse button doesn't appear to do anything (better than a confusing crash on click)."
   source: web/src/shared/components/NewTaskForm.tsx:220-226,510-544
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:586
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3497,7 +3497,7 @@
     cwd input; `title` carries the contextual hint … without colliding with the field's label text."
   source: web/src/shared/components/NewTaskForm.tsx:688-707
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:586
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3508,12 +3508,12 @@
   kind: invariant
   family: new-task-form
   statement: >
-    创建 wave 时必须带上宿主主题 RGB(读 `<html data-theme>`,缺省 DARK_THEME_RGB)。
+    创建 track 时必须带上宿主主题 RGB(读 `<html data-theme>`,缺省 DARK_THEME_RGB)。
   why: >
     与 useTodayTerminal 同一套 #177 契约:spec daemon 首次绘制要拿到匹配配色。
   source: web/src/shared/components/NewTaskForm.tsx:463-470,1084-1089
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3531,7 +3531,7 @@
     源码注释:"The label text stays 'Area' across all branches so the visual structure doesn't jitter."
   source: web/src/shared/components/NewTaskForm.tsx:715-747,843-1025
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:115,137
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3543,13 +3543,13 @@
   family: new-task-form
   statement: >
     issue-dev 变体硬编码 template_id = 'issue-development';legacy NewTaskForm 刻意不消费
-    `GET /api/wave-templates`(该端点存在,由 fe/ 的 new-wave 对话框消费)。
+    `GET /api/track-templates`(该端点存在,由 fe/ 的 new-track 对话框消费)。
   why: >
     源码注释(#891 design §6 F5):"If the git-forge plugin isn't running, the create POST 400s with a
     readable message that the normal submit-error path surfaces."
   source: web/src/shared/components/NewTaskForm.tsx:118-122,456-462
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:174
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3567,7 +3567,7 @@
     "#891 signoff r3 — kills the last OS dropdown popup"(用原生 checkbox 而非 select)。
   source: web/src/shared/components/NewTaskForm.tsx:169,374-382,633-659
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:112,207
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3595,7 +3595,7 @@
     精确断言。
   source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387,456-470,757-781
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,174-203,277
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3612,7 +3612,7 @@
     源码注释逐字写明这条锁的语义;测试 "stops prefilling after the user edits the title (latch)"。
   source: web/src/shared/components/NewTaskForm.tsx:175-177,360-367,608-619
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:112,125
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3631,7 +3631,7 @@
     "a stale raw override outlives later form edits: the summary flags it and the OLD blob ships"。
   source: web/src/shared/components/NewTaskForm.tsx:170-174,384-396,757-805
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:256,341,360
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3648,7 +3648,7 @@
     hand-repairing the JSON."
   source: web/src/shared/components/NewTaskForm.tsx:782-798
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:307,341
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3666,7 +3666,7 @@
     hatch (server-side schema validation is the final arbiter)."
   source: web/src/shared/components/NewTaskForm.tsx:398-410,1050-1082
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:144,153,307,401
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3682,7 +3682,7 @@
     测试名:"plain task variant sends no workflow keys at all (byte-identical body)"。变体是纯增量。
   source: web/src/shared/components/NewTaskForm.tsx:450-470
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:228
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3700,7 +3700,7 @@
     exposure from aria."
   source: web/src/shared/components/NewTaskForm.tsx:821-832
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:82
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3718,7 +3718,7 @@
     dense pages"。
   source: web/src/shared/components/NewTaskForm.tsx:56-60,546-554
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3736,7 +3736,7 @@
     屏幕阅读器在打字过程中不停打断。
   source: web/src/shared/components/NewTaskForm.tsx:585-593,684-713,776-803,807-811
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:307,401
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -3747,12 +3747,12 @@
   kind: capability
   family: new-task-form
   statement: >
-    创建成功后必须额外 invalidate areas 查询键(在 useCreateWaveMutation 自带的 waves 失效之外)。
+    创建成功后必须额外 invalidate areas 查询键(在 useCreateTrackMutation 自带的 tracks 失效之外)。
   why: >
     源码注释:"a brand-new area also benefits from a areas-list refresh in case the WS event didn't land yet."
   source: web/src/shared/components/NewTaskForm.tsx:471-476
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:236
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -3789,7 +3789,7 @@
     路径、非数字/缺失 issue 号、前导零(`/issues/07`)、0 号、超过 MAX_SAFE_INTEGER 的号、
     owner/repo 超出 GitHub 字符集(空格、%编码、unicode、空段)、以及 `.`/`..` 作为 repo 段。
   why: >
-    文件头把每一条拒绝理由都写成了台账:企业版会造出"永远过不了 workflow repo 交叉检查的 wave";
+    文件头把每一条拒绝理由都写成了台账:企业版会造出"永远过不了 workflow repo 交叉检查的 track";
     前导零"silently normalizing would make `issue_url` disagree with the pasted text"。
   source: web/src/shared/components/issueUrl.ts:12-37,52-91
   authoritative_test: web/src/shared/components/issueUrl.test.ts:85,118,124
@@ -4193,42 +4193,42 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVEROW-007
+- id: INV-TRACKROW-007
   kind: invariant
   family: shared-atoms
   statement: >
-    WaveRow 的删除/pin 按钮必须是行按钮的兄弟(在 `position: relative` 包裹层里绝对定位),不得嵌套;
-    `.wave-row` 需保留 32px 右侧沟槽避免遮挡。
+    TrackRow 的删除/pin 按钮必须是行按钮的兄弟(在 `position: relative` 包裹层里绝对定位),不得嵌套;
+    `.track-row` 需保留 32px 右侧沟槽避免遮挡。
   why: >
     源码注释:"nesting buttons is invalid HTML and trips axe's `nested-interactive`" + 沟槽是为了让绝对
     定位的删除键"not a visible overlap"。
-  source: web/src/shared/components/WaveRow.tsx:43-57,58-133
+  source: web/src/shared/components/TrackRow.tsx:43-57,58-133
   authoritative_test: web/src/shared/components/Sidebar.test.tsx:120
-  owner_slice: features/wave/row
+  owner_slice: features/track/row
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVEROW-008
+- id: INV-TRACKROW-008
   kind: invariant
   family: shared-atoms
   statement: >
-    onClick 缺省时 WaveRow 渲染为 `<button disabled>` —— 视觉不变但不可激活。
+    onClick 缺省时 TrackRow 渲染为 `<button disabled>` —— 视觉不变但不可激活。
   why: >
     源码注释:"so its visual treatment is unchanged but it isn't activatable; … mostly defensive (e.g.
     read-only embedded views)."
-  source: web/src/shared/components/WaveRow.tsx:53-64
+  source: web/src/shared/components/TrackRow.tsx:53-64
   authoritative_test: NONE
-  owner_slice: features/wave/row
+  owner_slice: features/track/row
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVEROW-009
+- id: INV-TRACKROW-009
   kind: invariant
   family: shared-atoms
   statement: >
@@ -4237,26 +4237,26 @@
   why: >
     源码注释:"Avoid the 'double-bullet' effect" + "`compact` skips the leading dot so we don't double up
     with the row's own status glyph" + "the badge shows up regardless … (the only 'always present'
-    wave-level state)"。
-  source: web/src/shared/components/WaveRow.tsx:33-42,67-90
-  authoritative_test: web/src/shared/components/WaveLifecycleBadge.test.tsx:79
-  owner_slice: features/wave/row
+    track-level state)"。
+  source: web/src/shared/components/TrackRow.tsx:33-42,67-90
+  authoritative_test: web/src/shared/components/TrackLifecycleBadge.test.tsx:79
+  owner_slice: features/track/row
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: CAP-WAVEROW-010
+- id: CAP-TRACKROW-010
   kind: capability
   family: shared-atoms
   statement: >
     进度条只在 running 且 progress>0 时渲染;eta 文本独立于进度条渲染。
   why: >
     非运行态的进度条是死信息;两者的条件刻意分开(showProgress vs showEta)。
-  source: web/src/shared/components/WaveRow.tsx:37-40,91-104 + web/src/shared/components/ProgressBar.tsx:1-19
+  source: web/src/shared/components/TrackRow.tsx:37-40,91-104 + web/src/shared/components/ProgressBar.tsx:1-19
   authoritative_test: NONE
-  owner_slice: features/wave/row
+  owner_slice: features/track/row
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -4273,9 +4273,9 @@
   why: >
     源码注释:"no new design tokens … `failed` rides this bucket until a dedicated `--danger` token lands."
     这是有意的临时并桶,重写时容易被当成 bug "修好"。
-  source: web/src/shared/components/WaveLifecycleBadge.tsx:16-24,58-69
-  authoritative_test: web/src/shared/components/WaveLifecycleBadge.test.tsx:40,52,64
-  owner_slice: features/wave/lifecycle-badge
+  source: web/src/shared/components/TrackLifecycleBadge.tsx:16-24,58-69
+  authoritative_test: web/src/shared/components/TrackLifecycleBadge.test.tsx:40,52,64
+  owner_slice: features/track/lifecycle-badge
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -4286,14 +4286,14 @@
   kind: gate
   family: shared-atoms
   statement: >
-    `lifecycleLabel` 必须对 WaveLifecycle 的九个取值穷尽 switch(无 default),并作为纯函数导出供分组/排序
+    `lifecycleLabel` 必须对 TrackLifecycle 的九个取值穷尽 switch(无 default),并作为纯函数导出供分组/排序
     等非渲染场景复用。
   why: >
     无 default 让 TS 在新增 lifecycle 时编译期报错;"exposes `lifecycleLabel` as a pure helper for
     grouping/sorting sites" 锁定导出契约(Today 日历就是消费方)。
-  source: web/src/shared/components/WaveLifecycleBadge.tsx:29-56
-  authoritative_test: web/src/shared/components/WaveLifecycleBadge.test.tsx:14,35
-  owner_slice: features/wave/lifecycle-badge
+  source: web/src/shared/components/TrackLifecycleBadge.tsx:29-56
+  authoritative_test: web/src/shared/components/TrackLifecycleBadge.test.tsx:14,35
+  owner_slice: features/track/lifecycle-badge
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -4304,14 +4304,14 @@
   kind: invariant
   family: shared-atoms
   statement: >
-    药丸必须把原始 lifecycle 名暴露在 `data-lifecycle` 上,并把 "Wave lifecycle: <label>" 同时给到
+    药丸必须把原始 lifecycle 名暴露在 `data-lifecycle` 上,并把 "Track lifecycle: <label>" 同时给到
     title 与 aria-label。
   why: >
     "exposes the raw lifecycle name on `data-lifecycle` for tests / CSS" —— 这是测试与 CSS 的稳定钩子,
     改成 class 会破坏两者。
-  source: web/src/shared/components/WaveLifecycleBadge.tsx:82-96
-  authoritative_test: web/src/shared/components/WaveLifecycleBadge.test.tsx:88
-  owner_slice: features/wave/lifecycle-badge
+  source: web/src/shared/components/TrackLifecycleBadge.tsx:82-96
+  authoritative_test: web/src/shared/components/TrackLifecycleBadge.test.tsx:88
+  owner_slice: features/track/lifecycle-badge
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -4372,16 +4372,16 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-WAVEGLYPH-017
+- id: INV-TRACKGLYPH-017
   kind: invariant
   family: shared-atoms
   statement: >
-    WaveGlyph 的颜色必须直接从 WaveLifecycle 推导(waiting → warn 光晕 8px、running → accent 脉冲 7px、
+    TrackGlyph 的颜色必须直接从 TrackLifecycle 推导(waiting → warn 光晕 8px、running → accent 脉冲 7px、
     其余 → 0.55 透明的暗点 7px),不得引入第二套状态源。
   why: >
-    源码注释:"the single source of truth for wave-level state (see `shared/lifecycle.ts`)";
+    源码注释:"the single source of truth for track-level state (see `shared/lifecycle.ts`)";
     尺寸差(8 vs 7)是刻意的视觉权重差。
-  source: web/src/shared/components/WaveGlyph.tsx:4-55
+  source: web/src/shared/components/TrackGlyph.tsx:4-55
   authoritative_test: NONE
   owner_slice: ui/atoms
   intentional_omission: false
@@ -4559,7 +4559,7 @@
   family: duplication
   statement: >
     【重复对 4/5】react-markdown 渲染管线存在四处独立配置,必须视为一组:
-    (a) WaveReportPage 的扁平正文 —— remarkGfm + reportUrlTransform + ReportLink;
+    (a) TrackReportPage 的扁平正文 —— remarkGfm + reportUrlTransform + ReportLink;
     (b) report-blocks prose 块 —— 同上再加 h1/h2 id 注入;
     (c) report task 块的 goal / acceptance —— 同 (a),两次;
     (d) SpecConversation 的 agent 气泡 —— **只有 remarkGfm,没有 urlTransform、没有 ReportLink**。
@@ -4573,8 +4573,8 @@
     **共享 parse / normalize / sanitize-ast-policy 为单一内核（core/markdown）；
     端侧 renderer 显式配置行为差异（链接组件、heading id 注入、URL transform）**。
     即：收敛内核，不收敛 renderer。
-  source: web/src/pages/WaveReportPage.tsx:378-388 + web/src/pages/report-blocks/index.tsx:113-143 + web/src/pages/report-blocks/task.tsx:23-34 + web/src/pages/SpecConversation.tsx:106-110
-  authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:358 + web/src/pages/WaveReportPage.test.tsx:2382
+  source: web/src/pages/TrackReportPage.tsx:378-388 + web/src/pages/report-blocks/index.tsx:113-143 + web/src/pages/report-blocks/task.tsx:23-34 + web/src/pages/SpecConversation.tsx:106-110
+  authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:358 + web/src/pages/TrackReportPage.test.tsx:2382
   owner_slice: core/markdown/pipeline
   intentional_omission: false
   runtime_layer: core
@@ -4642,13 +4642,13 @@
   family: duplication
   statement: >
     【附加重复对】可编辑标题(点击/Enter/F2 进入、Escape 取消、Enter/blur 提交、焦点还原、aria-label 只放名字 +
-    sr-only 动词 describedby)在 Area.tsx 的 EditableTitle 与 Wave.tsx 的行内重命名各实现一份。
-    差异必须保留:Area 版有 #288 的合成 click 抑制器,Wave 版没有。
+    sr-only 动词 describedby)在 Area.tsx 的 EditableTitle 与 Track.tsx 的行内重命名各实现一份。
+    差异必须保留:Area 版有 #288 的合成 click 抑制器,Track 版没有。
   why: >
-    Wave.tsx 注释自称 "Same accessible-name split as AreaPage's EditableTitle (#56 followup)" —— 两处刻意
+    Track.tsx 注释自称 "Same accessible-name split as AreaPage's EditableTitle (#56 followup)" —— 两处刻意
     对齐;但 #288 的 re-entry 竞态只在 Area 版被修过。**新架构合并时必须把抑制器带进统一实现,而不是删掉。**
-  source: web/src/pages/Area.tsx:213-417 + web/src/pages/Wave.tsx:196-243,378-431
-  authoritative_test: web/src/pages/Area.test.tsx:138 + web/src/pages/Wave.test.tsx:350
+  source: web/src/pages/Area.tsx:213-417 + web/src/pages/Track.tsx:196-243,378-431
+  authoritative_test: web/src/pages/Area.test.tsx:138 + web/src/pages/Track.test.tsx:350
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -4660,15 +4660,15 @@
   kind: invariant
   family: duplication
   statement: >
-    【附加重复对】pin 按钮(`.side-wave-pin`、hover 显形/已 pin 常驻、aria-label 在 Pin wave / Unpin wave
-    间切换、点击 stopPropagation)在 Sidebar 内部 WaveRow 与 shared/components/WaveRow 各写一份,
+    【附加重复对】pin 按钮(`.side-track-pin`、hover 显形/已 pin 常驻、aria-label 在 Pin track / Unpin track
+    间切换、点击 stopPropagation)在 Sidebar 内部 TrackRow 与 shared/components/TrackRow 各写一份,
     两份必须行为一致。
   why: >
-    WaveRow 注释:"Mirrors the sidebar's WaveRow pin button";Area 页与 Sidebar 的 pin 测试分别锁定同一组
-    label。**新架构应只留一个 WaveRow。**
-  source: web/src/shared/components/Sidebar.tsx:644-656 + web/src/shared/components/WaveRow.tsx:120-132
+    TrackRow 注释:"Mirrors the sidebar's TrackRow pin button";Area 页与 Sidebar 的 pin 测试分别锁定同一组
+    label。**新架构应只留一个 TrackRow。**
+  source: web/src/shared/components/Sidebar.tsx:644-656 + web/src/shared/components/TrackRow.tsx:120-132
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:125 + web/src/pages/Area.test.tsx:416
-  owner_slice: features/wave/row
+  owner_slice: features/track/row
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -4679,7 +4679,7 @@
   kind: invariant
   family: duplication
   statement: >
-    【附加重复对】"Delete wave?" 确认对话框的标题/正文/按钮文案在 Area.tsx 与 Sidebar.tsx 各写一份,
+    【附加重复对】"Delete track?" 确认对话框的标题/正文/按钮文案在 Area.tsx 与 Sidebar.tsx 各写一份,
     必须逐字一致(含 "Its cards (including any terminals) go too. This cannot be undone.")。
   why: >
     同一个破坏性操作在两个入口给出不同措辞会让用户怀疑二者语义不同;两处的确认模式也刻意相同(close-then-await)。
@@ -4700,20 +4700,20 @@
   kind: invariant
   family: dead-code
   statement: >
-    `WaveContext` 在 Wave.tsx 里被 provide,但全仓没有任何消费者(全文搜索只有定义处与 provider 处)。
+    `TrackContext` 在 Track.tsx 里被 provide,但全仓没有任何消费者(全文搜索只有定义处与 provider 处)。
     **不迁移**——新架构不要移植这个 context。
   why: >
-    注释声称是给 wave-report 卡读 lifecycle 用的(#229 PR B),但报告已改由 WaveReportPage 直接拿 wave prop
+    注释声称是给 track-report 卡读 lifecycle 用的(#229 PR B),但报告已改由 TrackReportPage 直接拿 track prop
     渲染,消费方消失了。保留 provider 会让新架构误以为存在隐式依赖。
-  source: web/src/shared/components/WaveContext.ts:1-36 + web/src/pages/Wave.tsx:353,557
+  source: web/src/shared/components/TrackContext.ts:1-36 + web/src/pages/Track.tsx:353,557
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: null
   test_tier: none
   migration: skipped
-  skip_reason: WaveContext 全仓无消费者，属于确认的死代码；新架构明确不移植
+  skip_reason: TrackContext 全仓无消费者，属于确认的死代码；新架构明确不移植
 
 - id: INV-DEAD-002
   kind: invariant

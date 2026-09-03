@@ -4,12 +4,12 @@ import type { CardEntry } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
 import type { CodexCard } from './codex.ts';
 import { CODEX_CARD_ENTRY, isPlainChatPayload } from './codex.ts';
-import { partitionWaveCards } from './headless-filter.js';
+import { partitionTrackCards } from './headless-filter.js';
 import { registerAvailableBuiltinCards } from './register.js';
 
 function wire(id: string, kind: string, payload: unknown) {
   return {
-    id, kind, wave_id: 'w1', title: null, sort: 0, payload,
+    id, kind, track_id: 'w1', title: null, sort: 0, payload,
     deletable: true, created_at: 0, updated_at: 0,
   };
 }
@@ -90,7 +90,7 @@ describe('CODEX_CARD_ENTRY', () => {
     expect(registry.resolve({
       id: 'chat1', kind: 'codex', payload: { schemaVersion: 1, harness_profile: 'plain_chat' },
     })).toBeNull();
-    const { visible, unknown } = partitionWaveCards(registry, [
+    const { visible, unknown } = partitionTrackCards(registry, [
       wire('chat1', 'codex', { schemaVersion: 1, harness_profile: 'plain_chat' }),
       wire('k-codex', 'codex', { terminal_id: 't1' }),
     ]);
@@ -130,7 +130,7 @@ describe('CODEX_CARD_ENTRY', () => {
   /*
    * This used to assert `kernel-minted-only`, on the reading that a worker card
    * comes from a task row rather than a gesture. That was a statement about the
-   * front-end, not about the kernel: `POST /api/waves/:id/codex-cards` has
+   * front-end, not about the kernel: `POST /api/tracks/:id/codex-cards` has
    * always minted one atomically, and the panel now offers it. What the kernel
    * genuinely reserves to itself is the *spec harness* — a `codex` row with a
    * harness payload — and that is a different entry (`SPEC_CARD_ENTRY`), which
@@ -171,7 +171,7 @@ describe('CODEX_CARD_ENTRY', () => {
   it('lands codex cards in the visible partition beside terminal cards', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
-    const { visible, unknown } = partitionWaveCards(registry, [
+    const { visible, unknown } = partitionTrackCards(registry, [
       wire('k-codex', 'codex', { terminal_id: 't1' }),
       wire('k-term', 'terminal', { terminal_id: 't2' }),
       // Same kernel kind, harness bit set: still headless, still filtered out.

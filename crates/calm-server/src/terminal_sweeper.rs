@@ -9,14 +9,14 @@
 //! layers:
 //!
 //!   1. **Eager teardown in the route handler.** When a user issues
-//!      `DELETE /api/cards/:id`, `DELETE /api/waves/:id`, or
+//!      `DELETE /api/cards/:id`, `DELETE /api/tracks/:id`, or
 //!      `DELETE /api/areas/:id`, the handler walks the affected card
 //!      list, calls [`reap_terminal_artifacts`] to stop the renderer and
 //!      delete the terminal row, *then* deletes the
-//!      card / wave / area row. The `terminals.card_id` FK is
+//!      card / track / area row. The `terminals.card_id` FK is
 //!      `ON DELETE RESTRICT` (migration 0011), so a missed cleanup
 //!      surfaces as a transaction-level FK error rather than a silent
-//!      renderer-process leak. Wave deletion performs this external work
+//!      renderer-process leak. Track deletion performs this external work
 //!      before its short row-delete transaction.
 //!   2. **This sweeper.** Catches the residual shape: a crashed server,
 //!      a SIGKILL'd writer, or a partial-success transaction that left
@@ -32,7 +32,7 @@
 //! and the sweeper was supposed to "catch the leak" — but in practice
 //! it had nothing to catch (the row was already gone) and the daemon
 //! process kept running until the next 30 s tick at best. That model
-//! was wrong; the design doc lied. Card / wave / area delete now own
+//! was wrong; the design doc lied. Card / track / area delete now own
 //! their own teardown synchronously, and this sweeper exists only for
 //! crash-recovery / partial-write residue.
 //!
@@ -57,7 +57,7 @@
 //! through `write_with_event` to emit an audit event in the
 //! crash-recovery path, whereas the route-handler eager teardown
 //! deletes the row inside the same transaction that's about to delete
-//! the card and emits `Event::CardDeleted` (or `WaveDeleted` /
+//! the card and emits `Event::CardDeleted` (or `TrackDeleted` /
 //! `AreaDeleted`) as the audit signal.
 
 use std::time::Duration;
@@ -148,7 +148,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     // leaves the kernel cleanly and any subscriber sees the
     // `terminal.deleted` event.
     //
-    // Scope (PR2 of #136): try to resolve the card → wave → area
+    // Scope (PR2 of #136): try to resolve the card → track → area
     // chain so per-card subscribers see the reap. If the card has
     // already been deleted (the common case — the sweeper exists
     // precisely because card-delete may have left an orphan
@@ -157,10 +157,10 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     let terminal_id = term.id.clone();
     let card_id = term.card_id.clone();
     let scope = match state.repo.card_get(card_id.as_str()).await? {
-        Some(c) => match state.repo.wave_get(c.wave_id.as_str()).await? {
+        Some(c) => match state.repo.track_get(c.track_id.as_str()).await? {
             Some(w) => EventScope::Card {
                 card: c.id,
-                wave: w.id,
+                track: w.id,
                 area: w.area_id,
             },
             None => EventScope::System,
@@ -214,7 +214,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 ///
 /// Idempotent: missing socket, dead pid, and absent `renderer entry` /
 /// `pid` all collapse to a clean return. The caller is responsible for
-/// the *row delete* step (card/area/wave eager teardown: inside their short
+/// the *row delete* step (card/area/track eager teardown: inside their short
 /// delete transaction; sweeper: inside its own
 /// `write_with_event` audit transaction).
 ///

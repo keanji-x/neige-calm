@@ -93,7 +93,7 @@ async fn boot_host(
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
     (host, repo, tmp, events)
@@ -289,7 +289,7 @@ fn auth_helpers_reachable_from_public_surface() {
 
 #[tokio::test]
 async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
-    use calm_server::model::{NewArea, NewWave};
+    use calm_server::model::{NewArea, NewTrack};
 
     let plugin_id = "test.nocaps";
 
@@ -315,8 +315,8 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "demo".into(),
@@ -342,7 +342,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         "entrypoint": {
             "command": "bin/stub",
             "env": {
-                "NEIGE_DEMO_WAVE": wave.id.clone(),
+                "NEIGE_DEMO_TRACK": track.id.clone(),
                 "STUB_OMIT_CAPABILITY": "1"
             }
         },
@@ -350,7 +350,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         // installed so they don't matter — the drainer answers MethodNotFound
         // before perms are consulted.
         "permissions": {
-            "overlays_write": ["wave", "card"],
+            "overlays_write": ["track", "card"],
             "cards_create": true,
             "kv_quota_bytes": 1048576
         }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
@@ -379,7 +379,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         events,
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
 
@@ -406,14 +406,14 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         "neige.kv.set must NOT touch kv when capability is absent; got {kv:?}"
     );
 
-    let cards = repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    let cards = repo.cards_by_track(track.id.as_str()).await.unwrap();
     assert!(
         cards.is_empty(),
         "neige.card.create must NOT create cards when capability is absent; got {} cards",
         cards.len()
     );
 
-    let overlays = repo.overlays_for("wave", wave.id.as_str()).await.unwrap();
+    let overlays = repo.overlays_for("track", track.id.as_str()).await.unwrap();
     assert!(
         overlays.is_empty(),
         "neige.overlay.set must NOT write overlays when capability is absent; got {} overlays",

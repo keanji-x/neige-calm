@@ -6,7 +6,7 @@
 
 - Spec/用户决定做什么，并在报告中维护任务声明。
 - `tasks` 表是可重建的执行投影，不是第二份计划真源。
-- Scheduler 只做机械判定：依赖、wave lifecycle、并发预算、任务状态和 gate policy。
+- Scheduler 只做机械判定：依赖、track lifecycle、并发预算、任务状态和 gate policy。
 - Operation saga 负责启动 worker 或 gate，并提供幂等、恢复和补偿。
 - Worker 报告执行结果；内核验证所有权和状态迁移。
 - Gate 由内核运行，决定任务能否从 `verifying` 进入终态。
@@ -35,11 +35,11 @@ dispatch/spawn/report/gate 失败       → failed
 - 状态为 `pending`；
 - 所有依赖为 `done`；
 - 声明仍有效且没有阻断诊断；
-- wave lifecycle 允许调度；
-- wave/树的并发预算有容量；
+- track lifecycle 允许调度；
+- track/树的并发预算有容量；
 - 没有其它 scheduler 已经 claim。
 
-Ready 集合在 wave 锁与数据库事务内计算。Claim 与 `TaskDispatched` 事件同事务提交，避免两个 scheduler 启动同一任务。
+Ready 集合在 track 锁与数据库事务内计算。Claim 与 `TaskDispatched` 事件同事务提交，避免两个 scheduler 启动同一任务。
 
 任务优先级和文档顺序只决定 ready 集合内的稳定选择顺序，不能绕过依赖、预算或诊断。
 
@@ -67,7 +67,7 @@ Worker 成功/失败报告必须同时满足：
 - card/session/runtime 归属一致；
 - 同一终态没有已经赢得 CAS。
 
-Worker 报告和 task row flip、事件、必要的 wave lifecycle 推进同事务提交。CAS 输掉时先读取当前行区分“同结果重复”与“冲突终态”；冲突不能静默当成功。
+Worker 报告和 task row flip、事件、必要的 track lifecycle 推进同事务提交。CAS 输掉时先读取当前行区分“同结果重复”与“冲突终态”；冲突不能静默当成功。
 
 Kernel reaper 是单独的权限类别。它处理 worker 已死、无法再自证所有权的情况，但必须证明 runtime/operation 身份和 scheduler 来源，不能成为任意终结任务的后门。
 
@@ -89,7 +89,7 @@ Gate 结果：
 - 步骤失败：`verifying → failed`；
 - 基础设施错误、超时或无法证明进程身份：fail closed，并保留可读诊断。
 
-Gated task 的 worker 自报完成不能直接提升 wave lifecycle；提升只能在 gate 终态事务中发生。
+Gated task 的 worker 自报完成不能直接提升 track lifecycle；提升只能在 gate 终态事务中发生。
 
 ## 触发与恢复
 
@@ -112,7 +112,7 @@ Scheduler 可以被 task/report/lifecycle/gate 事件唤醒，但正确性不能
 
 ## 配置与风险
 
-- `task_budget` 限制 wave 内并发；树预算还受 doc-as-plan 的共享额度约束。
+- `task_budget` 限制 track 内并发；树预算还受 doc-as-plan 的共享额度约束。
 - `require_task_gates` 打开时，缺 gate 的声明不进入 ready 集合，除非显式声明受支持的跳过理由。
 - 并行 worker 若共享同一 checkout 会相互污染；在 workspace lease 完整隔离前，低默认并发是安全边界。
 - Gate log 和长期 operation evidence 需要有界保留策略。

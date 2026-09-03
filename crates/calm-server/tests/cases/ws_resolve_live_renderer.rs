@@ -6,7 +6,7 @@ use std::sync::Arc;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, Terminal};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewTrack, Terminal};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -133,7 +133,7 @@ impl TestFixture {
                 events,
                 calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_area_cache::WaveAreaCache::new(),
+                    calm_server::track_area_cache::TrackAreaCache::new(),
                 ),
             )),
             Arc::new(CodexClient::new_stub()),
@@ -157,9 +157,9 @@ impl TestFixture {
             })
             .await
             .expect("create area");
-        let wave = self
+        let track = self
             .repo
-            .wave_create(NewWave {
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
                 title: "ws-resolve-e2e".into(),
@@ -171,11 +171,11 @@ impl TestFixture {
                 theme: RequestTheme::default_dark(),
             })
             .await
-            .expect("create wave");
+            .expect("create track");
         let card = self
             .repo
             .card_create(NewCard {
-                wave_id: wave.id,
+                track_id: track.id,
                 title: None,
                 kind: "terminal".into(),
                 sort: None,

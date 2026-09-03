@@ -39,7 +39,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_delete_tx, card_with_codex_create_tx, terminal_delete_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, NewArea, NewWave, Terminal, new_id};
+use calm_server::model::{Card, CardRole, NewArea, NewTrack, Terminal, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::WorkerSessionState;
@@ -51,7 +51,7 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
-    wave_id: String,
+    track_id: String,
     _tmp: TempDir,
 }
 
@@ -70,8 +70,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "cascade pin".into(),
@@ -91,8 +91,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone() as Arc<dyn Repo>,
         events,
@@ -104,11 +104,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-cascade-pin-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -120,7 +123,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         repo,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         _tmp: tmp,
     }
 }
@@ -135,7 +138,7 @@ async fn mint_codex_worker(boot: &Boot) -> (Card, Terminal) {
         new_id(),
         &new_id(),
         None,
-        boot.wave_id.clone().into(),
+        boot.track_id.clone().into(),
         None,
         None,
         "/workspace".into(),

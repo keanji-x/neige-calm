@@ -26,7 +26,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewArea, NewWave};
+use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -57,7 +57,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// `TerminalExited` makes it through. Bound is still well under the
 /// issue's <10s total budget.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(8);
-/// Boot: in-memory repo + area + wave seeded; AppState wired with a real
+/// Boot: in-memory repo + area + track seeded; AppState wired with a real
 /// `DaemonClient` pointed at a fresh `TempDir` (so sockets from concurrent
 /// tests don't race in /tmp); both REST and WS routers merged and bound to
 /// a fresh `127.0.0.1:0` listener.
@@ -65,7 +65,7 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(8);
 /// Returns:
 ///   - bound socket address (for ws upgrade)
 ///   - cloned router (for in-process REST oneshot calls)
-///   - the wave id we seeded
+///   - the track id we seeded
 ///   - the `TempDir` (kept alive for the duration of the test — drop unlinks
 ///     the daemon socket directory)
 async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
@@ -77,7 +77,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             .expect("open in-memory sqlite"),
     );
 
-    // Seed an area + wave so the test can POST a card into the wave. Goes
+    // Seed an area + track so the test can POST a card into the track. Goes
     // through `raw_repo()` (gated behind the `fixtures` feature, auto-
     // enabled in dev-deps) just like `payload_validation.rs` does.
     let area = repo
@@ -88,13 +88,13 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
             title: "e2e".into(),
             sort: None,
-            // #1147 S6 — the terminal card's cwd defaults to the wave's
+            // #1147 S6 — the terminal card's cwd defaults to the track's
             // workspace; an empty workspace path is refused.
             cwd: "/neige-fixture-workspace".into(),
             template_id: None,
@@ -122,7 +122,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -154,7 +154,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
     // Tiny breathing room — same idiom as tests/ws_events.rs.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    (addr, app, wave.id.to_string(), tmp)
+    (addr, app, track.id.to_string(), tmp)
 }
 
 /// In-process REST POST against the merged router (no TCP hop, no JSON
@@ -262,7 +262,7 @@ async fn wait_for(
 
 #[tokio::test]
 async fn v2_full_chain_happy_path() {
-    let (addr, app, wave_id, _tmp) = boot_full().await;
+    let (addr, app, track_id, _tmp) = boot_full().await;
 
     // ---- 1. POST atomic terminal-card -----------------------------------
     //
@@ -281,7 +281,7 @@ async fn v2_full_chain_happy_path() {
     // shell choice.
     let (status, card) = rest_post(
         app.clone(),
-        format!("/api/waves/{wave_id}/terminal-cards"),
+        format!("/api/tracks/{track_id}/terminal-cards"),
         json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;

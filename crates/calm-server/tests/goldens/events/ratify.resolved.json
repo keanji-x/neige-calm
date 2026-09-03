@@ -1,9 +1,9 @@
 {
-  "description": "ratify.resolved carries the wave routing id and the lower-case user ratification decision",
+  "description": "ratify.resolved carries the track routing id and the lower-case user ratification decision",
   "wire": {
     "ev": "ratify.resolved",
     "data": {
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "decision": "grant"
     }
   }

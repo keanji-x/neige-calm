@@ -64,7 +64,7 @@ pub async fn worker_flow_item_insert_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: Option<&str>,
     runtime_id: Option<&str>,
-    wave_id: Option<&str>,
+    track_id: Option<&str>,
     worker_session_id: Option<&str>,
     kind: &str,
     payload: &str,
@@ -72,7 +72,7 @@ pub async fn worker_flow_item_insert_tx(
 ) -> Result<i64> {
     let row = sqlx::query(
         r#"INSERT INTO worker_flow_items (
-               card_id, runtime_id, wave_id, worker_session_id,
+               card_id, runtime_id, track_id, worker_session_id,
                kind, payload, created_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -80,7 +80,7 @@ pub async fn worker_flow_item_insert_tx(
     )
     .bind(card_id)
     .bind(runtime_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(worker_session_id)
     .bind(kind)
     .bind(payload)
@@ -304,7 +304,7 @@ impl RepoOutOfDomain for SqlxRepo {
         &self,
         runtime_id: &str,
         card_id: &str,
-        wave_id: &str,
+        track_id: &str,
         thread_id: &str,
         turn_id: Option<&str>,
         item_uuid: Option<&str>,
@@ -314,7 +314,7 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<i64> {
         let row = sqlx::query(
             r#"INSERT INTO harness_items (
-                   runtime_id, card_id, wave_id, thread_id, turn_id,
+                   runtime_id, card_id, track_id, thread_id, turn_id,
                    item_uuid, item_type, method, params, created_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -322,7 +322,7 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(runtime_id)
         .bind(card_id)
-        .bind(wave_id)
+        .bind(track_id)
         .bind(thread_id)
         .bind(turn_id)
         .bind(item_uuid)
@@ -342,7 +342,7 @@ impl RepoOutOfDomain for SqlxRepo {
         &self,
         card_id: Option<&str>,
         runtime_id: Option<&str>,
-        wave_id: Option<&str>,
+        track_id: Option<&str>,
         worker_session_id: Option<&str>,
         kind: &str,
         payload: &str,
@@ -354,7 +354,7 @@ impl RepoOutOfDomain for SqlxRepo {
             &mut tx,
             card_id,
             runtime_id,
-            wave_id,
+            track_id,
             worker_session_id,
             kind,
             payload,
@@ -697,7 +697,7 @@ impl RepoOutOfDomain for SqlxRepo {
             return Ok(AreaFolderClaim::Conflict(conflict));
         }
         // Shares the area-exists check + UNIQUE-to-Conflict mapping with
-        // the wave-create attach path.
+        // the track-create attach path.
         let folder = super::area_folder_create_tx(&mut tx, area_id, path).await?;
         tx.commit().await?;
         Ok(AreaFolderClaim::Created(folder))

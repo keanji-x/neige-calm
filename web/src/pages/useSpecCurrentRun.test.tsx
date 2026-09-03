@@ -79,7 +79,7 @@ async function emitPhase(
         data: {
           runtime_id: 'runtime_1',
           card_id: cardId,
-          wave_id: 'wave_1',
+          track_id: 'track_1',
           old_phase: oldPhase,
           new_phase: newPhase,
         },

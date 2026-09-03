@@ -82,9 +82,9 @@
 - term-body
 - term-line
 - tnum
-- wave-card
-- wave-grid
-- wave-grid-wrap
+- track-card
+- track-grid
+- track-grid-wrap
 - xterm
 - xterm-container
 - xterm-restart

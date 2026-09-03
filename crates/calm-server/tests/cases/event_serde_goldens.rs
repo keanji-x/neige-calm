@@ -26,12 +26,12 @@
 //!   3. asserts `canonical` is a serde fixed point (deserialize → serialize
 //!      returns it unchanged).
 
-use calm_server::event::{ArtifactRef, EditAuthor, Event, ForgeMergeSubject, WaveUpdatedPayload};
+use calm_server::event::{ArtifactRef, EditAuthor, Event, ForgeMergeSubject, TrackUpdatedPayload};
 use calm_server::harness::snapshot::HarnessPhaseTag;
-use calm_server::ids::{AreaId, CardId, WaveId};
+use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::model::{
-    Area, AreaKind, Card, CardRuntimeView, Overlay, Wave, WaveLifecycle, WaveWorkspace,
-    WaveWorkspaceKind,
+    Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackLifecycle, TrackWorkspace,
+    TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use calm_types::event::{
@@ -113,22 +113,22 @@ macro_rules! golden_test {
 // Shared fixture builders (deterministic fake data; must mirror the goldens)
 // ---------------------------------------------------------------------------
 
-fn wave_min() -> Wave {
-    Wave {
-        id: WaveId::from("wave-01"),
+fn track_min() -> Track {
+    Track {
+        id: TrackId::from("track-01"),
         area_id: AreaId::from("area-01"),
-        title: "Golden Wave".into(),
+        title: "Golden Track".into(),
         sort: 1.5,
         archived_at: None,
         pinned_at: None,
-        lifecycle: WaveLifecycle::Draft,
+        lifecycle: TrackLifecycle::Draft,
         cwd_wire_alias: String::new(),
         template_id: None,
         plugin_scope: None,
         purpose: None,
         template_input: None,
         terminal_at: None,
-        workspace: WaveWorkspace::default(),
+        workspace: TrackWorkspace::default(),
         created_at: 1000,
         updated_at: 2000,
     }
@@ -137,7 +137,7 @@ fn wave_min() -> Wave {
 fn card_min() -> Card {
     Card {
         id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         title: None,
         kind: "terminal".into(),
         sort: 1.5,
@@ -190,36 +190,36 @@ golden_test!(
 );
 
 golden_test!(
-    wave_updated_full,
-    "wave_updated.full.json",
-    Event::WaveUpdated(WaveUpdatedPayload::new(
-        Wave {
+    track_updated_full,
+    "track_updated.full.json",
+    Event::TrackUpdated(TrackUpdatedPayload::new(
+        Track {
             archived_at: Some(111),
             pinned_at: Some(222),
-            lifecycle: WaveLifecycle::Working,
-            cwd_wire_alias: "/tmp/golden-wave".into(),
+            lifecycle: TrackLifecycle::Working,
+            cwd_wire_alias: "/tmp/golden-track".into(),
             terminal_at: Some(333),
-            workspace: WaveWorkspace {
-                kind: WaveWorkspaceKind::Managed,
-                path: "/tmp/golden-wave".into(),
+            workspace: TrackWorkspace {
+                kind: TrackWorkspaceKind::Managed,
+                path: "/tmp/golden-track".into(),
                 frozen_at: Some(444),
             },
-            ..wave_min()
+            ..track_min()
         },
         Some("spec says hi".into()),
     ))
 );
 
 golden_test!(
-    wave_updated_min,
-    "wave_updated.min.json",
-    Event::WaveUpdated(WaveUpdatedPayload::new(wave_min(), None))
+    track_updated_min,
+    "track_updated.min.json",
+    Event::TrackUpdated(TrackUpdatedPayload::new(track_min(), None))
 );
 
 // #1209 PR-2 (design §3.4 / test #14, Rust leg) — the event log is the one
-// place that must keep reading the pre-rename spelling. `Wave` is
-// `#[serde(flatten)]`-ed into `WaveUpdatedPayload`, so every historical
-// `wave.updated` row on disk still says `workflow_id` / `workflow_input`. The
+// place that must keep reading the pre-rename spelling. `Track` is
+// `#[serde(flatten)]`-ed into `TrackUpdatedPayload`, so every historical
+// `track.updated` row on disk still says `workflow_id` / `workflow_input`. The
 // reader is `Event::from_kind_and_payload`, called from `events_since`, whose
 // error arm *skips the whole row* — which is why the fix is a `serde(alias)`
 // beside the retained `serde(default)`, and not the removal of `default`.
@@ -233,58 +233,58 @@ golden_test!(
 //
 // Two files, one per aliased field, so a half-reverted alias reds exactly one.
 golden_test!(
-    wave_updated_legacy_template_id,
-    "wave_updated.legacy_template_id.json",
-    Event::WaveUpdated(WaveUpdatedPayload::new(
-        Wave {
+    track_updated_legacy_template_id,
+    "track_updated.legacy_template_id.json",
+    Event::TrackUpdated(TrackUpdatedPayload::new(
+        Track {
             template_id: Some("small-change".into()),
-            ..wave_min()
+            ..track_min()
         },
         None,
     ))
 );
 
 golden_test!(
-    wave_updated_legacy_template_input,
-    "wave_updated.legacy_template_input.json",
-    Event::WaveUpdated(WaveUpdatedPayload::new(
-        Wave {
+    track_updated_legacy_template_input,
+    "track_updated.legacy_template_input.json",
+    Event::TrackUpdated(TrackUpdatedPayload::new(
+        Track {
             template_input: Some(json!({ "issue": 1209 })),
-            ..wave_min()
+            ..track_min()
         },
         None,
     ))
 );
 
 golden_test!(
-    wave_deleted,
-    "wave_deleted.json",
-    Event::WaveDeleted {
-        id: WaveId::from("wave-01"),
+    track_deleted,
+    "track_deleted.json",
+    Event::TrackDeleted {
+        id: TrackId::from("track-01"),
         area_id: AreaId::from("area-01"),
     }
 );
 
 golden_test!(
-    wave_lifecycle_changed_full,
-    "wave_lifecycle_changed.full.json",
-    Event::WaveLifecycleChanged {
-        id: WaveId::from("wave-01"),
+    track_lifecycle_changed_full,
+    "track_lifecycle_changed.full.json",
+    Event::TrackLifecycleChanged {
+        id: TrackId::from("track-01"),
         area_id: AreaId::from("area-01"),
-        from: WaveLifecycle::Reviewing,
-        to: WaveLifecycle::Done,
+        from: TrackLifecycle::Reviewing,
+        to: TrackLifecycle::Done,
         agent_message: Some("review passed".into()),
     }
 );
 
 golden_test!(
-    wave_lifecycle_changed_min,
-    "wave_lifecycle_changed.min.json",
-    Event::WaveLifecycleChanged {
-        id: WaveId::from("wave-01"),
+    track_lifecycle_changed_min,
+    "track_lifecycle_changed.min.json",
+    Event::TrackLifecycleChanged {
+        id: TrackId::from("track-01"),
         area_id: AreaId::from("area-01"),
-        from: WaveLifecycle::Draft,
-        to: WaveLifecycle::Planning,
+        from: TrackLifecycle::Draft,
+        to: TrackLifecycle::Planning,
         agent_message: None,
     }
 );
@@ -343,7 +343,7 @@ golden_test!(
     "card_deleted.json",
     Event::CardDeleted {
         id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
     }
 );
 
@@ -398,7 +398,7 @@ golden_test!(
     Event::HarnessItemAdded {
         runtime_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         item_db_id: 42,
         item_uuid: Some("uuid-01".into()),
         item_type: Some("agentMessage".into()),
@@ -413,7 +413,7 @@ golden_test!(
     Event::HarnessItemAdded {
         runtime_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         item_db_id: 42,
         item_uuid: None,
         item_type: None,
@@ -428,7 +428,7 @@ golden_test!(
     Event::HarnessPhaseChanged {
         runtime_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         old_phase: HarnessPhaseTag::PendingThreadStart,
         new_phase: HarnessPhaseTag::TurnRunning,
     }
@@ -440,7 +440,7 @@ golden_test!(
     Event::HarnessTranscriptCleared {
         runtime_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         cleared_item_count: Some(12),
         cleared_params_bytes: Some(3_400),
         card_age_ms_at_clear: Some(86_400_000),
@@ -453,16 +453,16 @@ golden_test!(
     Event::HarnessUserMessageEnqueued {
         runtime_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         char_count: 280,
     }
 );
 
 golden_test!(
-    wave_report_edited_full,
-    "wave_report_edited.full.json",
-    Event::WaveReportEdited {
-        wave_id: WaveId::from("wave-01"),
+    track_report_edited_full,
+    "track_report_edited.full.json",
+    Event::TrackReportEdited {
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
         author: EditAuthor::Spec,
         author_plugin_id: None,
@@ -476,10 +476,10 @@ golden_test!(
 );
 
 golden_test!(
-    wave_report_edited_min,
-    "wave_report_edited.min.json",
-    Event::WaveReportEdited {
-        wave_id: WaveId::from("wave-01"),
+    track_report_edited_min,
+    "track_report_edited.min.json",
+    Event::TrackReportEdited {
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
         author: EditAuthor::User,
         author_plugin_id: None,
@@ -493,10 +493,10 @@ golden_test!(
 );
 
 golden_test!(
-    wave_report_edited_plugin,
-    "wave_report_edited.plugin.json",
-    Event::WaveReportEdited {
-        wave_id: WaveId::from("wave-01"),
+    track_report_edited_plugin,
+    "track_report_edited.plugin.json",
+    Event::TrackReportEdited {
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
         author: EditAuthor::Plugin,
         author_plugin_id: Some("dev.neige.invest".into()),
@@ -731,7 +731,7 @@ golden_test!(
     plan_updated_full,
     "plan_updated.full.json",
     Event::PlanUpdated {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         changed_keys: vec!["t1".into(), "t2".into()],
         agent_message: Some("plan revised".into()),
     }
@@ -741,7 +741,7 @@ golden_test!(
     plan_updated_min,
     "plan_updated.min.json",
     Event::PlanUpdated {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         changed_keys: vec![],
         agent_message: None,
     }
@@ -751,7 +751,7 @@ golden_test!(
     task_dispatched_full,
     "task_dispatched.full.json",
     Event::TaskDispatched {
-        idempotency_key: "wave-01:build-step".into(),
+        idempotency_key: "track-01:build-step".into(),
         kind: "codex".into(),
         agent_message: Some("scheduler claimed build-step".into()),
     }
@@ -761,7 +761,7 @@ golden_test!(
     task_dispatched_min,
     "task_dispatched.min.json",
     Event::TaskDispatched {
-        idempotency_key: "wave-01:build-step".into(),
+        idempotency_key: "track-01:build-step".into(),
         kind: "terminal".into(),
         agent_message: None,
     }
@@ -771,18 +771,18 @@ golden_test!(
     task_context_frozen_full,
     "task_context_frozen.full.json",
     Event::TaskContextFrozen {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         task_key: "build-step".into(),
-        idempotency_key: "wave-01:build-step".into(),
-        task_id: "wave-01:build-step".into(),
+        idempotency_key: "track-01:build-step".into(),
+        task_id: "track-01:build-step".into(),
         refs: vec![TaskContextRef {
-            wave_id: WaveId::from("wave-01"),
+            track_id: TrackId::from("track-01"),
             block_id: "block-01".into(),
             rev: 7,
             hash: "sha256:context".into(),
             is_root: true,
         }],
-        doc_revs: [("wave-01".into(), 7)].into(),
+        doc_revs: [("track-01".into(), 7)].into(),
         truncated: true,
     }
 );
@@ -791,10 +791,10 @@ golden_test!(
     task_context_frozen_min,
     "task_context_frozen.min.json",
     Event::TaskContextFrozen {
-        wave_id: WaveId::default(),
+        track_id: TrackId::default(),
         task_key: String::new(),
         idempotency_key: String::new(),
-        task_id: "wave-01:legacy".into(),
+        task_id: "track-01:legacy".into(),
         refs: vec![],
         doc_revs: Default::default(),
         truncated: false,
@@ -805,11 +805,11 @@ golden_test!(
     task_context_advanced_full,
     "task_context_advanced.full.json",
     Event::TaskContextAdvanced {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         task_key: "build-step".into(),
-        task_id: "wave-01:build-step".into(),
+        task_id: "track-01:build-step".into(),
         changed_refs: vec![calm_types::event::TaskContextChangedRef {
-            wave_id: WaveId::from("wave-context"),
+            track_id: TrackId::from("track-context"),
             block_id: "block-01".into(),
             from_rev: 7,
             to_rev: 8,
@@ -825,9 +825,9 @@ golden_test!(
     task_context_advanced_min,
     "task_context_advanced.min.json",
     Event::TaskContextAdvanced {
-        wave_id: Default::default(),
+        track_id: Default::default(),
         task_key: String::new(),
-        task_id: "wave-01:legacy".into(),
+        task_id: "track-01:legacy".into(),
         changed_refs: Vec::new(),
         verdict: "material".into(),
         rationale: String::new(),
@@ -838,10 +838,10 @@ golden_test!(
     workspace_leased,
     "workspace_leased.json",
     Event::WorkspaceLeased {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
         lease_id: "lease-01".into(),
-        path: ".claude/worktrees/wave-01/card-01".into(),
+        path: ".claude/worktrees/track-01/card-01".into(),
     }
 );
 
@@ -849,7 +849,7 @@ golden_test!(
     workspace_released,
     "workspace_released.json",
     Event::WorkspaceReleased {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
         lease_id: "lease-01".into(),
     }
@@ -859,7 +859,7 @@ golden_test!(
     forge_pr_merged,
     "forge_pr_merged.json",
     Event::ForgePrMerged {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         subject: ForgeMergeSubject {
             phase: "impl".into(),
             slice_id: "6".into(),
@@ -874,7 +874,7 @@ golden_test!(
     review_round,
     "review.round.json",
     Event::ReviewRound {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         subject: ReviewSubject {
             phase: "impl".into(),
             slice_id: "5b".into(),
@@ -895,7 +895,7 @@ golden_test!(
             },
         ],
         root_cause: Some("tests failing".into()),
-        idempotency_key: "review.round:wave-01:impl:5b:760:1".into(),
+        idempotency_key: "review.round:track-01:impl:5b:760:1".into(),
     }
 );
 
@@ -903,7 +903,7 @@ golden_test!(
     ratify_requested,
     "ratify.requested.json",
     Event::RatifyRequested {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         reason: "cap_exhausted".into(),
     }
 );
@@ -912,7 +912,7 @@ golden_test!(
     ratify_resolved,
     "ratify.resolved.json",
     Event::RatifyResolved {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         decision: RatifyDecision::Grant,
     }
 );
@@ -921,7 +921,7 @@ golden_test!(
     proposal_submitted_full,
     "proposal_submitted.full.json",
     Event::ProposalSubmitted {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         proposal_id: "pp-01".into(),
         plugin_id: "dev.neige.invest".into(),
         subject_kind: "report".into(),
@@ -963,7 +963,7 @@ golden_test!(
     proposal_submitted_min,
     "proposal_submitted.min.json",
     Event::ProposalSubmitted {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         proposal_id: "pp-01".into(),
         plugin_id: "dev.neige.invest".into(),
         subject_kind: "report".into(),
@@ -982,7 +982,7 @@ golden_test!(
     proposal_resolved_full,
     "proposal_resolved.full.json",
     Event::ProposalResolved {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         proposal_id: "pp-01".into(),
         plugin_id: "dev.neige.invest".into(),
         decision: ProposalDecision::Accepted,
@@ -993,7 +993,7 @@ golden_test!(
     proposal_resolved_min,
     "proposal_resolved.min.json",
     Event::ProposalResolved {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         proposal_id: "pp-01".into(),
         plugin_id: "dev.neige.invest".into(),
         decision: ProposalDecision::Withdrawn,
@@ -1004,7 +1004,7 @@ golden_test!(
     forge_scan_completed,
     "forge_scan_completed.json",
     Event::ForgeScanCompleted {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         overlapping_prs: vec![1, 2],
     }
 );
@@ -1013,7 +1013,7 @@ golden_test!(
     forge_pr_opened,
     "forge_pr_opened.json",
     Event::ForgePrOpened {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         pr_number: 1,
         head_sha: "head-sha".into(),
     }
@@ -1023,7 +1023,7 @@ golden_test!(
     forge_pr_diff_read,
     "forge_pr_diff_read.json",
     Event::ForgePrDiffRead {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         pr_number: 1,
         base_sha: "base-sha".into(),
         head_sha: "head-sha".into(),
@@ -1035,7 +1035,7 @@ golden_test!(
     forge_pr_checks,
     "forge_pr_checks.json",
     Event::ForgePrChecks {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         pr_number: 1,
         conclusion: "success".into(),
     }
@@ -1045,7 +1045,7 @@ golden_test!(
     forge_issue_read,
     "forge_issue_read.json",
     Event::ForgeIssueRead {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         issue_number: 1,
         artifact_path: "/tmp/neige/issue-body.md".into(),
     }
@@ -1055,7 +1055,7 @@ golden_test!(
     forge_issue_closed,
     "forge_issue_closed.json",
     Event::ForgeIssueClosed {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         issue_number: 1,
     }
 );
@@ -1064,9 +1064,9 @@ golden_test!(
     worktree_provisioned,
     "worktree_provisioned.json",
     Event::WorktreeProvisioned {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
-        path: ".claude/worktrees/wave-01/card-01".into(),
+        path: ".claude/worktrees/track-01/card-01".into(),
     }
 );
 
@@ -1074,10 +1074,10 @@ golden_test!(
     worktree_committed,
     "worktree_committed.json",
     Event::WorktreeCommitted {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
         commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
-        branch: "neige/wave-01/card-01".into(),
+        branch: "neige/track-01/card-01".into(),
     }
 );
 
@@ -1085,9 +1085,9 @@ golden_test!(
     worktree_removed,
     "worktree_removed.json",
     Event::WorktreeRemoved {
-        wave_id: WaveId::from("wave-01"),
+        track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
-        path: ".claude/worktrees/wave-01/card-01".into(),
+        path: ".claude/worktrees/track-01/card-01".into(),
     }
 );
 
@@ -1095,13 +1095,13 @@ golden_test!(
     task_gate_result_full,
     "task_gate_result.full.json",
     Event::TaskGateResult {
-        task_id: "wave-01:build-step".into(),
-        idempotency_key: "wave-01:build-step".into(),
+        task_id: "track-01:build-step".into(),
+        idempotency_key: "track-01:build-step".into(),
         passed: false,
         failing_step: Some("clippy".into()),
         exit_code: Some(101),
         log_tail: "error: gate step failed\n".into(),
-        log_path: "/data/gate-logs/wave-01:build-step-g2.log".into(),
+        log_path: "/data/gate-logs/track-01:build-step-g2.log".into(),
         attempt: 2,
         agent_message: Some("gate attempt 2 failed at clippy".into()),
     }
@@ -1111,13 +1111,13 @@ golden_test!(
     task_gate_result_min,
     "task_gate_result.min.json",
     Event::TaskGateResult {
-        task_id: "wave-01:build-step".into(),
-        idempotency_key: "wave-01:build-step".into(),
+        task_id: "track-01:build-step".into(),
+        idempotency_key: "track-01:build-step".into(),
         passed: true,
         failing_step: None,
         exit_code: None,
         log_tail: String::new(),
-        log_path: "/data/gate-logs/wave-01:build-step-g1.log".into(),
+        log_path: "/data/gate-logs/track-01:build-step-g1.log".into(),
         attempt: 1,
         agent_message: None,
     }
@@ -1160,9 +1160,9 @@ fn alias_kinds_survive_from_kind_and_payload() {
 const ALL_KIND_TAGS: [&str; 49] = [
     "area.updated",
     "area.deleted",
-    "wave.updated",
-    "wave.deleted",
-    "wave.lifecycle_changed",
+    "track.updated",
+    "track.deleted",
+    "track.lifecycle_changed",
     "card.added",
     "card.updated",
     "card.deleted",
@@ -1173,7 +1173,7 @@ const ALL_KIND_TAGS: [&str; 49] = [
     "harness.phase.changed",
     "harness.transcript.cleared",
     "harness.user_message.enqueued",
-    "wave.report_edited",
+    "track.report_edited",
     "overlay.set",
     "overlay.deleted",
     "terminal.deleted",
@@ -1264,9 +1264,9 @@ fn kind_tag_list_matches_enum() {
         match ev {
             Event::AreaUpdated(_) => "area.updated",
             Event::AreaDeleted { .. } => "area.deleted",
-            Event::WaveUpdated(_) => "wave.updated",
-            Event::WaveDeleted { .. } => "wave.deleted",
-            Event::WaveLifecycleChanged { .. } => "wave.lifecycle_changed",
+            Event::TrackUpdated(_) => "track.updated",
+            Event::TrackDeleted { .. } => "track.deleted",
+            Event::TrackLifecycleChanged { .. } => "track.lifecycle_changed",
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
@@ -1277,7 +1277,7 @@ fn kind_tag_list_matches_enum() {
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
-            Event::WaveReportEdited { .. } => "wave.report_edited",
+            Event::TrackReportEdited { .. } => "track.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",

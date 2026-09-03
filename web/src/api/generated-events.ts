@@ -13,7 +13,7 @@ export type Area = { id: AreaId, name: string, color: string, sort: number, kind
  * One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
  *
  * Deliberately absent:
- * * `waveTitle` — every row belongs to the same hidden area chat wave, so
+ * * `trackTitle` — every row belongs to the same hidden area chat track, so
  *   returning its title would leak an object the user is never shown.
  * * `turns` — the server cannot produce a turn count that agrees with the
  *   drawer without re-parsing every `harness_items.params` blob; a number
@@ -23,10 +23,10 @@ export type AreaConversationSummary = {
 /**
  * The chat card's id. This is the conversation's identity everywhere.
  */
-id: string, waveId: string, 
+id: string, trackId: string, 
 /**
  * The conversation's own name, or null before it has one. Never the
- * wave's title.
+ * track's title.
  */
 title: string | null, 
 /**
@@ -84,7 +84,7 @@ export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: str
  */
 export type ArtifactRef = string;
 
-export type Card = { id: CardId, wave_id: WaveId, 
+export type Card = { id: CardId, track_id: TrackId, 
 /**
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
  * plugin-provided cards (the canonical MCP Apps resource URI). The
@@ -104,7 +104,7 @@ payload: unknown, title?: string, runtime?: CardRuntimeView,
  * migration 0013). `false` for kernel-owned cards that the user
  * cannot remove via REST / plugin callbacks — currently spec cards
  * (retroactively undeletable via the same migration's UPDATE) and
- * PR B's wave-report cards.
+ * PR B's track-report cards.
  *
  * `#[serde(default = "default_deletable")]` so wire payloads emitted
  * before #229 landed (event-log replay fixtures, old test seeds)
@@ -145,7 +145,7 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
 /**
- * Producer of a wave-report edit. Existing variants are persisted wire values.
+ * Producer of a track-report edit. Existing variants are persisted wire values.
  */
 export type EditAuthor = "spec" | "user" | "assistant" | "kernel" | "plugin";
 
@@ -162,7 +162,7 @@ export type EditAuthor = "spec" | "user" | "assistant" | "kernel" | "plugin";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `AreaUpdated(Area)`) pull in the struct's own export.
  */
-export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, area_id: AreaId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, area_id: AreaId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, 
+export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "track.lifecycle_changed", "data": { id: TrackId, area_id: AreaId, from: TrackLifecycle, to: TrackLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, 
 /**
  * Number of `harness_items` rows deleted by this reset.
  * `None` on pre-#1252 rows only.
@@ -179,7 +179,7 @@ cleared_params_bytes: number | null,
  * in milliseconds. Lets a retrospective tell "reset an hour in"
  * from "reset after a week". `None` on pre-#1252 rows only.
  */
-card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, 
+card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`
  * (#955 §5.3); `None` for every other author.
@@ -236,7 +236,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { wave_id: WaveId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { wave_id: WaveId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { wave_id: WaveId, proposal_id: string, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
 /**
  * Submitting plugin. Injected kernel-side from the callback
  * connection (never trusted from plugin input) and
@@ -259,21 +259,21 @@ base_doc_heads: string, ops: Array<ProposalOp>,
  */
 note: string, 
 /**
- * Pending-scoped idempotency key: while a `(plugin, wave,
+ * Pending-scoped idempotency key: while a `(plugin, track,
  * idem_key)` proposal is pending, re-submits return the
  * original proposal id; resolution releases the key.
  */
-idem_key: string, } } | { "ev": "proposal.resolved", "data": { wave_id: WaveId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { wave_id: WaveId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { wave_id: WaveId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { wave_id: WaveId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { wave_id: WaveId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { wave_id: WaveId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { wave_id: WaveId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { wave_id: WaveId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
+idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
 
 /**
- * Where an event lives in the area → wave → card hierarchy.
+ * Where an event lives in the area → track → card hierarchy.
  *
  * `EventScope::System` is the catch-all for events that genuinely don't
- * belong to a single area/wave/card (`Event::PluginState`, the
+ * belong to a single area/track/card (`Event::PluginState`, the
  * AreaCreated case where the area doesn't exist before the event, and
  * malformed legacy rows). Prefer the narrowest available scope.
  */
-export type EventScope = { "kind": "System" } | { "kind": "Area", "id": { area: AreaId, } } | { "kind": "Wave", "id": { wave: WaveId, area: AreaId, } } | { "kind": "Card", "id": { card: CardId, wave: WaveId, area: AreaId, } };
+export type EventScope = { "kind": "System" } | { "kind": "Area", "id": { area: AreaId, } } | { "kind": "Track", "id": { track: TrackId, area: AreaId, } } | { "kind": "Card", "id": { card: CardId, track: TrackId, area: AreaId, } };
 
 /**
  * Issue #250 PR 1 — 409 body for the folder-create conflict case.
@@ -295,13 +295,13 @@ export type FolderConflictKind = "equal" | "ancestor" | "descendant";
  */
 export type ForgeMergeSubject = { phase: string, slice_id: string, pr_number: number, };
 
-export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, wave_id: WaveId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, created_at_ms: number, };
+export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, created_at_ms: number, };
 
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 
 export type Overlay = { id: string, plugin_id: string, 
 /**
- * `"wave"` or `"card"`.
+ * `"track"` or `"card"`.
  */
 entity_kind: string, entity_id: string, 
 /**
@@ -341,7 +341,7 @@ export type ProposalAnchor = { "after_block_id": string } | "at_start" | "at_end
 export type ProposalDecision = "accepted" | "rejected" | "stale" | "withdrawn";
 
 /**
- * One proposed mutation of the wave-report block document
+ * One proposed mutation of the track-report block document
  * (design §5.2.1). A deliberately *stricter* sibling of the
  * interactive `calm.report.blocks.*` tool DTOs: anchoring must be
  * complete because apply happens asynchronously, and the wholesale
@@ -359,7 +359,7 @@ export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: st
 export type RatifyDecision = "grant" | "deny";
 
 /**
- * A derived, addressable slice of a wave report.
+ * A derived, addressable slice of a track report.
  */
 export type ReportBlock = { id: string, kind: string, rev: number, payload: unknown, };
 
@@ -371,14 +371,14 @@ export type ReviewSubject = { phase: string, slice_id: string, pr_number: number
 /**
  * One changed frozen reference carried by a context-advance verdict.
  */
-export type TaskContextChangedRef = { wave_id: WaveId, block_id: string, from_rev: number, to_rev: number, from_hash: string, to_hash: string, };
+export type TaskContextChangedRef = { track_id: TrackId, block_id: string, from_rev: number, to_rev: number, from_hash: string, to_hash: string, };
 
 /**
  * One report-block identity captured in a task context freeze.
  */
-export type TaskContextRef = { wave_id: WaveId, block_id: string, rev: number, hash: string, is_root: boolean, };
+export type TaskContextRef = { track_id: TrackId, block_id: string, rev: number, hash: string, is_root: boolean, };
 
-export type Wave = { id: WaveId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
+export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
  *
@@ -387,7 +387,7 @@ export type Wave = { id: WaveId, area_id: AreaId, title: string, sort: number, a
  */
 cwd: string, 
 /**
- * Template this wave was created from.
+ * Template this track was created from.
  *
  * The `serde(alias)` below is a deserialization-only compatibility read
  * for pre-#1209 event-log rows; serialization emits only this name.
@@ -398,7 +398,7 @@ template_id: string | null,
  */
 plugin_scope: string | null, 
 /**
- * Server-owned structural marker. Public wave creation cannot set this.
+ * Server-owned structural marker. Public track creation cannot set this.
  */
 purpose: string | null, 
 /**
@@ -408,14 +408,14 @@ purpose: string | null,
  */
 template_input: unknown, 
 /**
- * Issue #250 PR 2 — unix-ms timestamp the wave most recently
+ * Issue #250 PR 2 — unix-ms timestamp the track most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
- * or `None` while the wave is non-terminal. Stamped inside the
- * same transaction as the `WaveLifecycleChanged` event by
- * `wave_update_tx`; cleared back to `None` on reopen
+ * or `None` while the track is non-terminal. Stamped inside the
+ * same transaction as the `TrackLifecycleChanged` event by
+ * `track_update_tx`; cleared back to `None` on reopen
  * (Done/Canceled/Failed → Planning). The calendar window query
- * `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
- * terminal_at >= since)` to keep open waves visible across every
+ * `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
+ * terminal_at >= since)` to keep open tracks visible across every
  * day they span.
  *
  * Backfill semantics: rows that existed before this migration
@@ -426,19 +426,19 @@ template_input: unknown,
  * re-Done cycle stamps the column with the current time, which
  * is the first defensible point.
  */
-terminal_at: number | null, workspace: WaveWorkspace, created_at: number, updated_at: number, };
+terminal_at: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
- * One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
+ * One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
  *
  * Its own type rather than a reuse of [`AreaConversationSummary`], which is
  * what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
- * the area type's contract says "`waveTitle` is absent because every row lives
- * on one hidden wave", and on a wave that reasoning is simply not true. Two
+ * the area type's contract says "`trackTitle` is absent because every row lives
+ * on one hidden track", and on a track that reasoning is simply not true. Two
  * lists with different contracts should not share one name just because their
  * current fields coincide.
  */
-export type WaveConversationSummary = { 
+export type TrackConversationSummary = { 
 /**
  * The assistant card's id. This is the conversation's identity everywhere,
  * and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
@@ -446,17 +446,17 @@ export type WaveConversationSummary = {
  */
 id: string, 
 /**
- * The wave this conversation lives on. Always the wave in the request
+ * The track this conversation lives on. Always the track in the request
  * path; carried so a client holding a bare row can navigate.
  */
-waveId: string, 
+trackId: string, 
 /**
  * The conversation's own name, or null before it has one. Never the
- * wave's title.
+ * track's title.
  */
 title: string | null, 
 /**
- * Always `"wave-assistant"`, derived from the card's persisted marker.
+ * Always `"track-assistant"`, derived from the card's persisted marker.
  * A distinct value from the area list's `"shared-chat"` on purpose: the
  * frontend branches on it, and a shared value would route assistant rows
  * through the area chat's presentation.
@@ -475,54 +475,54 @@ state: WorkerSessionState | null,
  */
 updatedAt: number, };
 
-export type WaveFsCardMeta = { created_at: number, deletable: boolean, id: CardId, kind: string, role: CardRole, sort: number, updated_at: number, };
+export type TrackFsCardMeta = { created_at: number, deletable: boolean, id: CardId, kind: string, role: CardRole, sort: number, updated_at: number, };
 
-export type WaveFsHookEvent = { created_at: number, event_id: number, hook_kind: string, kind: string, payload: unknown, };
+export type TrackFsHookEvent = { created_at: number, event_id: number, hook_kind: string, kind: string, payload: unknown, };
 
-export type WaveFsRunDetail = { events: WaveFsRunEvents, finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: WaveFsRunStatus, verdict: WaveFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown | null, };
+export type TrackFsRunDetail = { events: TrackFsRunEvents, finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown | null, };
 
-export type WaveFsRunEventRef = { created_at: number, event_id: number, kind: string, payload: unknown, };
+export type TrackFsRunEventRef = { created_at: number, event_id: number, kind: string, payload: unknown, };
 
-export type WaveFsRunEvents = { completed: WaveFsRunEventRef | null, failed: WaveFsRunEventRef | null, requested: WaveFsRunEventRef | null, verdict: WaveFsRunEventRef | null, };
+export type TrackFsRunEvents = { completed: TrackFsRunEventRef | null, failed: TrackFsRunEventRef | null, requested: TrackFsRunEventRef | null, verdict: TrackFsRunEventRef | null, };
 
-export type WaveFsRunIndexEntry = { finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: WaveFsRunStatus, verdict: WaveFsRunVerdictSummary | null, worker_card_id: CardId | null, };
+export type TrackFsRunIndexEntry = { finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdictSummary | null, worker_card_id: CardId | null, };
 
-export type WaveFsRunStatus = "completed" | "failed" | "running" | "requested" | "unknown";
+export type TrackFsRunStatus = "completed" | "failed" | "running" | "requested" | "unknown";
 
-export type WaveFsRunVerdict = { at: number, reason: string | null, status: string, };
+export type TrackFsRunVerdict = { at: number, reason: string | null, status: string, };
 
-export type WaveFsRunVerdictSummary = { at: number, status: string, };
+export type TrackFsRunVerdictSummary = { at: number, status: string, };
 
 /**
- * Wave identifier. See [`AreaId`] for the opacity contract.
+ * Track identifier. See [`AreaId`] for the opacity contract.
  */
-export type WaveId = string;
+export type TrackId = string;
 
 /**
- * Issue #145 — Wave lifecycle state machine.
+ * Issue #145 — Track lifecycle state machine.
  *
- * One explicit state per wave, advanced through a typed state machine
- * (see `crate::wave_lifecycle`). The Spec Agent drives the happy path
+ * One explicit state per track, advanced through a typed state machine
+ * (see `crate::track_lifecycle`). The Spec Agent drives the happy path
  * (`draft → planning → dispatching → working → reviewing → done`);
  * the user can cancel any non-terminal state and reopen terminals;
  * worker cards have no authority to touch this field at all.
  *
  * **`archived` is intentionally NOT a lifecycle state.** Archive is
  * visibility / history management, orthogonal to execution semantics —
- * a `done`/`failed`/`canceled` wave can also be archived without
+ * a `done`/`failed`/`canceled` track can also be archived without
  * destroying the lifecycle truth. Archival continues to live on the
  * existing `archived_at: Option<i64>` field.
  *
- * Persisted as a lowercase string in `waves.lifecycle` (migration
+ * Persisted as a lowercase string in `tracks.lifecycle` (migration
  * 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
  * and storage shape stable; ts-rs exports the matching TS union into
  * `fe/core/api/generated/wire.ts` so the frontend can render the
  * badge against the same vocabulary.
  */
-export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
+export type TrackLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
 
 /**
- * The payload persisted in a wave-report card's `payload` JSON column.
+ * The payload persisted in a track-report card's `payload` JSON column.
  *
  * Wire shape (camelCase to match the rest of the kernel's payloads):
  *
@@ -536,14 +536,14 @@ export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "
  * ```
  *
  * `summary` is the one-line previewable in sidebars / list views;
- * `body` is the Markdown source the WaveReportCard renders. The
+ * `body` is the Markdown source the TrackReportCard renders. The
  * frontend derives sections from `body` by splitting on H1 headings;
  * the storage layer does not impose a section vocabulary.
  */
-export type WaveReportPayload = { 
+export type TrackReportPayload = { 
 /**
  * Tier A persistence contract — see
- * `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
+ * `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
  * `validation.rs`. `3` since #979 added document-wide optimistic
  * concurrency; blocks remain authoritative and `body` is their
  * flat projection. v1/v2 rows remain readable and are lazily
@@ -558,7 +558,7 @@ schemaVersion: number,
  */
 docRev: number, 
 /**
- * One-line summary used by sidebars / wave-list previews. Empty
+ * One-line summary used by sidebars / track-list previews. Empty
  * string is valid (means "spec agent has not produced a summary
  * yet"); the field stays a required `String` per the
  * [[required-over-option]] rule.
@@ -579,12 +579,12 @@ body: string,
 blocks?: Array<ReportBlock> | null, };
 
 /**
- * Payload for `Event::WaveUpdated`.
+ * Payload for `Event::TrackUpdated`.
  *
- * `wave` is flattened to preserve the historical wire shape: the event data
- * remains the full wave row at top level.
+ * `track` is flattened to preserve the historical wire shape: the event data
+ * remains the full track row at top level.
  */
-export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
+export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
  *
@@ -593,7 +593,7 @@ export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, area_id: 
  */
 cwd: string, 
 /**
- * Template this wave was created from.
+ * Template this track was created from.
  *
  * The `serde(alias)` below is a deserialization-only compatibility read
  * for pre-#1209 event-log rows; serialization emits only this name.
@@ -604,7 +604,7 @@ template_id: string | null,
  */
 plugin_scope: string | null, 
 /**
- * Server-owned structural marker. Public wave creation cannot set this.
+ * Server-owned structural marker. Public track creation cannot set this.
  */
 purpose: string | null, 
 /**
@@ -614,14 +614,14 @@ purpose: string | null,
  */
 template_input: unknown, 
 /**
- * Issue #250 PR 2 — unix-ms timestamp the wave most recently
+ * Issue #250 PR 2 — unix-ms timestamp the track most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
- * or `None` while the wave is non-terminal. Stamped inside the
- * same transaction as the `WaveLifecycleChanged` event by
- * `wave_update_tx`; cleared back to `None` on reopen
+ * or `None` while the track is non-terminal. Stamped inside the
+ * same transaction as the `TrackLifecycleChanged` event by
+ * `track_update_tx`; cleared back to `None` on reopen
  * (Done/Canceled/Failed → Planning). The calendar window query
- * `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
- * terminal_at >= since)` to keep open waves visible across every
+ * `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
+ * terminal_at >= since)` to keep open tracks visible across every
  * day they span.
  *
  * Backfill semantics: rows that existed before this migration
@@ -632,12 +632,12 @@ template_input: unknown,
  * re-Done cycle stamps the column with the current time, which
  * is the first defensible point.
  */
-terminal_at: number | null, workspace: WaveWorkspace, created_at: number, updated_at: number, };
+terminal_at: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
- * A wave's typed workspace. `path` is its single stored path.
+ * A track's typed workspace. `path` is its single stored path.
  */
-export type WaveWorkspace = { kind: WaveWorkspaceKind, 
+export type TrackWorkspace = { kind: TrackWorkspaceKind, 
 /**
  * Absolute path.
  */
@@ -654,7 +654,7 @@ frozen_at: number | null, };
 /**
  * Ownership must be explicit because only managed workspaces may be recycled.
  */
-export type WaveWorkspaceKind = "managed" | "attached";
+export type TrackWorkspaceKind = "managed" | "attached";
 
 /**
  * Opaque execution-session identifier.

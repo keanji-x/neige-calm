@@ -137,7 +137,7 @@ writes `~/.config/systemd/user/neige-app.service`. Then:
 `system install` bakes the caller's `$PATH` into the unit; use
 `--path "$PATH"` if the install shell has the wrong PATH. Warnings like
 `warning: <tool> not found on PATH` for `codex` / `claude` / `git` mean
-matching waves will be inert until PATH includes those tools.
+matching tracks will be inert until PATH includes those tools.
 
 ```bash
 systemctl --user daemon-reload
@@ -437,7 +437,7 @@ curl -s http://127.0.0.1:8080/api/version
 ### 8.2 Plugin compatibility (#1209, #1268)
 
 From #1209 onward, the ids a trusted plugin declares in its manifest
-**must** be keys in the kernel's wave-template roster — today
+**must** be keys in the kernel's track-template roster — today
 `issue-development`, `small-change`, `investigation`.
 
 **#1268 renamed the array itself: `workflows[]` is now `templates[]`.**
@@ -492,16 +492,16 @@ upgrade rather than relying on noticing at boot, and if a plugin goes missing
 after a restart, grep the server log for `manifest load failed`.
 
 What #1209 changed, and #1268 did not, is the *acceptance* semantics:
-declaring an id outside the roster does not let `POST /api/waves` create a
-wave bound to it. That request returns
+declaring an id outside the roster does not let `POST /api/tracks` create a
+track bound to it. That request returns
 
 ```
-400  wave create: `template_id` must reference a known wave template; got `<id>`
+400  track create: `template_id` must reference a known track template; got `<id>`
 ```
 
 Also note the request body itself changed in the same release: the two
-wave-create template fields are now spelled `template_id` and
-`template_input`. `CreateWaveRequest` uses `deny_unknown_fields`, so any
+track-create template fields are now spelled `template_id` and
+`template_input`. `CreateTrackRequest` uses `deny_unknown_fields`, so any
 out-of-repo script still sending the previous names is rejected by the JSON
 extractor before the handler runs: `422 Unprocessable Entity`, plain-text body
 `Failed to deserialize the JSON body into the target type: unknown field

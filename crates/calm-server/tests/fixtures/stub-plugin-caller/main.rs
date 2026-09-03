@@ -6,15 +6,15 @@
 //! integration test asserts on the kernel-side repo state, not on the stub's
 //! own state — so the stub can stay dead-simple.
 //!
-//! Sequence (driven by env `NEIGE_DEMO_WAVE`):
+//! Sequence (driven by env `NEIGE_DEMO_TRACK`):
 //!   1. `neige.kv.set { key: "answer", value: 42 }`
 //!   2. `neige.kv.get { key: "answer" }`
-//!   3. `neige.overlay.set { entity_kind: "wave", entity_id: <wave>, kind:
+//!   3. `neige.overlay.set { entity_kind: "track", entity_id: <track>, kind:
 //!      "status", payload: { state: "running" } }`
-//!   4. `neige.card.create { wave_id: <wave>, kind: "plugin:<self>:demo" }`
-//!   5. `neige.card.create { wave_id: <wave>, kind: "terminal" }`
+//!   4. `neige.card.create { track_id: <track>, kind: "plugin:<self>:demo" }`
+//!   5. `neige.card.create { track_id: <track>, kind: "terminal" }`
 //!      (this one is expected to succeed; permissions allow terminal)
-//!   6. `neige.card.create { wave_id: <wave>, kind: "plugin:other:x" }`
+//!   6. `neige.card.create { track_id: <track>, kind: "plugin:other:x" }`
 //!      (this one is expected to be REJECTED — exercises the deny path)
 //!
 //! The stub stays alive (continues reading initialize-style responses) until
@@ -34,11 +34,11 @@ fn main() {
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let plugin_id = std::env::var("NEIGE_PLUGIN_ID").unwrap_or_else(|_| "test.caller".to_string());
-    let wave_id =
-        std::env::var("NEIGE_DEMO_WAVE").unwrap_or_else(|_| "MISSING-WAVE-ENV".to_string());
+    let track_id =
+        std::env::var("NEIGE_DEMO_TRACK").unwrap_or_else(|_| "MISSING-TRACK-ENV".to_string());
     eprintln!(
-        "stub-caller: started plugin_id={} wave_id={}",
-        plugin_id, wave_id
+        "stub-caller: started plugin_id={} track_id={}",
+        plugin_id, track_id
     );
 
     let mut reader = BufReader::new(stdin.lock());
@@ -120,8 +120,8 @@ fn main() {
             12,
             "neige.overlay.set",
             serde_json::json!({
-                "entity_kind": "wave",
-                "entity_id": wave_id,
+                "entity_kind": "track",
+                "entity_id": track_id,
                 "kind": "status",
                 "payload": { "state": "running" }
             }),
@@ -130,7 +130,7 @@ fn main() {
             13,
             "neige.card.create",
             serde_json::json!({
-                "wave_id": wave_id,
+                "track_id": track_id,
                 "kind": format!("plugin:{}:demo", plugin_id),
                 "payload": { "hello": "world" }
             }),
@@ -139,7 +139,7 @@ fn main() {
             14,
             "neige.card.create",
             serde_json::json!({
-                "wave_id": wave_id,
+                "track_id": track_id,
                 "kind": "terminal"
             }),
         ),
@@ -147,7 +147,7 @@ fn main() {
             15,
             "neige.card.create",
             serde_json::json!({
-                "wave_id": wave_id,
+                "track_id": track_id,
                 "kind": "plugin:other.plugin:x"
             }),
         ),

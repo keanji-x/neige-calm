@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// Boot a minimal Axum router with an in-memory SqlxRepo. Shape mirrors
-/// `payload_validation.rs::boot` — no area/wave seeding here because the
+/// `payload_validation.rs::boot` — no area/track seeding here because the
 /// tests exercise the area endpoints themselves.
 async fn boot() -> (axum::Router, Arc<dyn Repo>) {
     let (app, repo, _concrete) = boot_with_concrete().await;
@@ -69,7 +69,7 @@ async fn boot_with_concrete() -> (axum::Router, Arc<dyn Repo>, Arc<SqlxRepo>) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_area_cache::WaveAreaCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

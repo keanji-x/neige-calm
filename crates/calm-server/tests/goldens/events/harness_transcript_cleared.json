@@ -5,7 +5,7 @@
     "data": {
       "runtime_id": "rt-01",
       "card_id": "card-01",
-      "wave_id": "wave-01",
+      "track_id": "track-01",
       "cleared_item_count": 12,
       "cleared_params_bytes": 3400,
       "card_age_ms_at_clear": 86400000

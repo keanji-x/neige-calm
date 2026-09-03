@@ -9,7 +9,7 @@
     "  - legacy 'codex.job_requested' events are rewritten by 0038 (max 37)",
     "  - runtimes (0028+), operations (0029+), 'parked' phase (0042+)",
     "  - card_codex_threads exists 0025..0033, spec_push_queue 0022..0032",
-    "Boundary values on purpose: NULLs, alias event kinds, every wave",
+    "Boundary values on purpose: NULLs, alias event kinds, every track",
     "lifecycle state, exited/signal-killed terminals, spec runtime with",
     "and without an mcp token (0035/0036 transform the token-less one)."
   ],
@@ -99,9 +99,9 @@
       "rows": [
         {
           "columns": {
-            "id": "wave-draft",
+            "id": "track-draft",
             "area_id": "area-user",
-            "title": "draft wave",
+            "title": "draft track",
             "sort": 0,
             "archived_at": null,
             "lifecycle": "draft",
@@ -115,9 +115,9 @@
         },
         {
           "columns": {
-            "id": "wave-working",
+            "id": "track-working",
             "area_id": "area-user",
-            "title": "working wave",
+            "title": "working track",
             "sort": 1,
             "archived_at": null,
             "lifecycle": "working",
@@ -132,9 +132,9 @@
         },
         {
           "columns": {
-            "id": "wave-done",
+            "id": "track-done",
             "area_id": "area-user",
-            "title": "done wave",
+            "title": "done track",
             "sort": 2,
             "archived_at": 2000,
             "lifecycle": "done",
@@ -148,9 +148,9 @@
         },
         {
           "columns": {
-            "id": "wave-failed",
+            "id": "track-failed",
             "area_id": "area-user",
-            "title": "failed wave",
+            "title": "failed track",
             "sort": 3,
             "archived_at": null,
             "lifecycle": "failed",
@@ -164,9 +164,95 @@
         },
         {
           "columns": {
-            "id": "wave-planning",
+            "id": "track-planning",
             "area_id": "area-user",
-            "title": "planning wave",
+            "title": "planning track",
+            "sort": 4,
+            "archived_at": null,
+            "lifecycle": "planning",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 1250,
+            "cove_id": "area-user"
+          }
+        }
+      ]
+    },
+    {
+      "table": "tracks",
+      "rows": [
+        {
+          "columns": {
+            "id": "track-draft",
+            "area_id": "area-user",
+            "title": "draft track",
+            "sort": 0,
+            "archived_at": null,
+            "lifecycle": "draft",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 1200,
+            "cove_id": "area-user"
+          }
+        },
+        {
+          "columns": {
+            "id": "track-working",
+            "area_id": "area-user",
+            "title": "working track",
+            "sort": 1,
+            "archived_at": null,
+            "lifecycle": "working",
+            "cwd": "/tmp/work",
+            "terminal_at": 1300,
+            "pinned_at": 1400,
+            "task_budget": 3,
+            "created_at": 1200,
+            "updated_at": 1300,
+            "cove_id": "area-user"
+          }
+        },
+        {
+          "columns": {
+            "id": "track-done",
+            "area_id": "area-user",
+            "title": "done track",
+            "sort": 2,
+            "archived_at": 2000,
+            "lifecycle": "done",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 2000,
+            "cove_id": "area-user"
+          }
+        },
+        {
+          "columns": {
+            "id": "track-failed",
+            "area_id": "area-user",
+            "title": "failed track",
+            "sort": 3,
+            "archived_at": null,
+            "lifecycle": "failed",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 1900,
+            "cove_id": "area-user"
+          }
+        },
+        {
+          "columns": {
+            "id": "track-planning",
+            "area_id": "area-user",
+            "title": "planning track",
             "sort": 4,
             "archived_at": null,
             "lifecycle": "planning",
@@ -186,7 +272,7 @@
         {
           "columns": {
             "id": "card-spec",
-            "wave_id": "wave-working",
+            "track_id": "track-working",
             "kind": "codex",
             "sort": 0,
             "payload": {
@@ -197,13 +283,14 @@
             "deletable": 0,
             "body_crdt": null,
             "created_at": 1300,
-            "updated_at": 1300
+            "updated_at": 1300,
+            "wave_id": "track-working"
           }
         },
         {
           "columns": {
             "id": "card-spec-no-token",
-            "wave_id": "wave-done",
+            "track_id": "track-done",
             "kind": "codex",
             "sort": 0,
             "payload": {
@@ -213,13 +300,14 @@
             "deletable": 0,
             "body_crdt": null,
             "created_at": 1300,
-            "updated_at": 1300
+            "updated_at": 1300,
+            "wave_id": "track-done"
           }
         },
         {
           "columns": {
             "id": "card-codex-w",
-            "wave_id": "wave-working",
+            "track_id": "track-working",
             "kind": "codex",
             "sort": 1,
             "payload": {
@@ -229,13 +317,14 @@
             "deletable": 1,
             "body_crdt": null,
             "created_at": 1310,
-            "updated_at": 1310
+            "updated_at": 1310,
+            "wave_id": "track-working"
           }
         },
         {
           "columns": {
             "id": "card-term",
-            "wave_id": "wave-draft",
+            "track_id": "track-draft",
             "kind": "terminal",
             "sort": 0,
             "payload": {
@@ -245,13 +334,14 @@
             "deletable": 1,
             "body_crdt": null,
             "created_at": 1320,
-            "updated_at": 1320
+            "updated_at": 1320,
+            "wave_id": "track-draft"
           }
         },
         {
           "columns": {
             "id": "card-claude",
-            "wave_id": "wave-planning",
+            "track_id": "track-planning",
             "kind": "claude",
             "sort": 0,
             "payload": {
@@ -262,14 +352,15 @@
             "deletable": 1,
             "body_crdt": null,
             "created_at": 1330,
-            "updated_at": 1330
+            "updated_at": 1330,
+            "wave_id": "track-planning"
           }
         },
         {
           "max_version": 36,
           "columns": {
             "id": "card-plain-legacy",
-            "wave_id": "wave-done",
+            "track_id": "track-done",
             "kind": "terminal",
             "sort": 1,
             "payload": {},
@@ -277,14 +368,15 @@
             "deletable": 1,
             "body_crdt": null,
             "created_at": 1340,
-            "updated_at": 1340
+            "updated_at": 1340,
+            "wave_id": "track-done"
           }
         },
         {
           "columns": {
             "id": "card-report",
-            "wave_id": "wave-failed",
-            "kind": "wave-report",
+            "track_id": "track-failed",
+            "kind": "track-report",
             "sort": -1,
             "payload": {
               "schemaVersion": 1,
@@ -295,7 +387,8 @@
             "deletable": 0,
             "body_crdt": null,
             "created_at": 1350,
-            "updated_at": 1350
+            "updated_at": 1350,
+            "wave_id": "track-failed"
           }
         }
       ]
@@ -384,9 +477,10 @@
             "thread_id": "thread-w1",
             "card_id": "card-codex-w",
             "role": "worker",
-            "wave_id": "wave-working",
+            "track_id": "track-working",
             "created_at": 1500,
-            "updated_at": 1500
+            "updated_at": 1500,
+            "wave_id": "track-working"
           }
         }
       ]
@@ -412,19 +506,20 @@
         {
           "columns": {
             "id": 1,
-            "kind": "wave.updated",
+            "kind": "track.updated",
             "payload": {
-              "id": "wave-working"
+              "id": "track-working"
             },
             "actor": "user",
             "at": 1600,
             "correlation": null,
             "event_version": 1,
-            "scope_kind": "wave",
+            "scope_kind": "track",
             "scope_area": "area-user",
-            "scope_wave": "wave-working",
+            "scope_track": "track-working",
             "scope_card": null,
-            "scope_cove": "area-user"
+            "scope_cove": "area-user",
+            "scope_wave": "track-working"
           }
         },
         {
@@ -433,17 +528,18 @@
             "id": 2,
             "kind": "codex.job_requested",
             "payload": {
-              "wave_id": "wave-working"
+              "track_id": "track-working"
             },
             "actor": "ai:spec",
             "at": 1610,
             "correlation": "corr-1",
             "event_version": 1,
-            "scope_kind": "wave",
+            "scope_kind": "track",
             "scope_area": "area-user",
-            "scope_wave": "wave-working",
+            "scope_track": "track-working",
             "scope_card": null,
-            "scope_cove": "area-user"
+            "scope_cove": "area-user",
+            "scope_wave": "track-working"
           }
         },
         {
@@ -452,17 +548,18 @@
             "id": 3,
             "kind": "codex.worker_requested",
             "payload": {
-              "wave_id": "wave-working"
+              "track_id": "track-working"
             },
             "actor": "ai:spec",
             "at": 1620,
             "correlation": null,
             "event_version": 2,
-            "scope_kind": "wave",
+            "scope_kind": "track",
             "scope_area": "area-user",
-            "scope_wave": "wave-working",
+            "scope_track": "track-working",
             "scope_card": null,
-            "scope_cove": "area-user"
+            "scope_cove": "area-user",
+            "scope_wave": "track-working"
           }
         },
         {
@@ -478,9 +575,10 @@
             "event_version": 1,
             "scope_kind": "card",
             "scope_area": "area-user",
-            "scope_wave": "wave-working",
+            "scope_track": "track-working",
             "scope_card": "card-codex-w",
-            "scope_cove": "area-user"
+            "scope_cove": "area-user",
+            "scope_wave": "track-working"
           }
         }
       ]
@@ -680,14 +778,15 @@
             "id": 1,
             "runtime_id": "rt-codex-w",
             "card_id": "card-codex-w",
-            "wave_id": "wave-working",
+            "track_id": "track-working",
             "thread_id": "thread-w1",
             "turn_id": null,
             "item_uuid": "item-uuid-1",
             "item_type": "agent_message",
             "method": "item/completed",
             "params": "{\"text\":\"hi\"}",
-            "created_at_ms": 2000
+            "created_at_ms": 2000,
+            "wave_id": "track-working"
           }
         }
       ]
@@ -698,8 +797,8 @@
         {
           "min_version": 41,
           "columns": {
-            "id": "wave-working:t1",
-            "wave_id": "wave-working",
+            "id": "track-working:t1",
+            "track_id": "track-working",
             "key": "t1",
             "kind": "codex",
             "goal": "implement the slice",
@@ -718,14 +817,15 @@
             "gate_attempt": 0,
             "created_at_ms": 2100,
             "updated_at_ms": 2100,
-            "finished_at_ms": 2100
+            "finished_at_ms": 2100,
+            "wave_id": "track-working"
           }
         },
         {
           "min_version": 41,
           "columns": {
-            "id": "wave-working:t2",
-            "wave_id": "wave-working",
+            "id": "track-working:t2",
+            "track_id": "track-working",
             "key": "t2",
             "kind": "terminal",
             "goal": "cargo test",
@@ -748,7 +848,8 @@
             "gate_attempt": 1,
             "created_at_ms": 2100,
             "updated_at_ms": 2200,
-            "finished_at_ms": 2200
+            "finished_at_ms": 2200,
+            "wave_id": "track-working"
           }
         }
       ]
@@ -768,13 +869,47 @@
       ]
     },
     {
+      "table": "track_vcs_objects",
+      "rows": [
+        {
+          "min_version": 39,
+          "columns": {
+            "hash": "obj-tree-1",
+            "kind": "tree",
+            "bytes": "{\"entries\":[]}",
+            "created_at": 2300
+          }
+        }
+      ]
+    },
+    {
       "table": "wave_vcs_commits",
       "rows": [
         {
           "min_version": 39,
           "columns": {
             "hash": "commit-1",
-            "wave_id": "wave-working",
+            "parent_hash": null,
+            "tree_hash": "obj-tree-1",
+            "manifest_schema_version": 1,
+            "author": "kernel",
+            "message": "root",
+            "lifecycle": "working",
+            "event_id": null,
+            "created_at": 2300,
+            "wave_id": "track-working"
+          }
+        }
+      ]
+    },
+    {
+      "table": "track_vcs_commits",
+      "rows": [
+        {
+          "min_version": 39,
+          "columns": {
+            "hash": "commit-1",
+            "track_id": "track-working",
             "parent_hash": null,
             "tree_hash": "obj-tree-1",
             "manifest_schema_version": 1,
@@ -793,7 +928,20 @@
         {
           "min_version": 39,
           "columns": {
-            "wave_id": "wave-working",
+            "head_hash": "commit-1",
+            "updated_event_id": null,
+            "wave_id": "track-working"
+          }
+        }
+      ]
+    },
+    {
+      "table": "track_vcs_refs",
+      "rows": [
+        {
+          "min_version": 39,
+          "columns": {
+            "track_id": "track-working",
             "head_hash": "commit-1",
             "updated_event_id": null
           }
@@ -808,7 +956,7 @@
             "id": "ov-layout-1",
             "plugin_id": "kernel",
             "entity_kind": "view",
-            "entity_id": "wave-working",
+            "entity_id": "track-working",
             "kind": "layout",
             "payload": {
               "schemaVersion": 1,

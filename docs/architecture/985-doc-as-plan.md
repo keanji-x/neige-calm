@@ -17,7 +17,7 @@
 
 1. 任务卡写清目标和完成条件，ready 后进入队列。
 2. 人删除的任务留下“不做”记录，Agent 不能用同一 key 偷偷重提；人可以撤回。
-3. 每个 wave 决定 Agent 声明的任务自动执行，还是等待人工放行。
+3. 每个 track 决定 Agent 声明的任务自动执行，还是等待人工放行。
 
 Hash、冻结集、projection、closure 和 CAS 都是实现细节，不应直接暴露给用户。
 
@@ -38,7 +38,7 @@ Task block 保存声明：
 
 ## 身份
 
-任务身份是 wave 内稳定的 `key`，不是 block id：
+任务身份是 track 内稳定的 `key`，不是 block id：
 
 - block id 支持编辑、移动和 fork；
 - key 连接依赖、运行记录、墓碑和幂等 operation；
@@ -70,7 +70,7 @@ Key 不能在原 block 上修改。确实要改变身份时，删除/墓碑旧�
 → 投影 tasks
 → 更新反向引用与声明影子
 → 写 report/task events
-→ 必要的 lifecycle 与 Wave VCS
+→ 必要的 lifecycle 与 Track VCS
 → commit
 ```
 
@@ -93,7 +93,7 @@ Key 不能在原 block 上修改。确实要改变身份时，删除/墓碑旧�
 
 - 哪个任务有问题；
 - 原因是什么；
-- 关联哪些 block/wave；
+- 关联哪些 block/track；
 - 用户下一步可以做什么。
 
 典型诊断包括重复 key、未知依赖、依赖环、缺 gate、超过额度、墓碑阻断、引用失效和 context stale。
@@ -119,7 +119,7 @@ Hash 只是变化检测载体，不是权威。真正的判定必须保留可解
 
 ## 引用闭包
 
-任务可以引用同 wave 或受允许范围内的 report block。执行上下文由根 task block 加 refs 闭包组成。
+任务可以引用同 track 或受允许范围内的 report block。执行上下文由根 task block 加 refs 闭包组成。
 
 解析必须：
 
@@ -148,16 +148,16 @@ Hash 只是变化检测载体，不是权威。真正的判定必须保留可解
 - `auto-declare`：合法且 ready 的 Agent task 可进入调度；
 - `declare-and-wait`：Agent 可以提议，但需要人工放行。
 
-删除一个任务不会暗中把整个 wave 自动切到 wait。若用户希望以后都等待，应由确认操作显式修改 policy。
+删除一个任务不会暗中把整个 track 自动切到 wait。若用户希望以后都等待，应由确认操作显式修改 policy。
 
 `released_by_user` 通过 UI 动作维护，不要求用户编辑内部字段。
 
-## Budget 与 wave tree
+## Budget 与 track tree
 
 两种限制解决不同问题：
 
-- `spec_task_ceiling`：限制一个 wave 中 Agent 声明占用的任务数量；
-- tree task budget：限制父/子 wave 整棵树的总容量和并发份额。
+- `spec_task_ceiling`：限制一个 track 中 Agent 声明占用的任务数量；
+- tree task budget：限制父/子 track 整棵树的总容量和并发份额。
 
 当前树深和总预算都有硬上限。创建 child、修改预算和重投影必须在事务内验证整树，不能让两个 sibling 各自认为还有同一份额度。
 
@@ -167,13 +167,13 @@ Human task 与 Agent task 的配额语义不同；限制 Agent 自扩张不能�
 
 ## Template 与 fork
 
-Workflow template 是普通 template wave 的 report。创建 wave 时复制报告，不建立持续引用：
+Workflow template 是普通 template track 的 report。创建 track 时复制报告，不建立持续引用：
 
-- 新 wave 后续独立演化；
+- 新 track 后续独立演化；
 - task block 的归因和人工放行状态按 fork 规则归一化；
 - `neige://` 引用改写到 fork 后实体；
 - workspace 不从模板继承；
-- 模板变化不追写正在运行的 wave。
+- 模板变化不追写正在运行的 track。
 
 模板被选中是一项用户产品决定；Spec 可以建议，但不能静默替用户换模板。
 
@@ -195,8 +195,8 @@ Projection 只决定“当前有哪些合法声明”。Scheduler 决定“哪�
 - 删除 pending task：移除可执行 projection，并按作者规则留下或清除墓碑。
 - 删除 in-flight task：不能只删 row；必须走 cancel/withdraw 协议，保留执行历史与诊断。
 - Terminal task row 不因文档重建消失。
-- Fork/模板复制声明，不复制原 wave 的运行身份。
-- Wave/area 删除仍遵守 operation、workspace 和审计边界。
+- Fork/模板复制声明，不复制原 track 的运行身份。
+- Track/area 删除仍遵守 operation、workspace 和审计边界。
 
 ## 失败与 sweep
 
@@ -216,8 +216,8 @@ Projection 只决定“当前有哪些合法声明”。Scheduler 决定“哪�
 - Claim 提交到 spawn 之间仍有极窄窗口；任何改变这一窗口的工作属于 operation driver 改造。
 - 误判 material change 会不可逆终结一次执行，必须持续观测误报率。
 - 同毫秒创建的 sibling 若只靠随机 id 决定余数份额，结果稳定但不具有人类可预测的公平性。
-- 删除父 wave 与并发创建 child 的竞态必须由数据库事务 guard 兜底，route 前检只改善错误体验。
-- 父 wave cancel 不自动等于整个子树 cancel；产品必须提供清晰的树级操作或逐项恢复路径。
+- 删除父 track 与并发创建 child 的竞态必须由数据库事务 guard 兜底，route 前检只改善错误体验。
+- 父 track cancel 不自动等于整个子树 cancel；产品必须提供清晰的树级操作或逐项恢复路径。
 - 配额只约束同时占用，不天然限制 Agent 一生累计创建多少任务。
 
 ## 不变量测试

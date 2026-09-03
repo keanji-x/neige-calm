@@ -21,9 +21,9 @@ use calm_server::mcp_server::auth;
 use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture,
 };
-use calm_server::mcp_server::tools::wave_state::TOOL_WAVE_STATE;
+use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -41,7 +41,7 @@ struct Boot {
     server: Arc<McpServer>,
     socket_path: PathBuf,
     raw_token: String,
-    wave_id: String,
+    track_id: String,
     card_id: String,
     thread_id: String,
     _tmp: TempDir,
@@ -79,8 +79,8 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-request-meta-test".into(),
@@ -102,7 +102,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
         card_id.clone(),
         &calm_server::model::new_id(),
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -131,12 +131,12 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
     };
 
     let events = EventBus::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -152,7 +152,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
         server,
         socket_path,
         raw_token,
-        wave_id: wave.id.as_str().to_string(),
+        track_id: track.id.as_str().to_string(),
         card_id,
         thread_id,
         _tmp: tmp,
@@ -316,7 +316,7 @@ async fn thread_id_flows_from_meta_to_identity() {
     let identity = recv_identity(&mut rx).await;
     assert_eq!(identity.card_id, boot.card_id);
     assert_eq!(identity.role, CardRole::Spec);
-    assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
+    assert_eq!(identity.track_id.as_deref(), Some(boot.track_id.as_str()));
 
     let mut top_level_meta = tools_call_frame(3, "test.echo_identity", json!({ "x": 2 }));
     top_level_meta["_meta"] = json!({ "threadId": boot.thread_id });
@@ -373,19 +373,19 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let boot = boot_with_registry(build_default_registry()).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
-    let without_meta = tools_call_frame(2, TOOL_WAVE_STATE, json!({}));
+    let without_meta = tools_call_frame(2, TOOL_TRACK_STATE, json!({}));
     send_frame(&mut wr, without_meta).await;
     let without_resp = recv_frame(&mut rd).await;
     assert!(
         without_resp.get("error").is_none(),
-        "get_wave_state without meta should use CardBound identity: {without_resp:#?}"
+        "get_track_state without meta should use CardBound identity: {without_resp:#?}"
     );
     assert_eq!(
-        without_resp["result"]["structuredContent"]["wave"]["id"],
-        json!(boot.wave_id)
+        without_resp["result"]["structuredContent"]["track"]["id"],
+        json!(boot.track_id)
     );
 
-    let mut with_meta = tools_call_frame(3, TOOL_WAVE_STATE, json!({}));
+    let mut with_meta = tools_call_frame(3, TOOL_TRACK_STATE, json!({}));
     with_meta["params"]["_meta"] = json!({
         "threadId": boot.thread_id,
         "card_id": "not-the-bound-card"
@@ -394,11 +394,11 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let with_resp = recv_frame(&mut rd).await;
     assert!(
         with_resp.get("error").is_none(),
-        "get_wave_state with meta errored: {with_resp:#?}"
+        "get_track_state with meta errored: {with_resp:#?}"
     );
 
     let with_result = &with_resp["result"]["structuredContent"];
-    assert_eq!(with_result["wave"]["id"], json!(boot.wave_id));
+    assert_eq!(with_result["track"]["id"], json!(boot.track_id));
 
     let _ = &boot.server;
 }

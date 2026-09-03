@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import type { WaveCardData } from '../types';
+import type { TrackCardData } from '../types';
 import type { CardInstanceCtx } from './registry';
 
 export interface CardGeometry {
@@ -29,7 +29,7 @@ export interface CardLifecycleWriter extends CardLifecycleStore {
 
 export type CardRuntimeCommand = { type: 'refresh' };
 
-export interface CardControllerContext<T extends WaveCardData = WaveCardData> {
+export interface CardControllerContext<T extends TrackCardData = TrackCardData> {
   card: T;
   lifecycle: CardLifecycleStore;
   instance: Pick<CardInstanceCtx, 'cardId' | 'deletable' | 'useCardSlot'>;
@@ -115,14 +115,14 @@ export function createCardLifecycleStore(
 
 declare module './registry' {
   interface CardEntry<
-    T extends WaveCardData = WaveCardData,
+    T extends TrackCardData = TrackCardData,
     TInput = Record<string, string>,
   > {
     createController?(
-      ctx: CardControllerContext<T extends WaveCardData ? T : WaveCardData>,
+      ctx: CardControllerContext<T extends TrackCardData ? T : TrackCardData>,
     ): CardController;
     wheelTarget?(
-      card: T extends WaveCardData ? T : WaveCardData,
+      card: T extends TrackCardData ? T : TrackCardData,
       instance: Pick<CardInstanceCtx, 'cardId' | 'useCardSlot'>,
     ): CardWheelTargetDecl | null;
     refreshBacking?: 'controller' | 'epoch' | 'none';

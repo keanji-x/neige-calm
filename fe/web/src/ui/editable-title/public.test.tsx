@@ -10,25 +10,25 @@ afterEach(cleanup);
 it('keeps the rejected draft in edit mode and reports the rename failure', async () => {
   render(<EditableTitle
     value="Old name"
-    editLabel="Rename wave"
-    inputLabel="Wave title"
+    editLabel="Rename track"
+    inputLabel="Track title"
     onCommit={() => Promise.reject(new Error('Rename was rejected.'))}
   />);
-  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-  await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
-  await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), 'My unsaved name{Enter}');
+  await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), 'My unsaved name{Enter}');
   expect((await screen.findByRole('alert')).textContent).toContain('Rename was rejected.');
-  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Wave title' }).value).toBe('My unsaved name');
+  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('My unsaved name');
 });
 
 it('submits only once when Enter is followed by blur while the rename is pending', async () => {
   let resolve: () => void = () => undefined;
   const onCommit = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
-  render(<><EditableTitle value="Old" editLabel="Rename wave" inputLabel="Wave title" onCommit={onCommit} />
+  render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} />
     <button type="button">Elsewhere</button></>);
-  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-  await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
-  await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), 'New{Enter}');
+  await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), 'New{Enter}');
   await userEvent.click(screen.getByRole('button', { name: 'Elsewhere' }));
   expect(onCommit).toHaveBeenCalledTimes(1);
   resolve();
@@ -52,15 +52,15 @@ it('does not pull focus back after Tab leaves an Enter commit that is still pend
 
 it('lets blur leave edit mode after a rejected rename without retrying it', async () => {
   const onCommit = vi.fn(() => Promise.reject(new Error('No permission')));
-  render(<><EditableTitle value="Old" editLabel="Rename wave" inputLabel="Wave title" onCommit={onCommit} />
+  render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} />
     <button type="button">Elsewhere</button></>);
-  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-  await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
-  await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), 'New{Enter}');
+  await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), 'New{Enter}');
   await screen.findByRole('alert');
   await userEvent.click(screen.getByRole('button', { name: 'Elsewhere' }));
   expect(onCommit).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole('button', { name: 'Rename wave' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Rename track' })).toBeTruthy();
 });
 
 it.each(['Enter', 'Escape'])('returns focus to the title after %s', async (key) => {
@@ -93,20 +93,20 @@ it('lets Tab move away after blur commits a changed title', async () => {
 it('shows the placeholder for a blank name and still opens an empty box', async () => {
   render(<EditableTitle
     value=""
-    placeholder="Untitled wave"
-    editLabel="Rename wave"
-    inputLabel="Wave title"
+    placeholder="Untitled track"
+    editLabel="Rename track"
+    inputLabel="Track title"
     onCommit={() => undefined}
   />);
-  const title = screen.getByRole('button', { name: 'Rename wave' });
-  expect(title.textContent).toBe('Untitled wave');
+  const title = screen.getByRole('button', { name: 'Rename track' });
+  expect(title.textContent).toBe('Untitled track');
   await userEvent.click(title);
-  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Wave title' }).value).toBe('');
+  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('');
 });
 
 /*
  * #1211 — the two answers to "what does an empty commit mean", pinned as a
- * pair. `'cancel'` is the default and the area's; `'clear'` is the wave's,
+ * pair. `'cancel'` is the default and the area's; `'clear'` is the track's,
  * where the spec agent can take the name back once the title is empty.
  */
 it('swallows an empty commit by default, and sends it under emptyCommit=clear', async () => {
@@ -123,14 +123,14 @@ it('swallows an empty commit by default, and sends it under emptyCommit=clear', 
   render(<EditableTitle
     value="Old"
     emptyCommit="clear"
-    editLabel="Rename wave"
-    inputLabel="Wave title"
+    editLabel="Rename track"
+    inputLabel="Track title"
     onCommit={clears}
   />);
-  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-  await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
-  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Wave title' }), { key: 'Enter' });
-  await screen.findByRole('button', { name: 'Rename wave' });
+  await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Track title' }), { key: 'Enter' });
+  await screen.findByRole('button', { name: 'Rename track' });
   expect(clears).toHaveBeenCalledTimes(1);
   expect(clears).toHaveBeenCalledWith('');
 });
@@ -144,15 +144,15 @@ it('writes nothing when an already-blank title is committed blank', async () => 
   const onCommit = vi.fn();
   render(<EditableTitle
     value=""
-    placeholder="Untitled wave"
+    placeholder="Untitled track"
     emptyCommit="clear"
-    editLabel="Rename wave"
-    inputLabel="Wave title"
+    editLabel="Rename track"
+    inputLabel="Track title"
     onCommit={onCommit}
   />);
-  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Wave title' }), { key: 'Enter' });
-  await screen.findByRole('button', { name: 'Rename wave' });
+  await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Track title' }), { key: 'Enter' });
+  await screen.findByRole('button', { name: 'Rename track' });
   expect(onCommit).not.toHaveBeenCalled();
 });
 

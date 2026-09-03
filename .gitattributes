@@ -5,8 +5,8 @@ fe/tools/mutation/fixtures/** -text
 # split and break the byte round-trip (#1185 §2.5). The files land in S2; the
 # declaration goes first so no checkout ever sees them untyped.
 #
-# `wave_report*.md`, not `wave_report_*.md`: the underscore-suffixed form misses
-# a plain `wave_report.md`, and a fragment file that silently falls outside this
+# `track_report*.md`, not `track_report_*.md`: the underscore-suffixed form misses
+# a plain `track_report.md`, and a fragment file that silently falls outside this
 # rule is exactly the failure it exists to prevent — nothing here breaks if the
 # pattern is wider than the set of files that ever appears.
-crates/calm-types/src/wave_report*.md -text
+crates/calm-types/src/track_report*.md -text

@@ -20,8 +20,8 @@ export function useGo() {
       case 'area':
         void navigate({ to: '/area/$areaId', params: { areaId: r.areaId } });
         return;
-      case 'wave':
-        void navigate({ to: '/wave/$waveId', params: { waveId: r.id } });
+      case 'track':
+        void navigate({ to: '/track/$trackId', params: { trackId: r.id } });
         return;
       case 'settings':
         void navigate({ to: '/settings' });

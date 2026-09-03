@@ -136,7 +136,7 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
         ),
     ));
 
@@ -152,7 +152,7 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_area_cache — same rationale
+        None, // #234: track_area_cache — same rationale
     );
 
     Fixture {
@@ -359,7 +359,7 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.overlay",
         permissions: json!({
-            "overlays_write": ["wave"],
+            "overlays_write": ["track"],
         }),
         view_html: Some("<html></html>"),
         csp: None,
@@ -380,8 +380,8 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
                     json!({
                         "name": "neige.overlay.set",
                         "arguments": {
-                            "entity_kind": "wave",
-                            "entity_id": "wave-xyz",
+                            "entity_kind": "track",
+                            "entity_id": "track-xyz",
                             "kind": "status",
                             "payload": { "state": "running" }
                         }
@@ -403,7 +403,7 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
     let overlays = fx
         .state
         .repo
-        .overlays_for("wave", "wave-xyz")
+        .overlays_for("track", "track-xyz")
         .await
         .expect("overlay list");
     assert_eq!(overlays.len(), 1, "expected one overlay row");
@@ -420,7 +420,7 @@ async fn tool_call_rejects_non_neige_namespace() {
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.gated",
         permissions: json!({
-            "overlays_write": ["wave"],
+            "overlays_write": ["track"],
         }),
         view_html: Some("<html></html>"),
         csp: None,
@@ -498,7 +498,7 @@ async fn tool_call_403_when_tool_not_in_view_allowlist() {
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.toolperm.scoped",
         permissions: json!({
-            "overlays_write": ["wave"],
+            "overlays_write": ["track"],
         }),
         view_html: Some("<html></html>"),
         csp: None,
@@ -517,8 +517,8 @@ async fn tool_call_403_when_tool_not_in_view_allowlist() {
                     json!({
                         "name": "neige.overlay.delete",
                         "arguments": {
-                            "entity_kind": "wave",
-                            "entity_id": "wave-xyz",
+                            "entity_kind": "track",
+                            "entity_id": "track-xyz",
                             "kind": "status"
                         }
                     })
@@ -550,7 +550,7 @@ async fn tool_call_403_when_view_declares_no_tools() {
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.toolperm.empty",
         permissions: json!({
-            "overlays_write": ["wave"],
+            "overlays_write": ["track"],
         }),
         view_html: Some("<html></html>"),
         csp: None,
@@ -569,8 +569,8 @@ async fn tool_call_403_when_view_declares_no_tools() {
                     json!({
                         "name": "neige.overlay.set",
                         "arguments": {
-                            "entity_kind": "wave",
-                            "entity_id": "wave-xyz",
+                            "entity_kind": "track",
+                            "entity_id": "track-xyz",
                             "kind": "status",
                             "payload": {}
                         }
@@ -598,7 +598,7 @@ async fn tool_call_allows_prefix_glob_grant() {
     let fx = boot(FxConfig {
         plugin_id: "m5.tc.toolperm.glob",
         permissions: json!({
-            "overlays_write": ["wave"],
+            "overlays_write": ["track"],
         }),
         view_html: Some("<html></html>"),
         csp: None,
@@ -617,8 +617,8 @@ async fn tool_call_allows_prefix_glob_grant() {
                     json!({
                         "name": "neige.overlay.set",
                         "arguments": {
-                            "entity_kind": "wave",
-                            "entity_id": "wave-glob",
+                            "entity_kind": "track",
+                            "entity_id": "track-glob",
                             "kind": "status",
                             "payload": { "state": "ok" }
                         }

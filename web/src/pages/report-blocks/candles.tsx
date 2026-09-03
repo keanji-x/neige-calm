@@ -27,7 +27,7 @@ import {
 } from 'lightweight-charts';
 import { useTheme } from '../../app/theme';
 import { useState } from '../../shared/state';
-import type { ChartCandlesPayload } from '../../cards/builtins/wave-report';
+import type { ChartCandlesPayload } from '../../cards/builtins/track-report';
 
 interface ChartPalette {
   up: string;

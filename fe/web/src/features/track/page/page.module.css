@@ -1,0 +1,1124 @@
+@layer features {
+  .page {
+    /*
+     * The document's measure and its margins, derived from one number.
+     *
+     * **568, not the global `--measure-prose` 504.** Measured on the real font:
+     * New York at 18px averages 8.2px a character, so 504 is 61 characters a
+     * line and 568 is 69 — both inside the 45–75 comfortable range, but the
+     * narrow one made the column read as a ribbon inside a 1440 window where it
+     * is one of five vertical bands. The global token stays 504: `styles/` is a
+     * frozen interface (§6.8) and every other prose surface on it is a
+     * different shape of page. Widening it globally is a change request, and
+     * this comment is the evidence for it.
+     *
+     * The margin is what is left over, halved — a document with two equal
+     * margins reads as a page. It is also, exactly, how much room the outline
+     * has for its labels (§6.16): every pixel the measure takes is a pixel off
+     * a section title.
+     *
+     *   leftover = (100cqi − 3×24 − panel-span − 568) / 2
+     *   at 1440 / rail 200: (1240 − 72 − 310 − 568) / 2 = 145
+     *
+     * `ui/page-header` reads `--document-start` too, which is what puts the
+     * page title on the first character of the prose.
+     */
+    --document-measure: calc(var(--measure-prose) + var(--space-12) * 2);
+    /* Leftover in the document track, not (1180 − 280) / 2. 100cqi is `.main`. */
+    --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--document-measure)) / 2));
+
+    /*
+     * A **flex column, not a two-row grid**, and the difference is the whole
+     * reason the panel card stays put.
+     *
+     * It was `grid-template-rows: auto minmax(0, 1fr)`. A `1fr` row in a grid
+     * whose own height is definite gets exactly the leftover and never one
+     * pixel more: the row's box stayed one viewport tall while the report grew
+     * to three, and the document simply overflowed it. Nothing looked wrong,
+     * because overflow paints — but `.panel` is `position: sticky`, and sticky
+     * may only move inside *its containing block*. That block was `.content`,
+     * inside the 1fr row, so the card had ~700px of travel in a 3200px scroll
+     * and then slid off the top like ordinary content. Measured on a real track:
+     * at scrollTop 400 the card was still at y=68, at 900 it was at −280, and
+     * by 2000 it was 1380px above the window.
+     *
+     * A flex column is what lets the two halves be said separately, and they
+     * had to be: *fill* the leftover when the document is short (the reason the
+     * `1fr` was there — an empty document centres in the space it owns) and
+     * *grow past it* when the document is long, which is what gives sticky its
+     * travel. The first cut said both on `.workspace` with `flex: 1 0 auto` and
+     * broke the card board, whose containing block that box is; see the note
+     * there for where the two now live.
+     */
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    /* Same as Today: fill `.main` so the panel sits on the trailing page pad
+       (24px), not 24px plus leftover from a 1180px page cap. */
+    max-inline-size: none;
+    inline-size: 100%;
+
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
+    padding-block: 0 var(--space-11);
+    padding-inline: var(--space-10);
+  }
+
+  .title {
+    min-inline-size: 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  /* Grow so the rename control's max-inline-size: 100% has a definite
+     parent. Without flex-grow that 100% resolved against a 0-width box. */
+  .titleHeading {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+  }
+
+  .pageBoard {
+    overflow: hidden;
+  }
+
+  .headerBack {
+    display: grid;
+    flex: none;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .headerBack:hover,
+  .headerBack:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  /*
+   * The header keeps its own height. Without this it is an ordinary flex item
+   * (`flex: 0 1 auto`), and once the row below grows past the page the free
+   * space goes negative and the *header* is what gives way.
+   *
+   * Positional, because `ui/page-header` renders its own element and this file
+   * cannot name it. That makes it (0,1,1) — higher than a bare `.workspace` —
+   * so the row below is written as `.page > .workspace` (0,2,0) rather than
+   * left to win on order: insert anything into `.page` ahead of the header and
+   * this rule would otherwise land on the workspace and silently undo the
+   * sticky fix.
+   */
+  .page > :first-child {
+    flex: none;
+  }
+
+  /*
+   * **This box stays one viewport. Its row does not.**
+   *
+   * `.workspace` is `position: relative` and the card board
+   * (`features/track/grid`) is `position: absolute; inset: 0` inside it, so this
+   * element's height *is* the board's height. The first cut of the sticky fix
+   * gave it `flex: 1 0 auto` — content-sized, never shrinking — and on a 4000px
+   * report the board became a 4000px overlay inside a `.page` that
+   * `.pageBoard` gives `overflow: hidden`: the top screenful visible and the
+   * rest unreachable. Not only a layout bug — `BoardHost` measures its
+   * container to choose terminal rows and resizes the PTY to match, so the
+   * number reaches a real process.
+   *
+   * The travel `.panel` needs was never this box's to give. Sticky moves inside
+   * *its own* containing block, which is `.content` one level down, and
+   * `.content` may overflow this box freely: nothing here clips, so its
+   * overflow still reaches `.page`'s scrollport and the page still scrolls the
+   * full document.
+   *
+   * So the two are separated: `flex: 1 1 auto` keeps the box itself at the
+   * viewport (it grows into the leftover on a short page and shrinks back on a
+   * long one), and `minmax(max-content, 1fr)` on the row is what actually
+   * carries the document's height — at least its content, and the leftover when
+   * there is less content than that.
+   */
+  .page > .workspace {
+    position: relative;
+    display: grid;
+    grid-template-rows: minmax(max-content, 1fr);
+    min-block-size: 0;
+    min-inline-size: 0;
+    flex: 1 1 auto;
+  }
+
+  /* `any_card_needs_input` is a field the kernel really writes, so it can carry
+     a page's attention — unlike progress/eta/now, which have no writer at all. */
+  .needsInput {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--warn-text);
+  }
+
+  .needsInputDot {
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--warn);
+  }
+
+  /* Coloured at rest, not on hover (§4.3). 28px box, 16px glyph — the one
+     chrome pairing. */
+  .headerDelete {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    line-height: var(--leading-none);
+    color: var(--error-text);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .headerDelete:hover,
+  .headerDelete:focus-visible {
+    background: var(--error-soft);
+  }
+
+  .mobilePanelButton,
+  .mobileReportChatFab,
+  .mobileTrackHeader,
+  .mobileListSurface {
+    display: none;
+  }
+
+  .desktopPanelSurface {
+    display: contents;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .headerDelete {
+      transition: none;
+    }
+  }
+
+  /* Main column plus the `--panel-span` track, separated by the standard
+     24px gutter. At 1440 / rail 200 that is leftover / 24 / 310. */
+  /*
+   * One row, and it fills. Left implicit, the row is sized by its tallest item
+   * — the panel card — so the document column ended where the card ended and an
+   * empty document could not centre itself in the space it owns. The panel
+   * pins to the top instead of stretching with it.
+   */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
+    grid-template-rows: minmax(0, 1fr);
+    gap: var(--space-10);
+    min-block-size: 0;
+  }
+
+  /*
+   * Start-aligned, at the outline gutter — the same offset the title takes.
+   *
+   * It was centred, to keep the column's slack from all piling up between the
+   * last word and the panel card. That reasoning was about a document with
+   * nothing to its leading side; this one has the outline rail there, and a
+   * centred document put its first character 100px away from the title of the
+   * page it is the content of.
+   */
+  .doc {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    min-block-size: 0;
+  }
+
+
+  /*
+   * The panel **stays** while the document scrolls under it.
+   *
+   * It is the page's controls and its inventory — the thing you scroll the
+   * document in order to act on — and it used to slide off the top with the
+   * prose, so acting on what you had just read meant scrolling back up to find
+   * the card again.
+   *
+   * The offset is the header's real height, `--header-band + --header-h`,
+   * published by `ui/page-header` onto this page (see its note on `:has(>
+   * .header)`). Plus the grid's own gutter, so the card clears the header by
+   * the same distance everything else on this page clears everything else.
+   *
+   * `max-block-size` with `overflow: auto` is the escape for a card taller than
+   * the viewport: sticky would otherwise pin its top and leave the bottom
+   * unreachable, which is worse than not sticking at all.
+   */
+  .panel {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    align-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+    max-block-size: calc(100dvh - var(--header-band) - var(--header-h) - var(--space-8) * 2);
+    overflow: auto;
+  }
+
+  /* Uppercase plus tracking standing in for a size the panel cannot spend. */
+  .sectionLabel {
+    margin-block-start: var(--space-8);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+
+  .sectionLabel:first-child {
+    margin-block-start: var(--space-0);
+  }
+
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-inline: calc(var(--space-2) * -1);
+  }
+
+  .cardRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .cardRow:hover,
+  .cardRow:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  /*
+   * ── The row's trailing column ────────────────────────────────────────────
+   *
+   * The delete is positioned over the row rather than laid out beside it, for
+   * the same reason `features/track/row` positions its own: the row is a
+   * `<button>` and the control may not nest inside it, but the two still have
+   * to read as one row. The `<li>` is the positioning context that lets them.
+   *
+   * The space is reserved at rest (`.cardRowRemovable`), so revealing the ×
+   * never reflows the title — a row whose text re-wraps on hover is a row that
+   * moves out from under the pointer. Flush at inset 0, which is where the
+   * module head's `+` and the track rows' × already sit: one trailing column for
+   * the whole panel.
+   */
+  .cardItem {
+    position: relative;
+  }
+
+  .cardRowRemovable {
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
+  }
+
+  .cardRemove {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: 0;
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    padding: 0;
+    border-radius: var(--radius-sm);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    opacity: 0;
+    cursor: pointer;
+    translate: 0 -50%;
+    transition: opacity var(--motion-quick) ease-out,
+      background-color var(--motion-quick) ease-out;
+
+    /* Hidden by opacity, never by `visibility`: `visibility: hidden` drops the
+       button out of the focus order, and `:focus-within` below would then never
+       fire — the keyboard path would lose the delete entirely (§2.6). */
+    pointer-events: none;
+  }
+
+  /* Before the descendant rule below, which stylelint's
+     `no-descending-specificity` requires and which costs nothing here: the two
+     say the same thing about `opacity`, and only this one adds a background. */
+  .cardRemove:hover,
+  .cardRemove:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .cardItem:hover .cardRemove,
+  .cardItem:focus-within .cardRemove {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .cardKind {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /*
+   * ── A module's list scrolls before it evicts its neighbours ──────────────
+   *
+   * `.panel` already caps at the viewport and scrolls, but that scrolls the
+   * *card*: a track with thirty cards pushed TASKS and CONVERSATIONS below the
+   * fold, and the panel's whole point is that those modules are readable at
+   * once without leaving the document.
+   *
+   * CONVERSATIONS is not listed here because it already does this —
+   * `features/chat/list`'s `.list` carries the identical cap, and its note
+   * ("one busy area pushed the conversation module below the fold") is this
+   * same defect found from the other end. CARDS was the module that never got
+   * the treatment; TASKS is new and would have repeated the omission.
+   *
+   * Eight rows, the same count and the same arithmetic as that list rather than
+   * a second invented number: eight `--row-h-sm` rows plus the seven
+   * `--space-1` gaps between them, so the cap lands exactly on a row boundary
+   * and a ninth row is visibly cut rather than ambiguously clipped. A list
+   * shorter than that is untouched — `max-block-size`, not `block-size`, so
+   * nothing reserves space it is not using.
+   *
+   * `overscroll-behavior: contain` so reaching the end of a module's list does
+   * not then scroll the panel, and then the page, under the reader's pointer.
+   */
+  .cards,
+  .tasks {
+    max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /*
+   * A task row: the key, and a word only when the state is not the ordinary
+   * one. Same skeleton as `.cardRow` — same height, same bleed, same hover —
+   * because they are the same kind of row in the same card, and two shapes for
+   * one thing is how a panel starts looking assembled out of whatever was to
+   * hand.
+   */
+  .tasks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-inline: calc(var(--space-2) * -1);
+  }
+
+  /*
+   * The row is the `<li>` now, not a button: it holds two controls (see
+   * `public.tsx`), and a button may not nest in a button. It keeps the box —
+   * height, bleed, radius — so CARDS and TASKS are still one shape, and the
+   * hover fill moves here so hovering *either* control lights the whole row,
+   * which is what tells the reader they are two parts of one thing.
+   *
+   * `position: relative` is what lets the status dot sit at the trailing edge
+   * while staying inside the reveal button in the DOM — the dot is a click
+   * target for the row's own action, not a hole in it.
+   */
+  .taskRow {
+    position: relative;
+    display: flex;
+    align-items: center;
+    /*
+     * `--space-4`, not `--space-2`, on the *trailing* cluster only.
+     *
+     * The key is `overflow: hidden` and truncates, so at a narrow panel this
+     * gap is the whole distance between an ellipsis and the next thing — at 4px
+     * the kind read as a suffix of the key rather than a separate column, which
+     * is what "挤" was. The leading pad stays `--space-2` so CARDS and TASKS
+     * still start on the same pixel (see `.cardRow`).
+     */
+    gap: var(--space-4);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    /* The trailing pad is the dot's lane: every row reserves it, dot or no dot,
+       so the kind column stays aligned down the list instead of stepping in and
+       out as tasks are dispatched. One `--space-4` each side of the dot, which
+       is what makes the kind→dot gap the same step as the key→kind one. */
+    padding-inline: var(--space-2) calc(var(--space-4) * 2 + var(--dot-md));
+    border-radius: var(--radius-sm);
+  }
+
+  /*
+   * `:has(:focus-visible)`, not `:focus-within`.
+   *
+   * The row is an `<li>` and never takes focus itself, so `:focus-visible` on
+   * it (what `.cardRow` above uses, correctly, because that row *is* the
+   * button) can never match — which is how it became `:focus-within` and how
+   * the defect arrived with it. `:focus-within` fires on *pointer* focus, so a
+   * click left the row painted with `--overlay-hover` and the pointer long
+   * gone: a row that looked hovered until focus moved somewhere else. `:has()`
+   * lets the row ask for the thing `.cardRow` asks for — a descendant the
+   * browser decided deserves a visible ring — so the two row types in this one
+   * card behave the same way again.
+   */
+  .taskRow:hover,
+  .taskRow:has(:focus-visible) {
+    background: var(--overlay-hover);
+  }
+
+  /*
+   * The reveal control takes the whole row minus the kind, so "click the row"
+   * is true in the only sense a pointer knows: everything that is not the other
+   * control.
+   */
+  .taskReveal {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: space-between;
+    /* Same step as the row's, so the key → declaration → kind run reads as one
+       evenly-spaced sequence instead of two different gaps. */
+    gap: var(--space-4);
+    min-inline-size: 0;
+    align-self: stretch;
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+
+  /*
+   * ── "Clicking the row reveals the block" is a claim about a *rectangle* ───
+   *
+   * In flow, this button ends where the kind begins, and the row had two dead
+   * zones the prose above already claimed were live. Both were reachable in the
+   * ordinary case, not at an edge:
+   *
+   *   - the **kind, when there is no card behind it** — a `<span>` sibling
+   *     (every codex row today, because `app/router` clears `workerCardId` for
+   *     a card the registry cannot draw). A word sitting in a clickable row,
+   *     doing nothing;
+   *   - the **trailing lane, when the task has no status** — the row reserves
+   *     it unconditionally so the kind column stays aligned, and only
+   *     `.taskDot::before` ever filled it. An undispatched row therefore had a
+   *     24px hole at the corner the eye is drawn to.
+   *
+   * So the button also paints an invisible copy of the whole row. `inset: 0`
+   * resolves against `.taskRow` (the positioned ancestor), which is the row
+   * *including* its reserved lane, and a pseudo-element is hit-tested as its
+   * originating element — so the pointer lands on this button anywhere the row
+   * is, and the cursor says so.
+   *
+   * **`::before`, and the choice is load-bearing.** Pseudo-elements are laid
+   * out in tree order, and every one of these is a positioned descendant of a
+   * non-positioned in-flow button, so they paint in DOM order with no z-index
+   * anywhere: `::before` → the dot (and `.taskDot::before`, its lane target) →
+   * the kind button. `::after` would have painted this sheet *over* the dot and
+   * taken the status tooltip back off the lane — the exact defect
+   * `.taskDot::before` exists to fix. That ordering is what the two controls
+   * depend on, so it is asserted by hit test in
+   * `task-row.browser.test.tsx`, not by reading these declarations back.
+   *
+   * The kind *button* is `position: relative` for that reason and no other: an
+   * unpositioned sibling would paint under this sheet and lose its own click.
+   * The kind *span* is deliberately left unpositioned, which is what puts the
+   * row's action under it.
+   */
+  .taskReveal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+  }
+
+  /* Mono, because the key is the literal the kernel and other reports address
+     this task by (§2.2) — the same font the block itself gives it. */
+  .taskKey {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Both are the quiet rank: this column says "not the ordinary case", and the
+     panel is greyscale. A ready, undispatched task prints nothing at all, so
+     there is no pair of words here competing to be read.
+
+     `.taskNote` covers both halves of the column — the declaration words and
+     the runtime ones (`running · codex`, `pending`, `failed`).
+     Deliberately one rank rather than a status palette: colour here would put
+     four hues in a greyscale panel to restate a word that is already legible,
+     and `failed` would then be the loudest thing on a page whose actual subject
+     is the document. */
+  .taskNote,
+  .taskWithdrawn {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .taskWithdrawn {
+    text-decoration: line-through;
+  }
+
+  /*
+   * ── The worker kind ──────────────────────────────────────────────────────
+   *
+   * One word, two elements, and the difference between them is the whole point:
+   * a `<span>` when there is no worker card (a codex row today — the registry
+   * has no adapter, so `app/router` cleared the id), a `<button>` when there
+   * is. They share every typographic property, because the fact is the same
+   * fact; what a control adds is the things a control has — a pointer cursor,
+   * an underline offer on hover, a focus ring of its own.
+   *
+   * The quiet rank, like `.cardKindTag`: the kind is a fact about the row, not
+   * the row's subject, and making the only clickable word the loudest one would
+   * invert that.
+   */
+  .taskKind,
+  .taskKindButton {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  /* Full row height, so the target is a 24px band and not an 11px line of type
+     — the word is small because it is quiet, which is a typographic decision
+     and must not also be a pointing one. */
+  .taskKindButton {
+    /* Positioned so it paints above `.taskReveal::before`, which covers the
+       whole row — an unpositioned sibling would sit under that sheet and lose
+       its click. Nothing here depends on where `relative` puts it. */
+    position: relative;
+    display: flex;
+    align-items: center;
+    align-self: stretch;
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .taskKindButton:hover,
+  .taskKindButton:focus-visible {
+    color: var(--text);
+    text-decoration: underline;
+  }
+
+  /*
+   * ── The status, as a dot ─────────────────────────────────────────────────
+   *
+   * Absolutely positioned at the row's trailing edge while remaining a DOM
+   * child of the reveal button (see `public.tsx`): a click on it still reveals
+   * the block, because a click on a button's descendant is a click on the
+   * button no matter where the descendant was painted.
+   *
+   * **Colour is a shorthand here, never the message.** The element carries
+   * `aria-label` and `title`, both spelling the status out; this rule only
+   * decides which of the app's existing semantic fills it takes. No hue is
+   * invented: every value below is a token from `styles/tokens.css`, which is a
+   * frozen interface, and all four fills clear 3:1 against the panel card in
+   * both themes (`tools/styles/check-contrast.mjs` holds that).
+   *
+   *   accent   dispatched, running, verifying — in flight, the app's one accent
+   *   success  done
+   *   error    failed
+   *   text-3   pending, canceled, and anything this build has not heard of
+   *
+   * ── Why hue could not be the only channel ────────────────────────────────
+   *
+   * Each fill clears 3:1 against the *card*. None of them clears anything
+   * against *each other*, which is the comparison a reader actually makes when
+   * four rows are stacked. Painted and read back in Chromium by
+   * `task-row.browser.test.tsx` (ΔL in OKLCH, WCAG 2.x ratio between the two
+   * fills):
+   *
+   *                       light              dark
+   *   accent~text-3   ΔL 0.9  1.06:1    ΔL 2.1  1.07:1
+   *   success~error   ΔL 3.1  1.30:1    ΔL 0.0  1.12:1
+   *   error~text-3    ΔL 5.0  1.15:1    ΔL 3.8  1.21:1
+   *   accent~error    ΔL 5.9  1.22:1    ΔL 5.9  1.30:1
+   *   success~text-3  ΔL 8.1  1.50:1    ΔL 3.9  1.09:1
+   *   accent~success  ΔL 9.0  1.58:1    ΔL 5.9  1.16:1
+   *
+   * Against the card, for comparison, the same four measure 4.68–7.42:1 in
+   * light and 5.30–6.86:1 in dark. Every one of them is a legible mark; not one
+   * of them is legible *as against another one*.
+   *
+   * Dark's `--success` and `--error` are the same lightness to the decimal —
+   * done and failed differ by hue and nothing else, and at 6px that is a grey
+   * smudge for a reader with deuteranopia and a slow read for everyone. The
+   * ladder is built in ΔL on purpose (§6.5) and every semantic fill sits on one
+   * rung of it, so a *palette* answer here does not exist: separating them in
+   * lightness would mean new tokens, and `styles/` is frozen (§6.8).
+   *
+   * So the dot carries a second, independent channel — **form** — and the four
+   * forms are distinguishable with the colour taken away entirely:
+   *
+   *   hollow ring     pending, canceled, unknown  — nothing in it yet
+   *   filled disc     done                        — closed, quiet
+   *   filled square   failed                      — the one non-circle
+   *   bullseye        in flight                   — a core inside a ring
+   *
+   * Colour then reinforces a shape rather than carrying the state alone, and the
+   * size moves `--dot-sm` → `--dot-md`: at 6px a 2px stroke has no hole left to
+   * be hollow with, so the form channel needs the next rung of the dot scale to
+   * exist at all. The row's trailing lane widens with it.
+   *
+   * **All four are the same 8px box, and none of them paints outside it.** The
+   * first cut gave the in-flight state a detached `outline` ring, which made
+   * that one mark 14px wide in a column of 8px ones — read back as "大小有点不
+   * 统一", and correctly: a size difference is a channel of its own, and
+   * spending it on one state says that state is *bigger*, not that it is
+   * running. So the ring moved inside the box (border) and the core shrank to
+   * make room for it, `background-clip` keeping the two apart. Equal rendered
+   * diameter is asserted across all four in `task-row.browser.test.tsx`, off
+   * `getBoundingClientRect()`, which is the only thing that can see it.
+   *
+   * The neutral is the default rather than a case, which is the same
+   * fail-quiet the poll allowlist takes: a status word this build does not know
+   * gets the colour that claims nothing, and the label still says it.
+   *
+   * The first three are the pairings `features/track/lifecycle-badge` already
+   * makes for the same three ideas, so a running task and a running track are
+   * the same colour on one screen — that badge is where this vocabulary was
+   * settled, and a second opinion about it here would be the drift the token
+   * scale exists to stop.
+   *
+   * Where this *does* diverge from that badge is the neutral: `--text-3`, not
+   * its `--text-4`. The muted rank measures 2.30:1 against the card in light
+   * and 2.16:1 in dark, and a dot below 3:1 is a smudge. The badge can afford
+   * it because its dot sits beside a permanently visible word; this one is
+   * alone on the row until you hover or listen to it. There is
+   * no fifth semantic fill in the scale, so `pending` and `canceled` share the
+   * neutral — the scale has no token that distinguishes "not started yet" from
+   * "stopped", and inventing one to fill a gap in a *palette* would be exactly
+   * the hand-rolled hex this system exists to prevent. The word tells them
+   * apart.
+   */
+  .taskDot {
+    position: absolute;
+    /* Centred explicitly rather than left to the static position, which would
+       be resolved against the reveal button's flex alignment — correct today
+       and silently at the mercy of any change to that button's layout. */
+    inset-block-start: 50%;
+    inset-inline-end: var(--space-4);
+    transform: translateY(-50%);
+    inline-size: var(--dot-md);
+    block-size: var(--dot-md);
+    /* `--rule-h` is the scale's line thickness, and this stroke is a line: at
+       2px on an 8px box the hole is 4px, which is the smallest opening that
+       still reads as an opening. `box-sizing` is `border-box` globally
+       (`styles/reset.css`), so the stroke grows inward and the dot's footprint
+       is `--dot-md` in every state — the four forms differ in what is drawn,
+       never in how much room they take. */
+    border: var(--rule-h) solid var(--text-3);
+    border-radius: var(--radius-pill);
+    /* The default form is the hollow one. Every filled state below has to say
+       so, which is what keeps "a status this build has not heard of" from
+       silently inheriting a shape that claims something. */
+    background: transparent;
+  }
+
+  /*
+   * ── The mark is 8px; the *target* is the whole lane ──────────────────────
+   *
+   * The bug this fixes was reported as "hover 没状态", and it was not a missing
+   * `title`: the dot has carried one all along, and at the dot's own centre the
+   * browser resolves it correctly, detail tail and all. Measured, the defect is
+   * that the tooltip lived on an 8×8 island. Six pixels away in *any* direction
+   * the topmost element is the bare `<li>`, which has no `title` at all — so
+   * the reader got silence, not the wrong tooltip, and an 8px target is not one
+   * anybody hits on purpose in a 24px row.
+   *
+   * The row already reserves a 24px trailing lane for this mark (see
+   * `.taskRow`'s padding). This gives the whole of it to the dot: a transparent
+   * pseudo-element, hit-tested as the dot itself, so `title` and `aria-label`
+   * resolve from the dot across the entire lane while the painted mark stays
+   * exactly `--dot-md` — every size assertion in `task-row.browser.test.tsx`
+   * measures the element's own rect, which a pseudo-element does not change.
+   *
+   * Explicitly *not* `pointer-events: none` on the dot, which is the other way
+   * to keep clicks falling through and is the way that would re-break this: it
+   * would take the dot out of hit testing entirely and there would be no hover
+   * to resolve a `title` from. Clicks need no help — the dot is a DOM child of
+   * the reveal button, so they bubble to it whatever sits on top.
+   *
+   * The insets are the lane's own geometry, not a guess: `--space-4` each side
+   * is exactly what `.taskRow` padded, and the block inset is whatever is left
+   * of the row once the mark has taken its `--dot-md`. The leading edge lands
+   * on the kind's trailing edge — abutting it, never over it, which is why the
+   * kind keeps its own hover and its own click.
+   */
+  .taskDot::before {
+    content: '';
+    position: absolute;
+    inset-block: calc((var(--row-h-sm) - var(--dot-md)) / -2);
+    inset-inline: calc(var(--space-4) * -1);
+  }
+
+  /*
+   * In flight: a bullseye — a core inside a ring, both `--accent`, the whole
+   * thing inside the shared 8px box. The 8px divides 1 / 1 / 4 / 1 / 1: a
+   * hairline ring on the border, a transparent gap on the padding, and a 4px
+   * core that `background-clip: content-box` keeps off the ring.
+   *
+   * The gap is padding rather than a second painted circle because it has to be
+   * genuinely transparent: the row paints `--overlay-hover` behind the dot on
+   * hover, and a gap filled with `--surface-card` would turn into a light
+   * collar exactly when the pointer is on the row.
+   *
+   * The ring is 1px where the hollow ring is `--rule-h`, and that is the point
+   * — the hollow ring is the entire mark and needs the weight, this one is a
+   * frame around a core that already carries it. The two are the same diameter,
+   * which is the thing the eye compares down a column.
+   */
+  .taskDot[data-nc-status="dispatched"],
+  .taskDot[data-nc-status="running"],
+  .taskDot[data-nc-status="verifying"] {
+    border-width: 1px;
+    border-color: var(--accent);
+    padding: 1px;
+    background: var(--accent);
+    background-clip: content-box;
+    animation: task-dot-pulse var(--motion-pulse) ease-in-out infinite;
+  }
+
+  .taskDot[data-nc-status="done"] {
+    border-color: var(--success);
+    background: var(--success);
+  }
+
+  /*
+   * Failed: the only non-circle in the panel. `--radius-sm` is 4px, which on an
+   * 8px box is a circle again, so the corner is half a rung down the same
+   * scale — enough to keep the mark from being a hard chip, far enough from
+   * `--radius-pill` that the silhouette is unmistakably square.
+   */
+  .taskDot[data-nc-status="failed"] {
+    border-color: var(--error);
+    border-radius: calc(var(--radius-sm) / 2);
+    background: var(--error);
+  }
+
+  /*
+   * The one genuinely live state gets the one piece of motion, and it is
+   * allowed to touch **only `opacity`** — the same breath `features/track/row`
+   * and `features/chat/list` take, for a reason that is stricter here than
+   * house style. Every other animatable property on this element is either the
+   * form (border, padding, background-clip, radius) or the box (size, outline),
+   * and both of those are now load-bearing: an animation that touched them
+   * would make an in-flight dot periodically the wrong shape or the wrong size,
+   * which is precisely the two complaints this rule exists to answer. Opacity
+   * changes neither, so suppressing it below costs nothing but the breath.
+   *
+   * ── The floor is a contrast bound, not a taste ───────────────────────────
+   *
+   * 0.8, and it used to be 0.35. `opacity` composites the mark against what is
+   * behind it, so the dimmest frame is the frame the dot has to be legible in —
+   * and at 0.35 the in-flight `--accent` measured 1.43:1 against
+   * `--surface-card` in light and 3.06:1 in dark, so for half of every breath
+   * the one state that is actually moving fell under the 3:1 non-text floor the
+   * rest of this file is written to. "The mark is never absent" was the right
+   * instinct and the wrong number: absent is not the bar, legible is.
+   *
+   * 0.8 is the rounded ceiling of the two thresholds — light needs 0.771 and
+   * dark 0.340, light binding because `--surface-card` is nearly white there —
+   * which leaves the breath shallow on purpose. A pulse that dips below what
+   * the palette can carry is not a livelier signal, it is a mark that
+   * disappears half the time.
+   *
+   * **The number is read back, not restated.** `tools/styles/check-contrast.mjs`
+   * parses this keyframe's minimum `opacity` out of this file and measures the
+   * accent at *that* alpha over the card in both themes, so lowering the floor
+   * here reddens the style gate rather than quietly re-introducing the defect —
+   * which is what happened the first time, because both contrast checks
+   * measured the opaque token and could not see an animation at all.
+   */
+  @keyframes task-dot-pulse {
+    50% {
+      opacity: 0.8;
+    }
+  }
+
+  /*
+   * ── Reduced motion, at a specificity that can actually win ───────────────
+   *
+   * `[data-nc-status]`, not a bare `.taskDot`. A media query adds no
+   * specificity, and the pulse is declared at `.taskDot[data-nc-status=
+   * "running"]` — (0,2,0) against a bare class's (0,1,0) — so the override this
+   * rule replaces lost the cascade outright and never suppressed anything:
+   * under emulated `reduce` the effective `animation-name` was still
+   * `task-dot-pulse`. The attribute selector matches the same (0,2,0) and comes
+   * later in the sheet, so it wins on source order, which is the only tie-break
+   * left.
+   *
+   * The rule is not redundant with `styles/base.css`'s global sweep even though
+   * that sweep is what was really suppressing the motion (`animation-duration:
+   * 0.01ms !important`, `animation-iteration-count: 1 !important`): that one
+   * makes the animation *elapse* instantly and still leaves it running once,
+   * over an element whose only animated property is now bounded by a contrast
+   * floor. Saying `none` here is exact, and it is the thing this file claims a
+   * few paragraphs up ("suppressing it below costs nothing but the breath").
+   * `task-row.browser.test.tsx` emulates the media feature and reads the
+   * effective `animation-name` off the painted element, so a rule that loses
+   * the cascade again is red rather than merely present.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    .taskDot[data-nc-status] {
+      animation: none;
+    }
+  }
+
+  /* The trailing badges of a card row, kept in one box so the row's
+     `space-between` still puts the name at the start and everything else at the
+     end — three loose children would float the middle one. */
+  .cardMeta {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* `.cardKindTag` is the card's kind once a title has taken the name slot
+     (#1149 titles every worker card after its task key, so the kind would
+     otherwise vanish from exactly the rows that need it). Same quiet rank as
+     `kernel-owned`: it is a fact about the row, not the row's subject. */
+  .cardKindTag,
+  .kernelOwned {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  /* The inline empty state: one line of hint-toned text in a dashed row-height
+     box. Dashed is the difference between "a container with nothing in it" and
+     "something is here". */
+  .inlineEmpty {
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-4);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  /* Compact/mobile is a navigation redesign, not a squeezed desktop grid.
+     Report is the root page. The inventory becomes a right-pushed page, and a
+     selected card becomes a second list-detail page without loading Grid. */
+  @media (width < 60rem) {
+    .page {
+      --document-start: 0px;
+      gap: var(--space-6);
+      padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-10));
+      padding-inline: var(--space-8);
+    }
+
+    .page > :first-child {
+      display: none;
+    }
+
+    .mobileTrackHeader {
+      display: contents;
+    }
+
+    .titleHeading {
+      overflow: visible;
+    }
+
+    .title {
+      white-space: normal;
+      text-overflow: clip;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+
+    .doc {
+      inline-size: 100%;
+      max-inline-size: var(--document-measure);
+      margin-inline: auto;
+    }
+
+    .mobilePanelButton {
+      display: grid;
+      place-items: center;
+      inline-size: var(--rail-w-collapsed);
+      min-block-size: var(--rail-w-collapsed);
+      border: 0;
+      border-radius: var(--radius-pill);
+      background: transparent;
+      box-shadow: none;
+      color: var(--text-2);
+      cursor: pointer;
+    }
+
+    .mobilePanelButton button {
+      /* Astryx's `lg` icon button is 36px. Mobile keeps its ghost appearance
+         but expands the actual button—not a fake wrapper—to the 44px target. */
+      inline-size: var(--rail-w-collapsed) !important;
+      min-inline-size: var(--rail-w-collapsed) !important;
+      block-size: var(--rail-w-collapsed) !important;
+      min-block-size: var(--rail-w-collapsed) !important;
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+
+    .headerDelete {
+      display: none;
+    }
+
+    .needsInput,
+    .page [data-nc-lifecycle-tone] {
+      display: none;
+    }
+
+    .panel {
+      position: fixed;
+      inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));
+      z-index: var(--z-overlay);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-8);
+      inline-size: 100%;
+      block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
+      min-block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
+      max-block-size: none;
+      padding: 0;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      background: var(--bg);
+      translate: 100% 0;
+      transition:
+        translate var(--motion-medium) ease-out,
+        visibility 0s linear var(--motion-medium);
+    }
+
+    .mobilePanelOpen {
+      visibility: visible;
+      translate: 0 0;
+      transition-delay: 0s;
+    }
+
+    .mobilePanelClosed {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .mobileListSurface {
+      display: block;
+      inline-size: 100%;
+      block-size: 100%;
+      min-block-size: 0;
+      overflow: hidden;
+    }
+
+    .desktopPanelSurface {
+      display: none;
+    }
+
+    /* The mobile Cards row's quiet rank: the kind and `kernel-owned`, each its
+       own element because each is its own field carrier (#1234). They sit in
+       `MobileListItem`'s meta lane, which supplies the type scale; this only
+       keeps the two words apart. */
+    .mobileRowMeta {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    /* A withdrawn declaration, struck through — the mobile half of the rule the
+       desktop draws with `.taskWithdrawn`. `RowBadge.struck` has no carrier in
+       the projection framework at all, so this class and the behaviour
+       assertion that reads it are the only thing holding it on this surface
+       (#1234 S1b-4b). */
+    .mobileRowStruck {
+      text-decoration: line-through;
+    }
+
+    .mobileConversationList {
+      min-inline-size: 0;
+    }
+
+    .mobileConversationList ul {
+      max-block-size: none !important;
+      margin-inline: 0 !important;
+      overflow: visible !important;
+    }
+
+    .mobileConversationList button {
+      min-block-size: var(--rail-w-collapsed) !important;
+      padding-inline: var(--space-4) !important;
+    }
+
+    .mobileConversationList > p {
+      min-block-size: var(--rail-w-collapsed);
+      font-size: var(--text-xs);
+      line-height: var(--leading-snug);
+      color: var(--text-3);
+    }
+
+    .mobileReportChatFab {
+      position: fixed;
+      inset-inline-end: var(--space-9);
+      inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-9));
+      z-index: var(--z-sticky);
+      display: inline-flex;
+      min-block-size: calc(var(--rail-w-collapsed) + var(--space-6));
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-3);
+      padding-inline: var(--space-9);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-pill);
+      background: var(--accent);
+      color: var(--text-on-accent);
+      box-shadow: var(--shadow-float);
+      font-size: var(--text-md);
+      font-weight: var(--weight-medium);
+      line-height: var(--leading-none);
+      cursor: pointer;
+    }
+
+    .mobileReportChatFab svg {
+      inline-size: var(--space-9);
+      block-size: var(--space-9);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .panel {
+        transition: none;
+      }
+    }
+  }
+}

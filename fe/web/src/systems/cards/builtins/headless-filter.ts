@@ -1,4 +1,4 @@
-import type { CardWire } from '../../../../../core/domain/wave.ts';
+import type { CardWire } from '../../../../../core/domain/track.ts';
 import type { CardRegistry, RegisteredCard } from '../registry.js';
 
 declare module '../registry.js' {
@@ -19,21 +19,21 @@ export type UnknownCardSlot = Readonly<{
   originalIndex: number;
 }>;
 
-export type WaveCardPartition = Readonly<{
+export type TrackCardPartition = Readonly<{
   visible: readonly VisibleCardSlot[];
   unknown: readonly UnknownCardSlot[];
 }>;
 
-export function partitionWaveCards(
+export function partitionTrackCards(
   registry: CardRegistry,
   cards: readonly CardWire[],
-): WaveCardPartition {
+): TrackCardPartition {
   const visible: VisibleCardSlot[] = [];
   const unknown: UnknownCardSlot[] = [];
   cards.forEach((wire, originalIndex) => {
     const card = registry.resolve({ id: wire.id, kind: wire.kind, payload: wire.payload });
     if (card === null) {
-      if (wire.kind !== 'wave-report') unknown.push(Object.freeze({ wire, originalIndex }));
+      if (wire.kind !== 'track-report') unknown.push(Object.freeze({ wire, originalIndex }));
       return;
     }
     if (registry.get(card.type)?.headless === true) return;

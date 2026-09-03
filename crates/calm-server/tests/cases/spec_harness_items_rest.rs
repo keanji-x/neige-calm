@@ -7,11 +7,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, HarnessItem, NewArea, NewCard, NewWave, new_id};
+use calm_server::model::{Card, CardRole, HarnessItem, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -33,8 +33,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "items rest".into(),
@@ -49,14 +49,14 @@ async fn boot() -> Boot {
         .unwrap();
 
     let role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
-    wave_area_cache.insert(wave.id.clone(), area.id);
+    let track_area_cache = TrackAreaCache::new();
+    track_area_cache.insert(track.id.clone(), area.id);
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -72,7 +72,7 @@ async fn boot() -> Boot {
         &mut tx,
         new_id(),
         NewCard {
-            wave_id: wave.id,
+            track_id: track.id,
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -97,11 +97,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-items-rest"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -148,7 +148,7 @@ async fn harness_items_route_returns_rows_in_order_and_paginates() {
             .harness_item_insert(
                 "runtime-rest",
                 boot.spec_card.id.as_str(),
-                boot.spec_card.wave_id.as_str(),
+                boot.spec_card.track_id.as_str(),
                 "thread-rest",
                 Some("turn-rest"),
                 Some(uuid),
@@ -229,7 +229,7 @@ async fn harness_items_desc_cursor_uses_less_than_after_id() {
             .harness_item_insert(
                 "runtime-desc",
                 boot.spec_card.id.as_str(),
-                boot.spec_card.wave_id.as_str(),
+                boot.spec_card.track_id.as_str(),
                 "thread-desc",
                 Some("turn-desc"),
                 Some(&uuid),
@@ -279,7 +279,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
         .harness_item_insert(
             "runtime-mcp",
             boot.spec_card.id.as_str(),
-            boot.spec_card.wave_id.as_str(),
+            boot.spec_card.track_id.as_str(),
             "thread-mcp",
             Some("turn-mcp-1"),
             Some("mcp-1"),
@@ -291,7 +291,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
                     "type": "mcpToolCall",
                     "status": "inProgress",
                     "server": "neige",
-                    "tool": "calm.wave.cat"
+                    "tool": "calm.track.cat"
                 }
             })
             .to_string(),
@@ -303,7 +303,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
         .harness_item_insert(
             "runtime-mcp",
             boot.spec_card.id.as_str(),
-            boot.spec_card.wave_id.as_str(),
+            boot.spec_card.track_id.as_str(),
             "thread-mcp",
             Some("turn-mcp-1"),
             Some("mcp-1"),
@@ -315,7 +315,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
                     "type": "mcpToolCall",
                     "status": "completed",
                     "server": "neige",
-                    "tool": "calm.wave.cat",
+                    "tool": "calm.track.cat",
                     "result": { "content": [{ "type": "text", "text": "ok" }] }
                 }
             })
@@ -367,7 +367,7 @@ async fn harness_items_route_page_budget_skips_plan_rows() {
                 .harness_item_insert(
                     "runtime-budget",
                     boot.spec_card.id.as_str(),
-                    boot.spec_card.wave_id.as_str(),
+                    boot.spec_card.track_id.as_str(),
                     "thread-budget",
                     Some("turn-budget"),
                     None,
@@ -390,7 +390,7 @@ async fn harness_items_route_page_budget_skips_plan_rows() {
                 .harness_item_insert(
                     "runtime-budget",
                     boot.spec_card.id.as_str(),
-                    boot.spec_card.wave_id.as_str(),
+                    boot.spec_card.track_id.as_str(),
                     "thread-budget",
                     Some("turn-budget"),
                     Some(&uuid),

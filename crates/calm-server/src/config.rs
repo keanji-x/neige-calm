@@ -25,12 +25,12 @@ pub struct Config {
     #[arg(long, env = "CALM_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
-    /// #1147 D2 — root under which server-managed wave workspaces live, one
-    /// git repository per wave at `<root>/<area_id>/<wave_id>`.
+    /// #1147 D2 — root under which server-managed track workspaces live, one
+    /// git repository per track at `<root>/<area_id>/<track_id>`.
     /// Defaults to `$HOME/neige-workspaces`.
     ///
     /// Deliberately NOT `CALM_DATA_DIR`: that path is defined as runtime state
-    /// (sockets, db, scratch) and is a legitimate reset target. A wave
+    /// (sockets, db, scratch) and is a legitimate reset target. A track
     /// workspace is a user-visible product — opened in an editor, backed up —
     /// and must survive a state reset. The default name avoids `~/neige`,
     /// `~/neige-calm` and `~/neige-calm-wt`, which are already taken.
@@ -228,7 +228,7 @@ impl Config {
     /// root makes every derived workspace path relative, and materialization
     /// requires an absolute path, so a process started without `HOME` — the
     /// normal case under systemd or a supervisor — would 500 on every single
-    /// wave create (#1147 N6). Absolute-by-construction is the fix; if even
+    /// track create (#1147 N6). Absolute-by-construction is the fix; if even
     /// `current_dir()` fails there is no defensible answer, so this is the one
     /// place that gives up loudly rather than inventing a path.
     pub fn workspace_root_resolved(&self) -> PathBuf {

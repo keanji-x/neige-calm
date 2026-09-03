@@ -10,7 +10,7 @@ import {
   type RowAction,
   type RowModuleView,
   type RowPainter,
-  type WavePageView,
+  type TrackPageView,
 } from './panel.js';
 
 function row(id: string, title: string, actions: readonly RowAction[] = []): PanelRow {
@@ -101,7 +101,7 @@ describe('paintModule', () => {
  * painters it is run over — which since S1b-3b include a production one, the
  * desktop painter, over the real rendered page, and since S1b-4a/4b the mobile
  * painter over both of its drill-down pages
- * (`wave/page/mobile-projection.test.tsx`). Neither claim says an unsupported
+ * (`track/page/mobile-projection.test.tsx`). Neither claim says an unsupported
  * control cannot be drawn: a painter may draw an extra control that carries no
  * marker at all.
  */
@@ -186,13 +186,13 @@ describe('paintModule action filtering', () => {
  * therefore calls `paintModule` and — correctly — never `paintPanel`.
  *
  * **The desktop does, since S1b-3b.** The production chain is
- * `wave/page/public.tsx`'s desktop panel card → `paintDesktopPanel` →
+ * `track/page/public.tsx`'s desktop panel card → `paintDesktopPanel` →
  * `paintPanel` → `paintModule`. So outside this suite `paintPanel`'s callers are
  * that wrapper and `checkProjection` (`tools/projection/public.ts`).
  *
  * Nothing *in this file* forces that chain to exist — this suite would stay
  * green if the page stopped calling the wrapper tomorrow. What holds it is
- * `wave/page/desktop-entry.test.tsx`, which mocks `paintDesktopPanel` and
+ * `track/page/desktop-entry.test.tsx`, which mocks `paintDesktopPanel` and
  * checks the page both calls it and renders what it returns; the residue that
  * oracle leaves is written down in `tools/projection/public.ts`'s standing list.
  */
@@ -203,7 +203,7 @@ describe('paintPanel', () => {
      every assertion in this block would stay green, because the only row would
      get `actions: []` either way. The capability filter must not be reachable
      only through `paintModule`'s own tests. */
-  const view: WavePageView = {
+  const view: TrackPageView = {
     rowModules: [
       { key: 'cards', title: 'Cards', rows: [row('c1', 'One', [OPEN, DELETE])], empty: 'No cards yet.' },
       { key: 'tasks', title: 'Tasks', rows: [], empty: 'No tasks declared yet.' },

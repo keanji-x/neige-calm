@@ -428,7 +428,7 @@ fn reset_cursor(cursor: &mut CursorState, position: &mut Option<Position>) {
 fn row_ctx(session: &WorkerSession, runtime: &WorkerSessionProjection) -> FlowRowCtx {
     FlowRowCtx {
         session_id: session.id.clone(),
-        wave_id: Some(session.wave_id.as_str().to_string()),
+        track_id: Some(session.track_id.as_str().to_string()),
         card_id: Some(runtime.card_id.clone()),
     }
 }

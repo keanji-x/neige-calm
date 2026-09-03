@@ -9,7 +9,7 @@
 //! Issue #175 — `areas.kind` (introduced in migration 0009) marks rows as
 //! either user-visible or system-owned. `GET /api/areas` defaults to the
 //! filtered `kind='user'` list so the kernel-minted system area (which
-//! hosts the default Today terminal's wave + card) doesn't leak into the
+//! hosts the default Today terminal's track + card) doesn't leak into the
 //! sidebar; opt back into the full list via `?include_system=true`.
 //! `POST /api/areas` never accepts a `kind` field — every area created
 //! through the regular surface lands as `User`. The system area is minted
@@ -29,8 +29,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea};
 use crate::operation::workspace_lease::{
-    any_wave_has_active_forge_action, release_workspace_leases_for_wave_tx,
-    sweep_workspace_worktrees_for_waves_repo,
+    any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
+    sweep_workspace_worktrees_for_tracks_repo,
 };
 use crate::state::{AppState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -154,7 +154,7 @@ pub(crate) async fn create_area(
     ),
 )]
 /// Issue #175 — idempotent upsert for the singleton system area that
-/// hosts the default Today terminal's wave + card. Returns 200 with the
+/// hosts the default Today terminal's track + card. Returns 200 with the
 /// existing row when one is present; otherwise mints a new row and
 /// returns 201. The DB-level partial unique index on
 /// `areas(kind) WHERE kind = 'system'` enforces the at-most-one
@@ -317,10 +317,10 @@ pub(crate) async fn delete_area(
         )));
     }
 
-    let waves = s.repo.waves_by_area(&id).await?;
-    let wave_ids = waves
+    let tracks = s.repo.tracks_by_area(&id).await?;
+    let track_ids = tracks
         .iter()
-        .map(|wave| wave.id.as_str())
+        .map(|track| track.id.as_str())
         .collect::<Vec<_>>();
     // Defensive TOCTOU guard only: this non-transactional read happens before
     // the teardown tx, so a forge-action can still become in-flight before the
@@ -329,9 +329,9 @@ pub(crate) async fn delete_area(
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
         CalmError::Internal("delete_area forge-action fence requires sqlite-backed repo".into())
     })?;
-    if any_wave_has_active_forge_action(&pool, &wave_ids).await? {
+    if any_track_has_active_forge_action(&pool, &track_ids).await? {
         return Err(CalmError::Conflict(format!(
-            "area {id} has a child wave with an in-flight forge-action; retry after it settles"
+            "area {id} has a child track with an in-flight forge-action; retry after it settles"
         )));
     }
 
@@ -339,12 +339,12 @@ pub(crate) async fn delete_area(
     // `terminals.card_id` is `ON DELETE RESTRICT` (migration 0011), so
     // an area delete that would orphan a terminal row aborts the
     // surrounding txn unless we drain the table first. Walk
-    // waves → cards → terminal_get_by_card; reap the daemon + socket
+    // tracks → cards → terminal_get_by_card; reap the daemon + socket
     // for each; collect the terminal ids for the in-txn row delete. The
-    // overlay sweep derives current wave/card ids inside the write txn.
+    // overlay sweep derives current track/card ids inside the write txn.
     let mut terminal_ids: Vec<String> = Vec::new();
-    for wave in &waves {
-        let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;
+    for track in &tracks {
+        let cards = s.repo.cards_by_track(track.id.as_str()).await?;
         for card in &cards {
             if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
                 reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
@@ -360,16 +360,16 @@ pub(crate) async fn delete_area(
     // left every managed repository on disk with no database row pointing at
     // it: an orphan tree that nothing could ever find again, let alone reclaim.
     //
-    // Same ordering rationale as `delete_wave`: terminals are already reaped,
+    // Same ordering rationale as `delete_track`: terminals are already reaped,
     // and a failure here aborts the DELETE with rows and directories both
-    // intact. Per-wave refusals are not failures — they leave that one
+    // intact. Per-track refusals are not failures — they leave that one
     // directory (and therefore the area directory) in place, visibly.
     let now = crate::model::now_ms();
-    let targets: Vec<workspace_recycle::RecycleTarget<'_>> = waves
+    let targets: Vec<workspace_recycle::RecycleTarget<'_>> = tracks
         .iter()
-        .map(|wave| workspace_recycle::RecycleTarget {
-            wave_id: wave.id.as_str(),
-            workspace: &wave.workspace,
+        .map(|track| workspace_recycle::RecycleTarget {
+            track_id: track.id.as_str(),
+            workspace: &track.workspace,
         })
         .collect();
     workspace_recycle::recycle_area_workspaces(&s.workspace_root, &id, area_kind, &targets, now)?;
@@ -395,14 +395,14 @@ pub(crate) async fn delete_area(
                 overlay_delete_by_entity_tx(tx, "area", &id).await?;
                 let mut events = Vec::new();
                 let mut sweeps = Vec::new();
-                let wave_ids: Vec<String> =
-                    sqlx::query_scalar("SELECT id FROM waves WHERE area_id = ?1")
+                let track_ids: Vec<String> =
+                    sqlx::query_scalar("SELECT id FROM tracks WHERE area_id = ?1")
                         .bind(&id)
                         .fetch_all(&mut **tx)
                         .await?;
-                for wave_id in &wave_ids {
+                for track_id in &track_ids {
                     let release =
-                        release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?;
+                        release_workspace_leases_for_track_tx(tx, track_id.as_str()).await?;
                     events.extend(release.events);
                     if let Some(sweep) = release.sweep {
                         sweeps.push(sweep);
@@ -414,6 +414,6 @@ pub(crate) async fn delete_area(
             })
         })
         .await?;
-    sweep_workspace_worktrees_for_waves_repo(s.repo.as_ref(), &s.events, sweeps).await?;
+    sweep_workspace_worktrees_for_tracks_repo(s.repo.as_ref(), &s.events, sweeps).await?;
     Ok(StatusCode::NO_CONTENT)
 }

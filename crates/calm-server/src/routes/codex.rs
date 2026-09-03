@@ -21,7 +21,7 @@
 //!
 //! The old `POST /api/cards/:id/codex` endpoint that bound an existing card
 //! to a live codex PTY is gone (#117). The atomic
-//! `POST /api/waves/:wave_id/codex-cards` replaces it — see
+//! `POST /api/tracks/:track_id/codex-cards` replaces it — see
 //! `routes::codex_cards`. The card-creation helpers (`host_codex_dir`,
 //! `copy_dir_recursive`, `default_cwd`) moved along with the endpoint.
 //! This file keeps only the loopback ingest.
@@ -211,16 +211,16 @@ pub(crate) async fn ingest_provider_hook(
     // the unknown-card guard catches a card that was deleted between
     // hook fire and ingest.
     //
-    // Scope: same as before — try to resolve `card → wave → area`;
+    // Scope: same as before — try to resolve `card → track → area`;
     // fall back to `EventScope::System` when the card has been
     // deleted. The gate's unknown-card branch then refuses the write,
     // which is what we want: a hook for a deleted card is an audit
     // smell.
     let scope = match s.repo.card_get(&card_id_str).await? {
-        Some(c) => match s.repo.wave_get(c.wave_id.as_str()).await? {
+        Some(c) => match s.repo.track_get(c.track_id.as_str()).await? {
             Some(w) => EventScope::Card {
                 card: c.id,
-                wave: w.id,
+                track: w.id,
                 area: w.area_id,
             },
             None => EventScope::System,

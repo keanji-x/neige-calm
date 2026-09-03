@@ -8,16 +8,16 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{
     ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision, ReviewSubject,
 };
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, WaveLifecycle, WavePatch};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -37,18 +37,18 @@ struct Boot {
     repo: Arc<dyn Repo>,
     app: axum::Router,
     area_id: AreaId,
-    wave_id: WaveId,
+    track_id: TrackId,
     spec_card_id: CardId,
     // Exposed for tests that seed events via `log_pure_event` (#888 t10/t12/t13).
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_area_cache: calm_server::wave_area_cache::WaveAreaCache,
+    track_area_cache: calm_server::track_area_cache::TrackAreaCache,
 }
 
-fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
+fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
-        wave_id,
+        track_id,
         provider: WorkerProviderKind::Codex,
         mode: SessionMode::Resumable,
         contract: WorkerContract::Planner,
@@ -75,28 +75,28 @@ fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession 
     }
 }
 
-async fn seed_wave_root_session(
+async fn seed_track_root_session(
     repo: &dyn RepoEventWrite,
-    wave_id: &WaveId,
+    track_id: &TrackId,
     card_id: &CardId,
     session_id: &str,
 ) {
-    let session = planner_session(session_id, wave_id.clone(), card_id.clone());
+    let session = planner_session(session_id, track_id.clone(), card_id.clone());
     let root_session_id = session.id.clone();
-    let wave_id = wave_id.clone();
+    let track_id = track_id.clone();
     calm_server::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             session_insert_tx(tx, session)
                 .await
                 .map_err(CalmError::from)?;
-            session_mark_wave_root_tx(tx, &wave_id, &root_session_id)
+            session_mark_track_root_tx(tx, &track_id, &root_session_id)
                 .await
                 .map_err(CalmError::from)?;
             Ok(())
         })
     })
     .await
-    .expect("seed wave root session");
+    .expect("seed track root session");
 }
 
 async fn boot() -> Boot {
@@ -109,8 +109,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "review ratify".into(),
@@ -123,19 +123,19 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_update(
-            wave.id.as_str(),
-            WavePatch {
-                lifecycle: Some(WaveLifecycle::Working),
-                ..WavePatch::default()
+    let track = repo
+        .track_update(
+            track.id.as_str(),
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Working),
+                ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -143,19 +143,19 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, SPEC_SESSION_ID).await;
+    seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, SPEC_SESSION_ID).await;
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
         spec_card.id.as_str(),
         CardRole::Spec,
     )
     .await;
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
     let state = AppState::from_parts(
         repo.clone(),
@@ -168,11 +168,14 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-review-ratify"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
     let app = calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -183,13 +186,13 @@ async fn boot() -> Boot {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs: repo
+        track_vcs: repo
             .sqlite_pool()
-            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: calm_server::state::WriteContext::new(
             card_role_cache.clone(),
-            wave_area_cache.clone(),
+            track_area_cache.clone(),
         ),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
@@ -205,11 +208,11 @@ async fn boot() -> Boot {
         repo,
         app,
         area_id: area.id,
-        wave_id: wave.id,
+        track_id: track.id,
         spec_card_id: spec_card.id,
         events,
         card_role_cache,
-        wave_area_cache,
+        track_area_cache,
     }
 }
 
@@ -219,7 +222,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
-        wave_id: Some(boot.wave_id.as_str().to_string()),
+        track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
@@ -258,9 +261,9 @@ fn valid_round_args(n: u32) -> Value {
     })
 }
 
-async fn events_for_wave(boot: &Boot, kinds: &[&str]) -> Vec<Event> {
+async fn events_for_track(boot: &Boot, kinds: &[&str]) -> Vec<Event> {
     boot.repo
-        .events_for_wave(boot.wave_id.as_str(), kinds, None)
+        .events_for_track(boot.track_id.as_str(), kinds, None)
         .await
         .unwrap()
         .into_iter()
@@ -268,13 +271,13 @@ async fn events_for_wave(boot: &Boot, kinds: &[&str]) -> Vec<Event> {
         .collect()
 }
 
-async fn set_wave_lifecycle(boot: &Boot, lifecycle: WaveLifecycle) {
+async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
     boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
+        .track_update(
+            boot.track_id.as_str(),
+            TrackPatch {
                 lifecycle: Some(lifecycle),
-                ..WavePatch::default()
+                ..TrackPatch::default()
             },
         )
         .await
@@ -363,7 +366,7 @@ async fn review_round_rejects_non_token_verdict_at_deserialization() {
             "error must name the valid tokens: {err:?}"
         );
     }
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert!(events.is_empty(), "{events:?}");
 }
 
@@ -395,7 +398,7 @@ async fn review_round_rejects_converged_with_changes_requested_channel() {
             .contains("requires every channel verdict to be approved"),
         "{err:?}"
     );
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert!(events.is_empty(), "{events:?}");
 }
 
@@ -433,7 +436,7 @@ async fn review_round_accepts_valid_round_and_emits_one_event() {
         .expect("valid review round");
     assert_eq!(out["emitted"], json!(true));
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 1, "{events:?}");
     match &events[0] {
         Event::ReviewRound {
@@ -448,7 +451,7 @@ async fn review_round_accepts_valid_round_and_emits_one_event() {
             assert!(*converged);
             assert_eq!(
                 idempotency_key,
-                &format!("review.round:{}:impl:5b:760:1", boot.wave_id)
+                &format!("review.round:{}:impl:5b:760:1", boot.track_id)
             );
         }
         other => panic!("unexpected event: {other:?}"),
@@ -466,7 +469,7 @@ async fn review_round_accepts_monotonic_append() {
         .expect("n=2 after n=1 is monotonic");
     assert_eq!(out["emitted"], json!(true));
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 2, "{events:?}");
     assert!(
         matches!(
@@ -491,7 +494,7 @@ async fn review_round_idempotent_resubmit_is_noop() {
         .expect("exact duplicate is idempotent");
     assert_eq!(out["emitted"], json!(false));
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 1, "duplicate must not append: {events:?}");
 }
 
@@ -524,7 +527,7 @@ async fn review_round_stale_same_n_with_different_payload_is_rejected() {
     );
     assert!(err.message.contains("stale/out-of-order"), "{err:?}");
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 1, "stale write must not append: {events:?}");
 }
 
@@ -561,7 +564,7 @@ async fn review_round_stale_n_after_later_round_with_different_payload_is_reject
     );
     assert!(err.message.contains("stale/out-of-order"), "{err:?}");
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 2, "stale write must not append: {events:?}");
 }
 
@@ -581,7 +584,7 @@ async fn review_round_gap_is_rejected() {
     );
     assert!(err.message.contains("stale/out-of-order"), "{err:?}");
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 1, "gap write must not append: {events:?}");
 }
 
@@ -592,27 +595,27 @@ async fn ratify_request_emits_event_and_flips_working_to_blocked() {
         .await
         .expect("ratify request");
 
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Blocked);
-    let events = events_for_wave(&boot, &["ratify.requested"]).await;
+    assert_eq!(track.lifecycle, TrackLifecycle::Blocked);
+    let events = events_for_track(&boot, &["ratify.requested"]).await;
     assert!(
         matches!(events.as_slice(), [Event::RatifyRequested { reason, .. }] if reason == "cap_exhausted")
     );
 }
 
 #[tokio::test]
-async fn ratify_request_rejects_already_blocked_wave_without_requested_event() {
+async fn ratify_request_rejects_already_blocked_track_without_requested_event() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Blocked).await;
 
     let err = request_ratification(&boot, "retry while blocked")
         .await
-        .expect_err("blocked wave without pending request must be rejected");
+        .expect_err("blocked track without pending request must be rejected");
     assert_eq!(
         err.code,
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
@@ -623,7 +626,7 @@ async fn ratify_request_rejects_already_blocked_wave_without_requested_event() {
         "{err:?}"
     );
 
-    let events = events_for_wave(&boot, &["ratify.requested"]).await;
+    let events = events_for_track(&boot, &["ratify.requested"]).await;
     assert!(
         events.is_empty(),
         "rejected request must not append: {events:?}"
@@ -636,7 +639,7 @@ async fn ratify_request_rejects_duplicate_pending_request_without_second_event()
     request_ratification(&boot, "cap_exhausted")
         .await
         .expect("first request");
-    set_wave_lifecycle(&boot, WaveLifecycle::Working).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Working).await;
 
     let err = request_ratification(&boot, "cap_exhausted retry")
         .await
@@ -651,7 +654,7 @@ async fn ratify_request_rejects_duplicate_pending_request_without_second_event()
         "{err:?}"
     );
 
-    let events = events_for_wave(&boot, &["ratify.requested"]).await;
+    let events = events_for_track(&boot, &["ratify.requested"]).await;
     assert_eq!(
         events.len(),
         1,
@@ -690,7 +693,7 @@ async fn plain_chat_worker_card_cannot_ratify() {
     let card = boot
         .repo
         .card_create(NewCard {
-            wave_id: boot.wave_id.clone(),
+            track_id: boot.track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -699,7 +702,7 @@ async fn plain_chat_worker_card_cannot_ratify() {
         .await
         .unwrap();
     boot.card_role_cache
-        .insert(card.id.clone(), CardRole::Worker, boot.wave_id.clone());
+        .insert(card.id.clone(), CardRole::Worker, boot.track_id.clone());
     let body = serde_json::to_vec(&json!({"decision": "grant"})).unwrap();
     let response = boot
         .app
@@ -726,7 +729,7 @@ async fn plain_chat_worker_card_cannot_ratify() {
 }
 
 #[tokio::test]
-async fn ratify_route_rejects_non_pending_wave_for_all_decisions_without_event() {
+async fn ratify_route_rejects_non_pending_track_for_all_decisions_without_event() {
     let boot = boot().await;
 
     for decision in ["grant", "deny"] {
@@ -735,12 +738,12 @@ async fn ratify_route_rejects_non_pending_wave_for_all_decisions_without_event()
         assert_eq!(body["code"], json!("conflict"));
         assert!(
             body["error"].as_str().is_some_and(
-                |message| message.contains("ratify: wave is not awaiting ratification")
+                |message| message.contains("ratify: track is not awaiting ratification")
             ),
             "{body}",
         );
 
-        let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+        let events = events_for_track(&boot, &["ratify.resolved"]).await;
         assert!(
             events.is_empty(),
             "rejected {decision} must not append: {events:?}"
@@ -749,9 +752,9 @@ async fn ratify_route_rejects_non_pending_wave_for_all_decisions_without_event()
 }
 
 #[tokio::test]
-async fn ratify_route_rejects_blocked_wave_without_pending_request_or_event() {
+async fn ratify_route_rejects_blocked_track_without_pending_request_or_event() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    set_track_lifecycle(&boot, TrackLifecycle::Blocked).await;
 
     for decision in ["grant", "deny"] {
         let (status, body) = post_ratify(&boot, decision).await;
@@ -759,12 +762,12 @@ async fn ratify_route_rejects_blocked_wave_without_pending_request_or_event() {
         assert_eq!(body["code"], json!("conflict"));
         assert!(
             body["error"].as_str().is_some_and(
-                |message| message.contains("ratify: wave is not awaiting ratification")
+                |message| message.contains("ratify: track is not awaiting ratification")
             ),
             "{body}",
         );
 
-        let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+        let events = events_for_track(&boot, &["ratify.resolved"]).await;
         assert!(
             events.is_empty(),
             "blocked-without-pending {decision} must not append: {events:?}"
@@ -782,7 +785,7 @@ async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_ev
     let (status, body) = post_ratify(&boot, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+    let events = events_for_track(&boot, &["ratify.resolved"]).await;
     assert!(
         matches!(
             events.as_slice(),
@@ -800,12 +803,12 @@ async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_ev
         assert_eq!(body["code"], json!("conflict"));
         assert!(
             body["error"].as_str().is_some_and(
-                |message| message.contains("ratify: wave is not awaiting ratification")
+                |message| message.contains("ratify: track is not awaiting ratification")
             ),
             "{body}",
         );
 
-        let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+        let events = events_for_track(&boot, &["ratify.resolved"]).await;
         assert_eq!(
             events.len(),
             1,
@@ -825,14 +828,14 @@ async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["decision"], json!("grant"));
 
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Working);
-    let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+    assert_eq!(track.lifecycle, TrackLifecycle::Working);
+    let events = events_for_track(&boot, &["ratify.resolved"]).await;
     assert!(
         matches!(
             events.as_slice(),
@@ -900,7 +903,7 @@ async fn exhaust_subject(boot: &Boot, cap: u32) {
 
 /// Reject helper: INVALID_PARAMS + message fragment + no event appended.
 async fn expect_round_reject(boot: &Boot, args: Value, fragment: &str) {
-    let before = events_for_wave(boot, &["review.round"]).await.len();
+    let before = events_for_track(boot, &["review.round"]).await.len();
     let err = call_tool(boot, TOOL_REVIEW_ROUND, args)
         .await
         .expect_err("review round must be rejected");
@@ -909,7 +912,7 @@ async fn expect_round_reject(boot: &Boot, args: Value, fragment: &str) {
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
     );
     assert!(err.message.contains(fragment), "{err:?}");
-    let after = events_for_wave(boot, &["review.round"]).await.len();
+    let after = events_for_track(boot, &["review.round"]).await.len();
     assert_eq!(after, before, "rejected round must not append");
 }
 
@@ -950,7 +953,7 @@ async fn review_round_cap_extension_with_fresh_grant_accepted() {
     // The extended window re-exhausts: n=6 > cap=5 hits the static guard.
     expect_round_reject(&boot, round_args(6, 5, false), "must be <=").await;
 
-    let events = events_for_wave(&boot, &["review.round"]).await;
+    let events = events_for_track(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 5, "{events:?}");
 }
 
@@ -996,7 +999,7 @@ async fn review_round_deny_does_not_authorize_extension() {
         .expect("ratify request");
     let (status, body) = post_ratify(&boot, "deny").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    // The wave stays blocked, but calm.review.round has no lifecycle guard —
+    // The track stays blocked, but calm.review.round has no lifecycle guard —
     // the reject below is the CAP arm's doing, not a lifecycle side effect.
     expect_round_reject(
         &boot,
@@ -1008,7 +1011,7 @@ async fn review_round_deny_does_not_authorize_extension() {
 
 // t5b — a later deny does NOT revoke an earlier grant's extension
 // authorization (#888 design §3.7 decided semantics; also pins the cap arm's
-// lifecycle-independence: the wave is `blocked` when the extension lands).
+// lifecycle-independence: the track is `blocked` when the extension lands).
 #[tokio::test]
 async fn review_round_deny_after_grant_does_not_revoke_extension() {
     let boot = boot().await;
@@ -1064,12 +1067,12 @@ async fn review_round_extension_duplicate_resubmit_noop() {
     request_and_grant(&boot, "cap_exhausted").await;
     emit_round(&boot, round_args(4, 5, false)).await;
 
-    let before = events_for_wave(&boot, &["review.round"]).await.len();
+    let before = events_for_track(&boot, &["review.round"]).await.len();
     let out = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(4, 5, false))
         .await
         .expect("byte-identical resubmit is idempotent");
     assert_eq!(out["emitted"], json!(false), "{out}");
-    let after = events_for_wave(&boot, &["review.round"]).await.len();
+    let after = events_for_track(&boot, &["review.round"]).await.len();
     assert_eq!(after, before, "duplicate must not append");
 }
 
@@ -1092,7 +1095,7 @@ async fn review_round_extension_resubmit_reordered_channels_rejected() {
 }
 
 // t9 — Q1 breadth (#888 design §3.6): ONE grant authorizes one +2 extension
-// for EVERY subject of the wave that was already exhausted when it landed.
+// for EVERY subject of the track that was already exhausted when it landed.
 #[tokio::test]
 async fn review_round_one_grant_extends_each_subject_exhausted_before_it() {
     let boot = boot().await;
@@ -1125,16 +1128,16 @@ async fn seed_pure_round(boot: &Boot, n: u32, cap: u32, tag: &str) {
     boot.repo
         .log_pure_event(
             ActorId::AiSpec(boot.spec_card_id.clone()),
-            EventScope::Wave {
-                wave: boot.wave_id.clone(),
+            EventScope::Track {
+                track: boot.track_id.clone(),
                 area: boot.area_id.clone(),
             },
             None,
             &boot.events,
             &boot.card_role_cache,
-            &boot.wave_area_cache,
+            &boot.track_area_cache,
             Event::ReviewRound {
-                wave_id: boot.wave_id.clone(),
+                track_id: boot.track_id.clone(),
                 subject: ReviewSubject {
                     phase: "impl".into(),
                     slice_id: "5b".into(),
@@ -1155,7 +1158,7 @@ async fn seed_pure_round(boot: &Boot, n: u32, cap: u32, tag: &str) {
                     },
                 ],
                 root_cause: None,
-                idempotency_key: format!("review.round:{}:impl:5b:760:{n}:{tag}", boot.wave_id),
+                idempotency_key: format!("review.round:{}:impl:5b:760:{n}:{tag}", boot.track_id),
             },
         )
         .await
@@ -1195,7 +1198,7 @@ async fn review_round_wrong_n_and_cap_reports_n_error() {
     exhaust_subject(&boot, 3).await;
     request_and_grant(&boot, "cap_exhausted").await;
 
-    let before = events_for_wave(&boot, &["review.round"]).await.len();
+    let before = events_for_track(&boot, &["review.round"]).await.len();
     let err = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(5, 6, false))
         .await
         .expect_err("wrong-n + wrong-cap round must be rejected");
@@ -1208,7 +1211,7 @@ async fn review_round_wrong_n_and_cap_reports_n_error() {
         !err.message.contains("exactly"),
         "n check must fire before the cap arm's E4 reject: {err:?}"
     );
-    let after = events_for_wave(&boot, &["review.round"]).await.len();
+    let after = events_for_track(&boot, &["review.round"]).await.len();
     assert_eq!(after, before, "rejected round must not append");
 }
 
@@ -1259,14 +1262,14 @@ async fn ratify_route_deny_emits_resolved_and_stays_blocked() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["decision"], json!("deny"));
 
-    let wave = boot
+    let track = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .track_get(boot.track_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Blocked);
-    let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+    assert_eq!(track.lifecycle, TrackLifecycle::Blocked);
+    let events = events_for_track(&boot, &["ratify.resolved"]).await;
     assert!(
         matches!(
             events.as_slice(),

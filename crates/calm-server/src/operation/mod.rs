@@ -5,7 +5,7 @@ mod driver;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
 
-pub mod child_wave_adapter;
+pub mod child_track_adapter;
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
@@ -59,7 +59,7 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 5] = [
     "claude-worker",
     "terminal-worker",
     "task-verify",
-    "child-wave",
+    "child-track",
 ];
 
 /// Registered adapters whose payloads are not tied to a scheduler task row.

@@ -525,7 +525,7 @@ pub async fn start_on_boot(state: &AppState) -> Result<(), CoreError> {
 fn session_from_runtime(runtime: &WorkerSessionProjection, card: &Card) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(runtime.id.clone()),
-        wave_id: card.wave_id.clone(),
+        track_id: card.track_id.clone(),
         provider: worker_provider_from_runtime(runtime),
         mode: SessionMode::Resumable,
         contract: WorkerContract::Executor,

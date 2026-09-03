@@ -19,11 +19,11 @@ use super::codex_fixture::{Fixture, SPEC_SESSION_ID};
 pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
     let request = SpecHarnessStartOperationPayload {
         actor: ActorId::Kernel,
-        wave_id: fx.wave_id.as_str().to_string(),
+        track_id: fx.track_id.as_str().to_string(),
         spec_card_id: fx.spec_card_id.clone(),
         report_card_id: None,
         sort: None,
-        cwd: fx.wave_cwd.display().to_string(),
+        cwd: fx.track_cwd.display().to_string(),
         goal: Some(goal),
         reset_harness_items: false,
         force_new_thread: true,
@@ -38,7 +38,7 @@ pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
         operation_key: new_id(),
         idempotency_key: Some(format!(
             "codex-forge-e2e-spec-start:{}:{}",
-            fx.wave_id.as_str(),
+            fx.track_id.as_str(),
             fx.spec_card_id.as_str()
         )),
         payload_hash,
@@ -67,7 +67,7 @@ pub fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
-        wave_id: Some(fx.wave_id.as_str().to_string()),
+        track_id: Some(fx.track_id.as_str().to_string()),
         area_id: fx.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
@@ -78,7 +78,7 @@ pub async fn plan_updated_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
 }
 
 pub async fn lifecycle_changed_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
-    actor_payload_rows(repo, "wave.lifecycle_changed").await
+    actor_payload_rows(repo, "track.lifecycle_changed").await
 }
 
 pub async fn actor_payload_rows(repo: &SqlxRepo, kind: &str) -> Vec<(ActorId, Value)> {
@@ -118,15 +118,15 @@ pub async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, 
 
 pub async fn assert_bound_issue_development_template_preconditions(fx: &Fixture) {
     let bound_template: Option<String> =
-        sqlx::query_scalar("SELECT template_id FROM waves WHERE id = ?1")
-            .bind(fx.wave_id.as_str())
+        sqlx::query_scalar("SELECT template_id FROM tracks WHERE id = ?1")
+            .bind(fx.track_id.as_str())
             .fetch_one(fx.repo.pool())
             .await
-            .expect("select bound wave template_id");
+            .expect("select bound track template_id");
     assert_eq!(
         bound_template.as_deref(),
         Some("issue-development"),
-        "wave must be bound to issue-development template",
+        "track must be bound to issue-development template",
     );
 }
 

@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn acceptance_11_sub_wave_sweep_arm_precedes_terminal_and_timeout_arms() {
+fn acceptance_11_sub_track_sweep_arm_precedes_terminal_and_timeout_arms() {
     let source = include_str!("mod.rs");
-    let sub_wave = source
+    let sub_track = source
         .find("TaskStatus::Running if task.spawn == \"sub-wave\"")
         .expect("sub-wave running arm");
     let terminal = source
@@ -12,7 +12,7 @@ fn acceptance_11_sub_wave_sweep_arm_precedes_terminal_and_timeout_arms() {
     let timeout = source
         .find("TaskStatus::Running if task_has_running_liveness_deadline(&task)")
         .expect("kind timeout arm");
-    assert!(sub_wave < terminal && terminal < timeout);
+    assert!(sub_track < terminal && terminal < timeout);
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
 fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
     Task {
         id: format!("w:{key}"),
-        wave_id: "w".into(),
+        track_id: "w".into(),
         key: key.into(),
         kind: TaskKind::Codex,
         goal: "do".into(),
@@ -158,19 +158,19 @@ fn zero_or_negative_capacity_dispatches_nothing() {
 #[test]
 fn lifecycle_gating_matches_design_table() {
     for allowed in [
-        WaveLifecycle::Planning,
-        WaveLifecycle::Dispatching,
-        WaveLifecycle::Working,
-        WaveLifecycle::Reviewing,
+        TrackLifecycle::Planning,
+        TrackLifecycle::Dispatching,
+        TrackLifecycle::Working,
+        TrackLifecycle::Reviewing,
     ] {
         assert!(lifecycle_allows_scheduling(allowed), "{allowed:?}");
     }
     for held in [
-        WaveLifecycle::Draft,
-        WaveLifecycle::Blocked,
-        WaveLifecycle::Done,
-        WaveLifecycle::Canceled,
-        WaveLifecycle::Failed,
+        TrackLifecycle::Draft,
+        TrackLifecycle::Blocked,
+        TrackLifecycle::Done,
+        TrackLifecycle::Canceled,
+        TrackLifecycle::Failed,
     ] {
         assert!(!lifecycle_allows_scheduling(held), "{held:?}");
     }
@@ -180,14 +180,14 @@ fn lifecycle_gating_matches_design_table() {
 
 #[test]
 fn budget_from_env_fallback_paths() {
-    let saved = std::env::var("NEIGE_WAVE_TASK_BUDGET").ok();
+    let saved = std::env::var("NEIGE_TRACK_TASK_BUDGET").ok();
     fn set(v: &str) {
         // SAFETY: single-threaded test; no concurrent env reader.
-        unsafe { std::env::set_var("NEIGE_WAVE_TASK_BUDGET", v) };
+        unsafe { std::env::set_var("NEIGE_TRACK_TASK_BUDGET", v) };
     }
     fn remove() {
         // SAFETY: see `set`.
-        unsafe { std::env::remove_var("NEIGE_WAVE_TASK_BUDGET") };
+        unsafe { std::env::remove_var("NEIGE_TRACK_TASK_BUDGET") };
     }
 
     remove();
@@ -335,7 +335,7 @@ fn codex_payload_ignores_task_cwd_for_hash_stability() {
 
     let legacy_without_cwd = json!({
         "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
-        "wave_id": "w",
+        "track_id": "w",
         "idempotency_key": "w:a",
         "goal": "do",
         "context": null,
@@ -369,7 +369,7 @@ fn claude_payload_ignores_task_cwd_for_hash_stability() {
 
     let legacy_without_cwd = json!({
         "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
-        "wave_id": "w",
+        "track_id": "w",
         "idempotency_key": "w:a",
         "goal": "do",
         "context": null,
@@ -405,7 +405,7 @@ fn budget_greater_than_one_relies_on_claim_time_workspace_leases() {
     let ready = compute_ready(&tasks, 2);
     assert_eq!(keys(&ready), vec!["a", "b"]);
     // There is intentionally no cwd/resource collision check here:
-    // Codex claims acquire `.claude/worktrees/<wave>/<card>` leases,
+    // Codex claims acquire `.claude/worktrees/<track>/<card>` leases,
     // and card ids make those paths structurally disjoint.
 }
 
@@ -475,8 +475,8 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(crate::model::NewWave {
+    let track = repo
+        .track_create(crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "claude-timeout".into(),
@@ -488,7 +488,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
             theme: crate::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
 
     let pool = concrete.pool().clone();
     let now = now_ms();
@@ -500,7 +500,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         "card-claude-timeout".into(),
         "runtime-claude-timeout",
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "claude".into(),
@@ -517,8 +517,8 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     .await
     .expect("create claude worker card");
     let mut running = task("claude-timeout", TaskStatus::Running, &[], 0);
-    running.id = format!("{}:claude-timeout", wave.id.as_str());
-    running.wave_id = wave.id.as_str().to_string();
+    running.id = format!("{}:claude-timeout", track.id.as_str());
+    running.track_id = track.id.as_str().to_string();
     running.kind = TaskKind::Claude;
     running.worker_card_id = Some(card.id.to_string());
     running.running_deadline_ms = Some(now - 1);
@@ -542,14 +542,14 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     .expect("mark claude session running");
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+                   lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                    boot_id, created_at_ms, updated_at_ms
                )
                VALUES ('lease-claude-timeout', ?1, ?2, '/tmp/neige-claude-timeout-lease',
                        'held', 'test-owner', ?3, NULL, ?4, ?4)"#,
     )
     .bind(card.id.as_ref())
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(now + 60_000)
     .bind(now)
     .execute(&pool)
@@ -559,7 +559,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     let events = EventBus::new();
     let write = WriteContext::new(
         concrete.card_role_cache().clone(),
-        concrete.wave_area_cache().clone(),
+        concrete.track_area_cache().clone(),
     );
     let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(pool.clone()));
     let completion = crate::operation::OperationCompletionBus::new();
@@ -638,8 +638,8 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(crate::model::NewWave {
+    let track = repo
+        .track_create(crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
             title: "timeout-race".into(),
@@ -651,10 +651,10 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
             theme: crate::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
+        .expect("create track");
     let mut stored = task("race", TaskStatus::Done, &[], 0);
-    stored.id = format!("{}:race", wave.id.as_str());
-    stored.wave_id = wave.id.as_str().to_string();
+    stored.id = format!("{}:race", track.id.as_str());
+    stored.track_id = track.id.as_str().to_string();
     stored.worker_card_id = Some("card-race".into());
     let mut snapshot = stored.clone();
     snapshot.status = TaskStatus::Running;
@@ -672,13 +672,13 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+                   lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                    boot_id, created_at_ms, updated_at_ms
                )
                VALUES ('lease-race', 'card-race', ?1, '/tmp/neige-timeout-race',
                        'held', 'test-owner', ?2, NULL, ?3, ?3)"#,
     )
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(now + 60_000)
     .bind(now)
     .execute(&pool)
@@ -686,13 +686,13 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     .expect("insert held lease");
     sqlx::query(
         r#"INSERT INTO worker_sessions (
-                   id, wave_id, provider, mode, contract, state, card_id,
+                   id, track_id, provider, mode, contract, state, card_id,
                    created_at_ms, updated_at_ms
                )
                VALUES ('runtime-race', ?1, 'codex', 'resumable', 'executor',
                        'running', 'card-race', ?2, ?2)"#,
     )
-    .bind(wave.id.as_str())
+    .bind(track.id.as_str())
     .bind(now)
     .execute(&pool)
     .await
@@ -701,7 +701,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     let events = EventBus::new();
     let write = WriteContext::new(
         concrete.card_role_cache().clone(),
-        concrete.wave_area_cache().clone(),
+        concrete.track_area_cache().clone(),
     );
     let scheduler = Scheduler::new(
         repo,

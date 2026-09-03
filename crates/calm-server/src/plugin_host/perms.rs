@@ -39,7 +39,7 @@ pub const DEFAULT_KV_QUOTA_BYTES: u64 = 1_048_576;
 impl Permissions {
     /// May the plugin write an overlay on this entity kind?
     ///
-    /// `entity_kind` is `"wave"` or `"card"` (the only two kinds in M3); the
+    /// `entity_kind` is `"track"` or `"card"` (the only two kinds in M3); the
     /// `overlay_kind` argument is the plugin-defined `kind` string and is
     /// **not** gated — design doc §6 only restricts entity kinds. We accept it
     /// here so future tightening (e.g. allow-listing specific overlay kinds)
@@ -172,21 +172,21 @@ mod tests {
 
     #[test]
     fn overlay_write_allows_listed_entity_kind() {
-        let p = perms(r#"{ "overlays_write": ["wave", "card"] }"#);
-        assert!(p.can_overlay_write("wave", "status"));
+        let p = perms(r#"{ "overlays_write": ["track", "card"] }"#);
+        assert!(p.can_overlay_write("track", "status"));
         assert!(p.can_overlay_write("card", "progress"));
     }
 
     #[test]
     fn overlay_write_denies_unlisted_entity_kind() {
         let p = perms(r#"{ "overlays_write": ["card"] }"#);
-        assert!(!p.can_overlay_write("wave", "status"));
+        assert!(!p.can_overlay_write("track", "status"));
     }
 
     #[test]
     fn overlay_write_denies_empty_allowlist() {
         let p = perms("{}");
-        assert!(!p.can_overlay_write("wave", "status"));
+        assert!(!p.can_overlay_write("track", "status"));
         assert!(!p.can_overlay_write("card", "status"));
     }
 
@@ -251,9 +251,9 @@ mod tests {
 
     #[test]
     fn subscribe_allows_exact_match() {
-        let p = perms(r#"{ "events_subscribe": ["card:*", "wave:*"] }"#);
+        let p = perms(r#"{ "events_subscribe": ["card:*", "track:*"] }"#);
         assert!(p.can_subscribe("card:*"));
-        assert!(p.can_subscribe("wave:*"));
+        assert!(p.can_subscribe("track:*"));
     }
 
     #[test]
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn subscribe_denies_unlisted_glob() {
         let p = perms(r#"{ "events_subscribe": ["card:*"] }"#);
-        assert!(!p.can_subscribe("wave:*"));
+        assert!(!p.can_subscribe("track:*"));
         assert!(!p.can_subscribe("plugin:*"));
     }
 

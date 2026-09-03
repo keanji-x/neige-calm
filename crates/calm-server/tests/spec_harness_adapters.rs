@@ -13,9 +13,9 @@ use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
 };
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{CardId, TrackId};
 use calm_server::mcp_server::auth;
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, Wave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, Track, new_id, now_ms};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use calm_server::operation::spec_harness_start_adapter::{
@@ -29,7 +29,7 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -74,7 +74,7 @@ async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>, CardRoleCache) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
+    let track_area_cache = TrackAreaCache::new();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -86,11 +86,11 @@ async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>, CardRoleCache) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     (
@@ -108,7 +108,7 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
+    let track_area_cache = TrackAreaCache::new();
     let mut codex = CodexClient::new_stub();
     codex.codex_bin = fake_codex_bin().to_string();
     let state = AppState::from_parts(
@@ -122,11 +122,11 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
             tmp.path().join("plugins-data"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(codex),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     );
 
     let cfg = Config::parse_from([
@@ -163,7 +163,7 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
     )
 }
 
-async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
+async fn seed_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
         .area_create(NewArea {
             name: "adapter".into(),
@@ -172,7 +172,7 @@ async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         })
         .await
         .unwrap();
-    repo.wave_create(NewWave {
+    repo.track_create(NewTrack {
         template_input: None,
         area_id: area.id,
         title: "adapter goal".into(),
@@ -187,13 +187,13 @@ async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
     .unwrap()
 }
 
-async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave, card_id: &str) {
+async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, track: &Track, card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     card_create_with_id_tx(
         &mut tx,
         card_id.to_string(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -215,7 +215,7 @@ async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave
 async fn seed_plain_chat_card(
     repo: &SqlxRepo,
     role_cache: &CardRoleCache,
-    wave: &Wave,
+    track: &Track,
     card_id: &str,
 ) {
     let mut tx = repo.pool().begin().await.unwrap();
@@ -223,7 +223,7 @@ async fn seed_plain_chat_card(
         &mut tx,
         card_id.to_string(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -238,12 +238,12 @@ async fn seed_plain_chat_card(
     tx.commit().await.unwrap();
 }
 
-/// The wave-assistant twin of [`seed_plain_chat_card`]: the same shape the
+/// The track-assistant twin of [`seed_plain_chat_card`]: the same shape the
 /// #1189 mint writes — `CardRole::Assistant` plus the `assistant` marker.
 async fn seed_assistant_card(
     repo: &SqlxRepo,
     role_cache: &CardRoleCache,
-    wave: &Wave,
+    track: &Track,
     card_id: &str,
 ) {
     let mut tx = repo.pool().begin().await.unwrap();
@@ -251,7 +251,7 @@ async fn seed_assistant_card(
         &mut tx,
         card_id.to_string(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -270,7 +270,7 @@ async fn seed_assistant_card(
 fn legacy_start_payload_defaults_to_spec_profile() {
     let mut payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::Kernel,
-        wave_id: "wave-old".into(),
+        track_id: "track-old".into(),
         spec_card_id: CardId::from("card-old".to_string()),
         report_card_id: None,
         sort: None,
@@ -332,9 +332,9 @@ async fn card_session_id(repo: &SqlxRepo, card_id: &str) -> Option<String> {
         .unwrap()
 }
 
-async fn wave_root_session_id(repo: &SqlxRepo, wave_id: &str) -> Option<String> {
-    sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
-        .bind(wave_id)
+async fn track_root_session_id(repo: &SqlxRepo, track_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+        .bind(track_id)
         .fetch_one(repo.pool())
         .await
         .unwrap()
@@ -374,16 +374,16 @@ fn thread_start_token(req: &Value) -> &str {
 #[tokio::test]
 async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -476,9 +476,9 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
 #[tokio::test]
 async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     let runtime_id = new_id();
     let thread_id = "thread-crash-replay".to_string();
     let turn_id = "turn-crash-replay".to_string();
@@ -541,18 +541,18 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
 
     let (state, repo, role_cache) = state_with_live_daemon(&tmp).await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     assert!(card_mcp_hash(&repo, &card_id).await.is_none());
 
     let first_payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -600,11 +600,11 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
 
     let second_payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
@@ -681,17 +681,17 @@ async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
     let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
 
     let (state, repo, role_cache) = state_with_live_daemon(&tmp).await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
 
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("spec channel-3 point-of-use".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -765,16 +765,16 @@ async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
 #[tokio::test]
 async fn plain_chat_thread_start_has_no_mcp_config() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_plain_chat_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: None,
         reset_harness_items: false,
         force_new_thread: true,
@@ -822,7 +822,7 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
         .expect("plain-chat runtime");
     assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
     assert!(
-        wave_root_session_id(&repo, wave.id.as_str())
+        track_root_session_id(&repo, track.id.as_str())
             .await
             .is_none()
     );
@@ -847,16 +847,16 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
 #[tokio::test]
 async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_assistant_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_assistant_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: None,
         reset_harness_items: false,
         force_new_thread: true,
@@ -877,7 +877,7 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
     );
 
     let expected_prompt =
-        calm_server::spec_card::render_assistant_prompt_for_test(wave.id.as_str());
+        calm_server::spec_card::render_assistant_prompt_for_test(track.id.as_str());
     assert_eq!(
         state
             .shared_codex_appserver
@@ -917,26 +917,26 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
         "SharedSpec would make this a Planner session"
     );
     assert!(
-        wave_root_session_id(&repo, wave.id.as_str())
+        track_root_session_id(&repo, track.id.as_str())
             .await
             .is_none(),
-        "the assistant must not become the wave's root session"
+        "the assistant must not become the track's root session"
     );
 }
 
 #[tokio::test]
 async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_plain_chat_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: None,
         reset_harness_items: false,
         force_new_thread: false,
@@ -968,9 +968,9 @@ async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
 #[tokio::test]
 async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
 
     let old_hash = auth::hash_token("old-runtime-token");
     let old_runtime_id = new_id();
@@ -1007,7 +1007,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         Some(old_runtime_id.as_str())
     );
     assert_eq!(
-        wave_root_session_id(&repo, wave.id.as_str())
+        track_root_session_id(&repo, track.id.as_str())
             .await
             .as_deref(),
         Some(old_runtime_id.as_str())
@@ -1018,11 +1018,11 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         .fail_next_thread_start_for_test();
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
@@ -1061,7 +1061,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         "failed deferred mint must not leave card linked to the placeholder session"
     );
     assert_eq!(
-        wave_root_session_id(&repo, wave.id.as_str())
+        track_root_session_id(&repo, track.id.as_str())
             .await
             .as_deref(),
         Some(old_runtime_id.as_str()),
@@ -1089,15 +1089,15 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         .unwrap()
         .expect("old session should still resolve card identity");
     assert_eq!(identity.card_id, CardId::from(card_id.clone()));
-    assert_eq!(identity.wave_id, wave.id);
+    assert_eq!(identity.track_id, track.id);
 }
 
 #[tokio::test]
 async fn force_new_thread_kills_old_pty_immediately() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
 
     let old_runtime_id = new_id();
     let old_thread_id = "thread-force-reset-old-pty".to_string();
@@ -1127,13 +1127,13 @@ async fn force_new_thread_kills_old_pty_immediately() {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: old_runtime_id.clone(),
-        wave_id: WaveId::from(wave.id.to_string()),
+        track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
         thread_id: Some(old_thread_id.clone()),
         repo: repo_dyn,
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
-        wave_area_cache: state.wave_area_cache.clone(),
+        track_area_cache: state.track_area_cache.clone(),
         daemon: state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -1150,11 +1150,11 @@ async fn force_new_thread_kills_old_pty_immediately() {
         .fail_next_thread_start_for_test();
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
@@ -1197,9 +1197,9 @@ async fn force_new_thread_kills_old_pty_immediately() {
 #[tokio::test]
 async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
 
     let old_runtime_id = new_id();
     let old_thread_id = "thread-existing-spec-runtime".to_string();
@@ -1228,13 +1228,13 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = SpecHarness::run(SpecHarnessParams {
         runtime_id: old_runtime_id.clone(),
-        wave_id: WaveId::from(wave.id.to_string()),
+        track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
         thread_id: Some(old_thread_id.clone()),
         repo: repo_dyn,
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
-        wave_area_cache: state.wave_area_cache.clone(),
+        track_area_cache: state.track_area_cache.clone(),
         daemon: state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -1247,11 +1247,11 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
 
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -1313,16 +1313,16 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
 #[tokio::test]
 async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -1393,16 +1393,16 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
 #[tokio::test]
 async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -1496,16 +1496,16 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
 #[tokio::test]
 async fn reusable_thread_without_token_fails_op() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -1633,11 +1633,11 @@ async fn reusable_thread_without_token_fails_op() {
         "failed reuse path must keep the card linked to the existing session"
     );
     assert_eq!(
-        wave_root_session_id(&repo, wave.id.as_str())
+        track_root_session_id(&repo, track.id.as_str())
             .await
             .as_deref(),
         Some(active_runtime_id.as_str()),
-        "failed reuse path must keep the wave root linked to the existing session"
+        "failed reuse path must keep the track root linked to the existing session"
     );
     assert_eq!(
         sqlx::query_scalar::<_, Option<String>>(
@@ -1656,16 +1656,16 @@ async fn reusable_thread_without_token_fails_op() {
 #[tokio::test]
 async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let card_id = new_id();
-    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    seed_spec_card(&repo, &role_cache, &track, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
@@ -1756,24 +1756,24 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
 // of `submit`.
 // ---------------------------------------------------------------------------
 
-async fn chat_wave(repo: &SqlxRepo) -> Wave {
-    let wave = seed_wave(repo).await;
-    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(wave.id.as_str())
+async fn chat_track(repo: &SqlxRepo) -> Track {
+    let track = seed_track(repo).await;
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(track.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
-    repo.wave_get(wave.id.as_str()).await.unwrap().unwrap()
+    repo.track_get(track.id.as_str()).await.unwrap().unwrap()
 }
 
-fn lazy_mint_payload(wave: &Wave, card_id: &str, profile: HarnessProfile) -> Value {
+fn lazy_mint_payload(track: &Track, card_id: &str, profile: HarnessProfile) -> Value {
     serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: CardId::from(card_id.to_string()),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
+        cwd: track.workspace.path.clone(),
         goal: None,
         reset_harness_items: false,
         force_new_thread: true,
@@ -1787,13 +1787,13 @@ fn lazy_mint_payload(wave: &Wave, card_id: &str, profile: HarnessProfile) -> Val
 #[tokio::test]
 async fn lazy_mint_requires_the_plain_chat_profile() {
     let (state, repo, _role_cache) = state_with_fake_daemon().await;
-    let wave = chat_wave(&repo).await;
+    let track = chat_track(&repo).await;
     let error = state
         .operation_runtime
         .submit(
             "spec-harness-start",
             key(),
-            lazy_mint_payload(&wave, "conv-profile", HarnessProfile::Spec),
+            lazy_mint_payload(&track, "conv-profile", HarnessProfile::Spec),
         )
         .await
         .expect_err("minting a card under the spec profile must be refused");
@@ -1805,35 +1805,35 @@ async fn lazy_mint_requires_the_plain_chat_profile() {
 }
 
 #[tokio::test]
-async fn lazy_mint_refuses_a_wave_that_is_not_a_area_chat_wave() {
+async fn lazy_mint_refuses_a_track_that_is_not_a_area_chat_track() {
     let (state, repo, _role_cache) = state_with_fake_daemon().await;
-    let wave = seed_wave(&repo).await;
+    let track = seed_track(&repo).await;
     let error = state
         .operation_runtime
         .submit(
             "spec-harness-start",
             key(),
-            lazy_mint_payload(&wave, "conv-wave", HarnessProfile::PlainChat),
+            lazy_mint_payload(&track, "conv-track", HarnessProfile::PlainChat),
         )
         .await
-        .expect_err("chat cards may only be conjured onto an area chat wave");
+        .expect_err("chat cards may only be conjured onto an area chat track");
     assert!(
         matches!(error, calm_server::error::CalmError::Forbidden(_)),
         "unexpected error: {error:?}"
     );
-    assert!(repo.card_get("conv-wave").await.unwrap().is_none());
+    assert!(repo.card_get("conv-track").await.unwrap().is_none());
 }
 
 #[tokio::test]
 async fn lazy_mint_refuses_to_adopt_an_existing_card() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = chat_wave(&repo).await;
+    let track = chat_track(&repo).await;
     let mut tx = repo.pool().begin().await.unwrap();
     card_create_with_id_tx(
         &mut tx,
         "conv-existing".into(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: Some("someone else's card".into()),
             kind: "codex".into(),
             sort: None,
@@ -1852,7 +1852,7 @@ async fn lazy_mint_refuses_to_adopt_an_existing_card() {
         .submit(
             "spec-harness-start",
             key(),
-            lazy_mint_payload(&wave, "conv-existing", HarnessProfile::PlainChat),
+            lazy_mint_payload(&track, "conv-existing", HarnessProfile::PlainChat),
         )
         .await
         .expect_err("an existing card must not be adopted as a fresh conversation");
@@ -1872,13 +1872,13 @@ async fn lazy_mint_refuses_to_adopt_an_existing_card() {
 #[tokio::test]
 async fn lazy_mint_creates_a_marked_kernel_owned_worker_card() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let wave = chat_wave(&repo).await;
+    let track = chat_track(&repo).await;
     let op_id = state
         .operation_runtime
         .submit(
             "spec-harness-start",
             key(),
-            lazy_mint_payload(&wave, "conv-ok", HarnessProfile::PlainChat),
+            lazy_mint_payload(&track, "conv-ok", HarnessProfile::PlainChat),
         )
         .await
         .unwrap();
@@ -1887,7 +1887,7 @@ async fn lazy_mint_creates_a_marked_kernel_owned_worker_card() {
             wait_op(&state, &op_id).await,
             OperationOutcome::Succeeded { .. }
         ),
-        "lazy mint must succeed on a chat wave"
+        "lazy mint must succeed on a chat track"
     );
     let card = repo
         .card_get("conv-ok")
@@ -1919,7 +1919,7 @@ async fn lazy_mint_creates_a_marked_kernel_owned_worker_card() {
 #[tokio::test]
 async fn lazy_mint_is_compensated_away_when_thread_start_fails() {
     let (state, repo, _role_cache) = state_with_fake_daemon().await;
-    let wave = chat_wave(&repo).await;
+    let track = chat_track(&repo).await;
     state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -1928,7 +1928,7 @@ async fn lazy_mint_is_compensated_away_when_thread_start_fails() {
         .submit(
             "spec-harness-start",
             key(),
-            lazy_mint_payload(&wave, "conv-doomed", HarnessProfile::PlainChat),
+            lazy_mint_payload(&track, "conv-doomed", HarnessProfile::PlainChat),
         )
         .await
         .unwrap();
@@ -1960,7 +1960,7 @@ async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
+    let track_area_cache = TrackAreaCache::new();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -1972,21 +1972,21 @@ async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
             std::env::temp_dir().join(format!("calm-plugins-data-down-{}", new_id())),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_area_cache),
+        Some(track_area_cache),
     )
     .with_shared_codex_appserver(SharedCodexAppServer::new_stub(repo.clone()));
     assert!(!state.shared_codex_appserver.is_running());
-    let wave = chat_wave(&repo).await;
+    let track = chat_track(&repo).await;
     state
         .operation_runtime
         .submit(
             "spec-harness-start",
             key(),
-            lazy_mint_payload(&wave, "conv-daemon-down", HarnessProfile::PlainChat),
+            lazy_mint_payload(&track, "conv-daemon-down", HarnessProfile::PlainChat),
         )
         .await
         .expect_err("a down app-server must be refused before anything is minted");

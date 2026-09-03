@@ -1,4 +1,4 @@
-// Tests for pickFgForBg — the colour the Calendar's wave bars use for
+// Tests for pickFgForBg — the colour the Calendar's track bars use for
 // title + area subscript. The contract is "always passes WCAG AA against
 // the bar's painted background"; the cases below pin the common-case
 // inputs that a user-picked area colour might be, plus the malformed

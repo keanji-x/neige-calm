@@ -16,20 +16,20 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, session_bind_attribution_tx, session_insert_tx,
-    session_mark_wave_root_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
+    session_mark_track_root_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
     session_supersede_and_start_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::{ToolCallIdentity, ToolHandler, ToolHandlerFuture};
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::role_gate::enforce_role;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use calm_truth::decision_gate::PrincipalDecisionGate;
 use calm_types::worker::{
     LivenessTag, Principal, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
@@ -44,7 +44,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
-/// 3 role files × 8 + the 6 assistant / cross-wave cells #1189 S2 adds + the
+/// 3 role files × 8 + the 6 assistant / cross-track cells #1189 S2 adds + the
 /// 2 surviving cells of the old `02_planner_non_root.json`.
 ///
 /// #1189 S2 retired **6** of that file's 8 cells: all six carried
@@ -55,12 +55,12 @@ const TEST_BUDGET: Duration = Duration::from_secs(5);
 ///
 /// The 2 `recorder_gate: true` cells are **kept**, in
 /// `02_superseded_spec_session.json`, still expecting Deny. Their old premise
-/// ("bound to this wave's spec card but not the wave root") was denied by the
+/// ("bound to this track's spec card but not the track root") was denied by the
 /// root criterion this slice removes; their new premise is that the session on
 /// that card is `superseded`, and the liveness check in `decide_recorder` is
 /// the only thing refusing them. That makes them the regression nails for that
 /// check — nothing else in the corpus covers it (`05_assistant.json`'s last
-/// two cells pin the orthogonal cross-wave axis, and `decision_gate`'s
+/// two cells pin the orthogonal cross-track axis, and `decision_gate`'s
 /// `a_root_marked_worker_session_is_still_refused` pins the opposite
 /// direction).
 ///
@@ -107,8 +107,8 @@ async fn boot_with_registry(
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "transport-vector-test".into(),
@@ -130,7 +130,7 @@ async fn boot_with_registry(
         card_id.clone(),
         &calm_server::model::new_id(),
         None,
-        wave.id.clone(),
+        track.id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -151,12 +151,12 @@ async fn boot_with_registry(
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -326,24 +326,24 @@ fn tools_call_frame(id: i64, name: &str, thread_id: Option<&str>, args: Value) -
     })
 }
 
-fn registry_with_wave_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCaptureRx) {
+fn registry_with_track_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCaptureRx) {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
-    let wave_cat = registry
-        .lookup("calm.wave.cat")
-        .expect("calm.wave.cat registered");
+    let track_cat = registry
+        .lookup("calm.track.cat")
+        .expect("calm.track.cat registered");
     let descriptor = registry
         .descriptors()
         .into_iter()
-        .find(|d| d.name == "calm.wave.cat")
-        .expect("calm.wave.cat descriptor registered");
+        .find(|d| d.name == "calm.track.cat")
+        .expect("calm.track.cat descriptor registered");
     let handler: ToolHandler = Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let tx = tx.clone();
-        let wave_cat = wave_cat.clone();
+        let track_cat = track_cat.clone();
         Box::pin(async move {
             tx.send(identity.clone()).unwrap();
-            wave_cat(ctx, identity, args).await
+            track_cat(ctx, identity, args).await
         })
     });
     registry.register(descriptor, handler);
@@ -361,7 +361,7 @@ async fn initialize_ok(
     assert!(resp.get("error").is_none(), "init failed: {resp:#?}");
 }
 
-async fn call_wave_cat(
+async fn call_track_cat(
     rd: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     wr: &mut tokio::net::unix::OwnedWriteHalf,
     id: i64,
@@ -369,7 +369,12 @@ async fn call_wave_cat(
 ) -> Value {
     send_frame(
         wr,
-        tools_call_frame(id, "calm.wave.cat", thread_id, json!({"path": "wave.json"})),
+        tools_call_frame(
+            id,
+            "calm.track.cat",
+            thread_id,
+            json!({"path": "track.json"}),
+        ),
     )
     .await;
     recv_frame(rd).await
@@ -377,12 +382,12 @@ async fn call_wave_cat(
 
 #[tokio::test]
 async fn card_bound_valid_token_allows_thread_absent_and_present() {
-    let (registry, mut identity_rx) = registry_with_wave_cat_identity_capture();
+    let (registry, mut identity_rx) = registry_with_track_cat_identity_capture();
     let b = boot_with_registry(registry, None).await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     initialize_ok(&mut rd, &mut wr, &b.raw_token).await;
 
-    let no_thread = call_wave_cat(&mut rd, &mut wr, 10, None).await;
+    let no_thread = call_track_cat(&mut rd, &mut wr, 10, None).await;
     assert!(
         no_thread.get("error").is_none(),
         "card-bound no-thread call failed: {no_thread:#?}"
@@ -395,7 +400,7 @@ async fn card_bound_valid_token_allows_thread_absent_and_present() {
     assert_eq!(identity.session_id, b.session_id);
     assert_eq!(identity.thread_id, "card-bound");
 
-    let with_thread = call_wave_cat(&mut rd, &mut wr, 11, Some(&b.thread_id)).await;
+    let with_thread = call_track_cat(&mut rd, &mut wr, 11, Some(&b.thread_id)).await;
     assert!(
         with_thread.get("error").is_none(),
         "card-bound thread call failed: {with_thread:#?}"
@@ -413,7 +418,7 @@ async fn card_bound_valid_token_allows_thread_absent_and_present() {
 
 #[tokio::test]
 async fn daemon_trust_requires_thread_id_and_routes_present_thread_id() {
-    let (registry, mut identity_rx) = registry_with_wave_cat_identity_capture();
+    let (registry, mut identity_rx) = registry_with_track_cat_identity_capture();
     let daemon_token = calm_server::mcp_server::auth::CardMcpToken::generate().into_inner();
     let b = boot_with_registry(
         registry,
@@ -423,7 +428,7 @@ async fn daemon_trust_requires_thread_id_and_routes_present_thread_id() {
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     initialize_ok(&mut rd, &mut wr, &daemon_token).await;
 
-    let missing = call_wave_cat(&mut rd, &mut wr, 20, None).await;
+    let missing = call_track_cat(&mut rd, &mut wr, 20, None).await;
     let err = missing
         .get("error")
         .expect("daemon-trust tools/call without threadId must fail");
@@ -436,7 +441,7 @@ async fn daemon_trust_requires_thread_id_and_routes_present_thread_id() {
         "error should name the missing thread id: {err:#?}"
     );
 
-    let routed = call_wave_cat(&mut rd, &mut wr, 21, Some(&b.thread_id)).await;
+    let routed = call_track_cat(&mut rd, &mut wr, 21, Some(&b.thread_id)).await;
     assert!(
         routed.get("error").is_none(),
         "daemon-trust thread call failed: {routed:#?}"
@@ -491,7 +496,7 @@ async fn stale_worker_session_rejects_initialize_over_transport() {
 
 #[tokio::test]
 async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch() {
-    let (registry, mut identity_rx) = registry_with_wave_cat_identity_capture();
+    let (registry, mut identity_rx) = registry_with_track_cat_identity_capture();
     let b = boot_with_registry(registry, None).await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     initialize_ok(&mut rd, &mut wr, &b.raw_token).await;
@@ -501,7 +506,7 @@ async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch(
         supersede_runtime_session(&b.sqlx_repo, b.card_id.as_str(), &second_thread_id).await;
     assert_ne!(second_session_id, b.session_id);
 
-    let resp = call_wave_cat(&mut rd, &mut wr, 40, Some(&second_thread_id)).await;
+    let resp = call_track_cat(&mut rd, &mut wr, 40, Some(&second_thread_id)).await;
     let err = resp
         .get("error")
         .expect("cross-session threadId must be rejected");
@@ -539,7 +544,7 @@ struct PrincipalDeltaVector {
 #[serde(deny_unknown_fields)]
 struct PrincipalSpec {
     session_id: String,
-    wave_id: String,
+    track_id: String,
     area_id: String,
 }
 
@@ -571,8 +576,8 @@ enum GateExpectation {
 struct PrincipalFixture {
     repo: Arc<SqlxRepo>,
     cache: CardRoleCache,
-    wcc: WaveAreaCache,
-    home_wave: WaveId,
+    wcc: TrackAreaCache,
+    home_track: TrackId,
     subst: Vec<(&'static str, String)>,
 }
 
@@ -580,9 +585,9 @@ impl PrincipalFixture {
     async fn boot() -> Self {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let cache = CardRoleCache::new();
-        let wcc = WaveAreaCache::new();
+        let wcc = TrackAreaCache::new();
         repo.seed_card_role_cache(&cache).await.unwrap();
-        repo.seed_wave_area_cache(&wcc).await.unwrap();
+        repo.seed_track_area_cache(&wcc).await.unwrap();
 
         let area = repo
             .area_create(NewArea {
@@ -592,8 +597,8 @@ impl PrincipalFixture {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "principal-delta".into(),
@@ -607,20 +612,20 @@ impl PrincipalFixture {
             .await
             .unwrap();
         let home_area = AreaId::from(area.id.as_str());
-        let home_wave = WaveId::from(wave.id.as_str());
-        wcc.insert(home_wave.clone(), home_area.clone());
+        let home_track = TrackId::from(track.id.as_str());
+        wcc.insert(home_track.clone(), home_area.clone());
 
-        let spec = seed_role_card(&repo, &cache, &home_wave, CardRole::Spec).await;
-        let executor = seed_role_card(&repo, &cache, &home_wave, CardRole::Worker).await;
-        let validator = seed_role_card(&repo, &cache, &home_wave, CardRole::Worker).await;
-        let report = seed_role_card(&repo, &cache, &home_wave, CardRole::ReportCard).await;
+        let spec = seed_role_card(&repo, &cache, &home_track, CardRole::Spec).await;
+        let executor = seed_role_card(&repo, &cache, &home_track, CardRole::Worker).await;
+        let validator = seed_role_card(&repo, &cache, &home_track, CardRole::Worker).await;
+        let report = seed_role_card(&repo, &cache, &home_track, CardRole::ReportCard).await;
         // #1189 §3.6 — the recorder criterion is now card-keyed, so the
         // corpus needs the two cards that criterion is about: an assistant
-        // on this wave (allowed) and one on a *different* wave (G-A').
-        let assistant = seed_role_card(&repo, &cache, &home_wave, CardRole::Assistant).await;
+        // on this track (allowed) and one on a *different* track (G-A').
+        let assistant = seed_role_card(&repo, &cache, &home_track, CardRole::Assistant).await;
 
-        let away_wave_row = repo
-            .wave_create(NewWave {
+        let away_track_row = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "principal-delta-away".into(),
@@ -633,10 +638,10 @@ impl PrincipalFixture {
             })
             .await
             .unwrap();
-        let away_wave = WaveId::from(away_wave_row.id.as_str());
-        wcc.insert(away_wave.clone(), home_area.clone());
-        let away_assistant = seed_role_card(&repo, &cache, &away_wave, CardRole::Assistant).await;
-        let away_spec = seed_role_card(&repo, &cache, &away_wave, CardRole::Spec).await;
+        let away_track = TrackId::from(away_track_row.id.as_str());
+        wcc.insert(away_track.clone(), home_area.clone());
+        let away_assistant = seed_role_card(&repo, &cache, &away_track, CardRole::Assistant).await;
+        let away_spec = seed_role_card(&repo, &cache, &away_track, CardRole::Spec).await;
 
         // Session → card bindings are the whole point of the new criterion,
         // so they must be REAL card ids. They used to be a synthetic
@@ -645,24 +650,24 @@ impl PrincipalFixture {
         // made the corpus vacuous.
         seed_sessions(
             &repo,
-            &home_wave,
-            &away_wave,
+            &home_track,
+            &away_track,
             &[
                 (
                     "session-root",
                     &spec,
                     WorkerContract::Planner,
-                    &home_wave,
+                    &home_track,
                     WorkerSessionState::Running,
                 ),
                 // #1189 §3.6 liveness — the *superseded* predecessor of
                 // `session-root` on the very same Spec card. This is what a
                 // resume leaves behind: `session_supersede_active_tx` (via
                 // `session_supersede_and_start_tx`) only flips the old row to
-                // `superseded` and keeps it, same `card_id` on the same wave.
-                // Repointing `waves.root_session_id` at the successor is a
+                // `superseded` and keeps it, same `card_id` on the same track.
+                // Repointing `tracks.root_session_id` at the successor is a
                 // separate, conditional path — `session_repoint_current_links_tx`
-                // → `session_mark_wave_root_tx`, and only when the successor is
+                // → `session_mark_track_root_tx`, and only when the successor is
                 // an active-authority `Planner`. Both halves of the card
                 // criterion still admit the predecessor, so `decide_recorder`'s
                 // liveness check is the only thing between it and the report.
@@ -672,42 +677,42 @@ impl PrincipalFixture {
                     "session-planner-superseded",
                     &spec,
                     WorkerContract::Planner,
-                    &home_wave,
+                    &home_track,
                     WorkerSessionState::Superseded,
                 ),
                 (
                     "session-executor",
                     &executor,
                     WorkerContract::Executor,
-                    &home_wave,
+                    &home_track,
                     WorkerSessionState::Running,
                 ),
                 (
                     "session-validator",
                     &validator,
                     WorkerContract::Validator,
-                    &home_wave,
+                    &home_track,
                     WorkerSessionState::Running,
                 ),
                 (
                     "session-assistant",
                     &assistant,
                     WorkerContract::Executor,
-                    &home_wave,
+                    &home_track,
                     WorkerSessionState::Running,
                 ),
                 (
                     "session-away-assistant",
                     &away_assistant,
                     WorkerContract::Executor,
-                    &away_wave,
+                    &away_track,
                     WorkerSessionState::Running,
                 ),
                 (
                     "session-away-spec",
                     &away_spec,
                     WorkerContract::Planner,
-                    &away_wave,
+                    &away_track,
                     WorkerSessionState::Running,
                 ),
             ],
@@ -732,16 +737,16 @@ impl PrincipalFixture {
             ("$ASSISTANT_CARD", assistant.as_str().to_string()),
             ("$AWAY_ASSISTANT_CARD", away_assistant.as_str().to_string()),
             ("$AWAY_SPEC_CARD", away_spec.as_str().to_string()),
-            ("$HOME_WAVE", home_wave.as_str().to_string()),
+            ("$HOME_TRACK", home_track.as_str().to_string()),
             ("$HOME_AREA", home_area.as_str().to_string()),
-            ("$AWAY_WAVE", away_wave.as_str().to_string()),
+            ("$AWAY_TRACK", away_track.as_str().to_string()),
         ];
 
         Self {
             repo,
             cache,
             wcc,
-            home_wave,
+            home_track,
             subst,
         }
     }
@@ -750,12 +755,12 @@ impl PrincipalFixture {
 async fn seed_role_card(
     repo: &SqlxRepo,
     cache: &CardRoleCache,
-    wave: &WaveId,
+    track: &TrackId,
     role: CardRole,
 ) -> CardId {
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.as_str().into(),
+            track_id: track.as_str().into(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -764,35 +769,35 @@ async fn seed_role_card(
         .await
         .unwrap();
     crate::support::mcp::set_persisted_card_role(repo, card.id.as_str(), role).await;
-    cache.insert(card.id.clone(), role, wave.clone());
+    cache.insert(card.id.clone(), role, track.clone());
     CardId::from(card.id.as_str())
 }
 
 async fn seed_sessions(
     repo: &SqlxRepo,
-    home_wave: &WaveId,
-    away_wave: &WaveId,
-    sessions: &[(&str, &CardId, WorkerContract, &WaveId, WorkerSessionState)],
+    home_track: &TrackId,
+    away_track: &TrackId,
+    sessions: &[(&str, &CardId, WorkerContract, &TrackId, WorkerSessionState)],
 ) {
     let mut tx = repo.pool().begin().await.unwrap();
-    for (id, card, contract, wave, state) in sessions {
+    for (id, card, contract, track, state) in sessions {
         session_insert_tx(
             &mut tx,
-            worker_session(id, (*wave).clone(), (*card).clone(), *contract, *state),
+            worker_session(id, (*track).clone(), (*card).clone(), *contract, *state),
         )
         .await
         .unwrap();
     }
-    // `session-root` stays marked as the home wave's root. The recorder
+    // `session-root` stays marked as the home track's root. The recorder
     // criterion no longer reads it (#1189 §3.6), and keeping the mark is
     // what makes that observable: root-ness alone must not be what any
     // vector's Allow rests on.
-    session_mark_wave_root_tx(&mut tx, home_wave, &WorkerSessionId::from("session-root"))
+    session_mark_track_root_tx(&mut tx, home_track, &WorkerSessionId::from("session-root"))
         .await
         .unwrap();
-    session_mark_wave_root_tx(
+    session_mark_track_root_tx(
         &mut tx,
-        away_wave,
+        away_track,
         &WorkerSessionId::from("session-away-spec"),
     )
     .await
@@ -802,14 +807,14 @@ async fn seed_sessions(
 
 fn worker_session(
     id: &str,
-    wave_id: WaveId,
+    track_id: TrackId,
     card_id: CardId,
     contract: WorkerContract,
     state: WorkerSessionState,
 ) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
-        wave_id,
+        track_id,
         provider: WorkerProviderKind::Codex,
         mode: SessionMode::Resumable,
         contract,
@@ -865,10 +870,10 @@ async fn run_principal_delta_vector(
                 .as_str()
                 .expect("principal session_id remains string"),
         ),
-        wave_id: WaveId::from(
-            substitute(&Value::String(v.principal.wave_id.clone()), &fx.subst)
+        track_id: TrackId::from(
+            substitute(&Value::String(v.principal.track_id.clone()), &fx.subst)
                 .as_str()
-                .expect("principal wave_id remains string"),
+                .expect("principal track_id remains string"),
         ),
         area_id: AreaId::from(
             substitute(&Value::String(v.principal.area_id.clone()), &fx.subst)
@@ -886,7 +891,7 @@ async fn run_principal_delta_vector(
     let recorder = if v.recorder_gate {
         let mut tx = fx.repo.pool().begin().await.unwrap();
         let grant = PrincipalDecisionGate::new(principal)
-            .recorder_grant(&mut tx, &fx.home_wave)
+            .recorder_grant(&mut tx, &fx.home_track)
             .await
             .map_err(|e| format!("recorder_grant errored: {e}"))?;
         tx.rollback().await.unwrap();

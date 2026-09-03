@@ -71,7 +71,7 @@ pub enum ProposalAnchor {
     AtEnd,
 }
 
-/// One proposed mutation of the wave-report block document
+/// One proposed mutation of the track-report block document
 /// (design §5.2.1). A deliberately *stricter* sibling of the
 /// interactive `calm.report.blocks.*` tool DTOs: anchoring must be
 /// complete because apply happens asynchronously, and the wholesale

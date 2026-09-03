@@ -10,9 +10,9 @@
 // mounted inside `AppProviders` so it sees the same QueryClient.
 //
 // What this component still owns:
-//   * the Sidebar's data shape: it wants `Area[]` and `Wave[]` (across
+//   * the Sidebar's data shape: it wants `Area[]` and `Track[]` (across
 //     all areas) for the "running / waiting" badges. We fetch areas
-//     once and fan out wave queries with `useQueries`, then adapt to
+//     once and fan out track queries with `useQueries`, then adapt to
 //     UI shapes inline. The result is shallow-stable enough for the
 //     Sidebar; per-area invalidations naturally roll up.
 //
@@ -28,22 +28,22 @@ import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
 import { Sidebar } from './shared/components/Sidebar';
 import { TitleBar } from './shared/components/TitleBar';
-import { adaptArea, adaptWave } from './api/adapt';
+import { adaptArea, adaptTrack } from './api/adapt';
 import * as api from './api/calm';
 import {
   queryKeys,
   useAreasQuery,
   useCreateAreaMutation,
   useDeleteAreaMutation,
-  useDeleteWaveMutation,
+  useDeleteTrackMutation,
   useOverlaysByKindQuery,
-  useUpdateWaveMutation,
+  useUpdateTrackMutation,
 } from './api/queries';
 import { useGo } from './app/navigation';
 import { logout } from './api/auth';
 import { useWheelRouter } from './input/useWheelRouter';
 import type { KernelOverlay } from './api/wire';
-import type { Area, Route as AppRoute, Wave } from './types';
+import type { Area, Route as AppRoute, Track } from './types';
 
 export function CalmApp() {
   const go = useGo();
@@ -59,10 +59,10 @@ export function CalmApp() {
 
   // ----- Sidebar data -----------------------------------------------------
   //
-  // Sidebar wants a flat list of all waves so it can render per-area
+  // Sidebar wants a flat list of all tracks so it can render per-area
   // counts and the "Waiting on you" bucket. We fan out one query per
   // area and adapt the results. Each query has its own cache entry, so
-  // a single-area invalidation only refetches that area's wave list.
+  // a single-area invalidation only refetches that area's track list.
 
   const areasQ = useAreasQuery();
   // Memoise the fallback to a stable empty array — without this, the
@@ -81,55 +81,55 @@ export function CalmApp() {
     [areasQ.data],
   );
 
-  const waveQueries = useQueries({
+  const trackQueries = useQueries({
     queries: kernelAreas.map((c) => ({
-      queryKey: queryKeys.wavesInArea(c.id),
-      queryFn: () => api.wavesInArea(c.id),
+      queryKey: queryKeys.tracksInArea(c.id),
+      queryFn: () => api.tracksInArea(c.id),
     })),
   });
 
   const areas: Area[] = useMemo(() => kernelAreas.map(adaptArea), [kernelAreas]);
 
-  // Workspace-wide wave overlays — one cheap query that the Sidebar
-  // reads to render accurate per-wave status indicators ("Waiting on
-  // you", "X running") for every area, not just whichever wave the
+  // Workspace-wide track overlays — one cheap query that the Sidebar
+  // reads to render accurate per-track status indicators ("Waiting on
+  // you", "X running") for every area, not just whichever track the
   // user has currently opened. eventBridge invalidates this snapshot
-  // on overlay.set/.deleted (and on wave/area deletes where the kernel
+  // on overlay.set/.deleted (and on track/area deletes where the kernel
   // may not cascade individual events).
-  const waveOverlaysQ = useOverlaysByKindQuery('wave');
+  const trackOverlaysQ = useOverlaysByKindQuery('track');
 
-  const overlaysByWaveId = useMemo(() => {
+  const overlaysByTrackId = useMemo(() => {
     const m = new Map<string, KernelOverlay[]>();
-    for (const o of waveOverlaysQ.data ?? []) {
-      if (o.entity_kind !== 'wave') continue;
+    for (const o of trackOverlaysQ.data ?? []) {
+      if (o.entity_kind !== 'track') continue;
       const cur = m.get(o.entity_id);
       if (cur) cur.push(o);
       else m.set(o.entity_id, [o]);
     }
     return m;
-  }, [waveOverlaysQ.data]);
+  }, [trackOverlaysQ.data]);
 
-  const waves: Wave[] = useMemo(() => {
-    const out: Wave[] = [];
-    for (const q of waveQueries) {
+  const tracks: Track[] = useMemo(() => {
+    const out: Track[] = [];
+    for (const q of trackQueries) {
       if (!q.data) continue;
       for (const w of q.data) {
-        out.push(adaptWave(w, overlaysByWaveId.get(w.id) ?? []));
+        out.push(adaptTrack(w, overlaysByTrackId.get(w.id) ?? []));
       }
     }
     return out;
     // Stable-ish: depends on each query's data identity. React-Query
     // keeps data references stable across refetches when the payload
     // is structurally equal, so this re-derives only on real changes.
-  }, [waveQueries, overlaysByWaveId]);
+  }, [trackQueries, overlaysByTrackId]);
 
   const loading = areasQ.isLoading;
   const error = areasQ.error;
 
   const createArea = useCreateAreaMutation();
   const deleteArea = useDeleteAreaMutation();
-  const deleteWave = useDeleteWaveMutation();
-  const updateWave = useUpdateWaveMutation();
+  const deleteTrack = useDeleteTrackMutation();
+  const updateTrack = useUpdateTrackMutation();
 
   // Sign-out (issue #189). POSTs `/api/auth/logout` which drops the
   // server-side session + clears the `calm-session` cookie. We then
@@ -151,7 +151,7 @@ export function CalmApp() {
       <div className="stage">
         <Sidebar
           areas={areas}
-          waves={waves}
+          tracks={tracks}
           route={route}
           onGo={go}
           onCreateArea={async (name, color) => {
@@ -169,21 +169,21 @@ export function CalmApp() {
               console.warn('[Calm] area delete failed:', err);
             }
           }}
-          onDeleteWave={async (waveId) => {
-            const wave = waves.find((w) => w.id === waveId);
-            if (!wave) return;
+          onDeleteTrack={async (trackId) => {
+            const track = tracks.find((w) => w.id === trackId);
+            if (!track) return;
             try {
-              await deleteWave.mutateAsync({ id: waveId, areaId: wave.areaId });
-              if (route.name === 'wave' && route.id === waveId) {
-                go({ name: 'area', areaId: wave.areaId });
+              await deleteTrack.mutateAsync({ id: trackId, areaId: track.areaId });
+              if (route.name === 'track' && route.id === trackId) {
+                go({ name: 'area', areaId: track.areaId });
               }
             } catch (err) {
-              console.warn('[Calm] wave delete failed:', err);
+              console.warn('[Calm] track delete failed:', err);
             }
           }}
-          onPinWave={async (waveId, pin) => {
-            await updateWave.mutateAsync({
-              id: waveId,
+          onPinTrack={async (trackId, pin) => {
+            await updateTrack.mutateAsync({
+              id: trackId,
               body: { pinned_at: pin ? Date.now() : null },
             });
           }}
@@ -216,9 +216,9 @@ function parseAppRoute(pathname: string): AppRoute {
     const id = decodeURIComponent(pathname.slice('/area/'.length).replace(/\/$/, ''));
     if (id) return { name: 'area', areaId: id };
   }
-  if (pathname.startsWith('/wave/')) {
-    const id = decodeURIComponent(pathname.slice('/wave/'.length).replace(/\/$/, ''));
-    if (id) return { name: 'wave', id };
+  if (pathname.startsWith('/track/')) {
+    const id = decodeURIComponent(pathname.slice('/track/'.length).replace(/\/$/, ''));
+    if (id) return { name: 'track', id };
   }
   if (pathname === '/settings' || pathname.startsWith('/settings/')) {
     return { name: 'settings' };

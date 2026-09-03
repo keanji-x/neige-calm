@@ -3,7 +3,7 @@
 //!
 //! A conversation is a headless codex card carrying the persisted
 //! `harness_profile: "plain_chat"` marker, parked on the area's single hidden
-//! chat wave. Pressing `+` in the UI creates nothing at all; the card, its
+//! chat track. Pressing `+` in the UI creates nothing at all; the card, its
 //! session and its codex thread are all minted by the first message, which is
 //! what this module's POST does in one operation.
 
@@ -19,7 +19,7 @@ use utoipa::ToSchema;
 use crate::actor::Actor;
 use crate::conversation_keys::derive_area_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::model::{AreaConversationSummary, Wave};
+use crate::model::{AreaConversationSummary, Track};
 use crate::operation::spec_harness_start_adapter::{
     HarnessProfile, LazyMintCardSeed, SpecHarnessStartOperationPayload,
 };
@@ -33,7 +33,7 @@ use crate::routes::conversations_shared::{
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
-use crate::routes::waves::ensure_area_chat_wave_inner;
+use crate::routes::tracks::ensure_area_chat_track_inner;
 use crate::session_projection_repo::WorkerSessionState;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
@@ -46,7 +46,7 @@ const AREA_CONVERSATION_KIND: &str = "shared-chat";
 /// Test-only rendezvous inside `create_area_conversation`, placed exactly at
 /// the window F1 is about: after the mint operation settled, before the
 /// first-message claim is taken. Mirrors
-/// `waves::install_chat_wave_ensure_barrier_for_test`.
+/// `tracks::install_chat_track_ensure_barrier_for_test`.
 #[cfg(feature = "fixtures")]
 fn first_message_barriers() -> &'static std::sync::Mutex<
     std::collections::HashMap<String, std::sync::Arc<tokio::sync::Barrier>>,
@@ -118,7 +118,7 @@ pub struct NewAreaConversationBody {
     tag = "areas",
     params(("area_id" = String, Path, description = "Area id")),
     responses(
-        (status = 200, description = "Conversations on this area's chat wave, newest activity first. Empty when the area has no chat wave yet — this endpoint never creates one.", body = Vec<AreaConversationSummary>),
+        (status = 200, description = "Conversations on this area's chat track, newest activity first. Empty when the area has no chat track yet — this endpoint never creates one.", body = Vec<AreaConversationSummary>),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -131,13 +131,13 @@ pub(crate) async fn list_area_conversations(
     if s.repo.area_get(&area_id).await?.is_none() {
         return Err(CalmError::NotFound(format!("area {area_id}")));
     }
-    let Some(wave) = area_chat_wave(&s, &area_id).await? else {
-        // No chat wave yet means no conversations. Ensuring one here would
-        // make a read create a wave (and, without a claimed folder, turn a
+    let Some(track) = area_chat_track(&s, &area_id).await? else {
+        // No chat track yet means no conversations. Ensuring one here would
+        // make a read create a track (and, without a claimed folder, turn a
         // list into a 409).
         return Ok(Json(Vec::new()));
     };
-    let rows = load_conversation_summaries(&w, wave.id.as_str(), None).await?;
+    let rows = load_conversation_summaries(&w, track.id.as_str(), None).await?;
     Ok(Json(rows))
 }
 
@@ -154,7 +154,7 @@ pub(crate) async fn list_area_conversations(
         (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = AreaConversationSummary),
         (status = 400, description = "Missing/blank `Idempotency-Key`, or empty/over-long text", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
-        (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the area has no claimed folder (no cwd for the chat wave), or the derived card already exists.\n* `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as \"server broke\" rather than \"this key is used up\").", body = ErrorBody),
+        (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the area has no claimed folder (no cwd for the chat track), or the derived card already exists.\n* `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as \"server broke\" rather than \"this key is used up\").", body = ErrorBody),
         (status = 500, description = "Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. Note the conversation is not necessarily empty: if `harness.observe` succeeded and only the audit write failed, the message is already in the harness queue even though no audit event records it. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it.", body = ErrorBody),
         (status = 503, description = "Shared codex app-server not running — retry shortly", body = ErrorBody),
     ),
@@ -231,18 +231,18 @@ pub(crate) async fn create_area_conversation(
         return Err(CalmError::NotFound(format!("area {area_id}")));
     }
 
-    let (wave, _created) = ensure_area_chat_wave_inner(&s, actor.clone(), &area_id).await?;
+    let (track, _created) = ensure_area_chat_track_inner(&s, actor.clone(), &area_id).await?;
     let derived = derive_area_conversation_keys(&area_id, &idempotency_key);
 
     let payload = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         spec_card_id: derived.card_id.clone().into(),
         report_card_id: None,
         sort: None,
-        cwd: wave.workspace.path.clone(),
-        // A plain chat has no wave goal: seeding one would put an
-        // `Observation::WaveGoal` in the queue and the harness would start
+        cwd: track.workspace.path.clone(),
+        // A plain chat has no track goal: seeding one would put an
+        // `Observation::TrackGoal` in the queue and the harness would start
         // talking before the user did.
         goal: None,
         reset_harness_items: false,
@@ -251,8 +251,8 @@ pub(crate) async fn create_area_conversation(
         create_card: Some(LazyMintCardSeed {
             title: None,
             sort: None,
-            // Deliberately absent. The area flavour's mint guard is the chat-wave
-            // check in `validate`, not the derived-id recomputation the wave
+            // Deliberately absent. The area flavour's mint guard is the chat-track
+            // check in `validate`, not the derived-id recomputation the track
             // flavour uses, and setting this would change every area create's
             // `payload_hash` for nothing.
             idempotency_key: None,
@@ -367,7 +367,7 @@ pub(crate) async fn create_area_conversation(
     wait_at_first_message_barrier(&area_id).await;
     let _first_message_claim =
         lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
-    if !user_message_already_enqueued(&w, wave.id.as_str(), &derived.card_id).await? {
+    if !user_message_already_enqueued(&w, track.id.as_str(), &derived.card_id).await? {
         // Call the real handler rather than reimplementing it: the first
         // message and every later message must go through byte-identical
         // validation, locking, harness recovery and audit.
@@ -382,7 +382,7 @@ pub(crate) async fn create_area_conversation(
         .await?;
     }
 
-    let summary = load_conversation_summaries(&w, wave.id.as_str(), Some(&derived.card_id))
+    let summary = load_conversation_summaries(&w, track.id.as_str(), Some(&derived.card_id))
         .await?
         .pop()
         .ok_or_else(|| {
@@ -394,15 +394,15 @@ pub(crate) async fn create_area_conversation(
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
-async fn area_chat_wave(s: &RouteState, area_id: &str) -> Result<Option<Wave>> {
+async fn area_chat_track(s: &RouteState, area_id: &str) -> Result<Option<Track>> {
     Ok(s.repo
-        .waves_by_area(area_id)
+        .tracks_by_area(area_id)
         .await?
         .into_iter()
-        .find(|wave| wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)))
+        .find(|track| track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)))
 }
 
-/// Read the conversation rows of one chat wave.
+/// Read the conversation rows of one chat track.
 ///
 /// `cards` is the driving table and the session is LEFT JOINed: a chat card
 /// with no live session row is still a conversation the user owns and must see
@@ -413,25 +413,25 @@ async fn area_chat_wave(s: &RouteState, area_id: &str) -> Result<Option<Wave>> {
 ///
 /// The marker predicate mirrors `plain_chat::card_is_plain_chat(.., true)`
 /// exactly — Worker role, `codex` kind, `harness_profile == "plain_chat"` — so
-/// the chat wave's kernel-owned spec and report cards can never appear here
+/// the chat track's kernel-owned spec and report cards can never appear here
 /// (INV-CHAT-007).
 ///
 /// The three conjuncts are NOT three equal defences, and the tests say so:
 /// - `harness_profile = 'plain_chat'` is the primary discriminator.
 /// - `kind = 'codex'` is **load-bearing and production-reachable**: `POST
-///   /api/cards` has no guard against `purpose = 'area-chat'` waves (design v5
-///   retired those guards) and this very list hands the chat `waveId` to the
-///   client, so a user can park a marked `terminal` card on the chat wave.
+///   /api/cards` has no guard against `purpose = 'area-chat'` tracks (design v5
+///   retired those guards) and this very list hands the chat `trackId` to the
+///   client, so a user can park a marked `terminal` card on the chat track.
 ///   This conjunct is the only thing that keeps it out.
 /// - `role = 'worker'` has **no production-reachable counterexample**: a chat
-///   wave's spec/report cards never receive the marker (their payload is
-///   written by `create_wave_with_spec_harness` and the adapter's payload
+///   track's spec/report cards never receive the marker (their payload is
+///   written by `create_track_with_spec_harness` and the adapter's payload
 ///   rewrite only touches thread keys). It is defence in depth against a
 ///   tampered/corrupt row, and its test fixture is a tampering model, not a
 ///   reachable state.
 async fn load_conversation_summaries(
     w: &WorkerState,
-    wave_id: &str,
+    track_id: &str,
     card_id: Option<&str>,
 ) -> Result<Vec<AreaConversationSummary>> {
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
@@ -439,7 +439,7 @@ async fn load_conversation_summaries(
     })?;
     let rows = sqlx::query_as::<_, ConversationRow>(
         r#"SELECT c.id                                   AS id,
-                  c.wave_id                              AS wave_id,
+                  c.track_id                              AS track_id,
                   c.title                                AS title,
                   ws.state                               AS state,
                   COALESCE(ws.updated_at_ms, c.updated_at) AS updated_at
@@ -453,14 +453,14 @@ async fn load_conversation_summaries(
                                           inner_ws.created_at_ms DESC,
                                           inner_ws.id DESC
                                  LIMIT 1)
-            WHERE c.wave_id = ?1
+            WHERE c.track_id = ?1
               AND c.role = 'worker'
               AND c.kind = 'codex'
               AND json_extract(c.payload, '$.harness_profile') = 'plain_chat'
               AND (?2 IS NULL OR c.id = ?2)
             ORDER BY updated_at DESC, c.id"#,
     )
-    .bind(wave_id)
+    .bind(track_id)
     .bind(card_id)
     .fetch_all(&pool)
     .await?;
@@ -472,7 +472,7 @@ async fn load_conversation_summaries(
 #[derive(sqlx::FromRow)]
 struct ConversationRow {
     id: String,
-    wave_id: String,
+    track_id: String,
     title: Option<String>,
     state: Option<String>,
     updated_at: i64,
@@ -489,7 +489,7 @@ impl TryFrom<ConversationRow> for AreaConversationSummary {
             .map_err(CalmError::Internal)?;
         Ok(AreaConversationSummary {
             id: row.id,
-            wave_id: row.wave_id,
+            track_id: row.track_id,
             title: row.title,
             kind: AREA_CONVERSATION_KIND.to_string(),
             state,

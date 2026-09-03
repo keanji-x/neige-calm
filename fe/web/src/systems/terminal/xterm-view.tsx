@@ -426,7 +426,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // production never carries it) exactly like `__xtermMounts__` above.
     // Registers a per-terminal buffer serializer keyed by `terminalId`,
     // so the e2e spec (`web/e2e/new-terminal-osc-echo.spec.ts`) can dump
-    // the rendered grid of a SPECIFIC card (a wave can have several
+    // the rendered grid of a SPECIFIC card (a track can have several
     // xterm-backed cards — e.g. the auto-minted codex spec card plus an
     // AddPanel New-terminal card — and only the cooked-shell terminal
     // can manifest the echo bug). The spec asserts no OSC 10/11 reply
@@ -523,9 +523,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // every Tab (forwarded to the PTY as `\t`) so the browser never moves
     // focus off the terminal. That's fine for users who clicked into the
     // terminal deliberately — but it turns the terminal into a one-way
-    // focus trap during plain Tab navigation across the wave page, which
+    // focus trap during plain Tab navigation across the track page, which
     // breaks keyboard-only nav (`web/e2e/a11y-keyboard.spec.ts`) the
-    // moment a wave has any xterm-backed card. Demote the textarea out
+    // moment a track has any xterm-backed card. Demote the textarea out
     // of the natural Tab order; users still engage the terminal by
     // clicking (xterm.js's mousedown handler focuses it), and once
     // focused all keys (including Tab → tab-completion) still flow to
@@ -649,7 +649,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             pixel_height: null,
           },
           cell_size: null,
-          // 'All' restores daemon-retained scrollback on remount (wave nav
+          // 'All' restores daemon-retained scrollback on remount (track nav
           // remounts XtermView); server bound is SCROLLBACK_MAX_LINES so
           // this is not unbounded.
           initial_scrollback: 'All',
@@ -1132,7 +1132,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
        *  own ARIA wiring and bypasses `aria-hidden` because it's the
        *  focusable input. Issue #236 followup: PR #239's sync-spawn
        *  makes the daemon's bold-green `runner@runner` shell prompt
-       *  visible the moment the wave-list snapshot is taken, which
+       *  visible the moment the track-list snapshot is taken, which
        *  triggered a `.xterm-fg-10.xterm-bold` color-contrast 2.81:1
        *  violation. Bumping xterm's palette to clear 4.5:1 would break
        *  parity with the user's terminal expectations (and would still

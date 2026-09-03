@@ -49,17 +49,17 @@ const rows: Row[] = [
     type: 'text',
   },
   {
-    slug: 'wave-report-textarea',
+    slug: 'track-report-textarea',
     tag: 'textarea',
     controlKind: 'text',
-    className: 'wave-report-edit-body',
+    className: 'track-report-edit-body',
   },
   {
-    slug: 'wave-title-input',
+    slug: 'track-title-input',
     tag: 'input',
     controlKind: 'text',
-    className: 'wave-title-input',
-    value: 'Wave title',
+    className: 'track-title-input',
+    value: 'Track title',
   },
   {
     slug: 'area-title-input',
@@ -111,7 +111,7 @@ function renderControl({ slug, tag, controlKind, className, type, placeholder, v
     'data-color-anchor-kind': controlKind,
     placeholder,
   };
-  if (tag === 'textarea') return <textarea {...props} defaultValue={value ?? 'Wave report body'} />;
+  if (tag === 'textarea') return <textarea {...props} defaultValue={value ?? 'Track report body'} />;
   if (tag === 'select') {
     return (
       <select {...props} defaultValue="one">

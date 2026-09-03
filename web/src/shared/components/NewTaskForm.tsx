@@ -1,19 +1,19 @@
 // ---------------- NewTaskForm ----------------
 //
 // Issue #250 PR 3 — the single creation surface for "task = description
-// + cwd + area". Used by the area page's `+ New wave` affordance today,
+// + cwd + area". Used by the area page's `+ New track` affordance today,
 // the calendar's empty-cell click later (PR 6). Per the issue comment
 // "all creation entrypoints must go through the same configuration
 // card", this component is the only place that knows how to POST a
-// well-formed `NewWave` body — every other entrypoint must reuse it
+// well-formed `NewTrack` body — every other entrypoint must reuse it
 // (not re-implement the cwd/area inference).
 //
 // Field semantics (decided across #255 + #250 PR 2, updated by #409):
-//   * task description (optional) → posted as `wave.title`. The kernel
+//   * task description (optional) → posted as `track.title`. The kernel
 //     threads a non-empty title into the spec daemon as the initial
 //     prompt; an empty title boots the spec daemon without an
 //     auto-submitted prompt. We deliberately do not surface a separate
-//     "prompt" field — title-as-prompt keeps the wave-row label and the
+//     "prompt" field — title-as-prompt keeps the track-row label and the
 //     prompt in lock-step when a prompt exists.
 //   * cwd (required) → absolute path the spec daemon spawns under.
 //     The form refuses to submit a non-`/`-prefixed value; the server
@@ -27,23 +27,23 @@
 //                  "existing": pick an area from `useAreasQuery`, submit
 //                    with `attach_folder: true` so the kernel adds
 //                    `cwd` as a new folder under that area inside the
-//                    same tx as the wave-create. PR 3 implements this
+//                    same tx as the track-create. PR 3 implements this
 //                    as a two-step client-side flow for the "create
 //                    new area + claim cwd" branch (see below) — the
 //                    "existing area + attach cwd" branch is a single
 //                    POST with `attach_folder: true`, which the kernel
 //                    handles atomically inside one tx.
 //                  "new":      mint a fresh area (`POST /api/areas`),
-//                    then POST the wave with the new id + the same
+//                    then POST the track with the new id + the same
 //                    `attach_folder: true` flag. Two-step (area +
-//                    wave) because the server doesn't yet expose an
-//                    atomic "create area + first wave" endpoint; if
-//                    the wave POST fails (e.g. validation), the area
+//                    track) because the server doesn't yet expose an
+//                    atomic "create area + first track" endpoint; if
+//                    the track POST fails (e.g. validation), the area
 //                    is left in place and a retry reuses it. Followup
 //                    todo to collapse this into one atomic endpoint
 //                    if the leftover-area cost ever bites.
 //
-// 409 / FolderConflict handling: NewWave's `attach_folder: true` path
+// 409 / FolderConflict handling: NewTrack's `attach_folder: true` path
 // can land a structured 409 on this list of scenarios:
 //   - cwd is descendant of a folder owned by a *different* area (the
 //     resolve would have warned us pre-submit, but a concurrent claim
@@ -69,17 +69,17 @@ import {
   queryKeys,
   useAreasQuery,
   useCreateAreaMutation,
-  useCreateWaveMutation,
+  useCreateTrackMutation,
 } from '../../api/queries';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../../api/themeRgb';
-import type { AreaResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
+import type { AreaResolveBody, FolderConflictBody, KernelTrack } from '../../api/wire';
 import { ChevronIcon } from './ChevronIcon';
 import { DirectoryBrowser } from './DirectoryPicker';
 import { parseGitHubIssueUrl } from './issueUrl';
 import { useModalView } from '../../ui/Dialog/Dialog';
 
-/** Result handed back to the caller on successful POST `/api/waves`. */
-export type NewTaskFormResult = KernelWave;
+/** Result handed back to the caller on successful POST `/api/tracks`. */
+export type NewTaskFormResult = KernelTrack;
 
 export interface NewTaskFormProps {
   /** Pre-selected area. When the surrounding page already scopes itself
@@ -87,9 +87,9 @@ export interface NewTaskFormProps {
    *  it on first paint. The cwd-resolve auto-match still overrides this
    *  if it lands a different area. */
   defaultAreaId?: string;
-  /** Fired after the wave-create POST succeeds. Caller usually navigates
-   *  to `/calm/wave/<id>`. */
-  onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
+  /** Fired after the track-create POST succeeds. Caller usually navigates
+   *  to `/calm/track/<id>`. */
+  onCreated: (track: NewTaskFormResult) => void | Promise<void>;
   /** Fired when the user dismisses the form (Esc, Cancel). Caller
    *  collapses the inline panel back to a CTA button. */
   onCancel: () => void;
@@ -107,7 +107,7 @@ export interface NewTaskFormProps {
    *  own `initialFocusRef` is `HTMLElement` too. */
   initialFocusRef?: RefObject<HTMLElement | null>;
   /** Issue #891 slice ③ — form variant. `'task'` (default) is the plain
-   *  wave path, untouched. `'issue-dev'` binds the created wave to the
+   *  track path, untouched. `'issue-dev'` binds the created track to the
    *  shipped `issue-development` workflow: the user supplies a GitHub
    *  issue URL (plus the same cwd/area flow), the form derives
    *  `{repo, issue_number, issue_url}` client-side and POSTs them as
@@ -116,7 +116,7 @@ export interface NewTaskFormProps {
 }
 
 /** #891 (design §6 F5) — this legacy form deliberately does not consume
- *  `GET /api/wave-templates`, so the issue-dev variant hardcodes the id.
+ *  `GET /api/track-templates`, so the issue-dev variant hardcodes the id.
  *  If the git-forge plugin isn't running, the create POST 400s with a
  *  readable message that the normal submit-error path surfaces. */
 const ISSUE_DEV_TEMPLATE_ID = 'issue-development';
@@ -214,12 +214,12 @@ export function NewTaskForm({
   // user's manual areaChoice.
   const userOverrodeAutoMatchRef = useRef(false);
 
-  const createWave = useCreateWaveMutation();
+  const createTrack = useCreateTrackMutation();
   const createArea = useCreateAreaMutation();
   const qc = useQueryClient();
   // Browse… → always pushes a DirectoryBrowser view into the surrounding
   // Dialog's body via `useModalView()`. NewTaskForm is hosted exclusively
-  // inside a Dialog today (NewWaveCTA in Area.tsx wraps it), so the
+  // inside a Dialog today (NewTrackCTA in Area.tsx wraps it), so the
   // modal-view context is always present in production. The dev-time
   // `console.warn` below catches accidental Dialog-less renderings during
   // refactors instead of silently breaking the Browse affordance.
@@ -420,8 +420,8 @@ export function NewTaskForm({
         // Resolve the area_id + attach_folder flag from the form state:
         //   * auto → cwd already covered; attach=false
         //   * existing → user-picked; attach=true so the cwd lands as a
-        //     folder under that area inside the wave-create tx.
-        //   * new → mint the area first, then submit the wave under it
+        //     folder under that area inside the track-create tx.
+        //   * new → mint the area first, then submit the track under it
         //     with attach=true.
         let areaId: string;
         let attachFolder: boolean;
@@ -432,9 +432,9 @@ export function NewTaskForm({
           areaId = areaChoice.areaId;
           attachFolder = true;
         } else {
-          // Two-step: area first, then wave. If the wave POST fails
+          // Two-step: area first, then track. If the track POST fails
           // the area is left in place — see file header for rationale.
-          // TODO(#250): atomic create-area-and-wave endpoint to collapse
+          // TODO(#250): atomic create-area-and-track endpoint to collapse
           // this two-step and remove the leftover-area risk on partial
           // failure (current fallback: a retry reuses the orphan area).
           const area = await createArea.mutateAsync({
@@ -447,7 +447,7 @@ export function NewTaskForm({
           // mutation's onSuccess invalidate. No extra work here.
         }
 
-        // issue-dev variant (#891 ③): bind the wave to the shipped
+        // issue-dev variant (#891 ③): bind the track to the shipped
         // workflow and carry the input JSON. The raw-JSON override wins
         // when the user has edited it (canSubmit already gated on it
         // parsing); otherwise the derived structured fields go out. The
@@ -460,7 +460,7 @@ export function NewTaskForm({
                 rawJson !== null ? (JSON.parse(rawJson) as unknown) : derivedTemplateInput,
             }
           : {};
-        const wave = await createWave.mutateAsync({
+        const track = await createTrack.mutateAsync({
           area_id: areaId,
           title: title.trim(),
           cwd: finalCwd,
@@ -468,12 +468,12 @@ export function NewTaskForm({
           theme: readHostThemeRgb(),
           ...templateFields,
         });
-        // Belt-and-suspenders cache invalidate — useCreateWaveMutation
-        // already kicks ['waves', area_id], but a brand-new area also
+        // Belt-and-suspenders cache invalidate — useCreateTrackMutation
+        // already kicks ['tracks', area_id], but a brand-new area also
         // benefits from a areas-list refresh in case the WS event
         // didn't land yet.
         void qc.invalidateQueries({ queryKey: queryKeys.areas() });
-        await onCreated(wave);
+        await onCreated(track);
       } catch (e) {
         const formatted = formatSubmitError(e, areas);
         setErrorMsg(formatted);
@@ -486,7 +486,7 @@ export function NewTaskForm({
       areaChoice,
       areas,
       createArea,
-      createWave,
+      createTrack,
       cwd,
       derivedTemplateInput,
       isIssueDev,
@@ -594,7 +594,7 @@ export function NewTaskForm({
           </>
         )}
 
-        {/* Task description ↔ wave.title. Textarea so the user can
+        {/* Task description ↔ track.title. Textarea so the user can
             paste a multi-line ask without us truncating. Enter is
             *not* submit here — newlines in the description are
             valid; submit is the explicit "Create task" button.
@@ -687,7 +687,7 @@ export function NewTaskForm({
           />
           {/* Browse… opens the directory walker. Always pushes into the
               surrounding Dialog via `useModalView()` — NewTaskForm is
-              hosted inside a Dialog in every in-app caller (NewWaveCTA
+              hosted inside a Dialog in every in-app caller (NewTrackCTA
               in Area.tsx). The typed input above remains the source of
               truth — Browse is just a shortcut that *sets* the cwd, it
               doesn't replace the field. Accessible name comes from the
@@ -961,7 +961,7 @@ function AreaSection({
       </div>
       {mode === 'existing' && areas.length > 0 ? (
         /* .calm-select (#891): the themed base-select drawer, same
-           treatment as the Workflow select in the New-wave dialog so
+           treatment as the Workflow select in the New-track dialog so
            the card has ONE popup system. The custom trigger button
            (selectedcontent + stroke chevron) makes the closed field
            render identically to the Workflow trigger; options are

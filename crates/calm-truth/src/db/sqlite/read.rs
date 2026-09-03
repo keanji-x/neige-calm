@@ -6,26 +6,26 @@ use super::{
     SqlxRepo, derive_session_identity, session_get_by_active_token_hash, session_get_by_id,
 };
 use crate::card_role_cache::CardRoleCache;
-use crate::db::rows::{WAVE_SELECT_COLUMNS, WAVE_SELECT_COLUMNS_W};
+use crate::db::rows::{TRACK_SELECT_COLUMNS, TRACK_SELECT_COLUMNS_W};
 use crate::db::{RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, WorkspaceLease};
 use crate::error::{CalmError, Result};
-use crate::ids::{AreaId, CardId, WaveId};
+use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::*;
 use crate::session_projection_repo::WorkerSessionKind;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
-/// Row shape of the single-statement `wave_detail` read (#1016).
+/// Row shape of the single-statement `track_detail` read (#1016).
 ///
-/// The wave columns decode through the usual [`crate::db::rows::WaveRow`]
+/// The track columns decode through the usual [`crate::db::rows::TrackRow`]
 /// mirror; `cards` and `overlays` ride along as JSON arrays produced by
 /// `json_group_array` so that all three come from ONE implicit transaction
-/// without the row multiplication a join would cause (a wave-scoped overlay
+/// without the row multiplication a join would cause (a track-scoped overlay
 /// would pair with every card).
 #[derive(sqlx::FromRow)]
-struct WaveDetailRow {
+struct TrackDetailRow {
     #[sqlx(flatten)]
-    wave: crate::db::rows::WaveRow,
+    track: crate::db::rows::TrackRow,
     cards_json: String,
     overlays_json: String,
 }
@@ -50,7 +50,7 @@ impl SqlxRepo {
         descending: bool,
         method_predicate: &str,
     ) -> Result<Vec<HarnessItem>> {
-        const COLUMNS: &str = "id, runtime_id, card_id, wave_id, thread_id, turn_id, \
+        const COLUMNS: &str = "id, runtime_id, card_id, track_id, thread_id, turn_id, \
                                item_uuid, item_type, method, params, created_at_ms";
         let (comparison, order, cursor) = if descending {
             ("<", "DESC", if after_id == 0 { i64::MAX } else { after_id })
@@ -91,7 +91,7 @@ impl RepoRead for SqlxRepo {
     async fn areas_list_user_visible(&self) -> Result<Vec<Area>> {
         // Issue #175 — default surface for `GET /api/areas`. Filters out
         // the singleton system area that hosts the default Today
-        // terminal's wave + card. Pre-#175 callers that want every row
+        // terminal's track + card. Pre-#175 callers that want every row
         // (debug surfaces, integration tests asserting on the system
         // area's existence) use `areas_list` directly.
         let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
@@ -162,49 +162,49 @@ impl RepoRead for SqlxRepo {
         Ok(row.map(AreaFolder::from))
     }
 
-    // ---------------------------------------------------------------- waves
-    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>> {
-        let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE area_id = ?1 ORDER BY sort ASC"
+    // ---------------------------------------------------------------- tracks
+    async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>> {
+        let rows = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE area_id = ?1 ORDER BY sort ASC"
         ))
         .bind(area_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(Wave::from).collect())
+        Ok(rows.into_iter().map(Track::from).collect())
     }
 
-    async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
+    async fn track_get_launchpad(&self) -> Result<Option<Track>> {
         // Same predicate as `today_launchpad_ensure_tx`'s first SELECT, and
         // single-valued by migration 0064's partial unique index — which is
         // what makes the answer well-defined, not the `LIMIT 1`. A bare
         // `LIMIT 1` has no `ORDER BY`, so on a hand-broken database holding two
         // launchpad rows sqlite may return either one; `ORDER BY id` is here so
         // that even then the answer is at least stable across calls rather than
-        // flapping between two waves.
-        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose = 'launchpad' ORDER BY id LIMIT 1"
+        // flapping between two tracks.
+        let row = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose = 'launchpad' ORDER BY id LIMIT 1"
         ))
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Wave::from))
+        Ok(row.map(Track::from))
     }
 
-    async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
-        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE id = ?1"
+    async fn track_get(&self, id: &str) -> Result<Option<Track>> {
+        let row = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE id = ?1"
         ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Wave::from))
+        Ok(row.map(Track::from))
     }
 
-    async fn waves_window(
+    async fn tracks_window(
         &self,
         area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
-    ) -> Result<Vec<Wave>> {
+    ) -> Result<Vec<Track>> {
         // Build the WHERE clause dynamically because sqlx doesn't have
         // good "optional bind" ergonomics — every binding has to be
         // either materialized or excluded from the query string. The
@@ -212,7 +212,7 @@ impl RepoRead for SqlxRepo {
         //   * `area_id`     : `area_id = ?`
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
-        let mut sql = format!("SELECT {WAVE_SELECT_COLUMNS} FROM waves");
+        let mut sql = format!("SELECT {TRACK_SELECT_COLUMNS} FROM tracks");
         let mut where_clauses: Vec<&str> = Vec::new();
         if area_id.is_some() {
             where_clauses.push("area_id = ?");
@@ -229,7 +229,7 @@ impl RepoRead for SqlxRepo {
         }
         sql.push_str(" ORDER BY created_at ASC, id ASC");
 
-        let mut q = sqlx::query_as::<_, crate::db::rows::WaveRow>(&sql);
+        let mut q = sqlx::query_as::<_, crate::db::rows::TrackRow>(&sql);
         if let Some(c) = area_id {
             q = q.bind(c);
         }
@@ -242,17 +242,17 @@ impl RepoRead for SqlxRepo {
         Ok(q.fetch_all(&self.pool)
             .await?
             .into_iter()
-            .map(Wave::from)
+            .map(Track::from)
             .collect())
     }
 
-    async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
+    async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>> {
         // ONE statement, no explicit transaction (#1016).
         //
         // Why not a deferred (`pool.begin()`) tx, which is what this used to
-        // be: it held R(waves)+R(cards) while parking on `overlays` and
-        // cycled with the IMMEDIATE writer of `DELETE /api/waves/:id`
-        // (overlays -> tasks -> waves), aborting the writer with the
+        // be: it held R(tracks)+R(cards) while parking on `overlays` and
+        // cycled with the IMMEDIATE writer of `DELETE /api/tracks/:id`
+        // (overlays -> tasks -> tracks), aborting the writer with the
         // non-retryable `SQLITE_LOCKED` (6) — see
         // `deferred_read_tx_deadlock_repro`. That gap is real only on a
         // SHARED-CACHE database with table-granularity locks, i.e. the
@@ -271,30 +271,30 @@ impl RepoRead for SqlxRepo {
         //
         // A single statement is both: it is autocommit (so it can never be
         // the lock-HOLDING waiter that closes a cycle) AND it is one
-        // implicit transaction (so wave, cards and overlays all come from
+        // implicit transaction (so track, cards and overlays all come from
         // one version of the database). The lock order is unchanged —
-        // waves, then cards, then overlays — so the repro above still parks
+        // tracks, then cards, then overlays — so the repro above still parks
         // on `overlays`, it just holds nothing while parked.
         //
         // The rejected third option was `begin_immediate_tx`: also
         // cycle-free (it parks at BEGIN holding nothing) and snapshot-
         // consistent, but it takes the writer slot, which would serialize
-        // every wave-detail read against every writer on the production
+        // every track-detail read against every writer on the production
         // database too. Paying a real production cost to close a gap that
         // does not exist in production is the trade this comment exists to
         // refuse.
         //
         // COST, measured rather than asserted (#1016 review). Aggregating
         // every card and overlay into one JSON string and parsing it whole is
-        // NOT free on big waves. Release build, in-memory sqlite, 30 calls
+        // NOT free on big tracks. Release build, in-memory sqlite, 30 calls
         // per point, one-statement vs. the old three-SELECT deferred tx:
         //
         //     8 cards × 2 KB payload   0.62 ms vs 0.79 ms
         //    60 cards × 20 KB payload 28.3  ms vs 11.2  ms
         //   200 cards × 8 KB payload  41.1  ms vs 17.0  ms
         //
-        // Small waves — the overwhelmingly common shape — get FASTER: one
-        // round trip beats three. Waves carrying large payloads (report /
+        // Small tracks — the overwhelmingly common shape — get FASTER: one
+        // round trip beats three. Tracks carrying large payloads (report /
         // spec cards) get 2–3.5× slower, because the row is materialized as
         // text and then parsed into the same values a second time. That is a
         // real regression on the tail, and the reason it is accepted here is
@@ -314,7 +314,7 @@ impl RepoRead for SqlxRepo {
         // fabricates a card, silently and with no error anywhere. Write-side
         // `json_valid` triggers (migration 0070, reverted with it) do not
         // close that — they cannot see disk corruption, a hand-edited row, or
-        // a restored bad backup, and `spec_harness_wave_vcs`'s
+        // a restored bad backup, and `spec_harness_track_vcs`'s
         // `transcript_refresh_failure_from_corrupt_card_payload…` shows the
         // codebase deliberately EXERCISES a corrupt payload and expects the
         // read to fail loudly rather than degrade into structure. `json()`
@@ -328,7 +328,7 @@ impl RepoRead for SqlxRepo {
         // `cards` / `overlays` means adding it here, the same audit the
         // previous explicit SELECT lists already required. Two columns need
         // an explicit fixup on the way into JSON (both pinned by
-        // `wave_detail_json_shape_tests`, on the bundled sqlite 3.46.0):
+        // `track_detail_json_shape_tests`, on the bundled sqlite 3.46.0):
         //
         //   * `deletable` — INTEGER in sqlite, `bool` in the model.
         //
@@ -342,13 +342,13 @@ impl RepoRead for SqlxRepo {
         //     significant digits, the round-trip width for binary64 — and
         //     splicing the result in as a JSON number via `json()` keeps the
         //     value bit-exact. Pinned by
-        //     `wave_detail_sort_precision_tests`.
+        //     `track_detail_sort_precision_tests`.
         //
         //     This matters beyond a cosmetic digit: two adjacent cards would
         //     collapse onto one `sort`, the total order below would then fall
         //     through to the `id` tiebreak (i.e. the wrong order half the
         //     time), and the web client writes the value it read back to the
-        //     DB when reordering cards (`WaveList.tsx`) — a silent, unlogged
+        //     DB when reordering cards (`TrackList.tsx`) — a silent, unlogged
         //     rewrite of persisted data.
         //
         //     (`payload` needs no such care: `json(c.payload)` re-renders the
@@ -358,26 +358,26 @@ impl RepoRead for SqlxRepo {
         // escapes its TEXT arguments and renders a NULL argument as JSON
         // `null`. An empty group yields `[]`, not `null`, because
         // `json_group_array` over zero rows is an empty array.
-        let row = sqlx::query_as::<_, WaveDetailRow>(&format!(
-            r#"SELECT {WAVE_SELECT_COLUMNS_W},
+        let row = sqlx::query_as::<_, TrackDetailRow>(&format!(
+            r#"SELECT {TRACK_SELECT_COLUMNS_W},
                       (SELECT json_group_array(json_object(
-                           'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind,
+                           'id', c.id, 'track_id', c.track_id, 'kind', c.kind,
                            'sort', json(printf('%!.17g', c.sort)),
                            'payload', json(c.payload), 'title', c.title,
                            'deletable', json(CASE WHEN c.deletable THEN 'true' ELSE 'false' END),
                            'created_at', c.created_at, 'updated_at', c.updated_at))
-                       FROM cards c WHERE c.wave_id = w.id) AS cards_json,
+                       FROM cards c WHERE c.track_id = w.id) AS cards_json,
                       (SELECT json_group_array(json_object(
                            'id', o.id, 'plugin_id', o.plugin_id, 'entity_kind', o.entity_kind,
                            'entity_id', o.entity_id, 'kind', o.kind, 'payload', json(o.payload),
                            'updated_at', o.updated_at))
                        FROM overlays o
-                       WHERE (o.entity_kind = 'wave' AND o.entity_id = w.id)
+                       WHERE (o.entity_kind = 'track' AND o.entity_id = w.id)
                           OR (o.entity_kind = 'card'
                               AND o.entity_id IN
-                                  (SELECT c2.id FROM cards c2 WHERE c2.wave_id = w.id)))
+                                  (SELECT c2.id FROM cards c2 WHERE c2.track_id = w.id)))
                           AS overlays_json
-               FROM waves w WHERE w.id = ?1"#
+               FROM tracks w WHERE w.id = ?1"#
         ))
         .bind(id)
         .fetch_optional(&self.pool)
@@ -397,7 +397,7 @@ impl RepoRead for SqlxRepo {
         // `overlays` was not sorted at all. A sort by a NON-unique key only
         // permutes within tie groups, so every card sharing a `sort` kept
         // whatever order the scan produced — and `sort` is client-assigned, so
-        // ties are normal, not exotic. Today `idx_cards_wave (wave_id, sort)`
+        // ties are normal, not exotic. Today `idx_cards_track (track_id, sort)`
         // happens to make that scan order look reasonable; a different plan
         // unmakes it silently, with no error anywhere.
         //
@@ -419,15 +419,15 @@ impl RepoRead for SqlxRepo {
         //
         // Why not an in-aggregate `ORDER BY` (sqlite >= 3.44, and the bundled
         // 3.46.0 does support it — this was measured, not assumed): it costs
-        // ~28% on payload-heavy waves and cannot be indexed away.
+        // ~28% on payload-heavy tracks and cannot be indexed away.
         // `EXPLAIN QUERY PLAN` reports `USE TEMP B-TREE FOR
         // <aggregate>(ORDER BY)` even when the ORDER BY is exactly the index
-        // order (`c.sort` alone against `idx_cards_wave`), i.e. 3.46 never
+        // order (`c.sort` alone against `idx_cards_track`), i.e. 3.46 never
         // elides the sorter, so every ~20 KB element string is copied through
         // a temp b-tree. Sorting a `Vec` that is already nearly ordered is
         // far cheaper than buffering the payloads twice, and the guarantee is
         // identical because the key is total. Both orders pinned by
-        // `wave_detail_order_tests`, which is RED if either key is weakened
+        // `track_detail_order_tests`, which is RED if either key is weakened
         // to a non-unique one.
         let mut cards: Vec<Card> = serde_json::from_str(&row.cards_json)?;
         cards.sort_by(|a, b| {
@@ -445,21 +445,21 @@ impl RepoRead for SqlxRepo {
             ))
         });
 
-        Ok(Some(WaveDetail {
-            wave: Wave::from(row.wave),
+        Ok(Some(TrackDetail {
+            track: Track::from(row.track),
             cards,
             overlays,
         }))
     }
 
     // ---------------------------------------------------------------- tasks
-    async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>> {
+    async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>> {
         let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE wave_id = ?1 \
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE track_id = ?1 \
              ORDER BY priority DESC, created_at_ms ASC, key ASC"
         );
         let rows = sqlx::query_as::<_, Task>(&sql)
-            .bind(wave_id)
+            .bind(track_id)
             .fetch_all(&self.pool)
             .await?;
         Ok(rows)
@@ -478,7 +478,7 @@ impl RepoRead for SqlxRepo {
         let sql = format!(
             "SELECT {TASK_COLUMNS} FROM tasks \
              WHERE status IN ('pending', 'dispatched', 'running', 'verifying') \
-             ORDER BY wave_id ASC, priority DESC, created_at_ms ASC, key ASC"
+             ORDER BY track_id ASC, priority DESC, created_at_ms ASC, key ASC"
         );
         let rows = sqlx::query_as::<_, Task>(&sql)
             .fetch_all(&self.pool)
@@ -486,29 +486,29 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    async fn task_contexts_by_dst_wave(
+    async fn task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<crate::db::TaskContextRow>> {
         let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
-            r#"SELECT DISTINCT t.id, t.wave_id, t.claim_context_json, t.context_closure_truncated
+            r#"SELECT DISTINCT t.id, t.track_id, t.claim_context_json, t.context_closure_truncated
                FROM task_ref_index i
                JOIN tasks t ON t.id = i.task_id
-               WHERE i.dst_wave_id = ?1
+               WHERE i.dst_track_id = ?1
                  AND t.status IN ('dispatched','running','verifying')
                  AND t.context_stale_at_ms IS NULL
                ORDER BY t.id"#,
         )
-        .bind(dst_wave_id)
+        .bind(dst_track_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                |(task_id, track_id, claim_context_json, closure_truncated)| {
                     crate::db::TaskContextRow {
                         task_id,
-                        wave_id,
+                        track_id,
                         claim_context_json,
                         closure_truncated: closure_truncated != 0,
                     }
@@ -517,29 +517,29 @@ impl RepoRead for SqlxRepo {
             .collect())
     }
 
-    async fn stale_task_contexts_by_dst_wave(
+    async fn stale_task_contexts_by_dst_track(
         &self,
-        dst_wave_id: &str,
+        dst_track_id: &str,
     ) -> Result<Vec<crate::db::TaskContextRow>> {
         let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
-            r#"SELECT DISTINCT t.id, t.wave_id, t.claim_context_json, t.context_closure_truncated
+            r#"SELECT DISTINCT t.id, t.track_id, t.claim_context_json, t.context_closure_truncated
                FROM task_ref_index i
                JOIN tasks t ON t.id = i.task_id
-               WHERE i.dst_wave_id = ?1
+               WHERE i.dst_track_id = ?1
                  AND t.status IN ('dispatched','running','verifying')
                  AND t.context_stale_at_ms IS NOT NULL
                ORDER BY t.id"#,
         )
-        .bind(dst_wave_id)
+        .bind(dst_track_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                |(task_id, track_id, claim_context_json, closure_truncated)| {
                     crate::db::TaskContextRow {
                         task_id,
-                        wave_id,
+                        track_id,
                         claim_context_json,
                         closure_truncated: closure_truncated != 0,
                     }
@@ -550,7 +550,7 @@ impl RepoRead for SqlxRepo {
 
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<crate::db::TaskContextRow>> {
         let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
-            r#"SELECT id, wave_id, claim_context_json, context_closure_truncated
+            r#"SELECT id, track_id, claim_context_json, context_closure_truncated
                FROM tasks
                WHERE status IN ('dispatched','running','verifying')
                  AND context_stale_at_ms IS NULL
@@ -561,10 +561,10 @@ impl RepoRead for SqlxRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                |(task_id, track_id, claim_context_json, closure_truncated)| {
                     crate::db::TaskContextRow {
                         task_id,
-                        wave_id,
+                        track_id,
                         claim_context_json,
                         closure_truncated: closure_truncated != 0,
                     }
@@ -575,7 +575,7 @@ impl RepoRead for SqlxRepo {
 
     async fn task_contexts_inflight_stale(&self) -> Result<Vec<crate::db::TaskContextRow>> {
         let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
-            r#"SELECT id, wave_id, claim_context_json, context_closure_truncated
+            r#"SELECT id, track_id, claim_context_json, context_closure_truncated
                FROM tasks
                WHERE status IN ('dispatched','running','verifying')
                  AND context_stale_at_ms IS NOT NULL
@@ -586,10 +586,10 @@ impl RepoRead for SqlxRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                |(task_id, track_id, claim_context_json, closure_truncated)| {
                     crate::db::TaskContextRow {
                         task_id,
-                        wave_id,
+                        track_id,
                         claim_context_json,
                         closure_truncated: closure_truncated != 0,
                     }
@@ -608,26 +608,26 @@ impl RepoRead for SqlxRepo {
     }
 
     // ---------------------------------------------------------------- cards
-    async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
-        // Keep this ORDER BY aligned with wave_vcs::cards_for_wave_tx; tests pin
+    async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>> {
+        // Keep this ORDER BY aligned with track_vcs::cards_for_track_tx; tests pin
         // the sort ASC, id ASC tie-break for duplicate worker run keys.
         let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
-               FROM cards WHERE wave_id = ?1 ORDER BY sort ASC, id ASC"#,
+            r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
+               FROM cards WHERE track_id = ?1 ORDER BY sort ASC, id ASC"#,
         )
-        .bind(wave_id)
+        .bind(track_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Card::from).collect())
     }
 
-    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>> {
+    async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
+            r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards
-               WHERE kind = 'wave-report'
-                 AND wave_id IN (SELECT id FROM waves WHERE area_id = ?1)
-               ORDER BY wave_id ASC, id ASC"#,
+               WHERE kind = 'track-report'
+                 AND track_id IN (SELECT id FROM tracks WHERE area_id = ?1)
+               ORDER BY track_id ASC, id ASC"#,
         )
         .bind(area_id)
         .fetch_all(&self.pool)
@@ -637,7 +637,7 @@ impl RepoRead for SqlxRepo {
 
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
         let row = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
+            r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards WHERE id = ?1"#,
         )
         .bind(id)
@@ -656,7 +656,7 @@ impl RepoRead for SqlxRepo {
         // Single SELECT = a self-consistent row snapshot: payload and
         // body_crdt can never tear against each other.
         let row: Option<CardWithCrdtRow> = sqlx::query_as(
-            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at,
+            r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at,
                       body_crdt
                FROM cards WHERE id = ?1"#,
         )
@@ -668,10 +668,10 @@ impl RepoRead for SqlxRepo {
 
     async fn task_diagnostics(
         &self,
-        wave_id: &str,
-        blocks: &[calm_types::wave_report::ReportBlock],
+        track_id: &str,
+        blocks: &[calm_types::track_report::ReportBlock],
     ) -> Result<Vec<super::BlockVerdict>> {
-        // No explicit transaction (#1016) — same trade as `wave_detail`, but
+        // No explicit transaction (#1016) — same trade as `track_detail`, but
         // this predicate genuinely cannot collapse into one statement: it
         // loops over each declaration's references issuing a data-dependent
         // lookup per reference, and it is the SAME function the write path
@@ -681,7 +681,7 @@ impl RepoRead for SqlxRepo {
         // worth more than a snapshot on a diagnostics render.
         //
         // What WAS collapsed is the part the verdict is computed from: policy,
-        // ceiling, in-flight occupancy, in-flight keys and the wave's area now
+        // ceiling, in-flight occupancy, in-flight keys and the track's area now
         // come from a single statement, so a displayed capacity /
         // schedulability can no longer be stitched together from four versions
         // of the database. Two remain — the frozen-declaration scan and the
@@ -696,7 +696,8 @@ impl RepoRead for SqlxRepo {
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
         let diagnostics =
-            super::evaluate_schedulability(&mut conn, wave_id, &declarations, &local, true).await?;
+            super::evaluate_schedulability(&mut conn, track_id, &declarations, &local, true)
+                .await?;
         Ok(diagnostics)
     }
 
@@ -754,7 +755,7 @@ impl RepoRead for SqlxRepo {
         let limit = limit.clamp(1, 500);
         let (sql, cursor) = if descending {
             (
-                r#"SELECT id, card_id, runtime_id, wave_id, worker_session_id,
+                r#"SELECT id, card_id, runtime_id, track_id, worker_session_id,
                           kind, payload, created_at_ms
                    FROM worker_flow_items
                    WHERE card_id = ?1 AND id < ?2
@@ -764,7 +765,7 @@ impl RepoRead for SqlxRepo {
             )
         } else {
             (
-                r#"SELECT id, card_id, runtime_id, wave_id, worker_session_id,
+                r#"SELECT id, card_id, runtime_id, track_id, worker_session_id,
                           kind, payload, created_at_ms
                    FROM worker_flow_items
                    WHERE card_id = ?1 AND id > ?2
@@ -951,11 +952,11 @@ impl RepoRead for SqlxRepo {
         // reaped before the next boot's takeover query runs.
         let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
             r#"SELECT c.id,
-                      c.wave_id,
+                      c.track_id,
                       ws.terminal_run_id,
                       0
                FROM cards c
-               JOIN waves w ON w.id = c.wave_id
+               JOIN tracks w ON w.id = c.track_id
                JOIN worker_sessions ws ON ws.id = c.session_id
                    AND ws.provider = ?1
                    AND ws.contract = ?2
@@ -1083,8 +1084,8 @@ impl RepoRead for SqlxRepo {
         cache.seed_from_db(&self.pool).await
     }
 
-    // ------------------------------------------------------- wave-area cache
-    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()> {
+    // ------------------------------------------------------- track-area cache
+    async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()> {
         cache.seed_from_db(&self.pool).await
     }
 
@@ -1114,9 +1115,9 @@ impl RepoRead for SqlxRepo {
         session_id: &str,
     ) -> Result<Option<SessionCardIdentity>> {
         let rows = sqlx::query(
-            r#"SELECT c.id, c.role, c.wave_id, w.area_id
+            r#"SELECT c.id, c.role, c.track_id, w.area_id
                FROM cards c
-               JOIN waves w ON w.id = c.wave_id
+               JOIN tracks w ON w.id = c.track_id
               WHERE c.session_id = ?1
               ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC
               LIMIT 2"#,
@@ -1132,7 +1133,7 @@ impl RepoRead for SqlxRepo {
                 Ok(Some(SessionCardIdentity {
                     card_id: CardId(row.try_get("id")?),
                     role,
-                    wave_id: WaveId(row.try_get("wave_id")?),
+                    track_id: TrackId(row.try_get("track_id")?),
                     area_id: AreaId(row.try_get("area_id")?),
                 }))
             }
@@ -1144,7 +1145,7 @@ impl RepoRead for SqlxRepo {
 
     async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>> {
         let row = sqlx::query(
-            r#"SELECT lease_id, card_id, wave_id, path, state
+            r#"SELECT lease_id, card_id, track_id, path, state
                FROM workspace_leases
                WHERE card_id = ?1
                  AND state = 'held'
@@ -1158,7 +1159,7 @@ impl RepoRead for SqlxRepo {
             Ok(WorkspaceLease {
                 lease_id: row.try_get("lease_id")?,
                 card_id: row.try_get("card_id")?,
-                wave_id: row.try_get("wave_id")?,
+                track_id: row.try_get("track_id")?,
                 path: row.try_get("path")?,
                 state: row.try_get("state")?,
             })

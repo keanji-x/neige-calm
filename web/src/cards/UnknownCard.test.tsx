@@ -5,7 +5,7 @@
 //
 //   1. `adaptKernelCard` (cards/registry.ts) returns null when no registry
 //      entry's `fromKernel` claims a kernel card. Router code then builds a
-//      `WaveCardSlot` with `kind: 'unknown'` instead of `kind: 'card'`.
+//      `TrackCardSlot` with `kind: 'unknown'` instead of `kind: 'card'`.
 //   2. `UnknownCard` (this folder) is the placeholder UI for those slots.
 //
 // We test both seams:
@@ -39,9 +39,9 @@ describe('UnknownCard component', () => {
     expect(handle?.textContent).toMatch(/Unknown card/i);
   });
 
-  it('exports a sane default size for the wave grid layout', () => {
-    // Pinned to keep the wave grid from collapsing if the unknown slot is
-    // the only thing in a wave — w/h must be non-zero and respect minW/H.
+  it('exports a sane default size for the track grid layout', () => {
+    // Pinned to keep the track grid from collapsing if the unknown slot is
+    // the only thing in a track — w/h must be non-zero and respect minW/H.
     expect(UNKNOWN_CARD_SIZE.w).toBeGreaterThanOrEqual(UNKNOWN_CARD_SIZE.minW);
     expect(UNKNOWN_CARD_SIZE.h).toBeGreaterThanOrEqual(UNKNOWN_CARD_SIZE.minH);
     expect(UNKNOWN_CARD_SIZE.minW).toBeGreaterThan(0);
@@ -56,7 +56,7 @@ describe('adaptKernelCard fallback contract', () => {
     // unregistered, made-up kind is the canonical "unknown" path.
     const card: KernelCard = {
       id: 'card_unk',
-      wave_id: 'wave_1',
+      track_id: 'track_1',
       kind: 'definitely-not-a-real-kind',
       sort: 0,
       payload: null,

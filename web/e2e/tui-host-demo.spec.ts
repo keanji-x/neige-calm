@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { LIGHT_THEME_RGB } from '../src/api/themeRgb';
-import { seedWaveViewMode } from './helpers/reset';
+import { seedTrackViewMode } from './helpers/reset';
 
 test.setTimeout(90_000);
 
@@ -61,7 +61,7 @@ test('split-pane TUI copies via OSC 52 and card wheel does not scroll the page',
   }
   const area = (await areaRes.json()) as { id: string };
   const title = `E2E tui-host ${suffix}`;
-  const waveRes = await page.request.post('/api/waves', {
+  const trackRes = await page.request.post('/api/tracks', {
     data: {
       area_id: area.id,
       title,
@@ -69,18 +69,18 @@ test('split-pane TUI copies via OSC 52 and card wheel does not scroll the page',
       // This spec is about the TUI host renderer, not working
       // directories (the terminal card below still passes its own
       // `cwd: '/tmp'`, which is a real directory inside the kernel).
-      // See `helpers/reset.ts::createWaveInArea` for why the invented
+      // See `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-tui-host-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
   });
-  if (!waveRes.ok()) {
-    throw new Error(`POST /api/waves failed: ${waveRes.status()}`);
+  if (!trackRes.ok()) {
+    throw new Error(`POST /api/tracks failed: ${trackRes.status()}`);
   }
-  const wave = (await waveRes.json()) as { id: string };
-  await seedWaveViewMode(page.request, wave.id, 'grid');
-  await page.goto(`/calm/wave/${wave.id}?testMounts=1`);
+  const track = (await trackRes.json()) as { id: string };
+  await seedTrackViewMode(page.request, track.id, 'grid');
+  await page.goto(`/calm/track/${track.id}?testMounts=1`);
   await expect(page.getByText(title, { exact: false }).first()).toBeVisible();
 
   const dumpsBefore = await page.evaluate(() => {
@@ -92,7 +92,7 @@ test('split-pane TUI copies via OSC 52 and card wheel does not scroll the page',
     '../fixtures/tui-host-demo.py',
   );
   const cardRes = await page.request.post(
-    `/api/waves/${wave.id}/terminal-cards`,
+    `/api/tracks/${track.id}/terminal-cards`,
     {
       data: {
         program: `python3 '${fixturePath}'`,

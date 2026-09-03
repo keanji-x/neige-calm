@@ -52,8 +52,8 @@ single `configure({ syncEventVersion, topics })` that returns the
 - `cursor: SyncCursorPort` — `read()`/`write()`. The implementation must persist
   under `SYNC_CURSOR_KEY` (`calm:sync:cursor`) from `core/keys/storage.ts`; the
   bridge never calls `localStorage` itself.
-- `context?: InvalidationContext` — `findWaveOwningCard`, so card-scoped events
-  can reach their wave. Absent it, card-derived wave keys are simply skipped.
+- `context?: InvalidationContext` — `findTrackOwningCard`, so card-scoped events
+  can reach their track. Absent it, card-derived track keys are simply skipped.
 
 ## Event kind → query key
 
@@ -64,36 +64,36 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | Planned key | Mapped key | Note |
 | --- | --- | --- |
 | `['areas']` | `queryKeys.areas()` | |
-| `['waves','area',id]` | `queryKeys.wavesInArea(id)` = `['waves', id]` | shape differs; this is the only place that knows |
-| `['wave', id]` | `queryKeys.waveDetail(id)` | |
-| `['overlays','wave'\|'card']` | `queryKeys.overlaysByKind(kind)` | |
+| `['tracks','area',id]` | `queryKeys.tracksInArea(id)` = `['tracks', id]` | shape differs; this is the only place that knows |
+| `['track', id]` | `queryKeys.trackDetail(id)` | |
+| `['overlays','track'\|'card']` | `queryKeys.overlaysByKind(kind)` | |
 | `['harness-items', cardId]` | `queryKeys.harnessItems(cardId)` | fe conversation history is query-backed |
 | `['spec-run', cardId]` | `queryKeys.specRun(cardId)` | fe current harness phase is query-backed |
-| `['wave-files', …]` | — | **no-op**: no wave-files query is built yet (stub) |
-| `['wave-report', id]` | `queryKeys.waveReport(id)` | the wave's task verdicts (TASKS panel) |
-| `['wave-report']` | `queryKeys.waveReportPrefix()` | prefix; the four `task.*` events carry no wave-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
+| `['track-files', …]` | — | **no-op**: no track-files query is built yet (stub) |
+| `['track-report', id]` | `queryKeys.trackReport(id)` | the track's task verdicts (TASKS panel) |
+| `['track-report']` | `queryKeys.trackReportPrefix()` | prefix; the four `task.*` events carry no track-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
 | `['area-conversations']` | `queryKeys.areaConversationsPrefix()` | prefix only; no conversation-writing event carries a `area_id` and no cached row can supply one, which is why `queryKeys.areaConversations(id)` keeps the id in second position |
-| `['wave-conversations', id]` | `queryKeys.waveConversations(id)` | the endpoint is per-wave (#1189 §4.1) and the plan names the wave whenever `derivedWaveId` resolves one |
-| `['wave-conversations']` | `queryKeys.waveConversationsPrefix()` | fallback for a `runtime.*` event whose card belongs to no cached wave detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
-| `['waves-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
-| `['wave-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
+| `['track-conversations', id]` | `queryKeys.trackConversations(id)` | the endpoint is per-track (#1189 §4.1) and the plan names the track whenever `derivedTrackId` resolves one |
+| `['track-conversations']` | `queryKeys.trackConversationsPrefix()` | fallback for a `runtime.*` event whose card belongs to no cached track detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
+| `['tracks-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
+| `['track-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
 
 Resulting per-kind behavior on the currently-built surfaces:
 
 | Event kind | Effect on cache | Reason |
 | --- | --- | --- |
 | `area.updated` | invalidate areas | area list is live |
-| `area.deleted` | invalidate areas + wave overlays | |
-| `wave.updated` | invalidate that area's wave list + wave detail | `wave-files`/`waves-range` parts drop (stubs) |
-| `wave.lifecycle_changed` | same as `wave.updated` | |
-| `wave.deleted` | invalidate area's wave list + wave overlays; **remove** wave detail | the detail can never resolve again |
-| `card.added` / `card.updated` | invalidate wave detail + both conversation lists | |
-| `card.deleted` | invalidate wave detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
-| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus wave detail when the built-in cache lookup resolves; plus the wave's task verdicts and both conversation lists | `wave-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
-| `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning wave detail | |
-| `wave.report_edited` | invalidate that wave's task verdicts | `wave-files` and `wave-backlinks` are still stubs |
-| `codex.hook`, `claude.hook` | invalidate `wave-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `wave-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
-| `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by wave id when the event resolves one, by prefix otherwise | `wave-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedWaveId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
+| `area.deleted` | invalidate areas + track overlays | |
+| `track.updated` | invalidate that area's track list + track detail | `track-files`/`tracks-range` parts drop (stubs) |
+| `track.lifecycle_changed` | same as `track.updated` | |
+| `track.deleted` | invalidate area's track list + track overlays; **remove** track detail | the detail can never resolve again |
+| `card.added` / `card.updated` | invalidate track detail + both conversation lists | |
+| `card.deleted` | invalidate track detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
+| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
+| `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning track detail | |
+| `track.report_edited` | invalidate that track's task verdicts | `track-files` and `track-backlinks` are still stubs |
+| `codex.hook`, `claude.hook` | invalidate `track-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `track-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
+| `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by track id when the event resolves one, by prefix otherwise | `track-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedTrackId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
 | `harness.item.added` | invalidate harness items | deliberately no conversation key: highest-frequency kind, and it is emitted *before* the `persist_snapshot` that moves the list's ordering column — see the note above `CONVERSATION_LIST_KINDS` in `core/events/invalidation-plan.test.ts` (follow-up tracked in #1216) |
 | `harness.phase.changed` | invalidate spec run + both conversation lists | |
 | `harness.transcript.cleared` | invalidate harness items + spec run | a reset always emits `harness.phase.changed` too, which carries the lists |
@@ -116,11 +116,11 @@ reconnect.
 ## Stubs, stated plainly
 
 The legacy app maps 40+ kinds. This slice covers only the kinds that keep the
-built surfaces live — areas, waves in an area, wave detail, wave overlays.
-Everything routed to `wave-files`, `waves-range` or `wave-backlinks` is a stub
+built surfaces live — areas, tracks in an area, track detail, track overlays.
+Everything routed to `track-files`, `tracks-range` or `track-backlinks` is a stub
 here and becomes real the moment those queries exist: the mapping is one entry
-in `mapPlannedQueryKey`, and the pure plan already emits the key. `wave-report`
-was such a stub and is now real — `waveTaskVerdictsQueryOptions` in
+in `mapPlannedQueryKey`, and the pure plan already emits the key. `track-report`
+was such a stub and is now real — `trackTaskVerdictsQueryOptions` in
 `app/providers/queries.ts` claims exactly the key the plan already emitted, so
 the TASKS panel went live without a line of new invalidation policy.
 
@@ -132,5 +132,5 @@ stamp. Between spawn and completion a terminal worker therefore emits nothing
 that reaches this key, and an agent worker emits only hooks, which are excluded
 above for cost. The panel closes that window with a bounded refresh timer on the
 query itself, not with a new event or a re-included hook; see `hasLiveTaskRun`
-in `core/domain/report.ts` for the accounting and `waveTaskVerdictsQueryOptions`
+in `core/domain/report.ts` for the accounting and `trackTaskVerdictsQueryOptions`
 for the measured interval.

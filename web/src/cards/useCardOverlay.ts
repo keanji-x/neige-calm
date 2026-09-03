@@ -2,7 +2,7 @@
 //
 // REST-seeded via the shared `['overlays', 'card']` snapshot query — the
 // same `GET /api/overlays?entity_kind=card` source the Sidebar pattern
-// uses for wave overlays — NOT a WS stream fold.
+// uses for track overlays — NOT a WS stream fold.
 //
 // The previous implementation folded `overlay.set` / `overlay.deleted`
 // frames into local `useState` with no REST seed, so it only ever knew

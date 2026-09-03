@@ -15,7 +15,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{AreaId, CardRole, NewArea, NewPlugin, NewWave, WaveId, now_ms};
+use calm_server::model::{AreaId, CardRole, NewArea, NewPlugin, NewTrack, TrackId, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -52,7 +52,7 @@ struct Fixture {
     raw_token: String,
     thread_id: String,
     card_id: String,
-    wave_id: String,
+    track_id: String,
     lease_abs: Option<PathBuf>,
     tool_call_marker: PathBuf,
     _runtime: Arc<OperationRuntime>,
@@ -64,7 +64,7 @@ struct Caller {
     raw_token: String,
     thread_id: String,
     card_id: String,
-    wave_id: String,
+    track_id: String,
     lease_abs: Option<PathBuf>,
     _lease_tmp: Option<TempDir>,
 }
@@ -174,7 +174,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         &awaited.repo,
         &scoped_idem_key(
             PLUGIN_ID,
-            &awaited.wave_id,
+            &awaited.track_id,
             &awaited.card_id,
             StubMode::Awaited.idem_key(),
         ),
@@ -269,8 +269,8 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .expect("stop parked plugin");
 
     let parked_missing_cwd = boot_fixture_with_role(StubMode::Parked, CardRole::Spec).await;
-    std::fs::remove_dir_all(parked_missing_cwd._tmp.path().join("wave-cwd"))
-        .expect("delete wave cwd before parked forge action");
+    std::fs::remove_dir_all(parked_missing_cwd._tmp.path().join("track-cwd"))
+        .expect("delete track cwd before parked forge action");
     let parked_missing_cwd_resp = call_forge_tool(&parked_missing_cwd, 6).await;
     assert!(
         parked_missing_cwd_resp.get("error").is_none(),
@@ -314,14 +314,14 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         &override_fx.repo,
         &scoped_idem_key(
             PLUGIN_ID,
-            &override_fx.wave_id,
+            &override_fx.track_id,
             &override_fx.card_id,
             StubMode::Override.idem_key(),
         ),
     )
     .await
     .expect("override op payload");
-    assert_eq!(override_payload["wave_id"], override_fx.wave_id);
+    assert_eq!(override_payload["track_id"], override_fx.track_id);
     assert_eq!(override_payload["card_id"], override_fx.card_id);
     assert_eq!(
         PathBuf::from(
@@ -335,7 +335,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
             .expect("override worker lease")
             .clone()
     );
-    assert_ne!(override_payload["wave_id"], "attacker-wave");
+    assert_ne!(override_payload["track_id"], "attacker-track");
     assert_ne!(override_payload["card_id"], "attacker-card");
     assert_ne!(override_payload["cwd_lease"], "/tmp/attacker-cwd-lease");
     assert_ne!(override_payload["result_path"], "/tmp/attacker.result");
@@ -427,7 +427,7 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
     let probe_b = json!({ "probe_argv": ["/bin/sh", "-c", "exit 1"] });
     let first_key = scoped_idem_key(
         PLUGIN_ID,
-        &fx.wave_id,
+        &fx.track_id,
         &fx.card_id,
         StubMode::Scoped.idem_key(),
     );
@@ -458,7 +458,7 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
             .as_str()
             .expect("retry op_id"),
         first_op_id,
-        "same wave/card/key/payload must remain idempotent"
+        "same track/card/key/payload must remain idempotent"
     );
     assert_eq!(
         operation_count(&fx.repo).await,
@@ -478,7 +478,7 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         .expect("retry result_path");
     assert_eq!(
         retry_result_path, first_result_path,
-        "same wave/card/key retry must reuse the scoped result_path"
+        "same track/card/key retry must reuse the scoped result_path"
     );
 
     let probe_conflict_resp = call_forge_tool_with_args(&fx, 22, json!({ "probe": probe_b })).await;
@@ -513,7 +513,7 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         "changed probe conflict must leave the frozen recovery probe unchanged"
     );
 
-    let second = create_wave_caller(&fx, CardRole::Spec).await;
+    let second = create_track_caller(&fx, CardRole::Spec).await;
     let second_resp = call_forge_tool_for_caller(&fx, &second, 23).await;
     assert!(
         second_resp.get("error").is_none(),
@@ -524,17 +524,17 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         .expect("second op_id");
     assert_ne!(
         second_op_id, first_op_id,
-        "different wave/card must not reuse the first operation"
+        "different track/card must not reuse the first operation"
     );
     assert_eq!(
         operation_count(&fx.repo).await,
         2,
-        "different wave/card with same plugin key/payload must submit a distinct operation"
+        "different track/card with same plugin key/payload must submit a distinct operation"
     );
 
     let second_key = scoped_idem_key(
         PLUGIN_ID,
-        &second.wave_id,
+        &second.track_id,
         &second.card_id,
         StubMode::Scoped.idem_key(),
     );
@@ -549,9 +549,9 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
     let second_payload = operation_payload_by_idem(&fx.repo, &second_key)
         .await
         .expect("second scoped op payload");
-    assert_eq!(first_payload["wave_id"], fx.wave_id);
+    assert_eq!(first_payload["track_id"], fx.track_id);
     assert_eq!(first_payload["card_id"], fx.card_id);
-    assert_eq!(second_payload["wave_id"], second.wave_id);
+    assert_eq!(second_payload["track_id"], second.track_id);
     assert_eq!(second_payload["card_id"], second.card_id);
     let stable_first_result_path = first_payload["result_path"]
         .as_str()
@@ -570,8 +570,8 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
 
     let rows = event_rows(&fx.repo, "worktree.provisioned").await;
     assert_eq!(rows.len(), 2, "both scoped operations must persist events");
-    assert_worktree_event(&rows[0], &fx.wave_id, &fx.card_id);
-    assert_worktree_event(&rows[1], &second.wave_id, &second.card_id);
+    assert_worktree_event(&rows[0], &fx.track_id, &fx.card_id);
+    assert_worktree_event(&rows[1], &second.track_id, &second.card_id);
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -598,7 +598,7 @@ async fn forge_action_default_result_dir_is_gate_logs_sibling() {
         &fx.repo,
         &scoped_idem_key(
             PLUGIN_ID,
-            &fx.wave_id,
+            &fx.track_id,
             &fx.card_id,
             StubMode::Awaited.idem_key(),
         ),
@@ -635,8 +635,8 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     let tool_call_marker = plugins_data_dir.join(PLUGIN_ID).join("tools-call-count");
-    let wave_cwd = tmp.path().join("wave-cwd");
-    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+    let track_cwd = tmp.path().join("track-cwd");
+    std::fs::create_dir_all(&track_cwd).expect("create track cwd");
 
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -645,7 +645,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     let events = EventBus::new();
 
     let area = repo
@@ -656,32 +656,32 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         })
         .await
         .expect("create area");
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "mcp-plugin-forge-action".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create wave");
-    repo.seed_wave_area_cache(&wave_area_cache)
+        .expect("create track");
+    repo.seed_track_area_cache(&track_area_cache)
         .await
-        .expect("seed wave/area cache");
+        .expect("seed track/area cache");
 
-    let caller = create_card_caller(&sqlx_repo, &card_role_cache, wave.id.clone(), role).await;
+    let caller = create_card_caller(&sqlx_repo, &card_role_cache, track.id.clone(), role).await;
 
     let plugin_host = boot_plugin_host(
         repo.clone(),
         plugins_dir.clone(),
         plugins_data_dir.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         mode,
         tool_call_marker.clone(),
     )
@@ -720,7 +720,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -743,7 +743,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         raw_token: caller.raw_token,
         thread_id: caller.thread_id,
         card_id: caller.card_id,
-        wave_id: caller.wave_id,
+        track_id: caller.track_id,
         lease_abs: caller.lease_abs,
         tool_call_marker,
         _runtime: runtime,
@@ -752,34 +752,34 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     }
 }
 
-async fn create_wave_caller(fx: &Fixture, role: CardRole) -> Caller {
-    let wave_cwd = fx
+async fn create_track_caller(fx: &Fixture, role: CardRole) -> Caller {
+    let track_cwd = fx
         ._tmp
         .path()
-        .join(format!("wave-cwd-{}", calm_server::model::new_id()));
-    std::fs::create_dir_all(&wave_cwd).expect("create additional wave cwd");
-    let wave = fx
+        .join(format!("track-cwd-{}", calm_server::model::new_id()));
+    std::fs::create_dir_all(&track_cwd).expect("create additional track cwd");
+    let track = fx
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             template_input: None,
             area_id: AreaId::from(fx.area_id.clone()),
             title: "mcp-plugin-forge-action-extra".into(),
             sort: None,
-            cwd: wave_cwd.display().to_string(),
+            cwd: track_cwd.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
-        .expect("create additional wave");
-    create_card_caller(&fx.repo, &fx.card_role_cache, wave.id, role).await
+        .expect("create additional track");
+    create_card_caller(&fx.repo, &fx.card_role_cache, track.id, role).await
 }
 
 async fn create_card_caller(
     sqlx_repo: &Arc<SqlxRepo>,
     card_role_cache: &CardRoleCache,
-    wave_id: WaveId,
+    track_id: TrackId,
     role: CardRole,
 ) -> Caller {
     let card_id = calm_server::model::new_id();
@@ -812,7 +812,7 @@ async fn create_card_caller(
         card_id.clone(),
         &runtime_id,
         None,
-        wave_id.clone(),
+        track_id.clone(),
         None,
         None,
         "/workspace".into(),
@@ -842,7 +842,7 @@ async fn create_card_caller(
         }
     };
     if let Some(lease_rel) = lease_rel.as_deref() {
-        insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), lease_rel).await;
+        insert_workspace_lease(&mut tx, &card_id, track_id.as_str(), lease_rel).await;
     }
     tx.commit().await.expect("commit card tx");
 
@@ -853,7 +853,7 @@ async fn create_card_caller(
         raw_token,
         thread_id,
         card_id,
-        wave_id: wave_id.to_string(),
+        track_id: track_id.to_string(),
         lease_abs,
         _lease_tmp: lease_tmp,
     }
@@ -938,20 +938,20 @@ async fn boot_plugin_host(
 async fn insert_workspace_lease(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
-    wave_id: &str,
+    track_id: &str,
     path: &str,
 ) {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
     )
     .bind(calm_server::model::new_id())
     .bind(card_id)
-    .bind(wave_id)
+    .bind(track_id)
     .bind(path)
     .bind("test-lease-owner")
     .bind(now + 60_000)
@@ -1112,13 +1112,13 @@ async fn operation_payload_by_idem(repo: &SqlxRepo, idem_key: &str) -> Option<Va
     payload.map(|payload| serde_json::from_str(&payload).expect("operation payload json"))
 }
 
-fn scoped_idem_key(plugin_id: &str, wave_id: &str, card_id: &str, idem_key: &str) -> String {
-    format!("{plugin_id}:{wave_id}:{card_id}:{idem_key}")
+fn scoped_idem_key(plugin_id: &str, track_id: &str, card_id: &str, idem_key: &str) -> String {
+    format!("{plugin_id}:{track_id}:{card_id}:{idem_key}")
 }
 
 async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     let rows: Vec<RawEventRow> = sqlx::query_as(
-        "SELECT scope_kind, scope_area, scope_wave, scope_card, payload \
+        "SELECT scope_kind, scope_area, scope_track, scope_card, payload \
              FROM events WHERE kind = ?1 ORDER BY id ASC",
     )
     .bind(kind)
@@ -1127,11 +1127,11 @@ async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     .expect("event rows");
     rows.into_iter()
         .map(
-            |(scope_kind, scope_area, scope_wave, scope_card, payload)| {
+            |(scope_kind, scope_area, scope_track, scope_card, payload)| {
                 (
                     scope_kind,
                     scope_area,
-                    scope_wave,
+                    scope_track,
                     scope_card,
                     serde_json::from_str(&payload).expect("event payload json"),
                 )
@@ -1140,12 +1140,12 @@ async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
         .collect()
 }
 
-fn assert_worktree_event(row: &EventRow, wave_id: &str, card_id: &str) {
-    let (scope_kind, _scope_area, scope_wave, scope_card, payload) = row;
+fn assert_worktree_event(row: &EventRow, track_id: &str, card_id: &str) {
+    let (scope_kind, _scope_area, scope_track, scope_card, payload) = row;
     assert_eq!(scope_kind, "card");
-    assert_eq!(scope_wave.as_deref(), Some(wave_id));
+    assert_eq!(scope_track.as_deref(), Some(track_id));
     assert_eq!(scope_card.as_deref(), Some(card_id));
-    assert_eq!(payload["wave_id"], wave_id);
+    assert_eq!(payload["track_id"], track_id);
     assert_eq!(payload["card_id"], card_id);
     assert_eq!(payload["path"], "/tmp/shared-worktree");
 }

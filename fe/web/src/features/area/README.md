@@ -5,20 +5,20 @@ Two presentational surfaces plus the shared area palette.
 | Module | What it is |
 | --- | --- |
 | `palette.ts` | INV-DUP-006 — the canonical area colour table (`AREA_PALETTE`), consumed only by the sidebar's random new-area picker. Not redeclared anywhere. |
-| `page/public.tsx` | `<AreaPage>` — the area route shell: swatch, rename, wave count, `+ New wave`, delete-with-confirm, and a body slot. |
-| `new-wave/public.tsx` | `<NewWaveForm>` — the create form: a task, plus an optional folder (#1131, #1147). Local form state only; never calls an API. |
+| `page/public.tsx` | `<AreaPage>` — the area route shell: swatch, rename, track count, `+ New track`, delete-with-confirm, and a body slot. |
+| `new-track/public.tsx` | `<NewTrackForm>` — the create form: a task, plus an optional folder (#1131, #1147). Local form state only; never calls an API. |
 
 ## Composition contract
 
-`AreaPage` **does not render the wave list**. `features/**` may not import a
-sibling feature domain, so the wave rows live in `features/wave/row` and
+`AreaPage` **does not render the track list**. `features/**` may not import a
+sibling feature domain, so the track rows live in `features/track/row` and
 `app/router` composes them:
 
 ```tsx
-<AreaPage area={area} waveCount={waves.length} waveList={<WaveList … />} … />
+<AreaPage area={area} trackCount={tracks.length} trackList={<TrackList … />} … />
 ```
 
-The empty state ("no waves yet") therefore belongs to the list slot. The page
+The empty state ("no tracks yet") therefore belongs to the list slot. The page
 must never add a second one — two empty states on one screen is the bug this
 sentence exists to prevent.
 
@@ -46,23 +46,23 @@ navigate there.
 Submit is enabled iff the composer is non-empty — template and folder are never
 required and both default to nothing.
 
-`NewWaveDraft` is `{ message, template_id?, template_input?, cwd? }`. **`message`
-is the wave's intent, not its title**: `NewWaveRoute` posts `POST /api/waves`
+`NewTrackDraft` is `{ message, template_id?, template_input?, cwd? }`. **`message`
+is the track's intent, not its title**: `NewTrackRoute` posts `POST /api/tracks`
 with *no* `title` at all — the kernel stores the empty string and the spec agent
-names the wave later through `calm.wave.rename`.
+names the track later through `calm.track.rename`.
 
-`message`'s destination is the new wave's spec card as its first message, and
+`message`'s destination is the new track's spec card as its first message, and
 **that delivery is not implemented here** (#1299). Doing it from this page takes
 three writes and cannot be made sound from a component — an unmount mid-flight
 loses the sentence silently, and `/spec/input` has no idempotency key so any
 retry can double-send. It moves into the create request instead. Until then the
-page says so on screen and the route opens the wave's spec conversation on
-arrival, so saying it again is one keystroke. See `NewWaveRoute`'s doc comment.
+page says so on screen and the route opens the track's spec conversation on
+arrival, so saying it again is one keystroke. See `NewTrackRoute`'s doc comment.
 
 **The `cwd` key is absent, not empty, when no folder was chosen.** That
 distinction is the whole workspace contract: no `cwd` / `attach_folder` is the
 kernel's *managed* branch, where it creates and owns a workspace under the
-workspace root; `{ cwd, attach_folder: true }` *attaches* the wave to a directory
+workspace root; `{ cwd, attach_folder: true }` *attaches* the track to a directory
 the kernel never creates, moves or deletes.
 
 Create time is the only entry into that choice: the kernel offers no
@@ -74,8 +74,8 @@ The folder control is **not** `DirectoryField` here, and that is deliberate:
 `DirectoryField` renders `ui/directory-browser` inline when no dialog is above
 it, and on a route that fallback is what fires — the #1211 regression. This page
 owns its own `Dialog` around `DirectoryBrowser` instead
-(CAP-WAVEWORKSPACE-003); `features/wave/new-card`, which *is* inside a dialog,
-keeps `DirectoryField` and the child-view push (CAP-WAVEWORKSPACE-006). Both
+(CAP-TRACKWORKSPACE-003); `features/track/new-card`, which *is* inside a dialog,
+keeps `DirectoryField` and the child-view push (CAP-TRACKWORKSPACE-006). Both
 call sites are registered in `tools/architecture/directory-picker-hosts.mjs`,
 which fails closed on a new one. Either way the `listDirectory` port arrives as
 a prop; `features/**` never reaches a transport (see

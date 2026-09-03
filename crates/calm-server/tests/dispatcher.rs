@@ -7,7 +7,7 @@
 //!      only the requested ones (and that the receiver outlives extra
 //!      lifecycle activity around it).
 //!   2. Pending shared-spec thread binding.
-//!   3. Scheduler trigger wiring: `wave.updated` pokes the plan scheduler.
+//!   3. Scheduler trigger wiring: `track.updated` pokes the plan scheduler.
 //!
 //! Tests run against an in-memory `SqlxRepo` and stubbed worker spawn
 //! dependencies.
@@ -26,10 +26,10 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope, SubscribeFilter, SubscribeScope};
-use calm_server::ids::{ActorId, AreaId, WaveId};
+use calm_server::ids::{ActorId, AreaId, TrackId};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
-    WavePatch, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewTerminal, NewTrack, Task, TaskKind, TaskStatus, TrackLifecycle,
+    TrackPatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -42,8 +42,8 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_area_cache::WaveAreaCache;
-use calm_types::wave_report::{ReportBlock, WaveReportPayload};
+use calm_server::track_area_cache::TrackAreaCache;
+use calm_types::track_report::{ReportBlock, TrackReportPayload};
 use serde_json::Value;
 
 static DISPATCHER_DAEMON_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -52,8 +52,8 @@ async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
     CardRoleCache,
-    WaveAreaCache,
-    WaveId,
+    TrackAreaCache,
+    TrackId,
     AreaId,
 ) {
     let repo: Arc<dyn Repo> = Arc::new(
@@ -69,8 +69,8 @@ async fn boot() -> (
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "dispatcher-test".into(),
@@ -86,14 +86,14 @@ async fn boot() -> (
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    let wave_area_cache = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     (
         repo,
         events,
         card_role_cache,
-        wave_area_cache,
-        wave.id,
+        track_area_cache,
+        track.id,
         area.id,
     )
 }
@@ -127,19 +127,19 @@ fn codex_req(idem: &str, goal: &str) -> Event {
     }
 }
 
-fn wave_scope(wave: &WaveId, area: &AreaId) -> EventScope {
-    EventScope::Wave {
-        wave: wave.clone(),
+fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
+    EventScope::Track {
+        track: track.clone(),
         area: area.clone(),
     }
 }
 
 #[tokio::test]
 async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_updated() {
-    let (repo, events, _cache, _wcc, wave_id, _area_id) = boot().await;
+    let (repo, events, _cache, _wcc, track_id, _area_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -190,7 +190,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
         .register(
             PendingEntry::new(
                 spec_card.id.to_string(),
-                Some(wave_id.to_string()),
+                Some(track_id.to_string()),
                 terminal.id.to_string(),
                 runtime.id.clone(),
             )
@@ -242,10 +242,10 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
 
 #[tokio::test]
 async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pending() {
-    let (repo, events, _cache, _wcc, wave_id, _area_id) = boot().await;
+    let (repo, events, _cache, _wcc, track_id, _area_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -268,7 +268,7 @@ async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pendin
         .register(
             PendingEntry::new(
                 spec_card.id.to_string(),
-                Some(wave_id.to_string()),
+                Some(track_id.to_string()),
                 terminal.id.to_string(),
                 "missing-runtime".to_string(),
             )
@@ -428,11 +428,11 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 #[tokio::test(flavor = "current_thread")]
 async fn lagged_context_sweep_precedes_scheduler_resume() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, _area_id) = boot().await;
-    repo.wave_update(
-        wave_id.as_str(),
-        WavePatch {
-            lifecycle: Some(WaveLifecycle::Working),
+    let (repo, events, cache, wcc, track_id, _area_id) = boot().await;
+    repo.track_update(
+        track_id.as_str(),
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Working),
             ..Default::default()
         },
     )
@@ -440,8 +440,8 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     .expect("set working lifecycle");
 
     let pool = repo.sqlite_pool().expect("dispatcher test uses sqlite");
-    let report = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
+    let report = TrackReportPayload {
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
         body: "# Task\n".into(),
@@ -456,20 +456,20 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     };
     sqlx::query(
         "INSERT INTO cards \
-         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
-         VALUES ('lagged-context-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('lagged-context-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
     )
-    .bind(wave_id.as_str())
+    .bind(track_id.as_str())
     .bind(serde_json::to_string(&report).unwrap())
     .execute(&pool)
     .await
     .expect("seed referenced report block");
 
-    let task_id = format!("{}:lagged-stale", wave_id.as_str());
+    let task_id = format!("{}:lagged-stale", track_id.as_str());
     let now = now_ms();
     let task = Task {
         id: task_id.clone(),
-        wave_id: wave_id.as_str().to_string(),
+        track_id: track_id.as_str().to_string(),
         key: "lagged-stale".into(),
         kind: TaskKind::Terminal,
         goal: "must not spawn".into(),
@@ -538,7 +538,10 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     );
     dispatcher.scheduler().mark_boot_sweep_complete();
     dispatcher.scheduler().open_context_sweep_gate().await;
-    dispatcher.scheduler().schedule_wave(wave_id.clone()).await;
+    dispatcher
+        .scheduler()
+        .schedule_track(track_id.clone())
+        .await;
     let frozen_context: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
             .bind(&task_id)
@@ -561,7 +564,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         events.emit(
             ActorId::Kernel,
             Event::TaskContextAdvanced {
-                wave_id: Default::default(),
+                track_id: Default::default(),
                 task_key: String::new(),
                 task_id: format!("noise-{index}"),
                 changed_refs: Vec::new(),
@@ -596,7 +599,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #644 round-2 review F4 — `wave.updated` is a scheduler trigger.
+// Issue #644 round-2 review F4 — `track.updated` is a scheduler trigger.
 // ---------------------------------------------------------------------------
 
 const CARD_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
@@ -755,29 +758,29 @@ impl ProviderAdapter for CardSpawnAdapter {
     }
 }
 
-/// Round-2 review F4: a Working wave held at `task_budget = 0` with a
-/// pending plan task must dispatch when `PATCH /api/waves` raises the
-/// budget — that PATCH emits ONLY `wave.updated` (no lifecycle event,
+/// Round-2 review F4: a Working track held at `task_budget = 0` with a
+/// pending plan task must dispatch when `PATCH /api/tracks` raises the
+/// budget — that PATCH emits ONLY `track.updated` (no lifecycle event,
 /// no plan.updated), so the dispatcher's subscriber must treat
-/// `wave.updated` as a scheduler poke instead of waiting for the
+/// `track.updated` as a scheduler poke instead of waiting for the
 /// periodic reconcile tick (300s default — far beyond this test).
 #[tokio::test]
-async fn wave_updated_budget_raise_pokes_scheduler() {
+async fn track_updated_budget_raise_pokes_scheduler() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, area_id) = boot().await;
-    repo.wave_update(
-        wave_id.as_str(),
-        WavePatch {
-            lifecycle: Some(WaveLifecycle::Working),
+    let (repo, events, cache, wcc, track_id, area_id) = boot().await;
+    repo.track_update(
+        track_id.as_str(),
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Working),
             task_budget: Some(Some(0)),
             ..Default::default()
         },
     )
     .await
-    .expect("hold wave at budget 0");
+    .expect("hold track at budget 0");
     let worker_card = repo
         .card_create(NewCard {
-            wave_id: wave_id.clone(),
+            track_id: track_id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -785,13 +788,13 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         })
         .await
         .expect("worker card for the spawn stub");
-    cache.insert(worker_card.id.clone(), CardRole::Worker, wave_id.clone());
+    cache.insert(worker_card.id.clone(), CardRole::Worker, track_id.clone());
 
-    let task_id = format!("{}:budget-held", wave_id.as_str());
+    let task_id = format!("{}:budget-held", track_id.as_str());
     let now = now_ms();
     let task = calm_server::model::Task {
         id: task_id.clone(),
-        wave_id: wave_id.as_str().to_string(),
+        track_id: track_id.as_str().to_string(),
         key: "budget-held".into(),
         kind: calm_server::model::TaskKind::Codex,
         goal: "do budget-held".into(),
@@ -858,17 +861,17 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         4,
     );
 
-    // A wave.updated while the budget is still 0 pokes the scheduler
+    // A track.updated while the budget is still 0 pokes the scheduler
     // but the §5.2 budget gate holds the task.
-    let wave = repo.wave_get(wave_id.as_str()).await.unwrap().unwrap();
+    let track = repo.track_get(track_id.as_str()).await.unwrap().unwrap();
     repo.log_pure_event(
         ActorId::User,
-        wave_scope(&wave_id, &area_id),
+        track_scope(&track_id, &area_id),
         None,
         &events,
         &cache,
         &wcc,
-        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(track, None)),
     )
     .await
     .unwrap();
@@ -879,27 +882,27 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         "budget 0 must keep holding the task"
     );
 
-    // The budget-raise PATCH shape: row update + ONLY a wave.updated
-    // event (mirror of routes/waves.rs `update_wave` with no lifecycle
+    // The budget-raise PATCH shape: row update + ONLY a track.updated
+    // event (mirror of routes/tracks.rs `update_track` with no lifecycle
     // change).
-    repo.wave_update(
-        wave_id.as_str(),
-        WavePatch {
+    repo.track_update(
+        track_id.as_str(),
+        TrackPatch {
             task_budget: Some(Some(1)),
             ..Default::default()
         },
     )
     .await
     .expect("raise budget");
-    let wave = repo.wave_get(wave_id.as_str()).await.unwrap().unwrap();
+    let track = repo.track_get(track_id.as_str()).await.unwrap().unwrap();
     repo.log_pure_event(
         ActorId::User,
-        wave_scope(&wave_id, &area_id),
+        track_scope(&track_id, &area_id),
         None,
         &events,
         &cache,
         &wcc,
-        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(track, None)),
     )
     .await
     .unwrap();
@@ -913,7 +916,7 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         }
     })
     .await
-    .expect("wave.updated must poke the scheduler — task stayed pending until the tick");
+    .expect("track.updated must poke the scheduler — task stayed pending until the tick");
     assert!(
         matches!(
             status,

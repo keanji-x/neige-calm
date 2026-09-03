@@ -76,7 +76,7 @@ type TextContentPart = {
   text?: unknown;
 };
 
-const DIFF_BLOCK_PREFIX = '## Wave state changes since your last turn';
+const DIFF_BLOCK_PREFIX = '## Track state changes since your last turn';
 const DIFF_BLOCK_END = '\n\n---\n\n';
 const USER_SAYS_MARKER = 'User says:\n';
 
@@ -87,8 +87,8 @@ const SYSTEM_LABELS: Array<[prefix: string, label: string]> = [
   // observations that were queued before the turn text carried an author;
   // the second names the author (`user` / `plugin` / `assistant`). Both are
   // the same chat row.
-  ['The user edited the wave report', 'Report edited'],
-  ['The wave report was edited', 'Report edited'],
+  ['The user edited the track report', 'Report edited'],
+  ['The track report was edited', 'Report edited'],
   ['A dispatched task completed', 'Task completed'],
   ['A dispatched task failed', 'Task failed'],
 ];

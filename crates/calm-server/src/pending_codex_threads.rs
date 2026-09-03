@@ -36,7 +36,7 @@ use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
 };
 use crate::state::WriteContext;
-use crate::wave_area_cache::WaveAreaCache;
+use crate::track_area_cache::TrackAreaCache;
 
 pub struct PendingThreadStartRegistry {
     queue: Mutex<VecDeque<PendingEntry>>,
@@ -48,7 +48,7 @@ pub struct PendingThreadStartRegistry {
 pub struct PendingEntry {
     pub card_id: String,
     pub role: CardRole,
-    pub wave_id: Option<String>,
+    pub track_id: Option<String>,
     pub terminal_id: String,
     pub runtime_id: String,
     /// PTY pid (best-effort, for debug logs). Not used for attribution.
@@ -62,14 +62,14 @@ pub struct PendingEntry {
 impl PendingEntry {
     pub fn new(
         card_id: String,
-        wave_id: Option<String>,
+        track_id: Option<String>,
         terminal_id: String,
         runtime_id: String,
     ) -> Self {
         Self {
             card_id,
             role: CardRole::Worker,
-            wave_id,
+            track_id,
             terminal_id,
             runtime_id,
             pty_pid: None,
@@ -95,7 +95,7 @@ impl PendingThreadStartRegistry {
 
     pub async fn register(&self, entry: PendingEntry) -> Result<()> {
         let card_id = entry.card_id.clone();
-        let wave_id = entry.wave_id.clone();
+        let track_id = entry.track_id.clone();
         let terminal_id = entry.terminal_id.clone();
         let runtime_id = entry.runtime_id.clone();
         let pty_pid = entry.pty_pid;
@@ -113,7 +113,7 @@ impl PendingThreadStartRegistry {
         tracing::info!(
             target = "shared_codex_daemon::pending_register",
             %card_id,
-            ?wave_id,
+            ?track_id,
             %terminal_id,
             %runtime_id,
             ?pty_pid,
@@ -364,7 +364,7 @@ impl PendingThreadStartRegistry {
         let scope = crate::routes::cards::card_scope(
             self.repo.as_ref(),
             card.id.clone(),
-            card.wave_id.clone(),
+            card.track_id.clone(),
         )
         .await?;
         let card_id_for_tx = card_id.to_string();
@@ -372,8 +372,8 @@ impl PendingThreadStartRegistry {
         let thread_id_for_tx = thread_id.to_string();
         let card_for_event = card;
         let card_role_cache = CardRoleCache::default();
-        let wave_area_cache = WaveAreaCache::default();
-        let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+        let track_area_cache = TrackAreaCache::default();
+        let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
         let result = write_with_events_typed(
             self.repo.as_ref(),
             ActorId::Kernel,
@@ -516,12 +516,12 @@ pub(crate) async fn card_payload_clear_pending_status(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
     let scope =
-        crate::routes::cards::card_scope(repo, card.id.clone(), card.wave_id.clone()).await?;
+        crate::routes::cards::card_scope(repo, card.id.clone(), card.track_id.clone()).await?;
     let runtime_id_for_tx = runtime_id.to_string();
     let card_for_event = card;
     let card_role_cache = CardRoleCache::default();
-    let wave_area_cache = WaveAreaCache::default();
-    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
+    let track_area_cache = TrackAreaCache::default();
+    let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let (_updated, _id) = write_with_event_typed(
         repo,
         ActorId::Kernel,
@@ -578,7 +578,7 @@ mod tests {
     use super::*;
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
-    use crate::model::{NewArea, NewCard, NewWave};
+    use crate::model::{NewArea, NewCard, NewTrack};
     use serde_json::json;
 
     async fn seed_card_without_runtime() -> (Arc<SqlxRepo>, EventBus, String) {
@@ -591,8 +591,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+        let track = repo
+            .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id,
                 title: "pending".into(),
@@ -607,7 +607,7 @@ mod tests {
             .unwrap();
         let card = repo
             .card_create(NewCard {
-                wave_id: wave.id,
+                track_id: track.id,
                 title: None,
                 kind: "codex".into(),
                 sort: None,

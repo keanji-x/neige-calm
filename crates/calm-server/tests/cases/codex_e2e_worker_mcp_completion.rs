@@ -9,7 +9,7 @@
 //! exec-shell carries `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` (channel 3 —
 //! the per-thread `shell_environment_policy.set` block on `thread/start`).
 //! That channel keeps getting silently dropped (#738/#747/#836), and when
-//! it is, the worker can never report and the wave wedges silently.
+//! it is, the worker can never report and the track wedges silently.
 //!
 //! Move 2 routes **codex** worker completion through the native
 //! `calm.task.complete` MCP tool (channel 2 — DaemonTrust + codex-injected
@@ -94,7 +94,7 @@ use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_ru
 use calm_server::event::{Event, EventBus};
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch, new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -105,7 +105,7 @@ use calm_server::shared_codex_appserver::{
 };
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use clap::Parser;
 use serde_json::json;
 // #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
@@ -158,11 +158,11 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
         })
         .await
         .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
+    let track = repo
+        .track_create(NewTrack {
             template_input: None,
             area_id: area.id,
-            title: "worker-mcp-completion-wave".into(),
+            title: "worker-mcp-completion-track".into(),
             sort: None,
             cwd: TEST_CWD.into(),
             template_id: None,
@@ -172,14 +172,14 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
         })
         .await
         .unwrap();
-    // Put the wave in Working so the worker's first report is a legal,
+    // Put the track in Working so the worker's first report is a legal,
     // unsurprising transition (TaskCompleted auto-promotes Working ->
     // Reviewing). Not strictly required for the assertion, which only
-    // waits on TaskCompleted, but keeps the wave shape realistic.
-    repo.wave_update(
-        wave.id.as_str(),
-        WavePatch {
-            lifecycle: Some(WaveLifecycle::Working),
+    // waits on TaskCompleted, but keeps the track shape realistic.
+    repo.track_update(
+        track.id.as_str(),
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Working),
             ..Default::default()
         },
     )
@@ -192,7 +192,7 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
         &mut tx,
         card_id.clone(),
         NewCard {
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
@@ -209,7 +209,7 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
     .unwrap();
     tx.commit().await.unwrap();
 
-    (card_id, wave.id.to_string())
+    (card_id, track.id.to_string())
 }
 
 async fn seed_shared_worker_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
@@ -273,13 +273,13 @@ async fn worker_completes_with_channel3_stripped() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_area_cache = WaveAreaCache::new();
+    let track_area_cache = TrackAreaCache::new();
     let events = EventBus::new();
     // Subscribe BEFORE driving the turn so we never miss the commit.
     let mut bus_rx = events.subscribe();
-    let (card_id, wave_id) = seed_worker_card(&repo, &card_role_cache).await;
-    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
-    eprintln!("[worker-mcp] seeded wave={wave_id} worker_card={card_id} codex={WORKER_CODEX}");
+    let (card_id, track_id) = seed_worker_card(&repo, &card_role_cache).await;
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+    eprintln!("[worker-mcp] seeded track={track_id} worker_card={card_id} codex={WORKER_CODEX}");
 
     let daemon_token = auth::CardMcpToken::generate().into_inner();
     let daemon_token_hash = auth::hash_token(&daemon_token);
@@ -298,7 +298,7 @@ async fn worker_completes_with_channel3_stripped() {
     let mcp_server = McpServer::spawn(
         repo_dyn.clone(),
         events.clone(),
-        WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         mcp_socket_path.clone(),
         shim_bin,
         build_default_registry(),
@@ -334,7 +334,7 @@ async fn worker_completes_with_channel3_stripped() {
     // concrete idempotency key K the worker is told to echo.
     let idempotency_key = "wm-strip-c3";
     let worker_instructions =
-        calm_server::spec_card::render_worker_prompt_for_e2e(&wave_id, WORKER_CODEX);
+        calm_server::spec_card::render_worker_prompt_for_e2e(&track_id, WORKER_CODEX);
 
     // Channel 3 STRIPPED: config is None — NO shell_environment_policy at
     // all, so NEIGE_MCP_SOCKET / NEIGE_MCP_TOKEN never reach the worker's
@@ -344,7 +344,7 @@ async fn worker_completes_with_channel3_stripped() {
         .thread_start_for_card(
             &card_id,
             CardRole::Worker,
-            Some(&wave_id),
+            Some(&track_id),
             SharedThreadStartParams {
                 cwd: TEST_CWD.into(),
                 approval_policy: "never".into(),

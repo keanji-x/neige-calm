@@ -122,7 +122,7 @@
   migration: pending
 
 # ---------------------------------------------------------------------------
-# §2.2 — Wave object semantics
+# §2.2 — Track object semantics
 # ---------------------------------------------------------------------------
 
 - id: INV-A11Y-007
@@ -167,8 +167,8 @@
     Sidebar 的一级 Today 导航按钮必须是顶层唯一的 Today 入口
   why: >
     #175：kernel 默认的 Today terminal 移入隐藏 system area（默认被 `GET /api/areas` 过滤掉），
-    测试不再需要与 seeded `Scratch` area 下自动创建的 Today wave 消歧；但用户自己把 wave
-    命名为 "Today" 时 WaveRow 的 landmark scoping 模式仍然必要
+    测试不再需要与 seeded `Scratch` area 下自动创建的 Today track 消歧；但用户自己把 track
+    命名为 "Today" 时 TrackRow 的 landmark scoping 模式仍然必要
   source: web/src/shared/components/Sidebar.tsx:258-267
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
   owner_slice: app/shell/sidebar
@@ -180,22 +180,22 @@
 
 - id: INV-A11Y-010
   kind: invariant
-  family: wave-semantics
+  family: track-semantics
   statement: >
     Sidebar「Waiting on you」分区（`aria-label` 为该串的 section）里，行的 accessible name
-    由行按钮的可见内容算出：`side-wave-title` span 恒渲染 wave 标题，`side-wave-area` span
+    由行按钮的可见内容算出：`side-track-title` span 恒渲染 track 标题，`side-track-area` span
     只在该行解析到 area 时才渲染（查不到时上游传 `area` 为 null），所以 name 是「标题」或
     「标题 + area 名」两种形态之一；按钮不带 aria-label／aria-labelledby，传给它的 `title`
     属性（`<area> · <title>`）纯属信息性，不进入 name
   why: >
     §2.2 明示 title attribute is informational only —— 这一半仍然成立，且是这条的真正约束：
-    只要行按钮不长出 aria-label，name 就等于渲染出来的文字。原文案还写着「name 必须只是 wave
+    只要行按钮不长出 aria-label，name 就等于渲染出来的文字。原文案还写着「name 必须只是 track
     title」，与实现相反：area 名是同一个按钮里可见的 span，本来就该进 name（#1148 裁决：文案错，
     不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 area 的消歧信息）。#1148 第二轮：area span
-    是条件渲染，写成恒为两段是把条件渲染写成了恒真；source 同时并回 271-283，因为 `WaveRow`
+    是条件渲染，写成恒为两段是把条件渲染写成了恒真；source 同时并回 271-283，因为 `TrackRow`
     是所有分区共用的，只引按钮那几行看不出这条限定在「Waiting on you」分区。#1148 第三轮：
     271-283 里的 `displayTitle` 是父作用域 map 中的同名变量，真正喂给 :658 那个 span 的是
-    `WaveRow` 自己在 :633 算出的 `displayTitle`，故把 653-660 并成 633-660 纳入真载体。
+    `TrackRow` 自己在 :633 算出的 `displayTitle`，故把 653-660 并成 633-660 纳入真载体。
   source: web/src/shared/components/Sidebar.tsx:271-283,633-660
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
@@ -207,16 +207,16 @@
 
 - id: INV-A11Y-011
   kind: invariant
-  family: wave-semantics
+  family: track-semantics
   statement: >
-    WaveRow 的行按钮与每行的 × 删除按钮必须是**兄弟**节点（包在
-    `<div className="wave-row-wrapper">` 内），绝不可嵌套
+    TrackRow 的行按钮与每行的 × 删除按钮必须是**兄弟**节点（包在
+    `<div className="track-row-wrapper">` 内），绝不可嵌套
   why: >
     §2.2 明示：嵌套会违反 axe 的 `nested-interactive` 规则。删除按钮 stopPropagation
-    以免触发行导航；hover-reveal 靠 `.wave-row-wrapper:hover` / `:focus-within`
-  source: web/src/shared/components/WaveRow.tsx:44-119
+    以免触发行导航；hover-reveal 靠 `.track-row-wrapper:hover` / `:focus-within`
+  source: web/src/shared/components/TrackRow.tsx:44-119
   authoritative_test: web/e2e/a11y-axe.spec.ts:229
-  owner_slice: features/wave/row
+  owner_slice: features/track/row
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -225,15 +225,15 @@
 
 - id: INV-A11Y-012
   kind: invariant
-  family: wave-semantics
+  family: track-semantics
   statement: >
     每行删除按钮的 accessible name 必须是 `Delete "<title>"` 形式的 `aria-label`
   why: >
     §2.2 给出确切形状；e2e 依赖它做 exact/substring 消歧（见 a11y-keyboard 的注释：
     Delete 按钮的 name 里包含 title 作为子串）
-  source: web/src/shared/components/WaveRow.tsx:106-118
-  authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:15
-  owner_slice: features/wave/row
+  source: web/src/shared/components/TrackRow.tsx:106-118
+  authoritative_test: web/e2e/a11y-sidebar-track-delete.spec.ts:15
+  owner_slice: features/track/row
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -242,12 +242,12 @@
 
 - id: INV-A11Y-013
   kind: invariant
-  family: wave-semantics
+  family: track-semantics
   statement: >
-    AreaPage 必须把它那一份排序后的 wave 列表包进 `<section aria-label="Waves">`
+    AreaPage 必须把它那一份排序后的 track 列表包进 `<section aria-label="Tracks">`
   why: >
     §2.2：否则 `getByRole('button', { name: /today/i })` 会与 sidebar 的 Today 导航按钮
-    冲突；测试范式是 `getByRole('region', { name: 'Waves' }).getByRole('button', …)`
+    冲突；测试范式是 `getByRole('region', { name: 'Tracks' }).getByRole('button', …)`
   source: web/src/pages/Area.tsx:168-189
   authoritative_test: NONE
   owner_slice: features/area/page
@@ -259,9 +259,9 @@
 
 - id: INV-A11Y-014
   kind: invariant
-  family: wave-semantics
+  family: track-semantics
   statement: >
-    AreaPage 只渲染**单个**已排序的 wave 列表（`waiting → running → idle`），
+    AreaPage 只渲染**单个**已排序的 track 列表（`waiting → running → idle`），
     不得拆成 per-status 子分区
   why: >
     §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
@@ -279,15 +279,15 @@
   kind: invariant
   family: rename-name-split
   statement: >
-    WavePage 头部面包屑的 wave 标题在可 rename 时必须是
-    `<span role="button" tabIndex={0} aria-label={wave.title} aria-describedby="<id>">`，
-    配一个兄弟 `<span className="sr-only">Rename wave</span>`；只读时是纯 `<span>`
+    TrackPage 头部面包屑的 track 标题在可 rename 时必须是
+    `<span role="button" tabIndex={0} aria-label={track.title} aria-describedby="<id>">`，
+    配一个兄弟 `<span className="sr-only">Rename track</span>`；只读时是纯 `<span>`
   why: >
     §2.2 + §3.2：这是全项目唯一无法避免 `role="button"` 的地方——必须坐在 `<h1>` 里而
     不破坏 heading 的 accessible-name 组合
-  source: web/src/pages/Wave.tsx:401-430
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:609
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:401-430
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:609
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -298,9 +298,9 @@
   kind: invariant
   family: status-dot
   statement: >
-    Wave 状态药丸内的 `<CardStatusDot>` 必须自带 `aria-label="status <state>"`
+    Track 状态药丸内的 `<CardStatusDot>` 必须自带 `aria-label="status <state>"`
   why: >
-    §2.2 + §2.7：FSM 动词文本可能相同（多个 wave 都是 "Working"），点必须独立可播报
+    §2.2 + §2.7：FSM 动词文本可能相同（多个 track 都是 "Working"），点必须独立可播报
   source: web/src/shared/components/CardStatusDot.tsx:48-79
   authoritative_test: NONE
   owner_slice: ui/atoms
@@ -314,13 +314,13 @@
   kind: capability
   family: view-mode
   statement: >
-    Wave 头部必须有一个无 checked 状态的原生 `<button className="view-cycle">`，
+    Track 头部必须有一个无 checked 状态的原生 `<button className="view-cycle">`，
     每次激活按 `grid → list → report → grid` 循环持久化的视图模式
   why: >
     Slice 9：这是键盘/AT 用户从 grid 进入键盘可用的 list 视图的唯一入口
-  source: web/src/pages/Wave.tsx:62-96
+  source: web/src/pages/Track.tsx:62-96
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -335,9 +335,9 @@
     `"<Current> view — switch to <next> view"`（例 `"Report view — switch to grid view"`）
   why: >
     §2.2：按钮无 checked 状态，当前模式只能靠 name 播报；e2e 用正则精确匹配这个形状
-  source: web/src/pages/Wave.tsx:74-96
+  source: web/src/pages/Track.tsx:74-96
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:835
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -348,12 +348,12 @@
   kind: invariant
   family: view-mode
   statement: >
-    Report 视图必须是新 wave 的默认视图；overlay 缺失时 WavePage 回落到 report
+    Report 视图必须是新 track 的默认视图；overlay 缺失时 TrackPage 回落到 report
   why: >
-    §2.2 与 §2.7 都明示 "Report is the default for new waves" / "Absence defaults to report"
-  source: web/src/pages/Wave.tsx:253-267
+    §2.2 与 §2.7 都明示 "Report is the default for new tracks" / "Absence defaults to report"
+  source: web/src/pages/Track.tsx:253-267
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -364,13 +364,13 @@
   kind: capability
   family: view-mode
   statement: >
-    WavePage 必须能按 per-wave view-mode overlay 渲染三种 body：Report(`WaveReportPage`)、
-    Grid(`WaveGrid`)、List(`WaveList`)
+    TrackPage 必须能按 per-track view-mode overlay 渲染三种 body：Report(`TrackReportPage`)、
+    Grid(`TrackGrid`)、List(`TrackList`)
   why: >
     Slice 9 的 Path C 决议：不给 grid 加键盘故事，而是另起一个 list 组件
-  source: web/src/pages/Wave.tsx:253-274,468-499
+  source: web/src/pages/Track.tsx:253-274,468-499
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -384,7 +384,7 @@
     从 report 视图添加 worker card 时必须自动切到 grid，使新建的 card 立即可见
   why: >
     §2.2 明示；否则用户在 report 视图下建卡后看不到任何反馈
-  source: web/src/pages/Wave.tsx:276-283
+  source: web/src/pages/Track.tsx:276-283
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -400,7 +400,7 @@
     Report 视图在 spec agent 尚未产出 report 时必须渲染 report 空态，而不是空白
   why: >
     §2.2 明示 "or the report empty state while the spec agent has not produced one"
-  source: web/src/pages/WaveReportPage.tsx:929-950
+  source: web/src/pages/TrackReportPage.tsx:929-950
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -418,9 +418,9 @@
   why: >
     §2.2 + §3.4 + §9 明示 "by design"：Slice 9 走 Path C，把键盘能力放进独立的 list 视图，
     而不是给 RGL 补键盘。新写代码的人只会看到「grid 没实现键盘」而误以为是缺陷
-  source: web/src/WaveGrid.tsx:250-265; web/src/WaveList.tsx:1-7
+  source: web/src/TrackGrid.tsx:250-265; web/src/TrackList.tsx:1-7
   authoritative_test: NONE
-  owner_slice: features/wave/grid
+  owner_slice: features/track/grid
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -435,9 +435,9 @@
     键盘用户 / 屏幕阅读器用户 / 驱动 UI 的 AI agent 都应切到 list 视图操作布局
   why: >
     Slice 9 决议；这是 grid 无键盘故事的对价，必须成对保留
-  source: web/src/WaveList.tsx:1-32,200-279
+  source: web/src/TrackList.tsx:1-32,200-279
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -452,9 +452,9 @@
     (`report → grid → list`)；从 grid 出发按一次
   why: >
     §2.2 / §3.1 / §9 三处重复记录这条精确步数——它是键盘用户能否触达 list 的唯一说明
-  source: web/src/pages/Wave.tsx:62-96
+  source: web/src/pages/Track.tsx:62-96
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -508,8 +508,8 @@
     #891 slice ③ 的 CI 回归：`/browse/i` 同时命中 Browse… 按钮和一个名为
     "E2E browse area" 的 select trigger，触发 strict-mode 冲突。已扫过的哨兵 locator：
     `'Browse…'`(U+2026)、`'Create task'`、`'Use a different area'`
-  source: web/e2e/wave-create-browse-cwd.spec.ts:57
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:57
+  source: web/e2e/track-create-browse-cwd.spec.ts:57
+  authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:57
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -539,7 +539,7 @@
   statement: >
     Workflow select 的选项用 `.calm-select-opt-name` + 空格文本节点 + `.calm-select-opt-desc`
     两段式，无分隔符字形；其 accessible name 因此展平成 "name + description"
-    （"None plain wave" / "Issue dev issue → PR autoflow"）。Area 选项为纯文本
+    （"None plain track" / "Issue dev issue → PR autoflow"）。Area 选项为纯文本
   why: >
     §2.2：区分靠排印而非分隔符；locator 必须用前缀匹配
     `getByRole('option', { name: /^None/ })`，因为描述被折进了 name
@@ -563,7 +563,7 @@
     时跑一次，所以 variant-change effect 必须自己接管切换后的焦点（共用 `initialFocusRef`）
   source: web/src/pages/Area.tsx:470-473,549-555
   authoritative_test: NONE
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -574,7 +574,7 @@
   kind: invariant
   family: calm-select
   statement: >
-    New wave 对话框没有可见标题行（传 `hideTitleRow`），只靠面板的 `aria-label="New wave"`
+    New track 对话框没有可见标题行（传 `hideTitleRow`），只靠面板的 `aria-label="New track"`
     命名；也没有头部 × 按钮——关闭途径只有表单 Cancel、Esc、遮罩点击。被 push 的子视图
     （Browse… 目录选择器）仍然渲染自己的标题头
   why: >
@@ -590,7 +590,7 @@
 
 - id: CAP-A11Y-033
   kind: capability
-  family: wave-create-form
+  family: track-create-form
   statement: >
     issue-dev 变体必须用原生 `<input type="checkbox">`（label 包裹 input）承载
     `template_input.merge_policy`：未勾选（默认）提交 `"hold-for-ratify"`，勾选提交
@@ -600,7 +600,7 @@
     不需要任何自定义 aria。wire shape 与早先的 `<select>` 版本保持不变
   source: web/src/shared/components/NewTaskForm.tsx:621-659
   authoritative_test: NONE
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -609,7 +609,7 @@
 
 - id: INV-A11Y-034
   kind: invariant
-  family: wave-create-form
+  family: track-create-form
   statement: >
     Auto-merge checkbox 下方的单行提示必须通过 `aria-describedby` 接成该 checkbox 的
     accessible description（断言用 `toHaveAccessibleDescription`）
@@ -617,7 +617,7 @@
     §2.2：提示解释的是二元语义的后果，必须随控件一起播报而非当作游离文本
   source: web/src/shared/components/NewTaskForm.tsx:621-659
   authoritative_test: NONE
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -626,7 +626,7 @@
 
 - id: INV-A11Y-035
   kind: invariant
-  family: wave-create-form
+  family: track-create-form
   statement: >
     Workflow 与 Area 两个 select 必须通过 label 关联暴露为
     `getByRole('combobox', { name: 'Workflow' | 'Area' })`；断言当前值读 select 的 `value`，
@@ -635,7 +635,7 @@
     §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
   source: web/src/pages/Area.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
   authoritative_test: NONE
-  owner_slice: features/wave/create
+  owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -654,7 +654,7 @@
     唯一视为可拖拽的部分；header 承载 card 的 accessible name
   why: >
     §2.3：header 之外的一切因此保持正常键盘可聚焦，pointer-only 交互不会截走按键
-  source: web/src/WaveGrid.tsx:250-265; web/src/cards/UnknownCard.tsx:30-35; web/src/cards/plugin-iframe.tsx:375-381; web/src/cards/builtins/codex.tsx:171-177,355-362; web/src/cards/builtins/iframe.tsx:118-124; web/src/cards/builtins/terminal.tsx:129-135,148-155; web/src/cards/builtins/file-viewer.tsx:376-382; web/src/cards/CardHead.tsx:146,158,167-172
+  source: web/src/TrackGrid.tsx:250-265; web/src/cards/UnknownCard.tsx:30-35; web/src/cards/plugin-iframe.tsx:375-381; web/src/cards/builtins/codex.tsx:171-177,355-362; web/src/cards/builtins/iframe.tsx:118-124; web/src/cards/builtins/terminal.tsx:129-135,148-155; web/src/cards/builtins/file-viewer.tsx:376-382; web/src/cards/CardHead.tsx:146,158,167-172
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
   intentional_omission: false
@@ -706,7 +706,7 @@
     `tabindex="-1"`
   why: >
     #236 followup：它出厂带 `tabindex="0"`，会让离屏 textarea 成为页面自然 Tab 序中的一站；
-    又因为 xterm 把 Tab 转发给 PTY，只要 wave 里有任何 xterm-backed card，外层键盘导航就被
+    又因为 xterm 把 Tab 转发给 PTY，只要 track 里有任何 xterm-backed card，外层键盘导航就被
     困住。用户仍可点击进入（xterm 自己的 mousedown 会聚焦 textarea），之后所有按键
     （含 Tab → tab-completion）流向 PTY
   source: web/src/XtermView.tsx:506-526
@@ -872,7 +872,7 @@
   family: status-dot
   statement: >
     6 态 card FSM 必须经由 `<CardStatusDot>` 以 `aria-label="status <state>"` 暴露；
-    同一个点同时驱动 per-card 状态条与 wave 级字形，两处 accessible-name 格式必须一致
+    同一个点同时驱动 per-card 状态条与 track 级字形，两处 accessible-name 格式必须一致
   why: >
     §2.7：格式一致才能让 AT / agent 用同一条 locator 覆盖两个表面
   source: web/src/shared/components/CardStatusDot.tsx:48-79
@@ -889,12 +889,12 @@
   family: view-mode
   statement: >
     view-mode overlay 必须持久化在
-    `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')`，
+    `(plugin_id='kernel', entity_kind='view', entity_id=<trackId>, kind='view-mode')`，
     payload `{ schemaVersion: 1, mode: 'grid' | 'list' | 'report' }`；缺失回落 report
   why: >
     Slice 9 定义的确切 key/payload 形状；schema 常量 `OVERLAY_VIEW_MODE_SCHEMA_VERSION`
     与 layout 的并列放在 `web/src/cards/builtins/schemaVersions.ts`
-  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Wave.tsx:253-274
+  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Track.tsx:253-274
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: systems/cards/overlays
   intentional_omission: false
@@ -910,7 +910,7 @@
     view-mode overlay 必须与既有的 `kind: 'layout'` overlay 分开存放
   why: >
     Slice 9 明示：否则 list-mode 用户（从不拖拽）为了翻一下 cycle 按钮就得铸一行 layout
-  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Wave.tsx:253-258
+  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Track.tsx:253-258
   authoritative_test: NONE
   owner_slice: systems/cards/overlays
   intentional_omission: false
@@ -923,9 +923,9 @@
   kind: invariant
   family: tab-order
   statement: >
-    Sidebar 展开时，Tab 顺序必须是：Today → Collapse sidebar → waiting-on-you waves（若有）
-    → pinned waves（若有）→ Areas 控件（`New area`、area 展开按钮、area 按钮、展开的内联
-    wave 行）→ 用户菜单 → 主内容
+    Sidebar 展开时，Tab 顺序必须是：Today → Collapse sidebar → waiting-on-you tracks（若有）
+    → pinned tracks（若有）→ Areas 控件（`New area`、area 展开按钮、area 按钮、展开的内联
+    track 行）→ 用户菜单 → 主内容
   why: >
     §3.1 记录的确切 stop 序列。**全项目唯一记录处，无 lint 无单测**——丢了就没有任何
     地方说明正确顺序是什么
@@ -974,9 +974,9 @@
   kind: invariant
   family: tab-order
   statement: >
-    AreaPage 的 Tab 顺序必须是：标题（可 rename 时为 rename 按钮）→ 各 wave 行
-    （每行是真 `<button className="wave-row">`，其兄弟 `<button className="wave-row-delete">`
-    在下一个 stop）→ `+ New wave` ghost 按钮。分区标题不是 tab stop
+    AreaPage 的 Tab 顺序必须是：标题（可 rename 时为 rename 按钮）→ 各 track 行
+    （每行是真 `<button className="track-row">`，其兄弟 `<button className="track-row-delete">`
+    在下一个 stop）→ `+ New track` ghost 按钮。分区标题不是 tab stop
   why: >
     §3.1 记录的确切序列，无测试覆盖
   source: web/src/pages/Area.tsx:99-143,168-189
@@ -992,16 +992,16 @@
   kind: invariant
   family: tab-order
   statement: >
-    WavePage 的 Tab 顺序必须是：返回按钮 → view-mode cycle 按钮 → area 面包屑按钮 →
-    wave 标题 rename 按钮 → Add panel → 删除按钮 → 正文（report 视图的 report 内容 /
+    TrackPage 的 Tab 顺序必须是：返回按钮 → view-mode cycle 按钮 → area 面包屑按钮 →
+    track 标题 rename 按钮 → Add panel → 删除按钮 → 正文（report 视图的 report 内容 /
     grid 视图的卡片 / list 视图的列表）
   why: >
-    §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
+    §3.1 记录的确切序列。这是「TrackPage 的 Tab 顺序应该是什么」的唯一记录处，
     无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
     自管内部序列）
-  source: web/src/pages/Wave.tsx:359-499
+  source: web/src/pages/Track.tsx:359-499
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1013,10 +1013,10 @@
   family: activation
   statement: >
     能用真实 `<button>` 的地方必须用真实 `<button>`（Enter 与 Space 天然激活）；
-    WaveRow 与 AreaPage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
+    TrackRow 与 AreaPage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
   why: >
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
-  source: web/src/shared/components/WaveRow.tsx:44-65
+  source: web/src/shared/components/TrackRow.tsx:44-65
   authoritative_test: NONE
   owner_slice: none/policy/a11y-doc
   intentional_omission: false
@@ -1030,12 +1030,12 @@
   family: activation
   statement: >
     任何 `role="button"` 元素必须显式处理 Enter 与 Space；今天唯一不可避免的实例是
-    WavePage 的 rename span
+    TrackPage 的 rename span
   why: >
     §3.2：它必须坐在 `<h1>` 内而不破坏 heading 的 accessible-name 组合，所以不能用真 button
-  source: web/src/pages/Wave.tsx:210-274
+  source: web/src/pages/Track.tsx:210-274
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1083,9 +1083,9 @@
     Esc 在 rename 编辑输入框上必须取消编辑并把焦点还给展示元素
   why: >
     §3.3 + §5：与 blur-commit 相对，Esc 是唯一的丢弃路径
-  source: web/src/pages/Wave.tsx:139-142
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:162
-  owner_slice: features/wave/page
+  source: web/src/pages/Track.tsx:139-142
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:162
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1096,7 +1096,7 @@
   kind: invariant
   family: escape
   statement: >
-    内联 NewWave / NewArea 输入框必须 blur-commit（`onBlur` 调 `submit()`），
+    内联 NewTrack / NewArea 输入框必须 blur-commit（`onBlur` 调 `submit()`），
     而 Escape 接到 `close`（丢弃草稿）
   why: >
     §3.3 明示这对不对称行为：blur 存、Esc 丢。重写时若把 Esc 也接成 commit 会静默吞掉
@@ -1118,12 +1118,12 @@
   kind: capability
   family: list-keyboard
   statement: >
-    WaveList 中 ArrowUp / ArrowDown 必须在卡片之间移动焦点，并**环绕**
+    TrackList 中 ArrowUp / ArrowDown 必须在卡片之间移动焦点，并**环绕**
   why: >
     Slice 9 的 roving tabindex 契约（`useRovingTabindex`），与 AddPanel 菜单同一套语义
-  source: web/src/WaveList.tsx:18-22,92,133-135,210-240
+  source: web/src/TrackList.tsx:18-22,92,133-135,210-240
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1134,12 +1134,12 @@
   kind: capability
   family: list-keyboard
   statement: >
-    WaveList 中 Home / End 必须跳到第一 / 最后一张卡片
+    TrackList 中 Home / End 必须跳到第一 / 最后一张卡片
   why: >
     Slice 9 契约条目
-  source: web/src/WaveList.tsx:18-22,133-135,210-240
+  source: web/src/TrackList.tsx:18-22,133-135,210-240
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1150,14 +1150,14 @@
   kind: capability
   family: list-keyboard
   statement: >
-    WaveList 中 `Alt+ArrowUp` / `Alt+ArrowDown` 必须把聚焦卡片上移 / 下移——通过
+    TrackList 中 `Alt+ArrowUp` / `Alt+ArrowDown` 必须把聚焦卡片上移 / 下移——通过
     `useUpdateCardMutation` 交换 `sort` 值（该 mutation 对 `sort` 是乐观的），
     并产生可被 trace ring buffer 捕获的 `card.updated` 事件
   why: >
     Slice 9：这是 grid 无键盘重排的唯一对价路径。带 Alt 是为了不和纯箭头的焦点移动冲突
-  source: web/src/WaveList.tsx:24-28,143-197,215-227
+  source: web/src/TrackList.tsx:24-28,143-197,215-227
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1168,16 +1168,16 @@
   kind: capability
   family: list-keyboard
   statement: >
-    WaveList 中 `Delete` 必须删除聚焦的卡片，**无确认弹窗**（与 grid 视图的
+    TrackList 中 `Delete` 必须删除聚焦的卡片，**无确认弹窗**（与 grid 视图的
     `×` 按钮行为一致）；`Backspace` 是刻意排除的，它是编辑键，不承担破坏性快捷键
   why: >
     §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
     操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型。Backspace 在编辑
     控件里意味着退格，把它接成删除卡片会让键盘用户在输入过程中误删整张卡片，所以
     契约只认 Delete
-  source: web/src/WaveList.tsx:234-240,258
+  source: web/src/TrackList.tsx:234-240,258
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1188,12 +1188,12 @@
   kind: capability
   family: list-keyboard
   statement: >
-    WaveList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 wave 头部
+    TrackList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 track 头部
   why: >
     §3.4：roving tabindex 让整个列表只占一个 tab stop，Tab 必须是「出口」而非在卡片间走
-  source: web/src/WaveList.tsx:18-22,133-135,210-240
+  source: web/src/TrackList.tsx:18-22,133-135,210-240
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1204,13 +1204,13 @@
   kind: invariant
   family: list-keyboard
   statement: >
-    WaveList 的每个 `<li>` 必须携带
+    TrackList 的每个 `<li>` 必须携带
     `aria-keyshortcuts="ArrowUp ArrowDown Alt+ArrowUp Alt+ArrowDown Home End Delete"`
   why: >
     §3.4 明示目的：让这套契约**仅凭 AT 就可发现**，不必读文档。字符串内容与顺序即契约
-  source: web/src/WaveList.tsx:242-277
+  source: web/src/TrackList.tsx:242-277
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1225,9 +1225,9 @@
   why: >
     §9 明示 "resize is out of scope (cards in list view self-size to intrinsic content)"；
     Slice 9 只承诺 reorder + remove
-  source: web/src/WaveList.tsx:1-43,200-285
+  source: web/src/TrackList.tsx:1-43,200-285
   authoritative_test: NONE
-  owner_slice: features/wave/list
+  owner_slice: features/track/list
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -1417,7 +1417,7 @@
   kind: invariant
   family: rename-name-split
   statement: >
-    rename 的展示元素必须是一等 tab stop（WavePage 用 `<span role="button" tabIndex={0}>`；
+    rename 的展示元素必须是一等 tab stop（TrackPage 用 `<span role="button" tabIndex={0}>`；
     AreaPage 用 `<h1>` 内的真实嵌套 `<button>`——后者是首选）
   why: >
     §5：不可聚焦就没有键盘进入 rename 的路径
@@ -1456,9 +1456,9 @@
     （Enter 走原生 button 激活）
   why: >
     Slice 3 (#64)：F2 是 Windows 惯例。preventDefault 只给 F2 是因为 Enter 不需要拦截
-  source: web/src/pages/Wave.tsx:198-210
+  source: web/src/pages/Track.tsx:198-210
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1475,7 +1475,7 @@
     §5 明示三路语义。blur-commit 是最容易在重写中丢失的一条——新写的人通常只实现
     Enter/Esc
   source: web/src/pages/Area.tsx:188-293
-  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:241
+  authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:241
   owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
@@ -1507,9 +1507,9 @@
     使 focus 调用发生在 React 卸载 input **之后**
   why: >
     §5 明示机制原因：早于卸载调 focus 会被随后的卸载抢走，焦点静默掉到 `<body>`
-  source: web/src/pages/Wave.tsx:116-127
+  source: web/src/pages/Track.tsx:116-127
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1544,11 +1544,11 @@
   family: focus-visible
   statement: >
     已登记的 `outline: none` / `:focus-visible` 配对清单必须保持完整：
-    `.side .area-nav-edit input`、`.wave-title[role="button"]`、`.wave-title-input`、
-    `.h-display-rename`、`.login-input`、`.wave-list-item`
+    `.side .area-nav-edit input`、`.track-title[role="button"]`、`.track-title-input`、
+    `.h-display-rename`、`.login-input`、`.track-list-item`
   why: >
     §6 的表格是这份清单的唯一记录处。另有无 `outline:none` 但有 focus-visible 的表面：
-    `.area-title-input`、`.new-wave-input`；而 `.wave-back` / `.wave-area` / `.crumb-link`
+    `.area-title-input`、`.new-track-input`；而 `.track-back` / `.track-area` / `.crumb-link`
     用实心 `outline` + `outline-offset`，从不剥默认焦点环
   source: web/src/calm.css:283
   authoritative_test: NONE
@@ -1621,9 +1621,9 @@
   why: >
     §7 明示 "Don't add a spinner where text would do"——spinner 在 reduced-motion 下会
     被折叠成静止，从而丢失它承载的信息
-  source: web/src/pages/Wave.tsx:257
+  source: web/src/pages/Track.tsx:257
   authoritative_test: NONE
-  owner_slice: features/wave/page
+  owner_slice: features/track/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit

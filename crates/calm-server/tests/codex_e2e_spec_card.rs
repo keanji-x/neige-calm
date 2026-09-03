@@ -9,7 +9,7 @@
 //!
 //! ## What it proves
 //!
-//! After `POST /api/waves`:
+//! After `POST /api/tracks`:
 //!   1. The spec card's codex daemon is running.
 //!   2. The codex process inherits `NEIGE_MCP_SOCKET` and
 //!      `NEIGE_MCP_TOKEN` in its `/proc/<pid>/environ` — hard
@@ -34,7 +34,7 @@
 //! window: the very bug the test was supposed to catch (codex env
 //! missing the MCP vars after #236's sync-spawn change) couldn't be
 //! caught here because the augmentation branch in
-//! `routes::waves::create_wave` (lines 315-326) is gated on
+//! `routes::tracks::create_track` (lines 315-326) is gated on
 //! `s.mcp_server.is_some()`. We now boot a real `McpServer` against a
 //! tempdir-scoped UDS, assign it onto the `AppState` after
 //! `from_parts`, and hard-assert both env vars are present. (Field is
@@ -67,7 +67,7 @@ use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 // #868: codex binary resolution goes through the shared no-fallback
@@ -227,7 +227,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     let card_role_cache = CardRoleCache::new();
 
     // Issue #236 followup — boot a real `McpServer` against a
-    // tempdir-scoped UDS so `routes::waves::create_wave`'s env-
+    // tempdir-scoped UDS so `routes::tracks::create_track`'s env-
     // augmentation branch (lines 315-326) folds `NEIGE_MCP_SOCKET` +
     // `NEIGE_MCP_TOKEN` into the codex daemon's spawn env. With
     // `mcp_server = None` (the default `from_parts` shape), the
@@ -237,11 +237,11 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     // the field is `pub` and the doc on `AppState::mcp_server`
     // explicitly calls out test-fixture mutation as the documented seam.
     let mcp_socket_path = tmp.path().join("mcp").join("kernel.sock");
-    let wave_area_cache = WaveAreaCache::new();
+    let track_area_cache = TrackAreaCache::new();
     let mcp_server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         mcp_socket_path.clone(),
         locate_shim_bin(),
         build_default_registry(),
@@ -269,11 +269,14 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
             std::env::temp_dir().join("calm-plugins-data-codex-e2e"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
+            calm_server::state::WriteContext::new(
+                card_role_cache.clone(),
+                track_area_cache.clone(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_area_cache.clone()),
+        Some(track_area_cache.clone()),
     );
     state.mcp_server = Some(mcp_server.clone());
 
@@ -291,19 +294,19 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
         baseline_pids.len(),
     );
 
-    // 1. POST /api/waves — synchronous spawn (#236). 201 means the
+    // 1. POST /api/tracks — synchronous spawn (#236). 201 means the
     //    daemon socket is up; codex is on its way up or already
     //    running inside the daemon.
     let (status, body) = post(
         app.clone(),
-        "/api/waves",
-        json!({"area_id": area.id, "title": "codex-e2e wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        "/api/tracks",
+        json!({"area_id": area.id, "title": "codex-e2e track", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "wave create returned non-201; body={body}",
+        "track create returned non-201; body={body}",
     );
 
     // 1a. #236 followup — find the spec card the route just minted
@@ -315,17 +318,17 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     //     codex CLI 0.132 doesn't do — the shim exited with
     //     `missing NEIGE_MCP_SOCKET` and the spec agent had no way
     //     to reach the kernel.
-    let wave_id = body
+    let track_id = body
         .get("id")
         .and_then(Value::as_str)
-        .expect("wave id in response");
+        .expect("track id in response");
     let spec_cards_body = {
         let resp = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/api/waves/{wave_id}/cards"))
+                    .uri(format!("/api/tracks/{track_id}/cards"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -335,9 +338,9 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
         serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null)
     };
     // The spec card is the only kernel-owned (`deletable = false`) card
-    // minted on a fresh wave (`model::Card::deletable` flips to `false`
-    // for spec cards per #229 PR A — see `create_wave` in
-    // `routes::waves`). `Card` doesn't expose the `role` field on the
+    // minted on a fresh track (`model::Card::deletable` flips to `false`
+    // for spec cards per #229 PR A — see `create_track` in
+    // `routes::tracks`). `Card` doesn't expose the `role` field on the
     // wire (that lives in `card_roles`); deletable is the next-best
     // stable discriminator here.
     let spec_card_id = spec_cards_body
@@ -352,7 +355,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
             })
         })
         .unwrap_or_else(|| {
-            panic!("spec card present on freshly created wave; cards body: {spec_cards_body}")
+            panic!("spec card present on freshly created track; cards body: {spec_cards_body}")
         });
     let codex_home = state.codex.codex_homes_dir.join(&spec_card_id);
     let cfg_path = codex_home.join("config.toml");
@@ -443,7 +446,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
 
     // Issue #236 followup — hard assertions. With the real `McpServer`
     // wired into the test fixture (see the boot block above), the
-    // create-wave handler's env-augmentation branch must have folded
+    // create-track handler's env-augmentation branch must have folded
     // both vars into the codex daemon's env. A soft-skip here would
     // re-open the exact regression window that landed the followup
     // fixes (shim token injection + docker mount): the bug is
@@ -456,13 +459,13 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     );
     assert!(
         !socket.is_empty(),
-        "[codex-e2e] codex env missing NEIGE_MCP_SOCKET — wave-create env augmentation \
-         didn't fire (routes/waves.rs lines 315-326) or the codex process exec'd before the \
+        "[codex-e2e] codex env missing NEIGE_MCP_SOCKET — track-create env augmentation \
+         didn't fire (routes/tracks.rs lines 315-326) or the codex process exec'd before the \
          env reached it",
     );
     assert!(
         !token.is_empty(),
-        "[codex-e2e] codex env missing NEIGE_MCP_TOKEN — wave-create env augmentation \
+        "[codex-e2e] codex env missing NEIGE_MCP_TOKEN — track-create env augmentation \
          didn't mint a per-card token or didn't fold it into the spawn env",
     );
 

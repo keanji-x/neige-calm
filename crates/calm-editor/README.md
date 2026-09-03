@@ -12,7 +12,7 @@ and the `ts-rs` bindings emitted into `web/src/editor/types/`.
 `calm-editor` (Rust) owns: schema, validation, MCP tools, ts-rs bindings.
 
 `web/src/editor/` (TS/React) owns: Plate setup, op dispatcher, MCP tool
-client surface, stable block-id middleware, and the `WaveReportEditor`
+client surface, stable block-id middleware, and the `TrackReportEditor`
 component. The wire contract between the two sides is the generated TS
 types in `web/src/editor/types/`.
 

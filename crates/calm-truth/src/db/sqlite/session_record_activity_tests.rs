@@ -3,15 +3,15 @@
 //! push-fed columns land on an active session WITHOUT bumping
 //! `updated_at_ms` (worker_sessions-only, like `liveness`), and that a
 //! terminal/missing session is a benign `Ok` no-op.
-use super::{SqlxRepo, area_create_tx, session_insert_tx, wave_create_tx};
-use crate::model::{NewArea, NewWave, RequestTheme};
+use super::{SqlxRepo, area_create_tx, session_insert_tx, track_create_tx};
+use crate::model::{NewArea, NewTrack, RequestTheme};
 use crate::session_repo::SessionRepo;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
 };
 
-/// Seed a real area → wave and insert one worker session in `state` with a
+/// Seed a real area → track and insert one worker session in `state` with a
 /// fixed `updated_at_ms`. Returns the session id.
 async fn seed_session(
     repo: &SqlxRepo,
@@ -42,9 +42,9 @@ async fn seed_session_with_thread(
     )
     .await
     .unwrap();
-    let wave = wave_create_tx(
+    let track = track_create_tx(
         &mut tx,
-        NewWave {
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "w".into(),
@@ -56,8 +56,8 @@ async fn seed_session_with_thread(
             theme: RequestTheme::default_dark(),
         },
         None,
-        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_area_cache(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        repo.track_area_cache(),
     )
     .await
     .unwrap();
@@ -67,7 +67,7 @@ async fn seed_session_with_thread(
         &mut tx,
         WorkerSession {
             id: id.clone(),
-            wave_id: wave.id.clone(),
+            track_id: track.id.clone(),
             provider: WorkerProviderKind::Codex,
             mode: SessionMode::Resumable,
             contract: WorkerContract::Executor,

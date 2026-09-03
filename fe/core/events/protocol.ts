@@ -1,7 +1,7 @@
 import { decodeWireEvent, type WireEvent } from '../api/schemas.js';
 import type { ApiDecodeFailure } from '../api/types.js';
 
-export type Topic = '*' | `area:${string}` | `wave:${string}` | `card:${string}`;
+export type Topic = '*' | `area:${string}` | `track:${string}` | `card:${string}`;
 
 export type EventSubscriptionFrame = Readonly<{ sub: readonly Topic[]; since: number }>;
 

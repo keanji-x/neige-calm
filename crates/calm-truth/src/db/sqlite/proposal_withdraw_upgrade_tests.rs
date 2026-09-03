@@ -78,12 +78,12 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
     sqlx::query(
         r#"INSERT INTO events (kind, payload, actor, at, event_version, scope_kind, scope_wave)
            VALUES
-           ('proposal.submitted', ?1, 'plugin:dev.example', 1, 12, 'wave', 'wave-legacy'),
-           ('proposal.resolved', ?2, 'user', 2, 12, 'wave', 'wave-legacy')"#,
+           ('proposal.submitted', ?1, 'plugin:dev.example', 1, 12, 'track', 'track-legacy'),
+           ('proposal.resolved', ?2, 'user', 2, 12, 'track', 'track-legacy')"#,
     )
     .bind(
         serde_json::json!({
-            "wave_id": "wave-legacy",
+            "track_id": "track-legacy",
             "proposal_id": "proposal-legacy",
             "plugin_id": "dev.example",
             "subject_kind": "report",
@@ -100,7 +100,7 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
     )
     .bind(
         serde_json::json!({
-            "wave_id": "wave-legacy",
+            "track_id": "track-legacy",
             "proposal_id": "proposal-legacy",
             "plugin_id": "dev.example",
             "decision": "rejected"
@@ -117,7 +117,7 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
                ops, note, idem_key, status, submitted_event_id,
                resolved_event_id, created_at, resolved_at
            ) VALUES (
-               'proposal-legacy', 'wave-legacy', 'dev.example', 'report', 'ah1:legacy',
+               'proposal-legacy', 'track-legacy', 'dev.example', 'report', 'ah1:legacy',
                '[]', 'historical proposal', 'legacy-idem', 'rejected', 1, 2, 1, 2
            )"#,
     )

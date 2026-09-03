@@ -17,12 +17,12 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_area_cache::WaveAreaCache;
+use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -53,8 +53,8 @@ async fn boot() -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let events = EventBus::new();
     let roles = CardRoleCache::new();
-    let waves = WaveAreaCache::new();
-    repo.seed_wave_area_cache(&waves).await.unwrap();
+    let tracks = TrackAreaCache::new();
+    repo.seed_track_area_cache(&tracks).await.unwrap();
     let state = AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
@@ -69,11 +69,11 @@ async fn boot() -> Boot {
             tmp.path().join("plugins-data"),
             Vec::new(),
             events,
-            calm_server::state::WriteContext::new(roles.clone(), waves.clone()),
+            calm_server::state::WriteContext::new(roles.clone(), tracks.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(roles),
-        Some(waves),
+        Some(tracks),
     )
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo_dyn, None,
@@ -142,14 +142,14 @@ impl Boot {
         )
     }
 
-    async fn ensure_chat_wave(&self) -> String {
+    async fn ensure_chat_track(&self) -> String {
         let response = self
             .app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/areas/{}/chat-wave/ensure", self.area_id))
+                    .uri(format!("/api/areas/{}/chat-track/ensure", self.area_id))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -171,7 +171,7 @@ impl Boot {
             .unwrap()
     }
 
-    /// Chat cards anywhere in the DB — the marker, not the wave, is the
+    /// Chat cards anywhere in the DB — the marker, not the track, is the
     /// identity.
     async fn chat_card_count(&self) -> i64 {
         self.count(
@@ -298,7 +298,7 @@ impl Boot {
 #[tokio::test]
 async fn first_message_mints_exactly_one_card_session_and_thread() {
     let b = boot().await;
-    b.ensure_chat_wave().await;
+    b.ensure_chat_track().await;
     assert_eq!(
         b.chat_card_count().await,
         0,
@@ -392,7 +392,7 @@ async fn failed_thread_start_leaves_no_blank_card() {
 }
 
 /// A *different* conversation started after a failed one still works — i.e. a
-/// failed attempt does not poison the area or its chat wave.
+/// failed attempt does not poison the area or its chat track.
 ///
 /// This is NOT the retry story: two different keys are two different
 /// conversations by design. The same-key retry is
@@ -832,9 +832,9 @@ async fn missing_idempotency_key_is_rejected_and_mints_nothing() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(b.chat_card_count().await, 0);
     assert_eq!(
-        b.count("SELECT COUNT(*) FROM waves").await,
+        b.count("SELECT COUNT(*) FROM tracks").await,
         0,
-        "no wave either"
+        "no track either"
     );
 }
 
@@ -849,7 +849,7 @@ async fn blank_text_is_rejected_before_minting() {
 }
 
 #[tokio::test]
-async fn list_on_unknown_area_is_not_found_and_without_chat_wave_is_empty() {
+async fn list_on_unknown_area_is_not_found_and_without_chat_track_is_empty() {
     let b = boot().await;
     let response = b
         .app
@@ -868,27 +868,27 @@ async fn list_on_unknown_area_is_not_found_and_without_chat_wave_is_empty() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!([]));
     assert_eq!(
-        b.count("SELECT COUNT(*) FROM waves").await,
+        b.count("SELECT COUNT(*) FROM tracks").await,
         0,
-        "listing must not ensure a chat wave"
+        "listing must not ensure a chat track"
     );
 }
 
-/// The list is fail-closed on the card marker (INV-CHAT-007): the chat wave's
+/// The list is fail-closed on the card marker (INV-CHAT-007): the chat track's
 /// own kernel-owned spec and report cards never appear, an unmarked codex card
-/// on the chat wave never appears, and a marked codex card on an ordinary wave
+/// on the chat track never appears, and a marked codex card on an ordinary track
 /// never appears either (it is not this area's conversation container).
 #[tokio::test]
 async fn list_returns_only_marked_chat_cards() {
     let b = boot().await;
-    let chat_wave = b.ensure_chat_wave().await;
+    let chat_track = b.ensure_chat_track().await;
     let (status, created) = b.create_conversation("idem-marker", "hello").await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
 
-    // An unmarked codex card sharing the chat wave.
+    // An unmarked codex card sharing the chat track.
     b.repo
         .card_create(NewCard {
-            wave_id: chat_wave.clone().into(),
+            track_id: chat_track.clone().into(),
             title: Some("plain worker".into()),
             kind: "codex".into(),
             sort: None,
@@ -896,10 +896,10 @@ async fn list_returns_only_marked_chat_cards() {
         })
         .await
         .unwrap();
-    // A marked codex card on an ordinary wave.
+    // A marked codex card on an ordinary track.
     let ordinary = b
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: b.area_id.clone().into(),
             title: "ordinary".into(),
             sort: None,
@@ -915,7 +915,7 @@ async fn list_returns_only_marked_chat_cards() {
     let stray = b
         .repo
         .card_create(NewCard {
-            wave_id: ordinary.id.clone(),
+            track_id: ordinary.id.clone(),
             title: Some("stray".into()),
             kind: "codex".into(),
             sort: None,
@@ -931,27 +931,27 @@ async fn list_returns_only_marked_chat_cards() {
     // fixture as proving three independent walls.
     //
     // TAMPERING MODEL, NOT A REACHABLE STATE: nothing in production ever puts
-    // the `plain_chat` marker on a chat wave's kernel-owned spec/report card —
-    // their payload comes from `create_wave_with_spec_harness` and the
+    // the `plain_chat` marker on a chat track's kernel-owned spec/report card —
+    // their payload comes from `create_track_with_spec_harness` and the
     // adapter's payload rewrite only touches thread keys. This `json_set`
     // forges that row by hand, so the `role = 'worker'` conjunct it exercises
     // is defence in depth against a corrupt/hand-edited DB, not a guard with a
     // reachable counterexample.
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.harness_profile', 'plain_chat') WHERE wave_id = ?1 AND role IN ('spec','reportcard')",
+        "UPDATE cards SET payload = json_set(payload, '$.harness_profile', 'plain_chat') WHERE track_id = ?1 AND role IN ('spec','reportcard')",
     )
-    .bind(&chat_wave)
+    .bind(&chat_track)
     .execute(b.repo.pool())
     .await
     .unwrap();
     // PRODUCTION-REACHABLE counterexample, and the reason `kind = 'codex'` is
     // load-bearing: `POST /api/cards` has no guard against `purpose =
-    // 'area-chat'` waves, and this list hands the chat `waveId` to the client,
-    // so a user really can park a marked non-codex card on the chat wave.
+    // 'area-chat'` tracks, and this list hands the chat `trackId` to the client,
+    // so a user really can park a marked non-codex card on the chat track.
     let marked_terminal = b
         .repo
         .card_create(NewCard {
-            wave_id: chat_wave.clone().into(),
+            track_id: chat_track.clone().into(),
             title: Some("marked terminal".into()),
             kind: "terminal".into(),
             sort: None,
@@ -962,24 +962,24 @@ async fn list_returns_only_marked_chat_cards() {
     b.state.card_role_cache.insert(
         marked_terminal.id.clone(),
         CardRole::Worker,
-        chat_wave.clone().into(),
+        chat_track.clone().into(),
     );
 
     let spec_and_report: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM cards WHERE wave_id = ?1 AND role IN ('spec','reportcard')",
+        "SELECT COUNT(*) FROM cards WHERE track_id = ?1 AND role IN ('spec','reportcard')",
     )
-    .bind(&chat_wave)
+    .bind(&chat_track)
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
-    assert_eq!(spec_and_report, 2, "the chat wave really does carry both");
+    assert_eq!(spec_and_report, 2, "the chat track really does carry both");
 
     let (status, body) = b.list_conversations().await;
     assert_eq!(status, StatusCode::OK);
     let rows = body.as_array().unwrap();
     assert_eq!(rows.len(), 1, "only the marked chat card: {body}");
     assert_eq!(rows[0]["id"], created["id"]);
-    assert_eq!(rows[0]["waveId"], json!(chat_wave));
+    assert_eq!(rows[0]["trackId"], json!(chat_track));
     assert_eq!(rows[0]["kind"], "shared-chat");
     b.shutdown_harnesses().await;
 }
@@ -1052,7 +1052,7 @@ async fn spec_input_accepts_the_chat_card_and_still_refuses_a_pty_codex_card() {
 
     let ordinary = b
         .repo
-        .wave_create(NewWave {
+        .track_create(NewTrack {
             area_id: b.area_id.clone().into(),
             title: "pty".into(),
             sort: None,
@@ -1068,7 +1068,7 @@ async fn spec_input_accepts_the_chat_card_and_still_refuses_a_pty_codex_card() {
     let pty = b
         .repo
         .card_create(NewCard {
-            wave_id: ordinary.id.clone(),
+            track_id: ordinary.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,

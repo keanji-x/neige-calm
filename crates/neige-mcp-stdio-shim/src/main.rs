@@ -1,7 +1,7 @@
 //! `neige-mcp-stdio-shim` — bridge between the codex CLI's stdio MCP
 //! transport and the neige-calm kernel's per-card UDS MCP server.
 //!
-//! PR7a (#136) of the Wave-as-Actor cut. The codex CLI's MCP client
+//! PR7a (#136) of the Track-as-Actor cut. The codex CLI's MCP client
 //! transport is stdio JSON-RPC; the kernel exposes its MCP server over
 //! a Unix domain socket so it can authenticate the caller per-card via
 //! `card_mcp_tokens`. This shim is the glue: codex spawns it with

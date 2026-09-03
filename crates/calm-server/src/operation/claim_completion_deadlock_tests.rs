@@ -77,7 +77,7 @@ async fn claim_drive_batch_vs_parked_completion_no_deadlock() {
                 idempotency_key: None,
                 payload_hash: "hash".into(),
             },
-            json!({ "wave_id": "wave-claim" }),
+            json!({ "track_id": "track-claim" }),
         )
         .await
         .unwrap();

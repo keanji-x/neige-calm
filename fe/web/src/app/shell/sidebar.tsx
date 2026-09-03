@@ -8,10 +8,10 @@
 import { useEffect, useRef } from 'react';
 
 import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { needsUserAttention, userVisibleWaves, visibleWaves, type Wave } from '../../../../core/domain/wave.ts';
+import { needsUserAttention, userVisibleTracks, visibleTracks, type Track } from '../../../../core/domain/track.ts';
 import { AREA_PALETTE } from '../../features/area/palette.ts';
-import { WaveRow } from '../../features/wave/row/public.tsx';
-import { deleteAreaCopy, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
+import { TrackRow } from '../../features/track/row/public.tsx';
+import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
@@ -27,19 +27,19 @@ import styles from './shell.module.css';
 
 export type SidebarProps = Readonly<{
   areas: readonly Area[];
-  wavesByArea: ReadonlyMap<string, readonly Wave[]>;
-  waves: readonly Wave[];
+  tracksByArea: ReadonlyMap<string, readonly Track[]>;
+  tracks: readonly Track[];
   currentPath: string;
   onGo: (target: NavTarget) => void;
   /** Colour is picked here, at random from `AREA_PALETTE` (INV-DUP-006). */
   onCreateArea: (name: string, color: string) => void | Promise<void>;
   onDeleteArea: (areaId: string, signal: AbortSignal) => void | Promise<void>;
-  /** Goes to the new-wave page for this area. The rail does not own that
+  /** Goes to the new-track page for this area. The rail does not own that
    *  page — it is the route `/area/{id}/new` (#1211) — and it reaches it
    *  through the shell, which is the nearest owner both `+` surfaces share. */
-  onNewWave: (areaId: string) => void;
-  onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
-  onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;
+  onNewTrack: (areaId: string) => void;
+  onSetPinned: (trackId: string, pinned: boolean) => void | Promise<void>;
+  onDeleteTrack: (trackId: string, signal: AbortSignal) => void | Promise<void>;
   onOpenSettings: () => void;
   /** Settings › Plugins, reachable without walking through Settings first. */
   onOpenPlugins: () => void;
@@ -68,27 +68,27 @@ function randomAreaColor(): string {
 
 /**
  * INV-SIDEBAR-007 — the three sections render in this order, and **pinning is
- * not relocation**: a pinned wave appears in the Pinned section *and* in its
+ * not relocation**: a pinned track appears in the Pinned section *and* in its
  * area's inline list, and if it also needs attention it appears in "Waiting on
- * you" as well. Waiting deliberately includes pinned attention waves.
+ * you" as well. Waiting deliberately includes pinned attention tracks.
  *
  * INV-A11Y-058 — there is **intentionally no skip-to-main link**. The rail is
  * short enough that it has not been raised as a pain point (a11y contract
  * §3.1/§9). If a second rail section with many rows lands, re-evaluate.
  *
- * INV-SIDEBAR-012 — every row's pin button is hover-revealed while the wave is
+ * INV-SIDEBAR-012 — every row's pin button is hover-revealed while the track is
  * unpinned and permanently visible once it is pinned; the reveal itself is CSS
- * (`features/wave/row/row.module.css`), so a jsdom test can only prove the
+ * (`features/track/row/row.module.css`), so a jsdom test can only prove the
  * control is always in the accessibility tree and carries `aria-pressed`.
  *
- * E2E-INV-SHELL-003 — `userVisibleWaves` filters the kernel system area here
+ * E2E-INV-SHELL-003 — `userVisibleTracks` filters the kernel system area here
  * as well as in the query layer, so scaffolding cannot reach the rail even if a
  * caller hands over an unfiltered list. It is the same function mobile Pages
  * uses, so the two surfaces cannot drift (#1191 §3.1).
  */
 export function Sidebar({
-  areas, wavesByArea, waves, currentPath, onGo,
-  onCreateArea, onDeleteArea, onNewWave, onSetPinned, onDeleteWave,
+  areas, tracksByArea, tracks, currentPath, onGo,
+  onCreateArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
   onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
@@ -98,29 +98,29 @@ export function Sidebar({
   const [areaDraft, setAreaDraft] = useState('');
   const areaInputRef = useRef<HTMLInputElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
-  const waveConfirm = useDeleteConfirm(onDeleteWave);
+  const trackConfirm = useDeleteConfirm(onDeleteTrack);
   const areaConfirm = useDeleteConfirm(onDeleteArea, () => onGo({ name: 'today' }));
   const writeFeedback = useOperationFeedback();
 
   const userAreas = visibleAreas(areas);
-  const userWaves = userVisibleWaves(waves, areas);
-  const waiting = userWaves.filter(needsUserAttention);
-  const pinned = userWaves.filter((wave) => wave.pinnedAt !== null)
+  const userTracks = userVisibleTracks(tracks, areas);
+  const waiting = userTracks.filter(needsUserAttention);
+  const pinned = userTracks.filter((track) => track.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
-  const activeWaveId = routeParamFromPath(currentPath, '/wave/') ?? null;
-  const activeAreaId = activeWaveId === null
+  const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
+  const activeAreaId = activeTrackId === null
     ? null
-    : userWaves.find((wave) => wave.id === activeWaveId)?.areaId ?? null;
+    : userTracks.find((track) => track.id === activeTrackId)?.areaId ?? null;
 
   const deletingArea = userAreas.find((area) => area.id === areaConfirm.target);
   const typed = useTypedConfirm(deletingArea?.name ?? '');
   const areaCopy = deleteAreaCopy(
     deletingArea?.name ?? '',
-    wavesByArea.get(areaConfirm.target ?? '')?.length,
+    tracksByArea.get(areaConfirm.target ?? '')?.length,
   );
 
-  // Navigating into a wave drops any manual collapse on its area — the row the
+  // Navigating into a track drops any manual collapse on its area — the row the
   // user just opened has to be visible. Dropping the override (rather than
   // forcing `true`) keeps the chevron usable straight afterwards.
   useEffect(() => {
@@ -135,7 +135,7 @@ export function Sidebar({
 
   /*
    * …and then brings it into view. Expanding the area is only half of "show me
-   * where I am": a workspace with a dozen areas puts the open wave below the
+   * where I am": a workspace with a dozen areas puts the open track below the
    * fold as often as not, and the rail then shows an expanded area with nothing
    * marked in it.
    *
@@ -144,15 +144,15 @@ export function Sidebar({
    * one such row now that the shortcut sections no longer claim to be current.
    *
    * `block: 'nearest'` scrolls only when the row is actually outside the
-   * viewport, so arriving at a wave already on screen moves nothing (principle
+   * viewport, so arriving at a track already on screen moves nothing (principle
    * 3). It re-runs on `expandedOverride` too, because the effect above may have
    * only just expanded the area the row lives in.
    */
   useEffect(() => {
-    if (activeWaveId === null) return;
+    if (activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeWaveId, expandedOverride]);
+  }, [activeTrackId, expandedOverride]);
 
   useEffect(() => { if (creatingArea) areaInputRef.current?.focus(); }, [creatingArea]);
 
@@ -168,10 +168,10 @@ export function Sidebar({
     currentPath,
     onGo,
     nowMs,
-    onSetPinned: (waveId: string, next: boolean) => {
-      void writeFeedback.run(Promise.resolve(onSetPinned(waveId, next)), 'Could not update the wave.');
+    onSetPinned: (trackId: string, next: boolean) => {
+      void writeFeedback.run(Promise.resolve(onSetPinned(trackId, next)), 'Could not update the track.');
     },
-    onDelete: waveConfirm.request,
+    onDelete: trackConfirm.request,
   };
 
   // The rail has no area yet: the one remedy is to make one, so the input opens
@@ -213,7 +213,7 @@ export function Sidebar({
         )}
       </div>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
-      {activityError !== null && <ErrorBox message={`Wave activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
+      {activityError !== null && <ErrorBox message={`Track activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
       {readLoading && <div role="status">Loading workspace…</div>}
       <OperationFeedback feedback={writeFeedback} />
 
@@ -253,8 +253,8 @@ export function Sidebar({
         </>
       ) : (
         <>
-          <WaveSection title="Waiting on you" waves={waiting} areas={userAreas} {...rowProps} />
-          <WaveSection title="Pinned" waves={pinned} areas={userAreas} {...rowProps} />
+          <TrackSection title="Waiting on you" tracks={waiting} areas={userAreas} {...rowProps} />
+          <TrackSection title="Pinned" tracks={pinned} areas={userAreas} {...rowProps} />
 
           <div className={styles.section}>
             <div className={styles.sectionHead}>
@@ -302,11 +302,11 @@ export function Sidebar({
                   <AreaGroup
                     key={area.id}
                     area={area}
-                    areaWaves={visibleWaves(wavesByArea.get(area.id) ?? [])}
+                    areaTracks={visibleTracks(tracksByArea.get(area.id) ?? [])}
                     expanded={expandedOverride.get(area.id) ?? true}
                     onToggle={(next) => setExpandedOverride((current) => new Map(current).set(area.id, next))}
                     onRequestDelete={areaConfirm.request}
-                    onNewWave={onNewWave}
+                    onNewTrack={onNewTrack}
                     {...rowProps}
                   />
                 ))}
@@ -350,18 +350,18 @@ export function Sidebar({
       </div>
 
       <ConfirmDialog
-        open={waveConfirm.open}
-        title={DELETE_WAVE_COPY.title}
-        description={DELETE_WAVE_COPY.description}
-        confirmLabel={DELETE_WAVE_COPY.confirmLabel}
+        open={trackConfirm.open}
+        title={DELETE_TRACK_COPY.title}
+        description={DELETE_TRACK_COPY.description}
+        confirmLabel={DELETE_TRACK_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
-        confirmState={waveConfirm.pending ? 'busy' : 'ready'}
-        onConfirm={waveConfirm.confirm}
-        onCancel={waveConfirm.cancel}
+        confirmState={trackConfirm.pending ? 'busy' : 'ready'}
+        onConfirm={trackConfirm.confirm}
+        onCancel={trackConfirm.cancel}
       />
-      <OperationFeedback feedback={waveConfirm.feedback} />
+      <OperationFeedback feedback={trackConfirm.feedback} />
       <OperationFeedback feedback={areaConfirm.feedback} />
-      {/* Deleting an area cascades to every wave inside it: the one operation in
+      {/* Deleting an area cascades to every track inside it: the one operation in
           the product that earns a typed confirm (§4.3). The rail entry and the
           area page header entry are two entry points to the same operation, so
           they share this dialog's copy and its confirmation strength. */}
@@ -390,8 +390,8 @@ type RowProps = Readonly<{
   currentPath: string;
   onGo: (target: NavTarget) => void;
   nowMs?: number;
-  onSetPinned: (waveId: string, pinned: boolean) => void;
-  onDelete: (waveId: string) => void;
+  onSetPinned: (trackId: string, pinned: boolean) => void;
+  onDelete: (trackId: string) => void;
 }>;
 
 /** A section with no rows does not render at all — no label, no dashed box.
@@ -400,31 +400,31 @@ type RowProps = Readonly<{
  * "Waiting on you" and "Pinned" — the two shortcut sections.
  *
  * Their rows are **never marked current**, and that is the one thing worth
- * saying about them. A wave that is open, pinned, and waiting used to light up
+ * saying about them. A track that is open, pinned, and waiting used to light up
  * three times in one 200px column, which does not tell you where you are three
  * times as well — it tells you three different places are where you are. These
  * sections are shortcuts *into* the tree; the tree is where a location is
  * shown, and the area list is the tree. One place to look, and it is the one
- * that also says which area the wave belongs to.
+ * that also says which area the track belongs to.
  */
-function WaveSection({ title, waves, areas, onGo, nowMs, onSetPinned, onDelete }: RowProps & {
+function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete }: RowProps & {
   title: string;
-  waves: readonly Wave[];
+  tracks: readonly Track[];
   areas: readonly Area[];
 }) {
-  if (waves.length === 0) return null;
+  if (tracks.length === 0) return null;
   return (
     <div className={styles.section}>
       <h2 className={styles.sectionTitle}>{title}</h2>
       <div className={styles.sectionRows}>
-        {waves.map((wave) => (
-          <WaveRow
-            key={wave.id}
-            wave={wave}
-            areaName={areaOf(wave.areaId, areas)?.name}
+        {tracks.map((track) => (
+          <TrackRow
+            key={track.id}
+            track={track}
+            areaName={areaOf(track.areaId, areas)?.name}
             variant="rail"
             nowMs={nowMs}
-            onOpen={(waveId) => onGo({ name: 'wave', waveId })}
+            onOpen={(trackId) => onGo({ name: 'track', trackId })}
             onSetPinned={onSetPinned}
             onDelete={onDelete}
           />
@@ -443,27 +443,27 @@ function WaveSection({ title, waves, areas, onGo, nowMs, onSetPinned, onDelete }
  * middle-click, open-in-new-tab and copy-link do not work on it.
  *
  * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only one of
- * them is hover-revealed. The `+` is permanent because starting a wave is the
+ * them is hover-revealed. The `+` is permanent because starting a track is the
  * rail's one creative action and a control you have to discover by hovering is
  * a control most people never find; the `×` stays revealed because a
  * area-deleting button permanently on every row is a row of loaded guns.
  *
  * They do not share a slot, and neither ever moves: `+` sits at the trailing
  * edge, `×` one control-step inboard, and the row reserves both gutters at
- * rest. The wave row's status dot/delete pair *does* share one slot — that
+ * rest. The track row's status dot/delete pair *does* share one slot — that
  * works because the two marks are the same size and mean the same place. Two
  * live buttons cannot do that, so this row spends the second 20px instead.
  */
 function AreaGroup({
-  area, areaWaves, expanded, onToggle, onRequestDelete, onNewWave,
+  area, areaTracks, expanded, onToggle, onRequestDelete, onNewTrack,
   currentPath, onGo, nowMs, onSetPinned, onDelete,
 }: RowProps & {
   area: Area;
-  areaWaves: readonly Wave[];
+  areaTracks: readonly Track[];
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   onRequestDelete: (areaId: string) => void;
-  onNewWave: (areaId: string) => void;
+  onNewTrack: (areaId: string) => void;
 }) {
   const active = routeParamFromPath(currentPath, '/area/') === area.id;
 
@@ -479,8 +479,8 @@ function AreaGroup({
         >
           {/* Name only. The chevron is a sibling positioned over this row's
               leading gutter (a button inside a button is invalid HTML and trips
-              axe's `nested-interactive`); there is no identity dot, no wave
-              count, and — since the wave row's status dot moved to the trailing
+              axe's `nested-interactive`); there is no identity dot, no track
+              count, and — since the track row's status dot moved to the trailing
               edge — no empty status cell either. */}
           <span className={styles.areaName} title={area.name}>{area.name}</span>
         </button>
@@ -507,7 +507,7 @@ function AreaGroup({
           <Icon name="close" size="sm" />
         </button>
         {/* The accessible name names the area, and it has to: the rail now
-            carries one of these per area, and N controls all called "New wave"
+            carries one of these per area, and N controls all called "New track"
             is a list a screen-reader user cannot choose from. `title` is the
             sighted hover label — §4.4 requires both, because a tooltip may not
             stand in for the accessible name. */}
@@ -515,23 +515,23 @@ function AreaGroup({
           type="button"
           data-nc-role="icon"
           className={styles.areaNew}
-          aria-label={`New wave in ${area.name}`}
-          title="New wave"
-          onClick={() => onNewWave(area.id)}
+          aria-label={`New track in ${area.name}`}
+          title="New track"
+          onClick={() => onNewTrack(area.id)}
         >
           <Icon name="plus" size="sm" />
         </button>
       </div>
       {expanded && (
-        <div className={styles.waveList}>
-          {areaWaves.map((wave) => (
-            <WaveRow
-              key={wave.id}
-              wave={wave}
+        <div className={styles.trackList}>
+          {areaTracks.map((track) => (
+            <TrackRow
+              key={track.id}
+              track={track}
               variant="rail"
               nowMs={nowMs}
-              active={routeParamFromPath(currentPath, '/wave/') === wave.id}
-              onOpen={(waveId) => onGo({ name: 'wave', waveId })}
+              active={routeParamFromPath(currentPath, '/track/') === track.id}
+              onOpen={(trackId) => onGo({ name: 'track', trackId })}
               onSetPinned={onSetPinned}
               onDelete={onDelete}
             />

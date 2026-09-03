@@ -225,7 +225,7 @@ struct RunningPlugin {
 /// held across the spawn, while the `live` insert happened only after process
 /// exec + MCP handshake. Two concurrent spawns of trusted plugins declaring
 /// the same template id could both pass, yielding duplicate running owners
-/// and a nondeterministic `plugin_scope_for_wave` winner. Concurrent callers
+/// and a nondeterministic `plugin_scope_for_track` winner. Concurrent callers
 /// are real: HTTP enable/reload routes plus the crash-supervisor respawn.
 ///
 /// `spawning` is the admission set: an id is inserted here — under the same
@@ -396,7 +396,7 @@ pub struct PluginHost {
     registry: Arc<PluginRegistry>,
     /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` —
     /// the host only does eventized writes + out-of-domain plugin/token/kv
-    /// writes + reads. Raw sync-domain writes (`area_*`, `wave_*`,
+    /// writes + reads. Raw sync-domain writes (`area_*`, `track_*`,
     /// `card_*` direct, `overlay_upsert`) are unreachable so a future
     /// contributor can't quietly bypass the audit log inside the host.
     pub(crate) repo: Arc<dyn RouteRepo>,
@@ -1985,7 +1985,7 @@ impl PluginHost {
         // crash-supervisor respawn) observes either our reservation or our
         // live entry, never the in-between. Uniqueness is enforced over the
         // same "running ∧ trusted" set every template resolver filters on
-        // (`resolve_template_binding`, `bound_template`, the MCP per-wave
+        // (`resolve_template_binding`, `bound_template`, the MCP per-track
         // tool scope) — plus admission reservations — so a stopped plugin
         // never squats on a template id but a mid-spawn one already holds it.
         // Ordered before the token mint so a refusal — like the min-kernel
@@ -3193,7 +3193,7 @@ impl PluginHost {
             };
             // PR2 of #136: `ActorId::Plugin(id)` typed; `EventScope::System`
             // because `Event::PluginState` is a server-lifecycle signal with
-            // no entity (area/wave/card) scope.
+            // no entity (area/track/card) scope.
             if let Err(e) = self
                 .repo
                 .log_pure_event(

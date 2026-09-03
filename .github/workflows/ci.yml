@@ -928,7 +928,7 @@ jobs:
   # #1297 — the `a11y (replay + playwright)` and `chromium e2e` jobs were
   # removed here. Both drove the unmaintained `web/` app, and both broke on
   # a change that is correct: their shared fixture
-  # (`web/e2e/helpers/reset.ts` `seedWaveViewMode`) seeds view state by
+  # (`web/e2e/helpers/reset.ts` `seedTrackViewMode`) seeds view state by
   # POSTing a `plugin_id: kernel` overlay through `/api/overlays`, which is
   # exactly the forge #1297 closes. `web/` is no longer maintained and is not
   # a compatibility target, so the gates were dropped rather than the fix
@@ -964,7 +964,7 @@ jobs:
       # in as `codex`, it is the app-server stand-in the Rust suites already
       # trust (tests/fixtures/osc-probe-child/appserver.rs). It is a `[[bin]]`
       # of calm-server, so it builds from the same invocation and shares the
-      # cache. Without it `POST /api/waves/{id}/conversations` fails in the
+      # cache. Without it `POST /api/tracks/{id}/conversations` fails in the
       # daemon preflight, *before* the card/session/token mint — and an e2e
       # that only ever sees that 500 cannot tell a correct mint from a broken
       # one.

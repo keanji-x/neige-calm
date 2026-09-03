@@ -54,7 +54,7 @@ mod tests {
 /// so PATH is pinned here (linker discovery for `rustc --test`) and rustc is a
 /// baked absolute toolchain path (a `~/.cargo/bin` rustup shim would need
 /// `$HOME`, which the cleared env does not have). The output binary is
-/// pid-suffixed: gates of concurrently-verifying tasks share `waves.cwd`.
+/// pid-suffixed: gates of concurrently-verifying tasks share `tracks.cwd`.
 fn capstone_gate_script(rustc: &Path) -> String {
     format!(
         "#!/bin/sh\n\
@@ -145,7 +145,7 @@ fn init_bare_origin_with_files(origin: &Path, seed: &Path, files: &[(&str, Strin
     ]);
 }
 
-pub fn clone_for_wave(origin: &Path, target: &Path) {
+pub fn clone_for_track(origin: &Path, target: &Path) {
     run_git_no_cwd(["clone", path_str(origin), path_str(target)]);
     configure_repo_identity(target);
 }
@@ -239,9 +239,9 @@ pub fn is_hex_sha(value: &str) -> bool {
 }
 
 /// #1147 S3 — a real Git work tree at a stable, name-derived path, for
-/// fixtures that need an **attached** wave and do not care where it points.
+/// fixtures that need an **attached** track and do not care where it points.
 ///
-/// `POST /api/waves` now validates an attached `cwd` (absolute, exists, is a
+/// `POST /api/tracks` now validates an attached `cwd` (absolute, exists, is a
 /// Git work tree) instead of accepting any string, because the FE entry point
 /// this slice adds is the first way a user can name one — and a path that only
 /// fails later, as a worker's `spawn-failed`, is the defect #1147 was opened

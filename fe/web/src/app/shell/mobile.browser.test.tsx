@@ -8,9 +8,9 @@
  * copy's geometry, and every interaction it drove was the copy's wiring.
  *
  * So the frame is gone. The router is `createAppRouter` over a memory history,
- * exactly as `app/router/wave-cards-panel.test.tsx` and
+ * exactly as `app/router/track-cards-panel.test.tsx` and
  * `mobile-report-navigation.test.tsx` drive it, and everything below is the
- * production shell, the production wave route and the production URL. What is
+ * production shell, the production track route and the production URL. What is
  * left of the harness is data: a transport that answers with fixtures, which is
  * the one thing a browser cannot supply.
  *
@@ -39,11 +39,11 @@ const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame((
 
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER_AREA = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = {
+const TRACK = {
   id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: 30, terminal_at: null, created_at: 1, updated_at: 2,
 };
-const OTHER_WAVE = {
+const OTHER_TRACK = {
   id: 'w2', area_id: 'c1', title: 'Remote access', sort: 2, lifecycle: 'draft', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
@@ -51,7 +51,7 @@ const OTHER_WAVE = {
 /* The document the phone is meant to read. Prose carries the headings the
    Outline is built from; the task block is what the TASKS panel lists. */
 const REPORT_CARD = {
-  id: 'card-report', wave_id: 'w1', kind: 'wave-report', title: 'Report', sort: 0, deletable: false,
+  id: 'card-report', track_id: 'w1', kind: 'track-report', title: 'Report', sort: 0, deletable: false,
   created_at: 1, updated_at: 2,
   payload: {
     schemaVersion: 3, docRev: 1,
@@ -82,11 +82,11 @@ const REPORT_CARD = {
   },
 };
 const TERMINAL_CARD = {
-  id: 'card-terminal', wave_id: 'w1', kind: 'terminal', title: 'Implementation terminal', sort: 1,
+  id: 'card-terminal', track_id: 'w1', kind: 'terminal', title: 'Implementation terminal', sort: 1,
   payload: {}, deletable: true, created_at: 1, updated_at: 2,
 };
 const REVIEW_CARD = {
-  id: 'card-review', wave_id: 'w1', kind: 'codex', title: 'Design review', sort: 2,
+  id: 'card-review', track_id: 'w1', kind: 'codex', title: 'Design review', sort: 2,
   payload: {}, deletable: false, created_at: 1, updated_at: 2,
 };
 
@@ -96,12 +96,12 @@ function setup(path: string) {
   const transport: ApiTransportPort = {
     send(request) {
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA, OTHER_AREA]));
-      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([WAVE, OTHER_WAVE]));
-      if (request.path === '/api/areas/c2/waves') return Promise.resolve(ok([]));
-      if (request.path === '/api/waves/w1') {
-        return Promise.resolve(ok({ wave: WAVE, cards: [REPORT_CARD, TERMINAL_CARD, REVIEW_CARD], overlays: [] }));
+      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK, OTHER_TRACK]));
+      if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
+      if (request.path === '/api/tracks/w1') {
+        return Promise.resolve(ok({ track: TRACK, cards: [REPORT_CARD, TERMINAL_CARD, REVIEW_CARD], overlays: [] }));
       }
-      if (request.path === '/api/waves/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
+      if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       return Promise.resolve(ok([]));
     },
   };
@@ -141,10 +141,10 @@ async function closePanel(): Promise<void> {
   await Promise.all(panel.getAnimations().map((animation) => animation.finished));
 }
 
-describe('Wave mobile presentation', () => {
+describe('Track mobile presentation', () => {
   it('keeps Report as the root and pushes Cards in as a full-width page', async () => {
     await page.viewport(390, 844);
-    setup('/wave/w1');
+    setup('/track/w1');
 
     /*
      * Nothing is measured until the route has painted: every assertion below is
@@ -152,10 +152,10 @@ describe('Wave mobile presentation', () => {
      * is the report's own control, so finding it is the same as "the report is
      * up".
      */
-    const opener = page.getByRole('button', { name: 'Wave actions' });
+    const opener = page.getByRole('button', { name: 'Track actions' });
     const openerElement = await opener.findElement();
     const panel = document.querySelector<HTMLElement>('[data-nc-mobile-page]')!;
-    const root = document.querySelector('[data-nc-wave-page]')!;
+    const root = document.querySelector('[data-nc-track-page]')!;
 
     expect(root.getBoundingClientRect().width).toBeLessThanOrEqual(window.innerWidth);
     expect(getComputedStyle(panel).visibility).toBe('hidden');
@@ -221,7 +221,7 @@ describe('Wave mobile presentation', () => {
     expect(dockElement().getBoundingClientRect().height).toBe(0);
     await Promise.all(document.getAnimations().map((animation) => animation.finished));
     await settlePaint();
-    await page.screenshot({ path: '../../../../test-results/mobile-waves.png' });
+    await page.screenshot({ path: '../../../../test-results/mobile-tracks.png' });
     await page.getByRole('button', { name: 'Responsive mobile UI' }).click();
     expect(dockElement().getBoundingClientRect().height).toBe(0);
 
@@ -231,9 +231,9 @@ describe('Wave mobile presentation', () => {
     expect(page.getByRole('menuitem', { name: 'Cards' })).toBeTruthy();
     expect(page.getByRole('menuitem', { name: 'Tasks' })).toBeTruthy();
     expect(page.getByRole('menuitem', { name: 'Conversations' })).toBeTruthy();
-    expect(page.getByRole('menuitem', { name: 'Delete wave' })).toBeTruthy();
+    expect(page.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
     await settlePaint();
-    await page.screenshot({ path: '../../../../test-results/mobile-wave-menu.png' });
+    await page.screenshot({ path: '../../../../test-results/mobile-track-menu.png' });
 
     await page.getByRole('menuitem', { name: 'Outline' }).click();
     await Promise.all(panel.getAnimations().map((animation) => animation.finished));

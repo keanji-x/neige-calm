@@ -711,7 +711,7 @@ describe('XtermView v4 handshake', () => {
     });
   });
 
-  it('does not mutate local xterm while container is degenerate (wave-switch transient)', () => {
+  it('does not mutate local xterm while container is degenerate (track-switch transient)', () => {
     const ws = connectOwnerTerminalAtSize(100, 30);
     const rafSpy = vi
       .spyOn(window, 'requestAnimationFrame')

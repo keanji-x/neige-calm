@@ -1,4 +1,4 @@
-//! `POST /api/waves/:wave_id/codex-cards` — atomic codex-card creation.
+//! `POST /api/tracks/:track_id/codex-cards` — atomic codex-card creation.
 //!
 //! Structural twin of `routes/terminal_cards.rs` for the codex flow (#117).
 //! Collapses what used to be a 2-step recipe — `POST .../cards` (kind=codex,
@@ -48,10 +48,13 @@ use std::time::Duration;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/waves/{wave_id}/codex-cards", post(create_codex_card))
+    Router::new().route(
+        "/api/tracks/{track_id}/codex-cards",
+        post(create_codex_card),
+    )
 }
 
-/// Body for `POST /api/waves/:wave_id/codex-cards`.
+/// Body for `POST /api/tracks/:track_id/codex-cards`.
 ///
 /// Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
 /// persists schema/UI fields and projects identity from `runtimes`). Empty
@@ -85,7 +88,7 @@ pub fn router() -> Router<AppState> {
 pub struct NewCodexCardBody {
     #[serde(default)]
     pub title: Option<String>,
-    /// Sort order within the wave. `None` defaults to "append to end".
+    /// Sort order within the track. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
     /// Working directory codex runs in. Empty string or missing → `$HOME`
@@ -112,13 +115,13 @@ pub struct NewCodexCardBody {
 
 #[utoipa::path(
     post,
-    path = "/api/waves/{wave_id}/codex-cards",
+    path = "/api/tracks/{track_id}/codex-cards",
     tag = "codex",
-    params(("wave_id" = String, Path, description = "Wave id to create the codex card under")),
+    params(("track_id" = String, Path, description = "Track id to create the codex card under")),
     request_body(content = NewCodexCardBody, description = "Body required (theme is mandatory; cwd/prompt optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; codex daemon spawned", body = Card),
-        (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 404, description = "Track not found", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
@@ -128,11 +131,11 @@ pub(crate) async fn create_codex_card(
     State(s): State<RouteState>,
     actor: Actor,
     headers: HeaderMap,
-    Path(wave_id): Path<String>,
+    Path(track_id): Path<String>,
     Json(p): Json<NewCodexCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_codex_create_request(CodexCreateRequestInput {
-        wave_id,
+        track_id,
         title: p.title,
         sort: p.sort,
         cwd: p.cwd,

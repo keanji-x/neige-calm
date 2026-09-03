@@ -1,0 +1,1208 @@
+//! Issue #247 PR3 — REST-side track-report edit endpoint integration
+//! tests (`POST /api/tracks/:id/report`).
+//!
+//! Companion to `mcp_track_report.rs` (MCP-side coverage). Each test
+//! drives the real axum router via `tower::ServiceExt::oneshot` with
+//! the same router assembly the production binary uses
+//! (protected REST behind `auth::require_session` + the actor
+//! middleware), so the auth gate, session-extraction, actor pinning,
+//! and the shared persist boundary all run end-to-end.
+//!
+//! Coverage:
+//!
+//!   * **Happy path** — authenticated user POST → 200; response is the
+//!     projected `TrackReportPayload`; both `CardUpdated` and
+//!     `TrackReportEdited` envelopes are emitted; the latter carries
+//!     `author == EditAuthor::User`.
+//!   * **Author cannot be forged** — request body with an extra
+//!     `author` field is rejected (`deny_unknown_fields` returns 4xx)
+//!     so a client can never persuade the server to attribute a User
+//!     edit as Spec.
+//!   * **No session** — request without cookie → 401, no events
+//!     emitted.
+//!   * **Cross-track isolation** — user posts to a track that doesn't
+//!     exist → 404, no events emitted. (Today's single-user owner
+//!     model has no per-track ACL; the track-existence 404 is the
+//!     effective cross-track gate. Multi-user would extend this with a
+//!     403 on a track the principal doesn't own.)
+//!   * **Worker / non-user actor** — authenticated session but
+//!     `X-Calm-Actor: ai:codex` → 403, no events emitted. Only
+//!     `ActorId::User` may persist via REST.
+//!   * **MCP path still tags Spec** — re-asserts via the existing
+//!     `mcp_track_report` regression suite (already pinned in PR2 and
+//!     re-confirmed by the build).
+
+#![cfg(unix)]
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::error::CalmError;
+use calm_server::event::{EditAuthor, Event, EventBus};
+use calm_server::ids::{ActorId, TrackId};
+use calm_server::model::{NewArea, NewCard, NewTrack};
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::routes;
+use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::track_report::{TrackReportPayload, persist_report};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+// ---------------------------------------------------------------------------
+// Fixture boot — fresh `AppState` + a seeded area/track/report card. The
+// router assembly mirrors `main.rs` so the auth + actor middleware fire
+// in the same order production sees them.
+// ---------------------------------------------------------------------------
+
+struct Boot {
+    state: AppState,
+    auth_state: AuthState,
+    track_id: TrackId,
+    /// Repo used to seed fixtures + read back post-write state.
+    repo: Arc<SqlxRepo>,
+}
+
+async fn boot() -> Boot {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let area = repo
+        .area_create(NewArea {
+            name: "rest-report-test".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let track = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: area.id.clone(),
+            title: "report track".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    repo.card_create(NewCard {
+        track_id: track.id.clone(),
+        kind: "track-report".into(),
+        sort: Some(-1.0),
+        payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+        title: None,
+    })
+    .await
+    .unwrap();
+
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-rest-report"),
+            Vec::new(),
+            EventBus::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
+            ),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        None,
+    );
+    let auth_state = AuthState::new(AuthConfig {
+        username: Some("alice".into()),
+        password: Some("hunter2".into()),
+        dev_autologin: false,
+        display_name: "alice".into(),
+    });
+    Boot {
+        state,
+        auth_state,
+        track_id: track.id,
+        repo,
+    }
+}
+
+/// Assemble the same router tree `main.rs` does — protected REST
+/// behind `actor_middleware` (innermost) + `require_session`
+/// (outermost), public REST + auth router unconditionally. Order
+/// matters: an unauthenticated request must be rejected by the
+/// session check before the actor extractor runs (otherwise we'd
+/// 400 on a missing/invalid actor header instead of 401-ing for
+/// the missing session).
+fn app(state: AppState, auth_state: AuthState) -> axum::Router {
+    let protected_rest = routes::protected_router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth::require_session,
+        ));
+    let public_rest = routes::public_router();
+    let auth_router = auth::router().with_state(auth_state.clone());
+    axum::Router::new()
+        .merge(protected_rest)
+        .merge(public_rest)
+        .with_state(state)
+        .merge(auth_router)
+}
+
+/// Login and return the bare `name=value` cookie string suitable for
+/// the `Cookie` header.
+async fn login(app: &axum::Router) -> String {
+    let body = serde_json::to_vec(&json!({
+        "username": "alice",
+        "password": "hunter2",
+    }))
+    .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "login must succeed");
+    let raw = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("Set-Cookie present on login")
+        .to_str()
+        .unwrap();
+    let first = raw.split(';').next().unwrap();
+    assert!(first.starts_with(&format!("{SESSION_COOKIE}=")));
+    first.to_string()
+}
+
+async fn json_request(
+    app: &axum::Router,
+    method: &str,
+    uri: String,
+    cookie: &str,
+    body: Value,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn human_block_rest_task_lifecycle_and_revision_domains() {
+    let boot = boot().await;
+    let track_id = boot.track_id.clone();
+    let repo = boot.repo.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let base = format!("/api/tracks/{track_id}/report/blocks");
+    let task = json!({
+        "key": "review",
+        "kind": "codex",
+        "goal": "Review [source](neige://wave/w_target#b_1234)",
+        "acceptance": "All checks pass",
+        "ready": false,
+        "declared_by": "user"
+    });
+
+    let created = json_request(
+        &app,
+        "POST",
+        base.clone(),
+        &cookie,
+        json!({"kind":"task", "payload":task, "ifDocRev":0}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created: Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let block_id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["rev"], 1);
+    assert_eq!(created["docRev"], 1);
+
+    let stale_create = json_request(
+        &app,
+        "POST",
+        base.clone(),
+        &cookie,
+        json!({"kind":"prose", "markdown":"stale", "ifDocRev":0}),
+    )
+    .await;
+    assert_eq!(stale_create.status(), StatusCode::CONFLICT);
+
+    let updated_task = json!({
+        "key": "review", "kind": "codex", "goal": "Review carefully",
+        "acceptance": "All checks pass", "ready": false, "declared_by": "user"
+    });
+    let updated = json_request(
+        &app,
+        "PATCH",
+        format!("{base}/{block_id}"),
+        &cookie,
+        json!({"kind":"task", "payload":updated_task, "ifBlockRev":1}),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated: Value =
+        serde_json::from_slice(&updated.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(updated["rev"], 2);
+
+    let stale_update = json_request(
+        &app,
+        "PATCH",
+        format!("{base}/{block_id}"),
+        &cookie,
+        json!({"kind":"task", "payload":updated_task, "ifBlockRev":1}),
+    )
+    .await;
+    assert_eq!(stale_update.status(), StatusCode::CONFLICT);
+
+    let deleted = json_request(
+        &app,
+        "DELETE",
+        format!("{base}/{block_id}"),
+        &cookie,
+        json!({"ifBlockRev":2}),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let card = repo
+        .cards_by_track(track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    let payload: TrackReportPayload = serde_json::from_value(card.payload).unwrap();
+    let tombstone = payload
+        .blocks
+        .unwrap()
+        .into_iter()
+        .find(|block| block.id == block_id)
+        .unwrap();
+    assert_eq!(tombstone.payload["key"], "review");
+    assert_eq!(tombstone.payload["declared_by"], "user");
+    assert_eq!(tombstone.payload["tombstoned_by"], "user");
+    assert!(tombstone.payload["tombstone"].is_object());
+}
+
+#[tokio::test]
+async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
+    let boot = boot().await;
+    let track = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let report = boot
+        .repo
+        .cards_by_track(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::Kernel,
+        EditAuthor::Spec,
+        track,
+        report,
+        TrackReportPayload::initial(),
+        TrackReportPayload::new("spec", "# Spec won\n"),
+        0,
+        None,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let track_id = boot.track_id.clone();
+    let repo = boot.repo.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track_id}/report"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({"summary": "human", "body": "# Human stale\n", "ifDocRev": 0})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let cards = repo.cards_by_track(track_id.as_str()).await.unwrap();
+    let payload: TrackReportPayload = serde_json::from_value(
+        cards
+            .into_iter()
+            .find(|c| c.kind == "track-report")
+            .unwrap()
+            .payload,
+    )
+    .unwrap();
+    assert_eq!(payload.body, "# Spec won\n");
+    assert_eq!(payload.doc_rev, 1);
+}
+
+#[tokio::test]
+async fn rest_whole_document_write_requires_if_doc_rev() {
+    let boot = boot().await;
+    let track_id = boot.track_id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track_id}/report"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({"summary": "missing", "body": "# Missing rev\n"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn backlinks_returns_source_track_and_unknown_track_is_not_found() {
+    let boot = boot().await;
+    let source_track_id = boot.track_id.clone();
+    let source_track = boot
+        .repo
+        .track_get(source_track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let target_track = boot
+        .repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: source_track.area_id.clone(),
+            title: "target track".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    boot.repo
+        .card_create(NewCard {
+            track_id: target_track.id.clone(),
+            kind: "track-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+            title: None,
+        })
+        .await
+        .unwrap();
+
+    let source_report = boot
+        .repo
+        .cards_by_track(source_track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    let updated_report = persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::Kernel,
+        EditAuthor::Kernel,
+        source_track,
+        source_report,
+        TrackReportPayload::initial(),
+        TrackReportPayload::new("", format!("[Target](neige://wave/{})", target_track.id)),
+        0,
+        None,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let updated_payload: TrackReportPayload =
+        serde_json::from_value(updated_report.payload).unwrap();
+    let source_block_id = updated_payload
+        .blocks
+        .and_then(|blocks| blocks.into_iter().next())
+        .map(|block| block.id)
+        .expect("persisted report has a prose block");
+    sqlx::query("UPDATE cards SET payload = json_remove(payload, '$.blocks') WHERE id = ?1")
+        .bind(updated_report.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/tracks/{}/backlinks", target_track.id))
+                .header(header::COOKIE, cookie.clone())
+                .header("x-calm-actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let entries = body["backlinks"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["skipped_sources"], 0);
+    assert_eq!(entries[0]["src_track_id"], source_track_id.as_str());
+    assert_eq!(entries[0]["src_track_title"], "report track");
+    assert_eq!(entries[0]["src_block_id"], source_block_id);
+    assert_eq!(
+        entries[0]["quote"],
+        json!({
+            "before": "",
+            "label": "Target",
+            "after": "",
+            "head_elided": false,
+            "tail_elided": false,
+        })
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/tracks/track_unknown/backlinks")
+                .header(header::COOKIE, cookie)
+                .header("x-calm-actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Collect up to `n` envelopes from the bus, with a short timeout so a
+/// missing event surfaces as a length mismatch instead of a hang.
+async fn collect_n(events: &EventBus, n: usize) -> Vec<calm_server::event::BroadcastEnvelope> {
+    let mut sub = events.subscribe();
+    let mut out = Vec::with_capacity(n);
+    while out.len() < n {
+        match tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+            Ok(Ok(env)) => out.push(env),
+            Ok(Err(_lag)) => break,
+            Err(_timeout) => break,
+        }
+    }
+    out
+}
+
+/// Assert no envelope arrives within a short window — used to confirm
+/// that auth/forbidden failures emit nothing. Bounded by `dur` so the
+/// test doesn't sit on a happy-no-event path forever.
+async fn expect_no_events(events: &EventBus, dur: Duration) {
+    let mut sub = events.subscribe();
+    match tokio::time::timeout(dur, sub.recv()).await {
+        // Timeout = no event arrived. Good.
+        Err(_) => {}
+        Ok(Ok(env)) => panic!("unexpected event arrived: {env:?}"),
+        Ok(Err(_lag)) => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
+    let boot = boot().await;
+    let events = boot.state.events.clone();
+    let track_id = boot.track_id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+
+    // Subscribe BEFORE issuing the write so we can collect the two
+    // envelopes the persist boundary emits (CardUpdated +
+    // TrackReportEdited).
+    let bus_clone = events.clone();
+    let collector = tokio::spawn(async move { collect_n(&bus_clone, 2).await });
+    // Small yield so the collector subscribes before the persist
+    // emit completes.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let body = serde_json::to_vec(&json!({
+        "summary": "user wrote this",
+        "body": "# Goal\n\nuser edit body\n",
+        "ifDocRev": 0,
+    }))
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{}/report", track_id.as_str()))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "user edit succeeds");
+
+    // Response body — projected payload reflects what was written.
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["summary"], "user wrote this");
+    assert_eq!(v["body"], "# Goal\n\nuser edit body\n");
+    assert_eq!(
+        v["schemaVersion"], 3,
+        "schemaVersion is server-pinned to the current constant"
+    );
+    assert_eq!(v["docRev"], 1);
+
+    // Bus — exactly two envelopes: CardUpdated first (preserves the
+    // pre-PR2 broadcast order), TrackReportEdited second with
+    // `author == User`.
+    let envs = collector.await.expect("collector ok");
+    assert_eq!(
+        envs.len(),
+        2,
+        "expected two envelopes (CardUpdated + TrackReportEdited), got {envs:?}",
+    );
+    assert!(
+        matches!(envs[0].event, Event::CardUpdated(_)),
+        "CardUpdated arrives first; got {:?}",
+        envs[0].event,
+    );
+    match &envs[1].event {
+        Event::TrackReportEdited {
+            track_id: w,
+            author,
+            summary_before,
+            summary_after,
+            body_before,
+            body_after,
+            ..
+        } => {
+            assert_eq!(w, &track_id, "track_id matches the path param");
+            assert_eq!(
+                *author,
+                EditAuthor::User,
+                "REST endpoint MUST tag User — Spec attribution would be the PR3 spoof bug",
+            );
+            // Pre-write was the seeded initial payload; post-write is
+            // exactly what the request body carried.
+            assert_eq!(summary_before, "");
+            assert_eq!(
+                body_before,
+                &TrackReportPayload::initial().body,
+                "before-state matches the TrackReportPayload::initial seed",
+            );
+            assert_eq!(summary_after, "user wrote this");
+            assert_eq!(body_after, "# Goal\n\nuser edit body\n");
+        }
+        other => panic!("expected TrackReportEdited as the second envelope, got {other:?}"),
+    }
+
+    // DB also has the new shape — read back via the track-report card
+    // row.
+    let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
+    let report_card = cards
+        .into_iter()
+        .find(|c| c.kind == "track-report")
+        .unwrap();
+    let persisted: TrackReportPayload = serde_json::from_value(report_card.payload).unwrap();
+    assert_eq!(persisted.body, "# Goal\n\nuser edit body\n");
+    assert_eq!(persisted.summary, "user wrote this");
+}
+
+#[tokio::test]
+async fn extra_author_field_in_body_is_rejected() {
+    // The load-bearing PR3 security invariant: the wire body MUST NOT
+    // accept an `author` field. `deny_unknown_fields` on the request
+    // body bounces any payload that tries to carry one, so a malicious
+    // (or accidentally over-eager) client cannot persuade the server
+    // to attribute a User edit as Spec.
+    let boot = boot().await;
+    let events = boot.state.events.clone();
+    let track_id = boot.track_id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+
+    // No subscription before — we expect zero events on the rejection
+    // path; `expect_no_events` after confirms.
+    let body = serde_json::to_vec(&json!({
+        "summary": "spoof attempt",
+        "body": "# Goal\n\npretending to be spec\n",
+        "ifDocRev": 0,
+        // The hostile field — must be rejected.
+        "author": "spec",
+    }))
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{}/report", track_id.as_str()))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // axum maps a `serde::Deserialize` failure on `Json<T>` to 400
+    // Bad Request via the default `JsonRejection` mapping. The exact
+    // body shape is irrelevant — what matters is (a) the call did NOT
+    // succeed and (b) no event was emitted.
+    assert!(
+        resp.status().is_client_error(),
+        "request with `author` field must be rejected; got {}",
+        resp.status(),
+    );
+    expect_no_events(&events, Duration::from_millis(150)).await;
+
+    // DB is unchanged — the seed body is still in place.
+    let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
+    let report_card = cards
+        .into_iter()
+        .find(|c| c.kind == "track-report")
+        .unwrap();
+    let persisted: TrackReportPayload = serde_json::from_value(report_card.payload).unwrap();
+    assert_eq!(
+        persisted.body,
+        TrackReportPayload::initial().body,
+        "spoof attempt did not mutate the report card",
+    );
+}
+
+#[tokio::test]
+async fn missing_session_returns_401_and_emits_nothing() {
+    let boot = boot().await;
+    let events = boot.state.events.clone();
+    let track_id = boot.track_id.clone();
+    let app = app(boot.state, boot.auth_state);
+
+    let body = serde_json::to_vec(&json!({
+        "summary": "no cookie",
+        "body": "# Goal\n\nshould 401\n",
+        "ifDocRev": 0,
+    }))
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{}/report", track_id.as_str()))
+                .header("content-type", "application/json")
+                // No Cookie header — session middleware must 401 us.
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["code"], "unauthorized");
+
+    // The session middleware short-circuits before reaching the
+    // handler, so no DB write and no event emit. Pin that.
+    expect_no_events(&events, Duration::from_millis(150)).await;
+}
+
+#[tokio::test]
+async fn nonexistent_track_returns_404_and_emits_nothing() {
+    let boot = boot().await;
+    let events = boot.state.events.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+
+    let body = serde_json::to_vec(&json!({
+        "summary": "ghost track",
+        "body": "# Goal\n\nghost\n",
+        "ifDocRev": 0,
+    }))
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                // Random-looking id; nothing matches.
+                .uri("/api/tracks/does-not-exist/report")
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    expect_no_events(&events, Duration::from_millis(150)).await;
+}
+
+#[tokio::test]
+async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing() {
+    // The X-Calm-Actor middleware accepts `ai:<id>` as a declared
+    // identity. The REST endpoint refuses *any* non-User actor with
+    // 403 so a hypothetical future worker / spec-card session-bearing
+    // surface cannot bypass the User-only contract by relabeling the
+    // header. The session itself is valid in every iteration here —
+    // the rejection is strictly on the actor pinning.
+    //
+    // Followup-nits coverage (security hygiene): the handler used to
+    // gate on `matches!(actor.to_actor_id(), ActorId::User)`. That
+    // type mapping has a defensive `_ => ActorId::User` fallback
+    // (intended to keep an attacker from synthesizing a Kernel /
+    // Plugin identity for the *event log*) which would also let any
+    // unknown `ai:<id>` header value pass the gate — only `ai:codex`
+    // is explicitly mapped to `ActorId::AiCodex`. The fix tightened
+    // the gate to a raw-string check (`actor.as_str() != "user"`); we
+    // pin the new behavior here by iterating every validated non-user
+    // shape the middleware will let through. The list deliberately
+    // includes `ai:codex` (the only one the *old* typed gate would
+    // also have caught) plus several `ai:<id>` values that would
+    // have slipped past it (`ai:claude`, `ai:gpt5`, `ai:claude-3-5`).
+    //
+    // `kernel` and `plugin:*` get rejected by the middleware itself
+    // (400 before the handler even runs) — those are pinned in
+    // `actor.rs` unit tests, not here.
+    let non_user_actors = [
+        "ai:codex",
+        "ai:claude",
+        "ai:gpt5",
+        "ai:claude-3-5",
+        "ai:newmodel-99",
+    ];
+
+    for declared_actor in non_user_actors {
+        let boot = boot().await;
+        let events = boot.state.events.clone();
+        let track_id = boot.track_id.clone();
+        let app = app(boot.state, boot.auth_state);
+        let cookie = login(&app).await;
+
+        let body = serde_json::to_vec(&json!({
+            "summary": format!("disguised-as-{declared_actor}"),
+            "body": "# Goal\n\nshould 403\n",
+            "ifDocRev": 0,
+        }))
+        .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/tracks/{}/report", track_id.as_str()))
+                    .header("content-type", "application/json")
+                    .header(header::COOKIE, cookie)
+                    // Declared non-user actor — the handler must
+                    // reject, regardless of whether
+                    // `Actor::to_actor_id` would have classified
+                    // this as `AiCodex` or fallen through to the
+                    // defensive `User` default.
+                    .header(calm_server::actor::Actor::HEADER, declared_actor)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "non-user actor `{declared_actor}` must be 403",
+        );
+        expect_no_events(&events, Duration::from_millis(150)).await;
+
+        // Belt-and-suspenders: DB unchanged for every iteration.
+        let cards = boot.repo.cards_by_track(track_id.as_str()).await.unwrap();
+        let report_card = cards
+            .into_iter()
+            .find(|c| c.kind == "track-report")
+            .unwrap();
+        let persisted: TrackReportPayload = serde_json::from_value(report_card.payload).unwrap();
+        assert_eq!(
+            persisted.body,
+            TrackReportPayload::initial().body,
+            "non-user actor `{declared_actor}` did not mutate the row",
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_user_actor_header_succeeds() {
+    // Defensive: an explicit `X-Calm-Actor: user` is the same as no
+    // header (both map to `ActorId::User`). Pin that we don't
+    // accidentally reject the explicit form.
+    let boot = boot().await;
+    let track_id = boot.track_id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+
+    let body = serde_json::to_vec(&json!({
+        "summary": "explicit user",
+        "body": "# Goal\n\nexplicit user\n",
+        "ifDocRev": 0,
+    }))
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{}/report", track_id.as_str()))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .header(calm_server::actor::Actor::HEADER, "user")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn generic_patch_rejects_track_report_payload_and_preserves_json_and_crdt() {
+    let boot = boot().await;
+    let track_id = boot.track_id.clone();
+    let repo = boot.repo.clone();
+    let report = repo
+        .cards_by_track(track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    let report_id = report.id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+
+    let persisted = json!({
+        "summary": "persisted",
+        "body": "# Goal\n\npersist boundary content\n",
+        "ifDocRev": 0,
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track_id}/report"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(persisted.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let before = repo
+        .card_get_with_body_crdt(report_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(before.1.is_some(), "persist boundary must seed body_crdt");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{report_id}"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({
+                        "payload": TrackReportPayload::new(
+                            "bypass",
+                            "# Goal\n\nmust not be persisted\n"
+                        )
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(error.contains("report persist boundary"), "error = {error}");
+
+    let after = repo
+        .card_get_with_body_crdt(report_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.0.payload, before.0.payload);
+    assert_eq!(after.1, before.1);
+}
+
+#[tokio::test]
+async fn generic_patch_rejects_worker_retarget_to_track_report_with_payload() {
+    let boot = boot().await;
+    let worker = boot
+        .repo
+        .card_create(NewCard {
+            track_id: boot.track_id.clone(),
+            title: None,
+            kind: "worker".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", worker.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({
+                        "kind": "track-report",
+                        "payload": TrackReportPayload::new("", "# Goal\n")
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn generic_patch_rejects_track_report_round_trip_without_payload() {
+    let boot = boot().await;
+    let report = boot
+        .repo
+        .cards_by_track(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let away = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", report.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(
+                    json!({"kind": "worker", "payload": {"arbitrary": true}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(away.status(), StatusCode::BAD_REQUEST);
+
+    let back = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", report.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(json!({"kind": "track-report"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(back.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn generic_patch_allows_track_report_title_and_sort_without_payload() {
+    let boot = boot().await;
+    let report = boot
+        .repo
+        .cards_by_track(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", report.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({"title": "Report", "sort": 12.5}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let card: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(card["title"], "Report");
+    assert_eq!(card["sort"], 12.5);
+}
+
+// ---------------------------------------------------------------------------
+// Root-cause lock for the codex-e2e report-card fixture gap.
+//
+// `real_spec_gives_up_at_review_cap_from_descriptor` and
+// `real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor`
+// failed at `calm.report.write` with `-32603 "track <id> has no track-report
+// card (invariant violation)"`. Root cause: the codex-e2e fixture bypassed
+// `routes::tracks::create_track` (the only production track-create entrypoint,
+// which mints the track-report card atomically with the track) by calling
+// `repo.track_create` directly and skipping the mint. Production never
+// produces a track without a report card.
+//
+// These pure-Rust tests reproduce the exact invariant at the shared kernel
+// resolver `resolve_report_for_track` (used by REST and mirrored by the MCP
+// `load_report_for_track` twin) WITHOUT spawning codex: the card-less shape
+// the buggy fixture produced errs; the production/fixed shape (card minted)
+// resolves.
+// ---------------------------------------------------------------------------
+
+async fn seed_spec_track_without_report_card(repo: &SqlxRepo) -> TrackId {
+    let area = repo
+        .area_create(NewArea {
+            name: "report-invariant".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let track = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: area.id.clone(),
+            title: "report invariant track".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    // Spec card only (kind "codex"), exactly the shape the codex-e2e fixture
+    // minted with report-card minting disabled. No track-report card.
+    repo.card_create(NewCard {
+        track_id: track.id.clone(),
+        title: None,
+        kind: "codex".into(),
+        sort: None,
+        payload: Value::Null,
+    })
+    .await
+    .unwrap();
+    track.id
+}
+
+#[tokio::test]
+async fn resolve_report_for_track_errs_when_report_card_missing() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let track_id = seed_spec_track_without_report_card(&repo).await;
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+
+    let err =
+        calm_server::track_report::resolve_report_for_track(route_repo.as_ref(), track_id.as_str())
+            .await
+            .expect_err("a track with no track-report card must trip the invariant");
+
+    match err {
+        CalmError::Internal(msg) => assert!(
+            msg.contains("has no track-report card (invariant violation)"),
+            "unexpected internal error message: {msg}"
+        ),
+        other => panic!("expected CalmError::Internal invariant violation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn resolve_report_for_track_ok_when_report_card_present() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let track_id = seed_spec_track_without_report_card(&repo).await;
+    // Mint the track-report card exactly as `routes::tracks::create_track` (and
+    // the fixed fixture) does: kind "track-report", sort -1.0, initial payload.
+    repo.card_create(NewCard {
+        track_id: track_id.clone(),
+        kind: "track-report".into(),
+        sort: Some(-1.0),
+        payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+        title: None,
+    })
+    .await
+    .unwrap();
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+
+    let (track, card, _payload) =
+        calm_server::track_report::resolve_report_for_track(route_repo.as_ref(), track_id.as_str())
+            .await
+            .expect("a track with a track-report card resolves");
+    assert_eq!(track.id, track_id);
+    assert_eq!(card.kind, "track-report");
+}

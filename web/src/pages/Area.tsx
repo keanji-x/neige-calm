@@ -1,19 +1,19 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
-import { WaveRow } from '../shared/components/WaveRow';
+import { TrackRow } from '../shared/components/TrackRow';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { NewTaskForm } from '../shared/components/NewTaskForm';
 import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { PlusIcon } from '../shared/components/PlusIcon';
 import { sortByLifecycleRank } from '../shared/lifecycle';
-import { waveDisplayTitle } from '../shared/waveTitle';
-import type { Area, Route, Wave } from '../types';
+import { trackDisplayTitle } from '../shared/trackTitle';
+import type { Area, Route, Track } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { Dialog } from '../ui/Dialog/Dialog';
 import { DeleteButton } from './_shared';
 
 // ============================================================
-// AreaPage — a single sorted list of the area's waves.
+// AreaPage — a single sorted list of the area's tracks.
 //
 // Each row encodes its own status (glyph/dot + activity + progress) so we
 // don't need Waiting / Running / Idle section headings to convey it.
@@ -23,32 +23,32 @@ import { DeleteButton } from './_shared';
 //
 // The area name renders exactly once — as the page <h1> — so there's no
 // duplicate naming chain with the sidebar's area-nav row (which already
-// shows the area name + swatch + wave count) or with the page header.
+// shows the area name + swatch + track count) or with the page header.
 // No eyebrow row above the title: the sidebar already carries the area's
-// color swatch + wave count, so reprinting either here is redundant
+// color swatch + track count, so reprinting either here is redundant
 // noise. "Less is more" — the page opens directly on the title.
 // ============================================================
 
 export function AreaPage({
   area,
-  waves,
+  tracks,
   onGo,
-  onWaveCreated,
+  onTrackCreated,
   onRenameArea,
   onDeleteArea,
-  onDeleteWave,
-  onPinWave,
+  onDeleteTrack,
+  onPinTrack,
 }: {
   area: Area;
-  waves: Wave[];
+  tracks: Track[];
   onGo: (r: Route) => void;
   /** Issue #250 PR 3 — fired after NewTaskForm successfully POSTs
-   *  `/api/waves`. Caller navigates to the new wave's detail page.
+   *  `/api/tracks`. Caller navigates to the new track's detail page.
    *  AreaPage owns the inline-form open/close state; the create POST
    *  + theme stamping + area auto-inference all live inside
    *  NewTaskForm. Pre-PR 3 this prop was `(areaId, title)` and the
    *  caller did the create — that signature is gone. */
-  onWaveCreated?: (wave: NewTaskFormResult) => void | Promise<void>;
+  onTrackCreated?: (track: NewTaskFormResult) => void | Promise<void>;
   /** Called from the inline rename input on the header. */
   onRenameArea?: (areaId: string, name: string) => void | Promise<void>;
   /** Called from the × button on the header. AreaPage renders a
@@ -56,56 +56,56 @@ export function AreaPage({
    *  double-prompt. */
   onDeleteArea?: (areaId: string) => void | Promise<void>;
   /** Called from a per-row × on hover. AreaPage renders a single
-   *  ConfirmDialog at the page level (driven by `pendingDeleteWave`)
+   *  ConfirmDialog at the page level (driven by `pendingDeleteTrack`)
    *  and routes confirmed deletes to this callback. */
-  onDeleteWave?: (waveId: string) => void | Promise<void>;
-  /** Pin or unpin a wave from within the area page. When provided,
-   *  every wave row renders a hover-revealed pin button. Mirrors the
-   *  sidebar's onPinWave contract. */
-  onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
+  onDeleteTrack?: (trackId: string) => void | Promise<void>;
+  /** Pin or unpin a track from within the area page. When provided,
+   *  every track row renders a hover-revealed pin button. Mirrors the
+   *  sidebar's onPinTrack contract. */
+  onPinTrack?: (trackId: string, pin: boolean) => void | Promise<void>;
 }) {
   // Per-row delete uses Pattern B (close-then-await): the dialog closes
-  // on Confirm and the parent's onDeleteWave promise runs without UI
-  // gating. The wave row already vanishes from the list on completion
-  // (the parent removes it from `waves`), which acts as its own
+  // on Confirm and the parent's onDeleteTrack promise runs without UI
+  // gating. The track row already vanishes from the list on completion
+  // (the parent removes it from `tracks`), which acts as its own
   // "succeeded" signal — gating the dialog with `confirmDisabled` would
   // duplicate that affordance. Cancel-safe default focus is inherited
   // from ConfirmDialog.
-  const [pendingDeleteWave, setPendingDeleteWave] = useState<Wave | null>(null);
-  const openDeleteWaveDialog = (w: Wave) => {
-    if (!onDeleteWave) return;
-    setPendingDeleteWave(w);
+  const [pendingDeleteTrack, setPendingDeleteTrack] = useState<Track | null>(null);
+  const openDeleteTrackDialog = (w: Track) => {
+    if (!onDeleteTrack) return;
+    setPendingDeleteTrack(w);
   };
-  const cancelDeleteWave = () => setPendingDeleteWave(null);
-  const confirmDeleteWave = () => {
-    const w = pendingDeleteWave;
-    setPendingDeleteWave(null);
-    if (!w || !onDeleteWave) return;
-    void onDeleteWave(w.id);
+  const cancelDeleteTrack = () => setPendingDeleteTrack(null);
+  const confirmDeleteTrack = () => {
+    const w = pendingDeleteTrack;
+    setPendingDeleteTrack(null);
+    if (!w || !onDeleteTrack) return;
+    void onDeleteTrack(w.id);
   };
 
   // Inline NewTaskForm: the page-header `+` toggles this open; NewTaskForm
   // autofocuses its title field on mount so no extra wiring needed here.
-  const [newWaveOpen, setNewWaveOpen] = useState(false);
+  const [newTrackOpen, setNewTrackOpen] = useState(false);
 
   // Single sorted list: waiting first (needs the user), then running
   // (in-flight work), then other (draft/done/canceled — the quiet
   // default). Within each bucket we keep the caller's order — the
-  // parent already orders waves the way the user expects (by recency /
+  // parent already orders tracks the way the user expects (by recency /
   // sort field). A stable bucket sort expresses status without forking
   // the layout into separate sections. Bucket rank is derived from the
-  // wave's `WaveLifecycle` (the single source of truth for wave-level
+  // track's `TrackLifecycle` (the single source of truth for track-level
   // state — see `shared/lifecycle.ts`).
-  const sortedWaves = useMemo(() => sortByLifecycleRank(waves), [waves]);
+  const sortedTracks = useMemo(() => sortByLifecycleRank(tracks), [tracks]);
 
   return (
     <div className="col wide">
       {/* `.area-head` is a flex row; `+` and `×` live in a sibling
           `.area-head-actions` group pushed to the right edge via
           `margin-left: auto`. The page title's leading edge stays at
-          x=0 (matching every wave-row's glyph column below). The × is
+          x=0 (matching every track-row's glyph column below). The × is
           hover/focus-within revealed, mirroring the per-row × on each
-          WaveRow so the page has one consistent delete affordance. */}
+          TrackRow so the page has one consistent delete affordance. */}
       <header className="area-head">
         {onRenameArea ? (
           <EditableTitle
@@ -117,13 +117,13 @@ export function AreaPage({
           <h1 className="h-display">{area.name}.</h1>
         )}
         <div className="area-head-actions">
-          {onWaveCreated && (
+          {onTrackCreated && (
             <button
               type="button"
               className="area-head-add"
-              onClick={() => setNewWaveOpen(true)}
-              title="New wave"
-              aria-label="New wave"
+              onClick={() => setNewTrackOpen(true)}
+              title="New track"
+              aria-label="New track"
             >
               <PlusIcon />
             </button>
@@ -134,7 +134,7 @@ export function AreaPage({
                 label={`Delete area "${area.name}"`}
                 confirmTitle="Delete area?"
                 confirmLabel="Delete area"
-                confirmMessage={`Delete area "${area.name}"? Its waves and cards go too. This cannot be undone.`}
+                confirmMessage={`Delete area "${area.name}"? Its tracks and cards go too. This cannot be undone.`}
                 onDelete={() => onDeleteArea(area.id)}
               />
             </span>
@@ -142,64 +142,64 @@ export function AreaPage({
         </div>
       </header>
 
-      {onWaveCreated && (
-        <NewWaveDialog
-          open={newWaveOpen}
+      {onTrackCreated && (
+        <NewTrackDialog
+          open={newTrackOpen}
           defaultAreaId={area.id}
-          onClose={() => setNewWaveOpen(false)}
-          onCreated={async (wave) => {
-            setNewWaveOpen(false);
-            await onWaveCreated(wave);
+          onClose={() => setNewTrackOpen(false)}
+          onCreated={async (track) => {
+            setNewTrackOpen(false);
+            await onTrackCreated(track);
           }}
         />
       )}
 
-      {waves.length === 0 && (
+      {tracks.length === 0 && (
         <div
           style={{
             padding: '32px 0 8px', color: 'var(--text-3)',
             fontSize: 15, textAlign: 'center',
           }}
         >
-          This Area is quiet. Start a Wave below.
+          This Area is quiet. Start a Track below.
         </div>
       )}
 
-      {sortedWaves.length > 0 && (
-        <section aria-label="Waves">
-          <div className="waves">
-            {sortedWaves.map((w) => (
-              <WaveRow
+      {sortedTracks.length > 0 && (
+        <section aria-label="Tracks">
+          <div className="tracks">
+            {sortedTracks.map((w) => (
+              <TrackRow
                 key={w.id}
-                wave={w}
+                track={w}
                 area={area}
                 showArea={false}
-                onClick={() => onGo({ name: 'wave', id: w.id })}
-                onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-                onPinWave={onPinWave}
+                onClick={() => onGo({ name: 'track', id: w.id })}
+                onDelete={onDeleteTrack ? () => openDeleteTrackDialog(w) : undefined}
+                onPinTrack={onPinTrack}
               />
             ))}
           </div>
         </section>
       )}
 
-      {/* Page-level wave-delete confirmation. One dialog instance per
-          page; `pendingDeleteWave` carries the wave being confirmed so
-          the title row text reflects the actual wave name. Mounted
+      {/* Page-level track-delete confirmation. One dialog instance per
+          page; `pendingDeleteTrack` carries the track being confirmed so
+          the title row text reflects the actual track name. Mounted
           unconditionally with `open` driven by the pending state so
           Dialog's focus restore on close lands us back where we were. */}
       <ConfirmDialog
-        open={pendingDeleteWave !== null}
-        title="Delete wave?"
+        open={pendingDeleteTrack !== null}
+        title="Delete track?"
         description={
-          pendingDeleteWave
-            ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
+          pendingDeleteTrack
+            ? `Delete track "${trackDisplayTitle(pendingDeleteTrack.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
             : null
         }
-        confirmLabel="Delete wave"
+        confirmLabel="Delete track"
         cancelLabel="Cancel"
-        onConfirm={confirmDeleteWave}
-        onCancel={cancelDeleteWave}
+        onConfirm={confirmDeleteTrack}
+        onCancel={cancelDeleteTrack}
       />
     </div>
   );
@@ -411,7 +411,7 @@ function EditableTitle({
   );
 }
 
-// ---------------- NewWaveDialog — title-row `+` opens this ----------------
+// ---------------- NewTrackDialog — title-row `+` opens this ----------------
 //
 // The compose trigger lives in the page title (see `area-head-actions`),
 // so the standalone bottom-of-page CTA is gone. The Dialog wrapper stays
@@ -422,10 +422,10 @@ function EditableTitle({
 // from there; this component just hosts the Dialog + NewTaskForm pairing.
 //
 // Why a controlled Dialog (vs. self-managing state like the prior
-// NewWaveCTA): the title-row `+` button is the visible trigger, and it
+// NewTrackCTA): the title-row `+` button is the visible trigger, and it
 // stays mounted while the Dialog is open so Dialog's focus-restore lands
 // keyboard users back on the `+` button after close.
-function NewWaveDialog({
+function NewTrackDialog({
   open,
   defaultAreaId,
   onClose,
@@ -434,7 +434,7 @@ function NewWaveDialog({
   open: boolean;
   defaultAreaId: string;
   onClose: () => void;
-  onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
+  onCreated: (track: NewTaskFormResult) => void | Promise<void>;
 }) {
   // Shared ref between the host Dialog and the NewTaskForm's first
   // field so the Dialog's initial-focus pass lands directly on the
@@ -448,8 +448,8 @@ function NewWaveDialog({
   // GitHub-issue-URL input in 'issue-dev'.
   const initialFieldRef = useRef<HTMLElement | null>(null);
   // Issue #891 slice ③ — which NewTaskForm variant the dialog hosts.
-  // 'task' is the plain wave path (unchanged); 'issue-dev' binds the
-  // wave to the shipped `issue-development` workflow from a GitHub
+  // 'task' is the plain track path (unchanged); 'issue-dev' binds the
+  // track to the shipped `issue-development` workflow from a GitHub
   // issue URL. Reset to 'task' whenever the dialog closes so every
   // open starts from the familiar default.
   const [variant, setVariant] = useState<'task' | 'issue-dev'>('task');
@@ -477,10 +477,10 @@ function NewWaveDialog({
       onClose={onClose}
       // Names the dialog (aria-label) without rendering the title row:
       // the owner wants the dialog to read as one cohesive card (#891
-      // signoff round 2), so the visible "New wave" head is gone but
+      // signoff round 2), so the visible "New track" head is gone but
       // the accessible name stays. Dismissal: the form's Cancel button,
       // Esc, and overlay-click.
-      title="New wave"
+      title="New track"
       hideTitleRow
       initialFocusRef={initialFieldRef}
     >
@@ -492,14 +492,14 @@ function NewWaveDialog({
               `appearance: base-select` + `::picker(select)` in
               calm.css gives Chromium an in-theme dropdown drawer;
               other browsers gracefully fall back to the OS popup. The
-              field binds `template_id`: "None" is a plain wave, other
+              field binds `template_id`: "None" is a plain track, other
               options are the shipped templates. Options carry two-part
               content — name + muted one-line description span (rich
               option content is a base-select capability; fallback
               popups flatten it to inline text, which is why the
               description is kept short). Changing it remounts
               NewTaskForm (key) so per-variant state starts clean. */}
-          <div className="new-wave-kind">
+          <div className="new-track-kind">
             <label htmlFor={variantSelectId} className="new-task-form-label">
               Workflow
             </label>
@@ -535,10 +535,10 @@ function NewWaveDialog({
               {/* Option rows: name + muted description, differentiated
                   purely by type (no literal separator); the {' '} text
                   node keeps the flattened fallback/AT text readable
-                  ("None plain wave"). */}
+                  ("None plain track"). */}
               <option value="task">
                 <span className="calm-select-opt-name">None</span>{' '}
-                <span className="calm-select-opt-desc">plain wave</span>
+                <span className="calm-select-opt-desc">plain track</span>
               </option>
               <option value="issue-dev">
                 <span className="calm-select-opt-name">Issue dev</span>{' '}

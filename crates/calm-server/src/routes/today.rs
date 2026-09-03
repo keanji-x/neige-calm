@@ -1,25 +1,25 @@
 //! Server-owned Today launchpad bootstrap (#951, Slice A).
 
 use crate::actor::Actor;
-use crate::db::rows::WAVE_SELECT_COLUMNS;
+use crate::db::rows::TRACK_SELECT_COLUMNS;
 use crate::db::sqlite::{
     area_create_system_tx, card_create_with_id_tx, card_update_tx, card_with_terminal_create_tx,
-    wave_workspace_write_tx,
+    track_workspace_write_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
-    Card, CardPatch, CardRole, NewCard, RequestTheme, Terminal, Wave, WaveWorkspace,
-    WaveWorkspaceKind, new_id, now_ms,
+    Card, CardPatch, CardRole, NewCard, RequestTheme, Terminal, Track, TrackWorkspace,
+    TrackWorkspaceKind, new_id, now_ms,
 };
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::{AppState, RouteState};
+use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
-use crate::wave_report::WaveReportPayload;
 use axum::{
     Json, Router,
     extract::{FromRef, State},
@@ -32,7 +32,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use utoipa::ToSchema;
 // #1147 — one definition of the path digest, shared with the scheduler's
-// child-wave bootstrap key.
+// child-track bootstrap key.
 use crate::workspace_materialize::workspace_key_digest;
 
 pub fn router() -> Router<AppState> {
@@ -43,7 +43,7 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TodayLaunchpad {
-    pub wave_id: String,
+    pub track_id: String,
     pub spec_card_id: String,
     pub terminal_card_id: String,
     pub terminal_id: String,
@@ -55,13 +55,13 @@ pub struct TodayLaunchpad {
 /// does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
 /// reader's, and the two answer different questions.
 ///
-/// There is no `report_card_id` here on purpose. The wave detail already
-/// returns the wave's cards and the frontend locates the report by
-/// `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+/// There is no `report_card_id` here on purpose. The track detail already
+/// returns the track's cards and the frontend locates the report by
+/// `kind == "track-report"` (`fe/core/domain/report.ts::readTrackReport`), so
 /// such a field would have no consumer.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TodayLaunchpadResolved {
-    pub wave_id: String,
+    pub track_id: String,
     /// Whether this report's `summary`/`body` differ **right now** from the
     /// canonical freshly-minted pair.
     ///
@@ -71,7 +71,7 @@ pub struct TodayLaunchpadResolved {
     /// on it — see the first bullet below.
     ///
     /// It is computed server-side by
-    /// [`WaveReportPayload::report_startup_read_required`], the kernel's one
+    /// [`TrackReportPayload::report_startup_read_required`], the kernel's one
     /// canonical "has this been written" predicate. It is deliberately NOT
     /// named `report_started`, and the difference is not cosmetic (design D7):
     ///
@@ -92,7 +92,7 @@ pub struct TodayLaunchpadResolved {
     ///   text was reverted to canonical while those two stayed non-zero.
     ///
     /// The frontend must not re-derive this by looking at the report body:
-    /// `readWaveReport` returns non-null for the canonical initial report
+    /// `readTrackReport` returns non-null for the canonical initial report
     /// (its body carries the maintenance-contract comment and four H1s), so a
     /// null-check there renders four empty headings instead of an empty state.
     pub report_has_noninitial_content: bool,
@@ -100,7 +100,7 @@ pub struct TodayLaunchpadResolved {
 
 struct EnsureTxResult {
     dto: TodayLaunchpad,
-    wave: Wave,
+    track: Track,
     report_card_id: String,
     created: bool,
     adopted_legacy: bool,
@@ -121,12 +121,12 @@ struct EnsureTxResult {
 /// unique violation as `UNIQUE constraint failed: <table>.<column>[, …]` — it
 /// names the index only for a unique index over *expressions*. Both indexes
 /// this module races on (`idx_areas_one_system` on `areas(kind)`,
-/// `idx_waves_one_launchpad` on `waves(purpose)`) are partial indexes over
-/// plain columns, so their messages read `areas.kind` and `waves.purpose` and
+/// `idx_tracks_one_launchpad` on `tracks(purpose)`) are partial indexes over
+/// plain columns, so their messages read `areas.kind` and `tracks.purpose` and
 /// contain no index name at all. Passing the index name here matches nothing:
 /// the arm becomes dead code and the race surfaces as a 500 instead of the
-/// retry it was written to perform. `routes::waves` has always used the column
-/// form (`waves.area_id`); this module did not until #1253 PR1.
+/// retry it was written to perform. `routes::tracks` has always used the column
+/// form (`tracks.area_id`); this module did not until #1253 PR1.
 /// The `constraint` argument for the system-area race, and the ONLY place that
 /// string is written.
 ///
@@ -146,7 +146,7 @@ struct EnsureTxResult {
 ///   in which nothing was ever retried.
 const SYSTEM_AREA_UNIQUE: &str = "areas.kind";
 
-/// The `constraint` argument for the launchpad-wave race.
+/// The `constraint` argument for the launchpad-track race.
 ///
 /// **Read this before trusting it, because its guard is weaker than the one
 /// above and the difference is not obvious.** The retry arm it feeds is
@@ -166,7 +166,7 @@ const SYSTEM_AREA_UNIQUE: &str = "areas.kind";
 /// `#[allow(dead_code)]`, or one second non-test reader of this constant, and
 /// the guard goes silent with nothing turning red. Do not add either without
 /// replacing the guard.
-const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
+const LAUNCHPAD_UNIQUE: &str = "tracks.purpose";
 
 /// Per-server observation of the system-area mint race.
 ///
@@ -213,7 +213,7 @@ const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
 /// rendezvous actually did its job.
 ///
 /// **Why an `Option` on [`AppState`] rather than `#[cfg(feature = "fixtures")]`.**
-/// `routes::waves`'s `wait_at_chat_wave_ensure_barrier` is the existing
+/// `routes::tracks`'s `wait_at_chat_track_ensure_barrier` is the existing
 /// precedent for this shape and is cfg-gated behind a process-global registry.
 /// That carrier was already ruled against for the counters, for two reasons
 /// that apply here unchanged: a cfg-gated path means the tested binary does not
@@ -256,7 +256,7 @@ fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
 /// **Routine absence is data; anomalous absence is an error.** That is the
 /// whole rule, and the two branches here are the two sides of it.
 ///
-/// *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+/// *No launchpad track* is the ordinary state of a fresh workspace, so it is
 /// `200` with a `null` body — not a 404. It was a 404 for one revision, on the
 /// grounds that 404 is "cheap and fail-closed". That reasoning did not survive
 /// contact with the fact that this is the **landing route**: every session on
@@ -269,8 +269,8 @@ fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
 /// once #1253 PR2's trigger lands, first use mints a launchpad and the
 /// exemption outlives its reason.
 ///
-/// *A launchpad wave with no `wave-report` card* stays a `404`, and that is
-/// the same rule rather than an exception to it. The wave and its report card
+/// *A launchpad track with no `track-report` card* stays a `404`, and that is
+/// the same rule rather than an exception to it. The track and its report card
 /// are created in **one transaction** (`today_launchpad_ensure_tx`), and the
 /// adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
 /// commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
@@ -282,45 +282,45 @@ fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
 /// status means "go create one" (INV-TODAYTERM-006 pins that chain). This one
 /// would mean "render the empty state" — pure data, no action — so borrowing
 /// the shape would discard the meaning.
-#[utoipa::path(get, path = "/api/today/launchpad", tag = "waves", responses(
-    (status = 200, description = "The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.", body = Option<TodayLaunchpadResolved>),
-    (status = 404, description = "The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs.", body = ErrorBody)
+#[utoipa::path(get, path = "/api/today/launchpad", tag = "tracks", responses(
+    (status = 200, description = "The launchpad track and whether its report has been written, or `null` when no launchpad track exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.", body = Option<TodayLaunchpadResolved>),
+    (status = 404, description = "The launchpad track exists but carries no `track-report` card. Not a reachable state; see the handler docs.", body = ErrorBody)
 ))]
 pub(crate) async fn resolve_today_launchpad(
     State(app): State<AppState>,
     _actor: Actor,
 ) -> Result<Json<Option<TodayLaunchpadResolved>>> {
-    let Some(wave) = app.repo.wave_get_launchpad().await? else {
+    let Some(track) = app.repo.track_get_launchpad().await? else {
         return Ok(Json(None));
     };
     let report = app
         .repo
-        .cards_by_wave(wave.id.as_str())
+        .cards_by_track(track.id.as_str())
         .await?
         .into_iter()
-        .find(|card| card.kind == "wave-report")
+        .find(|card| card.kind == "track-report")
         .ok_or_else(|| CalmError::NotFound("today launchpad report card".into()))?;
     // A payload this build cannot parse is, by construction, not the canonical
     // initial payload, so `true` ("someone wrote something here") is the honest
     // answer and it shows the document rather than hiding it behind an empty
     // state. The alternative — treating an unreadable payload as empty — would
     // let one bad row silently swallow a real report.
-    let has_noninitial_content = serde_json::from_value::<WaveReportPayload>(report.payload)
+    let has_noninitial_content = serde_json::from_value::<TrackReportPayload>(report.payload)
         .map(|payload| payload.report_startup_read_required())
         .unwrap_or(true);
     Ok(Json(Some(TodayLaunchpadResolved {
-        wave_id: wave.id.to_string(),
+        track_id: track.id.to_string(),
         report_has_noninitial_content: has_noninitial_content,
     })))
 }
 
-/// #1147 — the launchpad wave's workspace. `Managed`, under the workspace
+/// #1147 — the launchpad track's workspace. `Managed`, under the workspace
 /// root like every other managed workspace, and **never frozen**.
 ///
 /// **Never frozen** is the design D9 exception, and it is the *only* thing
-/// that is exceptional here. The launchpad is the one wave whose path the
+/// that is exceptional here. The launchpad is the one track whose path the
 /// kernel may legally re-point: the adopt-legacy branch below repurposes an
-/// existing `Today` wave, and `ensure` is idempotent, so that branch runs
+/// existing `Today` track, and `ensure` is idempotent, so that branch runs
 /// against a row that has already been through here. Freezing it would make
 /// design D1's "`frozen_at` is one-shot and monotonic" false — re-point +
 /// re-stamp is exactly the sequence the latch forbids. The alternatives were
@@ -338,19 +338,19 @@ pub(crate) async fn resolve_today_launchpad(
 ///
 /// Making it managed also buys an invariant with **no exceptions**:
 /// `kind = Managed ⇒ path is under <workspace-root>`.
-/// `every_managed_wave_lives_under_the_workspace_root` in
+/// `every_managed_track_lives_under_the_workspace_root` in
 /// `tests/cases/today_launchpad.rs` asserts it over the whole table, so S5's
 /// recycle-path prefix assertion needs no launchpad carve-out.
 ///
 /// The old `<data_dir>/../launchpad` directory is deliberately **left on
 /// disk**: nothing outside the workspace root is ours to delete.
-fn launchpad_workspace(workspace_root: &Path, area_id: &str, wave_id: &str) -> WaveWorkspace {
-    WaveWorkspace {
-        kind: WaveWorkspaceKind::Managed,
+fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> TrackWorkspace {
+    TrackWorkspace {
+        kind: TrackWorkspaceKind::Managed,
         path: crate::workspace_materialize::managed_workspace_path(
             workspace_root,
             area_id,
-            wave_id,
+            track_id,
         )
         .to_string_lossy()
         .into_owned(),
@@ -374,69 +374,69 @@ async fn today_launchpad_ensure_tx(
     area_id: &str,
     workspace_root: &Path,
 ) -> Result<EnsureTxResult> {
-    let existing = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-        "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose='launchpad' LIMIT 1"
+    let existing = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+        "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose='launchpad' LIMIT 1"
     ))
     .fetch_optional(&mut **tx)
     .await?
-    .map(Wave::from);
+    .map(Track::from);
 
-    let (mut wave, created, adopted_legacy) = if let Some(wave) = existing {
-        (wave, false, false)
-    } else if let Some(mut wave) = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-        "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE area_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1"
-    )).bind(area_id).fetch_optional(&mut **tx).await?.map(Wave::from) {
+    let (mut track, created, adopted_legacy) = if let Some(track) = existing {
+        (track, false, false)
+    } else if let Some(mut track) = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+        "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE area_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1"
+    )).bind(area_id).fetch_optional(&mut **tx).await?.map(Track::from) {
         // #1147 S1 — this UPDATE used to carry `cwd=?2`, which made it a
         // second writer of a column that design D1 demotes to a projection of
         // `workspace.path`. It now writes everything *except* the workspace
         // and hands the workspace to the single writer below, in the same tx.
-        sqlx::query("UPDATE waves SET purpose='launchpad', template_id=NULL, plugin_scope=NULL, template_input=NULL, updated_at=?2 WHERE id=?1")
-            .bind(wave.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
-        wave.purpose = Some("launchpad".into());
-        wave.template_id = None; wave.plugin_scope = None; wave.template_input = None;
-        (wave, false, true)
+        sqlx::query("UPDATE tracks SET purpose='launchpad', template_id=NULL, plugin_scope=NULL, template_input=NULL, updated_at=?2 WHERE id=?1")
+            .bind(track.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
+        track.purpose = Some("launchpad".into());
+        track.template_id = None; track.plugin_scope = None; track.template_input = None;
+        (track, false, true)
     } else {
         let id = new_id(); let now = now_ms();
-        let sort: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM waves WHERE area_id=?1")
+        let sort: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM tracks WHERE area_id=?1")
             .bind(area_id).fetch_one(&mut **tx).await?;
         // #1147 S1 — `cwd` is off this INSERT's column list (it falls to
         // migration 0018's `DEFAULT ''` for the remainder of this tx) and is
         // written together with the workspace columns by the single workspace
         // writer below, shared by all three branches.
-        sqlx::query("INSERT INTO waves(id,area_id,title,sort,lifecycle,template_id,purpose,template_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
+        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,template_id,purpose,template_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
             .bind(&id).bind(area_id).bind(sort).bind(now).execute(&mut **tx).await?;
-        s.write.area_cache().insert(WaveId::from(id.clone()), area_id.to_string().into());
-        (Wave { id:id.into(), area_id:area_id.to_string().into(), title:"Today".into(), sort,
+        s.write.area_cache().insert(TrackId::from(id.clone()), area_id.to_string().into());
+        (Track { id:id.into(), area_id:area_id.to_string().into(), title:"Today".into(), sort,
             archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd_wire_alias:String::new(),
             template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
-            terminal_at:None, workspace: WaveWorkspace::default(), created_at:now, updated_at:now }, true, false)
+            terminal_at:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };
 
     // #1147 — ONE workspace writer for all three branches, so the launchpad's
     // row cannot differ by which branch minted it. The desired workspace is a
-    // pure function of the wave id, so this is a no-op on the steady state and
+    // pure function of the track id, so this is a no-op on the steady state and
     // a one-time re-point for a row created before S2 (whose path was the
     // kernel-minted `<data_dir>/../launchpad`). Re-pointing is legal precisely
-    // because this wave is never frozen — see `launchpad_workspace`.
-    let desired = launchpad_workspace(workspace_root, area_id, wave.id.as_str());
-    if wave.workspace != desired {
-        wave_workspace_write_tx(tx, wave.id.as_str(), &desired).await?;
-        wave.cwd_wire_alias = desired.path.clone();
-        wave.workspace = desired;
+    // because this track is never frozen — see `launchpad_workspace`.
+    let desired = launchpad_workspace(workspace_root, area_id, track.id.as_str());
+    if track.workspace != desired {
+        track_workspace_write_tx(tx, track.id.as_str(), &desired).await?;
+        track.cwd_wire_alias = desired.path.clone();
+        track.workspace = desired;
     }
-    let cwd = wave.workspace.path.clone();
+    let cwd = track.workspace.path.clone();
     let cwd = cwd.as_str();
 
     let cards: Vec<Card> = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT id,wave_id,kind,title,sort,payload,deletable,created_at,updated_at FROM cards WHERE wave_id=?1 ORDER BY created_at,id"
-    ).bind(wave.id.as_str()).fetch_all(&mut **tx).await?.into_iter().map(Card::from).collect();
+        "SELECT id,track_id,kind,title,sort,payload,deletable,created_at,updated_at FROM cards WHERE track_id=?1 ORDER BY created_at,id"
+    ).bind(track.id.as_str()).fetch_all(&mut **tx).await?.into_iter().map(Card::from).collect();
     let spec = if let Some(card) = cards
         .iter()
         .find(|c| c.kind == "codex" && s.write.role_cache().get(&c.id) == Some(CardRole::Spec))
         .cloned()
     {
         if adopted_legacy {
-            // Only repurposing a legacy Today wave invalidates its old spec thread.
+            // Only repurposing a legacy Today track invalidates its old spec thread.
             sqlx::query("DELETE FROM harness_items WHERE card_id=?1")
                 .bind(card.id.as_str())
                 .execute(&mut **tx)
@@ -459,7 +459,7 @@ async fn today_launchpad_ensure_tx(
             new_id(),
             NewCard {
                 title: None,
-                wave_id: wave.id.clone(),
+                track_id: track.id.clone(),
                 kind: "codex".into(),
                 sort: None,
                 payload: spec_payload(),
@@ -470,7 +470,7 @@ async fn today_launchpad_ensure_tx(
         )
         .await?
     };
-    let report = if let Some(card) = cards.iter().find(|c| c.kind == "wave-report").cloned() {
+    let report = if let Some(card) = cards.iter().find(|c| c.kind == "track-report").cloned() {
         card
     } else {
         card_create_with_id_tx(
@@ -478,10 +478,10 @@ async fn today_launchpad_ensure_tx(
             new_id(),
             NewCard {
                 title: None,
-                wave_id: wave.id.clone(),
-                kind: "wave-report".into(),
+                track_id: track.id.clone(),
+                kind: "track-report".into(),
                 sort: Some(-1.0),
-                payload: serde_json::to_value(WaveReportPayload::initial())?,
+                payload: serde_json::to_value(TrackReportPayload::initial())?,
             },
             CardRole::ReportCard,
             false,
@@ -490,8 +490,8 @@ async fn today_launchpad_ensure_tx(
         .await?
     };
     let valid_terminal_card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT c.id,c.wave_id,c.kind,c.title,c.sort,c.payload,c.deletable,c.created_at,c.updated_at FROM cards c JOIN terminals t ON t.card_id=c.id WHERE c.wave_id=?1 AND c.kind='terminal' ORDER BY c.created_at,c.id LIMIT 1"
-    ).bind(wave.id.as_str()).fetch_optional(&mut **tx).await?.map(Card::from);
+        "SELECT c.id,c.track_id,c.kind,c.title,c.sort,c.payload,c.deletable,c.created_at,c.updated_at FROM cards c JOIN terminals t ON t.card_id=c.id WHERE c.track_id=?1 AND c.kind='terminal' ORDER BY c.created_at,c.id LIMIT 1"
+    ).bind(track.id.as_str()).fetch_optional(&mut **tx).await?.map(Card::from);
     let valid_terminal: Option<(Card, Terminal)> = if let Some(card) = valid_terminal_card {
         let term = crate::db::sqlite::terminal_get_by_card_tx(tx, card.id.as_str()).await?;
         term.map(|term| (card, term))
@@ -506,7 +506,7 @@ async fn today_launchpad_ensure_tx(
             new_id(),
             &new_id(),
             None,
-            wave.id.clone(),
+            track.id.clone(),
             None,
             None,
             String::new(),
@@ -543,7 +543,7 @@ async fn today_launchpad_ensure_tx(
     .bind(format!(
         "today-launchpad:{}:%:{}",
         spec.id.as_str(),
-        workspace_key_digest(&wave.workspace.path)
+        workspace_key_digest(&track.workspace.path)
     ))
     .fetch_one(&mut **tx)
     .await?;
@@ -551,12 +551,12 @@ async fn today_launchpad_ensure_tx(
 
     Ok(EnsureTxResult {
         dto: TodayLaunchpad {
-            wave_id: wave.id.to_string(),
+            track_id: track.id.to_string(),
             spec_card_id: spec.id.to_string(),
             terminal_card_id: terminal_card.id.to_string(),
             terminal_id: terminal.id,
         },
-        wave,
+        track,
         report_card_id: report.id.to_string(),
         created,
         adopted_legacy,
@@ -564,7 +564,7 @@ async fn today_launchpad_ensure_tx(
     })
 }
 
-#[utoipa::path(post,path="/api/today/launchpad/ensure",tag="waves",responses(
+#[utoipa::path(post,path="/api/today/launchpad/ensure",tag="tracks",responses(
     (status=200,description="Existing live launchpad",body=TodayLaunchpad),
     (status=201,description="Launchpad minted or adopted; harness start may still be dormant",body=TodayLaunchpad),
     (status=503,description="Launchpad exists but harness failed to start",body=ErrorBody)
@@ -636,7 +636,7 @@ pub(crate) async fn ensure_today_launchpad(
         }
     };
     // #1147 — the launchpad's workspace is a managed one under the workspace
-    // root, derived from the wave id inside the transaction. The pre-S2
+    // root, derived from the track id inside the transaction. The pre-S2
     // `<data_dir>/../launchpad` directory is no longer created here, and an
     // existing one is deliberately left on disk: nothing outside the workspace
     // root is ours to remove.
@@ -650,7 +650,7 @@ pub(crate) async fn ensure_today_launchpad(
     .await;
     let out = match attempt {
         Ok(v) => v,
-        // The COLUMN form, not `idx_waves_one_launchpad`: see
+        // The COLUMN form, not `idx_tracks_one_launchpad`: see
         // `is_unique_constraint`.
         //
         // —— This arm is UNREACHABLE today, and that is worth stating plainly.
@@ -698,26 +698,26 @@ pub(crate) async fn ensure_today_launchpad(
         }
         Err(e) => return Err(e),
     };
-    // #1147 S2 (design D3) — the launchpad is one of the four wave-create
-    // entry points (`POST /api/waves`, area chat, launchpad, child wave;
+    // #1147 S2 (design D3) — the launchpad is one of the four track-create
+    // entry points (`POST /api/tracks`, area chat, launchpad, child track;
     // template seeding was a fifth until #1300 S2 deleted it). The enumeration
-    // is spelled out once, in `tests/cases/wave_workspace_materialize.rs`,
+    // is spelled out once, in `tests/cases/track_workspace_materialize.rs`,
     // because an ordinal repeated across files is what drifted: this comment
-    // and `child_wave_adapter.rs` both used to call themselves "the fifth".
-    // It does **not** go through `create_wave_structure` (raw
-    // `INSERT INTO waves`), so it carries its own materialize call. Skipping it
+    // and `child_track_adapter.rs` both used to call themselves "the fifth".
+    // It does **not** go through `create_track_structure` (raw
+    // `INSERT INTO tracks`), so it carries its own materialize call. Skipping it
     // would leave every codex task on the Today panel dying with
     // `spawn-failed` (`git rev-parse --show-toplevel` on a non-repository),
     // which is the exact defect #1147 opened on.
     crate::workspace_materialize::materialize_workspace(
-        &out.wave.workspace,
+        &out.track.workspace,
         &workspace_root,
-        out.wave.id.as_str(),
+        out.track.id.as_str(),
     )
     .map_err(|error| {
         tracing::error!(
-            wave_id = %out.dto.wave_id,
-            path = %out.wave.workspace.path,
+            track_id = %out.dto.track_id,
+            path = %out.track.workspace.path,
             error = %error,
             "today launchpad: workspace materialization failed"
         );
@@ -726,11 +726,11 @@ pub(crate) async fn ensure_today_launchpad(
 
     let req = SpecHarnessStartOperationPayload {
         actor: ActorId::Kernel,
-        wave_id: out.dto.wave_id.clone(),
+        track_id: out.dto.track_id.clone(),
         spec_card_id: CardId::from(out.dto.spec_card_id.clone()),
         report_card_id: Some(out.report_card_id),
         sort: None,
-        cwd: out.wave.workspace.path.clone(),
+        cwd: out.track.workspace.path.clone(),
         goal: None,
         reset_harness_items: out.created || out.adopted_legacy,
         // #1147 — a re-point also forces a new thread. The codex thread holds
@@ -782,7 +782,7 @@ pub(crate) async fn ensure_today_launchpad(
                 idempotency_key: Some(format!(
                     "today-launchpad:{}:{start_mode}:{}",
                     out.dto.spec_card_id,
-                    workspace_key_digest(&out.wave.workspace.path)
+                    workspace_key_digest(&out.track.workspace.path)
                 )),
                 payload_hash: hash,
             },
@@ -822,7 +822,7 @@ mod tests {
     /// can change under us. It runs the real migrations on a real database and
     /// provokes real violations; `is_unique_constraint` is then called
     /// **directly**, as the module's own private function. No hand-built
-    /// `CalmError`, and deliberately not `waves::is_unique_constraint_for_test`
+    /// `CalmError`, and deliberately not `tracks::is_unique_constraint_for_test`
     /// — a test that reaches for a test-only export is testing the export.
     ///
     /// **What it binds, and what it does not.** It asserts against
@@ -879,20 +879,20 @@ mod tests {
              system-area retry arm dead code before #1253: {message}"
         );
 
-        // —— waves(purpose) WHERE purpose = 'launchpad' (migration 0064) ——
+        // —— tracks(purpose) WHERE purpose = 'launchpad' (migration 0064) ——
         let insert_launchpad = |id: &'static str| {
             sqlx::query(
-                "INSERT INTO waves(id,area_id,title,sort,lifecycle,purpose,created_at,updated_at) \
+                "INSERT INTO tracks(id,area_id,title,sort,lifecycle,purpose,created_at,updated_at) \
                  VALUES(?1,'area-winner','Today',1,'draft','launchpad',1,1)",
             )
             .bind(id)
             .execute(pool)
         };
-        insert_launchpad("wave-winner").await.unwrap();
-        let error: CalmError = insert_launchpad("wave-loser").await.unwrap_err().into();
+        insert_launchpad("track-winner").await.unwrap();
+        let error: CalmError = insert_launchpad("track-loser").await.unwrap_err().into();
         let message = error.to_string();
         assert!(
-            message.contains("UNIQUE constraint failed: waves.purpose"),
+            message.contains("UNIQUE constraint failed: tracks.purpose"),
             "unexpected message: {message}"
         );
         assert!(
@@ -901,7 +901,7 @@ mod tests {
              but `{LAUNCHPAD_UNIQUE}` does not: {message}"
         );
         assert!(
-            !is_unique_constraint(&error, "idx_waves_one_launchpad"),
+            !is_unique_constraint(&error, "idx_tracks_one_launchpad"),
             "the index name must NOT match — see the note on the launchpad \
              retry arm in `ensure_today_launchpad`: {message}"
         );

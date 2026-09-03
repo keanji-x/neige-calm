@@ -73,7 +73,7 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
              id, wave_id, key, kind, goal, context_json, depends_on_json,
              status, created_at_ms, updated_at_ms
            ) VALUES (
-             'wave-legacy:in-flight', 'wave-legacy', 'in-flight', 'codex',
+             'track-legacy:in-flight', 'track-legacy', 'in-flight', 'codex',
              'legacy work', 'null', '[]', 'running', 1, 1
            )"#,
     )
@@ -87,7 +87,7 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
         .expect("upgrade through context-freeze migration");
     let claim_context: Option<String> =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
-            .bind("wave-legacy:in-flight")
+            .bind("track-legacy:in-flight")
             .fetch_one(&pool)
             .await
             .expect("read upgraded legacy task");
@@ -366,7 +366,7 @@ async fn upgrade_from_pre_0068_with_nonterminal_task_aborts_cleanly_at_0072() {
 async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss() {
     const HEAD_TASK_COLUMNS: &[&str] = &[
         "id",
-        "wave_id",
+        "track_id",
         "key",
         "kind",
         "goal",
@@ -396,7 +396,7 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
         "decl_released_by_user",
         "context_verify_failures",
         "spawn",
-        "child_wave_id",
+        "child_track_id",
     ];
 
     let dir = tempfile::tempdir().expect("temporary database directory");
@@ -423,17 +423,41 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
            'block-flight','w','block-flight','claude','keep me','{\"source\":\"block\"}',\
            'accept','/tmp','[\"dep\"]',7,'{\"cmd\":\"true\"}','running','working','worker',\
            '{\"ok\":true}',2,101,202,'boot',303,11,12,NULL,'[]',404,1,'spec','block',1,1,5,\
-           'child-wave',NULL\
+           'child-track',NULL\
          )",
     )
     .execute(&pool)
     .await
     .expect("seed pre-0073 in-flight block task");
+    // The before/after snapshots must name their columns DIFFERENTLY, because
+    // #1316 S2's migration 0081 renames two of them (`wave_id` -> `track_id`,
+    // `child_wave_id` -> `child_track_id`). Before 0081 this test could reuse
+    // one column list for both sides, and that is exactly what made the rename
+    // surface here: `HEAD_TASK_COLUMNS` describes the schema AFTER the upgrade
+    // and cannot address the 0072 row.
+    //
+    // The invariant is unchanged and still load-bearing: the assertion compares
+    // VALUES, so renaming a column must not alter any of them. Deriving the
+    // pre-0081 list from the head list (rather than writing a second literal
+    // roster) keeps the two in lockstep — a column added to `HEAD_TASK_COLUMNS`
+    // is automatically snapshotted on both sides.
+    let pre_0081_columns: Vec<String> = HEAD_TASK_COLUMNS
+        .iter()
+        .map(|c| match *c {
+            "track_id" => "wave_id".to_string(),
+            "child_track_id" => "child_wave_id".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
     let snapshot_sql = format!(
         "SELECT json_array({}) FROM tasks WHERE id='block-flight'",
         HEAD_TASK_COLUMNS.join(",")
     );
-    let before: String = sqlx::query_scalar(&snapshot_sql)
+    let before_sql = format!(
+        "SELECT json_array({}) FROM tasks WHERE id='block-flight'",
+        pre_0081_columns.join(",")
+    );
+    let before: String = sqlx::query_scalar(&before_sql)
         .fetch_one(&pool)
         .await
         .expect("snapshot complete 0072 task row except origin");
@@ -488,7 +512,7 @@ async fn upgrade_0073_accepts_terminal_legacy_rows_and_an_empty_database() {
         .expect("terminal legacy task may upgrade through 0073");
     let terminal_json: String = sqlx::query_scalar(
         "SELECT json_object( \
-           'id',id,'wave_id',wave_id,'key',key,'kind',kind,'goal',goal, \
+           'id',id,'track_id',track_id,'key',key,'kind',kind,'goal',goal, \
            'context_json',json(context_json),'depends_on_json',json(depends_on_json), \
            'status',status,'declared_by',declared_by, \
            'claim_context_json',json(claim_context_json),'spawn',spawn, \
@@ -504,7 +528,7 @@ async fn upgrade_0073_accepts_terminal_legacy_rows_and_an_empty_database() {
         serde_json::from_str::<serde_json::Value>(&terminal_json).unwrap(),
         serde_json::json!({
             "id": "done",
-            "wave_id": "w",
+            "track_id": "w",
             "key": "done",
             "kind": "codex",
             "goal": "g",

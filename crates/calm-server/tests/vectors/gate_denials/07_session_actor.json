@@ -3,29 +3,29 @@
     "description": "AiCodexSession(worker session) may report task.completed in its resolved worker card scope",
     "actor": { "kind": "AiCodexSession", "id": "$WORKER_SESSION" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-52", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
   {
-    "description": "AiCodexSession(worker session) writing into another card and wave scope is refused after session resolution",
+    "description": "AiCodexSession(worker session) writing into another card and track scope is refused after session resolution",
     "actor": { "kind": "AiCodexSession", "id": "$WORKER_SESSION" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-53", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "wave": "$OTHER_WAVE", "area": "$OTHER_AREA" } },
+    "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "track": "$OTHER_TRACK", "area": "$OTHER_AREA" } },
     "expected": { "decision": "deny", "error_contains": "scope.card mismatch" }
   },
   {
-    "description": "AiSpecSession(spec session) may emit wave.updated on its home wave",
+    "description": "AiSpecSession(spec session) may emit track.updated on its home track",
     "actor": { "kind": "AiSpecSession", "id": "$SPEC_SESSION" },
-    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "area_id": "$HOME_AREA", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
-    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
+    "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
   {
-    "description": "AiCodexSession(worker session) may not emit wave.updated after resolving to a Worker card",
+    "description": "AiCodexSession(worker session) may not emit track.updated after resolving to a Worker card",
     "actor": { "kind": "AiCodexSession", "id": "$WORKER_SESSION" },
-    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "area_id": "$HOME_AREA", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
-    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+    "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
+    "expected": { "decision": "deny", "error_contains": "may emit track.updated" }
   },
   {
     "description": "AiCodexSession(unknown session) is refused before card authority is inferred",
@@ -52,7 +52,7 @@
     "description": "AiSpecSession over a Worker-roled session is refused before ordinary card-scoped writes",
     "actor": { "kind": "AiSpecSession", "id": "$WORKER_SESSION" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-59", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "claims spec authority" }
   }
 ]

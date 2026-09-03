@@ -82,19 +82,19 @@ impl Drop for GitEnv {
     }
 }
 
-const WAVE: &str = "wave0000000000000000000000000001";
+const TRACK: &str = "track0000000000000000000000000001";
 
 /// `(root, repo_root)` for a fresh sandbox. The repository lives at
-/// `<root>/<area>/<wave>` like production's `managed_workspace_path`.
+/// `<root>/<area>/<track>` like production's `managed_workspace_path`.
 fn sandbox(tmp: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let root = tmp.path().join("root");
     std::fs::create_dir_all(&root).unwrap();
-    let repo_root = super::managed_workspace_path(&root, "area0000000000000000000000000001", WAVE);
+    let repo_root = super::managed_workspace_path(&root, "area0000000000000000000000000001", TRACK);
     (root, repo_root)
 }
 
 fn materialize(root: &Path, repo_root: &Path) -> crate::error::Result<()> {
-    materialize_managed_workspace(root, repo_root, WAVE)
+    materialize_managed_workspace(root, repo_root, TRACK)
 }
 
 fn head_resolves(path: &Path) -> bool {
@@ -141,16 +141,16 @@ fn count_all_commits(path: &Path) -> u32 {
 }
 
 fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
-    let wave_id = "wave0000000000000000000000000001";
+    let track_id = "track0000000000000000000000000001";
     let card_id = "card0000000000000000000000000001";
     WorkspaceLeaseTarget {
         repo_root: repo_root.to_path_buf(),
         path: repo_root
             .join(".claude")
             .join("worktrees")
-            .join(wave_id)
+            .join(track_id)
             .join(card_id),
-        branch: format!("neige/{wave_id}/{card_id}"),
+        branch: format!("neige/{track_id}/{card_id}"),
     }
 }
 
@@ -197,7 +197,7 @@ fn without_the_init_commit_there_is_no_baseline_commit() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
-    materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
+    materialize_managed_workspace_inner(&root, &repo_root, TRACK, InitCommit::Skip).unwrap();
 
     // Prove the mutation actually applied.
     assert!(
@@ -246,7 +246,7 @@ fn worktree_add_without_a_baseline_commit_is_version_dependent() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
-    materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
+    materialize_managed_workspace_inner(&root, &repo_root, TRACK, InitCommit::Skip).unwrap();
     assert_eq!(count_all_commits(&repo_root), 0);
 
     let version = git_version();
@@ -424,12 +424,12 @@ fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
     );
 }
 
-/// D2: the layout is `<root>/<area_id>/<wave_id>`, ids only.
+/// D2: the layout is `<root>/<area_id>/<track_id>`, ids only.
 #[test]
-fn managed_path_is_root_area_wave() {
+fn managed_path_is_root_area_track() {
     let _env = GitEnv::c_locale();
-    let path = super::managed_workspace_path(Path::new("/srv/ws"), "area1", "wave1");
-    assert_eq!(path, Path::new("/srv/ws/area1/wave1"));
+    let path = super::managed_workspace_path(Path::new("/srv/ws"), "area1", "track1");
+    assert_eq!(path, Path::new("/srv/ws/area1/track1"));
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +634,7 @@ fn the_marker_is_what_decides_adoption() {
     third_party_repo(&repo_root);
     std::fs::write(
         repo_root.join(".git").join(super::OWNER_MARKER),
-        format!("{WAVE}\n"),
+        format!("{TRACK}\n"),
     )
     .unwrap();
 
@@ -642,16 +642,16 @@ fn the_marker_is_what_decides_adoption() {
         .expect("a directory carrying our marker is ours and must be accepted");
 }
 
-/// **B2** — a marker naming a *different* wave is corruption, not an invitation.
+/// **B2** — a marker naming a *different* track is corruption, not an invitation.
 #[test]
-fn a_marker_for_another_wave_is_refused() {
+fn a_marker_for_another_track_is_refused() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     std::fs::create_dir_all(repo_root.join(".git")).unwrap();
     std::fs::write(
         repo_root.join(".git").join(super::OWNER_MARKER),
-        "some-other-wave\n",
+        "some-other-track\n",
     )
     .unwrap();
 
@@ -872,7 +872,7 @@ fn a_stale_lock_file_from_a_killed_init_is_cleared() {
     std::fs::create_dir_all(repo_root.join(".git")).unwrap();
     std::fs::write(
         repo_root.join(".git").join(super::OWNER_MARKER),
-        format!("{WAVE}\n"),
+        format!("{TRACK}\n"),
     )
     .unwrap();
     std::fs::write(repo_root.join(".git/config.lock"), "").unwrap();
@@ -898,7 +898,7 @@ fn a_stale_ref_lock_is_cleared() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
-    materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
+    materialize_managed_workspace_inner(&root, &repo_root, TRACK, InitCommit::Skip).unwrap();
     std::fs::write(repo_root.join(".git/HEAD.lock"), "").unwrap();
     assert!(!head_resolves(&repo_root));
 
@@ -984,7 +984,7 @@ fn n7_a_refused_symlink_workspace_leaves_an_orphan_repository_outside_the_root()
 
     materialize(&root, &repo_root).expect_err("symlink must be refused");
 
-    let orphan = elsewhere.join(WAVE);
+    let orphan = elsewhere.join(TRACK);
     assert!(
         orphan.join(".git").is_dir() && orphan.join(".git").join(super::OWNER_MARKER).exists(),
         "KNOWN GAP (#1147 N7): if this assertion starts failing, the orphan is \
@@ -1021,13 +1021,13 @@ fn n5_losing_our_own_marker_is_an_unrecoverable_refusal() {
 /// **N4** — pinned, NOT fixed in S2.
 ///
 /// Moving `CALM_WORKSPACE_ROOT` (or `$HOME`) strands every existing managed
-/// wave: its stored path is no longer under the configured root, so the
-/// containment assertion refuses it and the wave can never take a lease again.
+/// track: its stored path is no longer under the configured root, so the
+/// containment assertion refuses it and the track can never take a lease again.
 /// The launchpad self-heals because its path is re-derived on every `ensure`;
-/// an ordinary wave has no such path. A migration is owed — S5, with the
+/// an ordinary track has no such path. A migration is owed — S5, with the
 /// recycle/relocate machinery.
 #[test]
-fn n4_moving_the_workspace_root_strands_existing_waves() {
+fn n4_moving_the_workspace_root_strands_existing_tracks() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (old_root, repo_root) = sandbox(&tmp);
@@ -1035,8 +1035,8 @@ fn n4_moving_the_workspace_root_strands_existing_waves() {
 
     let new_root = tmp.path().join("moved-root");
     std::fs::create_dir_all(&new_root).unwrap();
-    let error = materialize_managed_workspace(&new_root, &repo_root, WAVE).expect_err(
-        "KNOWN GAP (#1147 N4): an existing wave under the old root is refused \
+    let error = materialize_managed_workspace(&new_root, &repo_root, TRACK).expect_err(
+        "KNOWN GAP (#1147 N4): an existing track under the old root is refused \
          outright after the root moves, with no migration path",
     );
     assert!(

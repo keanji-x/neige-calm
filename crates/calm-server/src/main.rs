@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     // #275 / #1109 — refuse to serve on an ambiguous `area_folders`
     // table. Overlapping claims are unreachable through today's atomic
     // writer, but a pre-#275 database can hold them, and folder
-    // resolution would then hand a wave to an arbitrary area.
+    // resolution would then hand a track to an arbitrary area.
     calm_server::assert_area_folders_disjoint_on_boot(&state).await?;
 
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
@@ -412,7 +412,7 @@ mod tests {
         assert_eq!(root.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(root.headers()[axum::http::header::LOCATION], "/calm/");
         assert_eq!(
-            response_body(app.clone(), "/calm/wave/deep-link").await,
+            response_body(app.clone(), "/calm/track/deep-link").await,
             (StatusCode::OK, legacy_index.to_vec())
         );
         assert_eq!(
@@ -420,7 +420,7 @@ mod tests {
             (StatusCode::OK, b"legacy-asset-exact\n".to_vec())
         );
         assert_eq!(
-            response_body(app, "/next/wave/deep-link").await,
+            response_body(app, "/next/track/deep-link").await,
             (StatusCode::OK, b"next-index-exact\n".to_vec())
         );
     }
@@ -435,11 +435,11 @@ mod tests {
 
         let app = super::mount_frontends(axum::Router::new(), Some(web.path()), Some(fe.path()));
         assert_eq!(
-            response_body(app.clone(), "/calm/wave/deep-link").await,
+            response_body(app.clone(), "/calm/track/deep-link").await,
             (StatusCode::OK, b"legacy-index\n".to_vec())
         );
         assert_eq!(
-            response_body(app.clone(), "/next/wave/deep-link").await,
+            response_body(app.clone(), "/next/track/deep-link").await,
             (StatusCode::OK, b"next-index\n".to_vec())
         );
         assert_eq!(
