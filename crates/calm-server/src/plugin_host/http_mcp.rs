@@ -199,7 +199,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::manifest::{ApiKeyIn, McpHttpBlock};
+use super::manifest::{ApiKeyIn, McpHttpBlock, ResolvedMcpUrl};
 use super::mcp::RpcError;
 
 /// SSE data-line prefix. The probed server frames its single JSON-RPC
@@ -580,8 +580,22 @@ impl HttpMcpClient {
     /// discharged by the only constructor of that type, so this function cannot
     /// be handed a value it cannot scrub — from here, from a test, or from a
     /// module that does not exist yet.
-    pub fn new(plugin_id: &str, block: &McpHttpBlock, api_key: Option<&HttpCredential>) -> Self {
-        let base = block.url.trim().to_string();
+    ///
+    /// The endpoint arrives as a [`ResolvedMcpUrl`], never as `block.url`, and
+    /// that is the same argument the `api_key` parameter's type makes one line
+    /// down (#1284 §2.3(c)): the only constructor of that type is
+    /// `manifest::resolve_mcp_http_url`, which renders the url's
+    /// `{{config.*}}` slots, re-runs the manifest's own URL validator on the
+    /// result and — for a connector that holds an API key — refuses any render
+    /// that moved the origin. Taking a `&str` here would leave "did anyone
+    /// resolve this?" as a thing every call site has to remember.
+    pub fn new(
+        plugin_id: &str,
+        url: &ResolvedMcpUrl,
+        block: &McpHttpBlock,
+        api_key: Option<&HttpCredential>,
+    ) -> Self {
+        let base = url.as_str().to_string();
         let mut url = base.clone();
         let mut header_auth = None;
         let mut secret_forms = Vec::new();
@@ -1255,6 +1269,16 @@ mod tests {
         keys.iter().map(|k| (*k).to_string()).collect()
     }
 
+    /// The endpoint these fixtures run against — through the REAL resolver
+    /// (#1284 §2.3(c)), with no configuration in force. Every block below
+    /// carries a literal url, so this is the identity plus the manifest's own
+    /// URL validation; going through the resolver anyway is what keeps these
+    /// tests unable to construct a client the production path could not.
+    fn resolved(block: &McpHttpBlock) -> ResolvedMcpUrl {
+        super::super::manifest::resolve_mcp_http_url(block, &serde_json::Map::new())
+            .unwrap_or_else(|e| panic!("fixture url must resolve: {e}"))
+    }
+
     /// Shorthand for a credential the HTTP path will accept.
     fn cred(raw: &str) -> HttpCredential {
         HttpCredential::parse(raw)
@@ -1398,7 +1422,7 @@ mod tests {
             "request_timeout_ms": 600_000,
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, None);
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, None);
         // The fixture that would have failed against a real TLS endpoint.
         assert_eq!(client.bringup_timeout, Duration::from_millis(400));
         assert!(
@@ -1450,7 +1474,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred("sk/a+b=c")));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("sk/a+b=c")));
         assert_eq!(
             client.url,
             "https://mcp.example.com/mcp?api_key=sk%2Fa%2Bb%3Dc"
@@ -1467,7 +1491,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("abcdefgh")));
         assert_eq!(
             client.url,
             "https://mcp.example.com/mcp?v=1&api_key=abcdefgh"
@@ -1482,7 +1506,7 @@ mod tests {
             "api_key_in": "header:x-api-key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("abcdefgh")));
         assert_eq!(client.url, "https://mcp.example.com/mcp");
         assert_eq!(
             client.header_auth,
@@ -1499,7 +1523,7 @@ mod tests {
             "api_key_in": api_key_in,
         }))
         .unwrap();
-        HttpMcpClient::new("c", &block, Some(&cred(LEAKY)))
+        HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(LEAKY)))
     }
 
     /// A derived `Debug` would print `url` (key in the query) and
@@ -1529,7 +1553,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
         let encoded = percent_encode(key);
         assert_ne!(encoded, key);
 
@@ -1603,7 +1627,7 @@ mod tests {
             "url": "https://mcp.example.com/mcp",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, None);
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, None);
         assert!(
             client.secret_forms.is_empty(),
             "no key must register no pattern, got {:?}",
@@ -1771,7 +1795,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
         let forms = client.secret_forms.clone();
         let encoded = percent_encode(key);
         assert_ne!(encoded, key, "fixture needs two distinct literals");
@@ -1889,7 +1913,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
 
         let upper = percent_encode(key);
         assert_eq!(upper, "sk-a%2Fb%2Bc%3Dd", "encoder shape changed");
@@ -1933,7 +1957,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
 
         let encoded = percent_encode(key);
         assert_eq!(
@@ -1969,7 +1993,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("abcdefgh")));
         assert_eq!(client.secret_forms, vec!["abcdefgh".to_string()]);
     }
 
@@ -2185,7 +2209,7 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(&cred(good)));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(good)));
         let body = format!("hit {good}y end");
         let scrubbed = client.scrub(body);
         assert!(
@@ -2202,7 +2226,7 @@ mod tests {
         // registered literal: the encoding can carry no `<` or `>`, so it cannot
         // overlap the marker either, and two forms do not reopen the class.
         let two_form = "sk-a/b+c=d";
-        let client = HttpMcpClient::new("c", &block, Some(&cred(two_form)));
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(two_form)));
         assert_eq!(client.secret_forms.len(), 2);
         for spelling in [two_form.to_string(), percent_encode(two_form)] {
             let out = client.scrub(format!("upstream echoed ?api_key={spelling}!"));
@@ -2224,7 +2248,7 @@ mod tests {
             "url": "https://mcp.example.com/mcp",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, None);
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, None);
         assert_eq!(client.scrub("plain".to_string()), "plain");
         assert!(format!("{client:?}").contains("none"));
     }

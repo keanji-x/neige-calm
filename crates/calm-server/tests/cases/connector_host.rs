@@ -130,6 +130,10 @@ struct StubServer {
     addr: std::net::SocketAddr,
     /// Query strings seen, so a test can prove the API key rode along.
     seen_queries: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Whole request targets (path AND query), so #1284 S3b can prove a
+    /// configured PATH reached the wire — `seen_queries` drops the path, which
+    /// is exactly the half the url slots fill.
+    seen_targets: Arc<std::sync::Mutex<Vec<String>>>,
     /// Methods seen, in order.
     seen_methods: Arc<std::sync::Mutex<Vec<String>>>,
     /// Set once `tools/list` has been received (used to line up the
@@ -207,9 +211,11 @@ impl StubServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stub");
         let addr = listener.local_addr().expect("local addr");
         let seen_queries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_targets = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let tools_list_received = Arc::new(AtomicBool::new(false));
 
+        let targets = Arc::clone(&seen_targets);
         let queries = Arc::clone(&seen_queries);
         let methods = Arc::clone(&seen_methods);
         let received = Arc::clone(&tools_list_received);
@@ -225,6 +231,7 @@ impl StubServer {
                     return;
                 };
                 let queries = Arc::clone(&queries);
+                let targets = Arc::clone(&targets);
                 let methods = Arc::clone(&methods);
                 let received = Arc::clone(&received);
                 let gate = Arc::clone(&gate);
@@ -233,6 +240,7 @@ impl StubServer {
                         Some(v) => v,
                         None => return,
                     };
+                    targets.lock().unwrap().push(target.clone());
                     if let Some(q) = target.split_once('?').map(|(_, q)| q.to_string()) {
                         queries.lock().unwrap().push(q);
                     } else {
@@ -348,6 +356,7 @@ impl StubServer {
         Self {
             addr,
             seen_queries,
+            seen_targets,
             seen_methods,
             tools_list_received,
             _task: task,
@@ -364,6 +373,10 @@ impl StubServer {
 
     fn queries(&self) -> Vec<String> {
         self.seen_queries.lock().unwrap().clone()
+    }
+
+    fn targets(&self) -> Vec<String> {
+        self.seen_targets.lock().unwrap().clone()
     }
 
     async fn wait_for_tools_list(&self) {
@@ -1052,9 +1065,19 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
         let manifest = state.plugin.registry().get(CONNECTOR_ID).unwrap();
         let credential = calm_server::plugin_host::HttpCredential::parse(SECRET_VALUE)
             .expect("the fixture credential must satisfy the HTTP-credential rules");
+        let block = manifest.mcp_http.as_ref().unwrap();
+        // #1284 §2.3(c): the endpoint comes from the real resolver, exactly as
+        // `spawn_mcp_http` gets it — a `&str` is no longer a thing this
+        // constructor accepts.
+        let url = calm_server::plugin_host::manifest::resolve_mcp_http_url(
+            block,
+            &serde_json::Map::new(),
+        )
+        .expect("the fixture url resolves");
         let client = calm_server::plugin_host::HttpMcpClient::new(
             CONNECTOR_ID,
-            manifest.mcp_http.as_ref().unwrap(),
+            &url,
+            block,
             Some(&credential),
         );
         let err = client
@@ -3797,4 +3820,557 @@ async fn a_cli_connector_whose_config_store_is_unreadable_lands_unavailable() {
          missing: {reason}"
     );
     assert!(!host.running_plugin_ids().await.contains(CLI_CONFIG_ID));
+}
+
+// ===========================================================================
+// #1284 S3b — configuration actually reaches an `mcp-http` connector's url,
+// and the origin lock that keyed connectors get for it.
+//
+// The carrier is a real connector: a manifest written to disk, installed and
+// enabled through the real routes, configured through the real
+// `PATCH /api/plugins/{id}/config`, and brought up against the local stub
+// upstream at the top of this file. What is asserted is the request the STUB
+// received — not what the kernel intended to send.
+//
+// Mutation witness table (#1284 S3b). Every row below was applied to THIS
+// tree, run, observed, and restored. The tree was committed first (`f56f4d02`,
+// the `main` merge, for this revision; `edaafec5` for the previous one and
+// `0fd7eb26` for the pre-review one). Each row starts by copying a pristine
+// byte-for-byte snapshot of both target files over the working copies, so no
+// mutation can ever be applied on top of another's leftovers, and the script
+// asserts its own edit landed (exact occurrence count, then a non-zero
+// `git diff --numstat`) rather than assuming a `replace` matched — a mutation
+// that silently failed to apply would otherwise read as a green row. Restore
+// is the same byte copy, never `git checkout -- <path>`, which has destroyed
+// uncommitted work in this repo before. `git status` was verified clean at the
+// end. The red column is the OBSERVED set, not the intended one, and where a
+// row is NOT orthogonal — or produces NO red at all — that is written down
+// rather than smoothed over.
+//
+// **Every row below was RE-RUN after the review fix.** The fix changed
+// `lock_origin` and added a parse-time placement of the same check, so the
+// pre-fix numbers were void — a fact about a carrier that no longer exists is
+// not evidence. Where a red set changed membership, the change is stated.
+//
+// **What the review found, and what it costs this table.** Row 7 used to read
+// "the author could not construct a configured value that reaches this
+// comparison and fails it". A reviewer then constructed one — a slot in the
+// USERINFO (`https://user{{config.x}}@h.example/mcp`, value `.evil.example/`),
+// whose probe render parses with host `h.example` and whose configured render
+// has host `user.evil.example` — and the componentwise comparison was the only
+// thing that refused it. So the row was never "unreachable"; it was "not
+// tested", and every zero below is now labelled with which of those two it is.
+//
+// **Selection set.** Every count below is from one and the same set, the one
+// S3a's table above uses:
+// `test(connector_host) or test(cli_query) or test(manifest) or
+// test(plugin_host::config) or test(plugin_config_delivery) or
+// test(plugin_routes) or test(plugin_lifecycle_lock) or test(plugin_host_smoke)`,
+// **329 tests, all green unmutated**, `--no-fail-fast`, `--features
+// calm-server/codex-e2e`. 301 → 322 is this slice's own new tests, and
+// 322 → 326 is the review fix's four (two url ones in `manifest.rs`, two guard
+// ones below). No row of S3a's table was re-run, and none of the mutations
+// below touches argv or env rendering, so S3a's red sets are unmoved by
+// construction.
+//
+// **326 → 329 after merging `main`, and every row below was RE-RUN, not
+// reasoned about.** The merge brought three tests into this filter — and this
+// is the merge that also landed #1286, whose fix lives one function away from
+// this slice's, so "the denominator moved but surely nothing else did" was
+// exactly the assumption not worth making. All fourteen rows were applied to
+// the merged tree and run again. **Every red COUNT below is unchanged; only the
+// denominator moved.** Since the three arrivals are green in all fourteen and
+// the pre-merge 326 are all still present, each row's red set is the same set,
+// not merely the same size.
+//
+// The three, and what each turned out to be worth:
+// * `connector_host::an_upstream_redirect_cannot_send_a_header_api_key_to_another_host`
+//   (#1286) — the only arrival that reaches this slice's code at all: it spawns
+//   a keyed `mcp-http` connector. It is green under **all fourteen**, including
+//   4 and 8, the two rows that fail every other `mcp-http` spawn. The reason is
+//   worth stating because it is a real property of the guard and not an
+//   accident of this fixture: `spawn_admitted` calls `assert_config_gate_ran`
+//   only `if outcome.is_ok()`, and this test's spawn is a **refusal** — the
+//   redirect is rejected during bring-up, so the connector never completes a
+//   spawn and the §4.7 guard, which quantifies over COMPLETED spawns, has
+//   nothing to fire on. A fail-closed bring-up can therefore never join rows 4
+//   or 8, and this test's arrival tells us nothing new about the gate. It is
+//   also inert against rows 1, 2, 3, 7, 9–14: its manifest url is a literal
+//   with no `{{config.*}}` slot, so every url mutation leaves its resolution
+//   byte-identical.
+// * `neige-app::upgrade::tests::{staged_copy_uses_verified_manifest_snapshot,
+//   upgrade_stage_rejects_backslash_filename_alias_of_manifest_path}` (#1357) —
+//   swept in by `test(manifest)` matching the word in their names, nothing more.
+//   They live in the `neige-app` crate; every mutation below is inside
+//   `calm-server`'s `plugin_host`, so they could not go red under any of them,
+//   and they did not.
+//
+// **One noise result, named — and it did not recur.** In the pre-merge run,
+// row 3 also failed
+// `plugin_host::cli_query::tests::the_budget_kill_reaches_the_childs_descendants`,
+// a process-kill timing test that touches nothing this row mutates. Re-run
+// alone on the restored tree it passed (`1 test run: 1 passed`); it is the
+// #1326 load-flake family and was NOT counted in that row's red set. In the
+// post-merge re-run of all fourteen rows it did not appear at all — row 3's
+// observed set was exactly its four members — so the row now needs no
+// exclusion. The note is kept because the flake is a property of the box under
+// load, not of this tree, and a future runner will meet it again.
+//
+// | # | mutation | red test | red assertion |
+// |---|---|---|---|
+// | 1 | delete the origin comparison from `resolve_mcp_http_url` (`if block.api_key_secret.is_some() { lock_origin(…) }` never runs) | three of 329: `plugin_host::manifest::connector_kind_tests::{a_keyed_connector_refuses_a_slot_anywhere_in_the_origin, a_hand_built_block_is_still_refused_at_render_time}`, `connector_host::only_an_unkeyed_connector_may_have_its_host_configured` | ``https://{{config.endpoint}}/mcp resolved to https://evil.example/mcp — a keyed connector's origin is not configurable``; end to end, "a keyed connector's host is not a configurable field: ()" — `spawn` returns `Ok` and the connector comes up pointed at the configured host. This is the F19 class: `validate_mcp_http_url` passes every one of these, so nothing else in the tree refuses them. **Membership moved with the fix**: `an_unkeyed_connector_may_have_its_entire_url_configured` left the set (its keyed half, a whole-url template, is now refused earlier — at manifest-parse time — so deleting the render-time lock no longer shows), and `a_hand_built_block_is_still_refused_at_render_time` entered it. That new test exists precisely because the parse-time placement would otherwise mask this row: it builds an `McpHttpBlock` directly, which is the only way to reach `resolve_mcp_http_url` without passing `Manifest::parse` — and is what `ResolvedMcpUrl` claims to make safe |
+// | 2 | delete the post-render `validate_mcp_http_url` call (the tier check and the origin lock stay) | three of 329 (unchanged by the review fix, same three tests): `plugin_host::manifest::connector_kind_tests::{a_configured_value_is_refused_by_the_real_url_validator, a_configured_value_needing_encoding_is_refused_not_encoded}`, `connector_host::a_configured_url_value_is_refused_by_the_manifests_own_validator` | ``"mcp\\evil.example" must be refused``; ``a space would have to be encoded: ResolvedMcpUrl("https://mcp.example.com/a b")``; end to end, "a backslash retargets the request under WHATWG parsing: ()". Orthogonal to row 1: the origin lock stays intact and does NOT catch these, which is the point — a backslash in the PATH keeps the origin identical while retargeting the request |
+// | 3 | invert the tier discriminant: `api_key_secret.is_none()` locks the origin, `is_some()` does not | **four of 329**: row 1's three plus `plugin_host::manifest::connector_kind_tests::an_unkeyed_connector_may_have_its_entire_url_configured` | same assertions, from the other side: the keyed fixture resolves `https://evil.example/mcp`, and the unkeyed one — which nothing should lock — is refused with "…origin is locked…". Not orthogonal to row 1 by construction (one boolean feeds both); it is the row that shows the discriminant is `McpHttpBlock.api_key_secret` and nothing else. The unkeyed test rejoins here where it left row 1, because inverting the boolean is the one mutation that makes the UNKEYED tier refuse |
+// | 4 | **delete the shared gate call from `spawn_mcp_http`** (`config_for_spawn_or_unavailable` → a bare empty map) | **twenty of 329**, the same twenty as before the review fix. Four assert configuration behaviour: `connector_host::{mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector, a_configured_url_value_is_refused_by_the_manifests_own_validator, an_mcp_http_connector_missing_required_configuration_lands_unavailable, only_an_unkeyed_connector_may_have_its_host_configured}`. One is the §4.7 meta test. **The other fifteen are pre-existing `mcp-http` tests that assert nothing about configuration at all** — `connector_installs_enables_and_stays_running_across_restart`, `connector_tools_call_returns_upstream_data_and_sends_the_api_key`, `secrets_json_values_never_appear_in_any_plugin_api_response`, `rotate_token_on_a_connector_is_rejected_without_side_effects`, … | the fifteen all die on the production guard: ``#1284 §4.7: plugin `mcp-wisburg` (kind `mcp-http`) completed a spawn without passing `config_for_spawn_or_unavailable` — its effective configuration and its `required` verdict came from somewhere else, or from nowhere``. **This row is the answer to "how would you catch the fourth kind"**: `mcp-http` was routed by `spawn_admitted`'s exhaustive match since #1164 and consumed no configuration until this slice, and the entire suite stayed green. Under this guard it cannot |
+// | 5a | **neuter the guard** — `assert_config_gate_ran` returns immediately, so no spawn is ever checked | **two of 329**: `connector_host::{the_config_gate_guard_panics_when_the_witness_is_absent, a_config_gate_breach_is_counted_not_only_logged}` | ``a debug build must still fail loudly`` / the panic these `should_panic` on never arrives. **This row is the review fix.** The guard's own MISS branch is what needed testing, and no spawn in a correctly-wired suite produces one — so the two tests call the guard directly with an id that never spawned. The zero this row used to record was "nobody tested the branch", not "the branch cannot fire" |
+// | 5b | delete only the CALL SITE (`spawn_admitted` stops calling the guard), guard body intact | **none of 329 — 329 passed** | Still a zero, and now a precise one: the guard is a conditional over spawns, and with every spawn path wired there is no violation for any spawn to hit. The tests from 5a keep passing because they bypass `spawn_admitted` on purpose. What the call site buys is measured by row 6, not here |
+// | 6 | rows 4 + 5a together — the gate call gone AND the guard gone | **seven of 329**: the four configuration assertions, the §4.7 meta test, and 5a's two guard tests | e.g. ``the same variant the other two kinds raise: got ConnectorUnavailable { … }`` and ``` `mcp-http` spawned without passing the shared configuration gate ``` . **Read 20 → 5 correctly** (the five that are about the gate, setting aside 5a's two, which are about the guard in isolation): an unwired kind is ALREADY caught by five tests without the guard, so the guard does not buy "otherwise this would be missed". What it buys is **breadth and proximity** — every one of the twenty `mcp-http` spawns fails at the moment of the violation, instead of five failing later on a downstream symptom. And the class it uniquely covers is not this one at all: it is **a second spawn path growing inside an already-wired kind**, which the meta test cannot see because it drives exactly one fixture per kind. (The meta test is red in both worlds — it reads the witness directly rather than through the guard — which is itself the reason the guard is not redundant with it) |
+// | 7 | delete only the componentwise `(scheme, host, port)` comparison inside `lock_origin`, keeping the probe-position refusal | **none of 329 — 329 passed** | A zero, and the label is now **"covered upstream", not "unreachable"** — the distinction this review fix was written to restore. Every value the tests reach with is refused before it gets here: by the probe-position check, by `validate_mcp_http_url` on the probe render, or by the same validator on the rendered url. What the pre-review table claimed instead was that no such value COULD exist, and the reviewer produced one (a userinfo slot) that this comparison alone stopped. The comparison stays; row 14 is the run that shows why |
+// | 8 | delete the witness stamp from `config_for_spawn_or_unavailable` (the gate still runs; it just stops recording that it did) | **seventy of 329**, unchanged by the review fix, across all three kinds: every `connector_host` and `plugin_config_delivery` spawn plus the meta test | ``#1284 §4.7: plugin `cli-configured` (kind `cli-query`) completed a spawn without passing …`` / same for `mcp-wisburg` and the `app` fixtures. The row's purpose is the converse of row 5b: it shows the guard is armed on EVERY spawn of EVERY kind, not only on the path this slice touched — 70 reds is what "quantified over spawns" looks like |
+// | 9 | delete the **parse-time** probe check (`McpHttpBlock::validate` stops calling `probe_literal_url` for the keyed tier) | **one of 329**: `plugin_host::manifest::connector_kind_tests::a_keyed_url_template_is_refused_at_install_time` | ``a keyed template must be refused at manifest-parse time`` for `https://user{{config.endpoint}}@h.example/mcp`. Only one red, and that is the honest shape: the render-time placement still refuses every one of these templates, so what this row proves is exactly what the placement is FOR — the author hears about it at install instead of at bring-up |
+// | 10 | keep both call sites, but delete `validate_mcp_http_url(&probe)` from inside `probe_literal_url` | **one of 329**: the same install-time test | same assertion. The two placements call one function, so gutting the function has the same visible effect as removing its earliest caller — which is the point of the fix: it is `validate_mcp_http_url`, called, not a second spelling of its rules |
+// | 11 | rows 9 + 10 together — no probe validation anywhere | **one of 329**: still only the install-time test | The userinfo cases in `a_keyed_connector_refuses_a_slot_anywhere_in_the_origin` stay GREEN here, and that is worth reading twice: with the validator gone, the probe lands in `username`, and the probe-position check (row 12) catches it. The two mechanisms overlap on the userinfo family by design — that family is why both exist |
+// | 12 | delete the probe-position refusal from `lock_origin` ("a slot sits inside the origin"), keeping the componentwise comparison | **none of 329 — 329 passed** | A zero labelled "covered downstream", the mirror of row 7: with the position check gone, a host slot makes the probe render's host `neige-config-slot` while the configured render's is `evil.example`, and the comparison refuses on the difference. Neither half is dead; each is the other's backstop |
+// | 13 | delete ONLY the `username`/`password` arms of the probe-position check | **none of 329 — 329 passed** | A zero with a structural explanation, not an empirical one: `validate_mcp_http_url` runs on the probe two lines earlier and refuses userinfo outright, so a probe can never be observed in `username` or `password` while that call stands. The arms are kept as a fail-closed statement of the whole rule (see row 11 for the world where they carry the weight), and this row is the measurement that says so rather than an assumption |
+// | 14 | **rows 7 + 12 together** — both halves of the origin lock deleted, `validate_mcp_http_url` untouched | **two of 329**: `plugin_host::manifest::connector_kind_tests::a_keyed_connector_refuses_a_slot_anywhere_in_the_origin`, `connector_host::only_an_unkeyed_connector_may_have_its_host_configured` | ``https://{{config.endpoint}}/mcp resolved to https://evil.example/mcp — a keyed connector's origin is not configurable``; end to end, "a keyed connector's host is not a configurable field: ()". **This is the row rows 7 and 12 owe their existence to.** Each half alone is covered by the other, so each alone is a zero; together they are the whole of §2.3(c)'s origin lock, and the suite says so loudly. A pair of zeros that sum to a red is a mechanism, not two dead checks — but only a run can tell those apart, which is what the pre-review "unreachable" claim skipped |
+// ===========================================================================
+
+const HTTP_CONFIG_ID: &str = "mcp-configured";
+
+/// Write an `mcp-http` connector whose url carries `{{config.*}}` slots.
+///
+/// `keyed` decides the §2.3(c) tier — it writes `api_key_secret` +
+/// `secrets.json` — and is the ONLY difference between the two halves of the
+/// tiering pair, so a difference in outcome can only be the tier.
+fn write_configured_http_connector(
+    plugins_dir: &Path,
+    url: &str,
+    keyed: bool,
+    required: bool,
+) -> PathBuf {
+    let dir = plugins_dir.join(HTTP_CONFIG_ID);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config_schema = json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string" },
+            "rev": { "type": "string" },
+            "endpoint": { "type": "string" }
+        },
+        "additionalProperties": false
+    });
+    if required {
+        config_schema["required"] = json!(["path"]);
+    }
+    let mut block = json!({
+        "url": url,
+        "tools_allow": [ALLOWED_TOOL],
+        "request_timeout_ms": 5_000,
+    });
+    if keyed {
+        block["api_key_secret"] = json!(SECRET_NAME);
+        block["api_key_in"] = json!("query:api_key");
+    }
+    std::fs::write(
+        dir.join("manifest.json"),
+        json!({
+            "manifest_version": if required { 3 } else { 2 },
+            "kind": "mcp-http",
+            "id": HTTP_CONFIG_ID,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Configured Upstream",
+            "config_schema": config_schema,
+            "mcp_http": block,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    if keyed {
+        let secrets = dir.join("secrets.json");
+        let mut f = std::fs::File::create(&secrets).unwrap();
+        f.write_all(json!({ SECRET_NAME: SECRET_VALUE }).to_string().as_bytes())
+            .unwrap();
+        drop(f);
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    dir
+}
+
+/// `http://<addr>` + a literal tail, written without `format!` so the doubled
+/// braces of a `{{config.*}}` slot stay readable.
+fn slotted_url(addr: std::net::SocketAddr, tail: &str) -> String {
+    let mut s = String::from("http://");
+    s.push_str(&addr.to_string());
+    s.push_str(tail);
+    s
+}
+
+/// The reason recorded in the `unavailable` terminal state, or a panic naming
+/// what the connector actually did.
+async fn unavailable_reason(host: &Arc<PluginHost>, id: &str) -> String {
+    let status = host
+        .status(id)
+        .await
+        .expect("a refused bring-up must still be observable through status()");
+    match &status.status {
+        PluginRuntimeStatus::Unavailable { reason } => reason.clone(),
+        other => panic!("expected Unavailable, got {other:?}"),
+    }
+}
+
+/// §4.6 positive half — a configuration value fills the PATH and the QUERY of a
+/// keyed connector's url, and the upstream receives exactly that.
+#[tokio::test]
+async fn mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    let dir = write_configured_http_connector(
+        &b.plugins_dir,
+        &slotted_url(stub.addr, "/{{config.path}}?rev={{config.rev}}"),
+        true,
+        false,
+    );
+
+    let host = b.host();
+    let state = b.state(Arc::clone(&host));
+    let (status, body) = post_json(
+        &state,
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": dir.display().to_string() } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "install failed: {body}");
+
+    let (status, body) = patch_json(
+        &state,
+        &format!("/api/plugins/{HTTP_CONFIG_ID}/config"),
+        json!({ "path": "v2/mcp", "rev": "7" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "config write failed: {body}");
+
+    let (status, body) = post_json(
+        &state,
+        &format!("/api/plugins/{HTTP_CONFIG_ID}/enable"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "enable failed: {body}");
+    assert!(
+        state
+            .plugin
+            .running_plugin_ids()
+            .await
+            .contains(HTTP_CONFIG_ID)
+    );
+
+    let targets = stub.targets();
+    assert!(!targets.is_empty(), "the stub was never contacted");
+    for target in &targets {
+        assert!(
+            target.starts_with("/v2/mcp?rev=7&api_key="),
+            "the configured path and query must be what reached the upstream, \
+             with the credential appended after them: {target}"
+        );
+    }
+}
+
+/// §4.6 negative half + the v5 tiering, as ONE test so the two halves cannot
+/// drift into two fixtures that differ in more than the tier.
+///
+/// Same url template, same configured value, same everything: one manifest
+/// holds `api_key_secret` and one does not. The keyed one must refuse before
+/// any request leaves this process — the credential must not reach the
+/// configured host even once — and the unkeyed one must come up, because with
+/// no credential to divert the argument for locking the origin does not exist.
+#[tokio::test]
+async fn only_an_unkeyed_connector_may_have_its_host_configured() {
+    let stub = StubServer::start(StubMode::Normal).await;
+
+    // --- keyed: refused, and nothing was sent -----------------------------
+    let b = boot().await;
+    write_configured_http_connector(
+        &b.plugins_dir,
+        "http://{{config.endpoint}}/mcp",
+        true,
+        false,
+    );
+    let host = b.host();
+    seed_row(&b, HTTP_CONFIG_ID).await;
+    b.repo
+        .plugin_update_user_config(HTTP_CONFIG_ID, json!({ "endpoint": stub.addr.to_string() }))
+        .await
+        .expect("configure");
+
+    host.spawn(HTTP_CONFIG_ID)
+        .await
+        .expect_err("a keyed connector's host is not a configurable field");
+    let reason = unavailable_reason(&host, HTTP_CONFIG_ID).await;
+    assert!(
+        reason.contains("origin is locked") && reason.contains("api_key_secret"),
+        "the refusal must name the rule and why it applies: {reason}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(HTTP_CONFIG_ID));
+    assert!(
+        stub.targets().is_empty(),
+        "the credential must not have been sent to the configured host at all: {:?}",
+        stub.targets()
+    );
+
+    // --- unkeyed: the SAME configuration comes up -------------------------
+    let b = boot().await;
+    write_configured_http_connector(
+        &b.plugins_dir,
+        "http://{{config.endpoint}}/mcp",
+        false,
+        false,
+    );
+    let host = b.host();
+    seed_row(&b, HTTP_CONFIG_ID).await;
+    b.repo
+        .plugin_update_user_config(HTTP_CONFIG_ID, json!({ "endpoint": stub.addr.to_string() }))
+        .await
+        .expect("configure");
+    host.spawn(HTTP_CONFIG_ID)
+        .await
+        .expect("with no api_key_secret the whole url is configurable");
+    assert!(host.running_plugin_ids().await.contains(HTTP_CONFIG_ID));
+    assert!(
+        stub.targets().iter().any(|t| t == "/mcp"),
+        "the configured host must have been contacted: {:?}",
+        stub.targets()
+    );
+}
+
+/// §4.6 — one of `manifest.rs`'s own WHATWG retargeting cases, injected as a
+/// CONFIGURATION VALUE. It must be refused exactly as hard as it is in a
+/// manifest, which is only true if the rendered url goes through
+/// `validate_mcp_http_url` itself rather than through a restatement of it.
+#[tokio::test]
+async fn a_configured_url_value_is_refused_by_the_manifests_own_validator() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    write_configured_http_connector(
+        &b.plugins_dir,
+        &slotted_url(stub.addr, "/{{config.path}}"),
+        true,
+        false,
+    );
+    let host = b.host();
+    seed_row(&b, HTTP_CONFIG_ID).await;
+    b.repo
+        .plugin_update_user_config(HTTP_CONFIG_ID, json!({ "path": r"mcp\evil.example" }))
+        .await
+        .expect("configure");
+
+    host.spawn(HTTP_CONFIG_ID)
+        .await
+        .expect_err("a backslash retargets the request under WHATWG parsing");
+    let reason = unavailable_reason(&host, HTTP_CONFIG_ID).await;
+    assert!(
+        reason.contains("mcp_http.url") && reason.contains("backslashes"),
+        "the refusal must be the url validator's own, naming the field: {reason}"
+    );
+    assert!(stub.targets().is_empty(), "nothing may have been sent");
+}
+
+/// §2.2 v6 + §2.4 for the third kind: `required` is enforced at consumption,
+/// through the shared gate, with the shared wording.
+#[tokio::test]
+async fn an_mcp_http_connector_missing_required_configuration_lands_unavailable() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    write_configured_http_connector(
+        &b.plugins_dir,
+        &slotted_url(stub.addr, "/{{config.path}}"),
+        true,
+        true,
+    );
+    let host = b.host();
+    seed_row(&b, HTTP_CONFIG_ID).await;
+
+    let err = host
+        .spawn(HTTP_CONFIG_ID)
+        .await
+        .expect_err("a connector missing required configuration must not come up");
+    assert!(
+        matches!(err, HostError::MissingRequiredConfig { .. }),
+        "the same variant the other two kinds raise: got {err:?}"
+    );
+    assert_eq!(
+        unavailable_reason(&host, HTTP_CONFIG_ID).await,
+        "missing required configuration: path. Set it under Settings › \
+         Plugins, then start the plugin again.",
+        "the reason must be `config::missing_required_reason`'s, verbatim"
+    );
+    assert!(stub.targets().is_empty(), "nothing may have been sent");
+
+    // …and it comes up once the operator supplies the key, so the refusal is
+    // about the configuration and not about the fixture.
+    b.repo
+        .plugin_update_user_config(HTTP_CONFIG_ID, json!({ "path": "mcp" }))
+        .await
+        .expect("configure");
+    let host = b.host();
+    host.spawn(HTTP_CONFIG_ID)
+        .await
+        .expect("a fully configured connector comes up");
+    assert!(host.running_plugin_ids().await.contains(HTTP_CONFIG_ID));
+}
+
+// ===========================================================================
+// #1284 §4.7 — the meta guard: EVERY spawn path goes through the ONE
+// configuration gate.
+// ===========================================================================
+
+/// Every `ConnectorKind` variant, taken from **serde's own derived variant
+/// list** rather than from a list a human keeps up to date.
+///
+/// The `#[derive(Deserialize)]` on `ConnectorKind` generates
+/// `unknown variant ..., expected one of `app`, `mcp-http`, `cli-query`` from
+/// the enum itself, so a variant added tomorrow appears here with nobody
+/// touching this file. That is what makes the assertion below set equality and
+/// not a sample of three.
+///
+/// If serde ever changes that message, this function returns something that
+/// does not contain the three known kinds and the caller fails loudly — the
+/// failure direction is closed.
+fn all_connector_kinds() -> Vec<String> {
+    let err = serde_json::from_value::<calm_server::plugin_host::ConnectorKind>(json!(
+        "__no_such_kind__"
+    ))
+    .expect_err("an unknown kind must not deserialize")
+    .to_string();
+    let list = err
+        .split_once("expected one of ")
+        .unwrap_or_else(|| panic!("serde's variant list is no longer parseable from: {err}"))
+        .1;
+    list.split(',')
+        .map(|s| s.trim().trim_end_matches('.').trim_matches('`').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// §4.7 — the guard the design asked for and the tree never had.
+///
+/// **What it asserts.** For every `ConnectorKind` there is a real spawn, driven
+/// through `PluginHost::spawn`, and every one of those spawns passed through
+/// `PluginHost::config_for_spawn_or_unavailable` — the single `defaults ⊕
+/// user_config` seam. The universe of kinds is serde's (see
+/// [`all_connector_kinds`]), so this is set equality; a kind with no fixture
+/// here fails with an instruction rather than being silently skipped.
+///
+/// **Why this and not "I counted three call sites".** `mcp-http` is the
+/// standing proof that counting does not work: it has been routed by
+/// `spawn_admitted`'s exhaustive match since #1164 and consumed no
+/// configuration at all until this slice, and no test noticed. The compiler
+/// forces a new kind to be ROUTED; nothing forced it to be WIRED.
+///
+/// **This test is the positive witness; the fail-closed half is in production**
+/// — `spawn_admitted` checks the same stamp after every successful spawn of
+/// every kind and `debug_assert!`s on a miss, so any test in the suite that
+/// spawns a plugin that skipped the gate panics, whether or not anyone
+/// remembered to list its kind here.
+#[tokio::test]
+async fn every_connector_kind_spawns_through_the_shared_config_gate() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(bin.path(), "ok.sh", "#!/bin/sh\necho ok\n");
+
+    const APP_ID: &str = "echo-app";
+    write_app_plugin(&b.plugins_dir, APP_ID);
+    write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+    write_configured_cli_connector(&b.plugins_dir, &script.display().to_string(), false);
+
+    let host = b.host();
+    let kinds = all_connector_kinds();
+    assert!(
+        kinds.len() >= 3 && kinds.iter().any(|k| k == "app"),
+        "serde's variant list did not parse into kinds: {kinds:?}"
+    );
+
+    let mut driven = Vec::new();
+    for kind in &kinds {
+        let id = match kind.as_str() {
+            "app" => APP_ID,
+            "mcp-http" => CONNECTOR_ID,
+            "cli-query" => CLI_CONFIG_ID,
+            other => panic!(
+                "#1284 §4.7: no spawn fixture for `kind: {other}`. Every kind's spawn \
+                 path must go through `config_for_spawn_or_unavailable`; add a fixture \
+                 here rather than trusting the kinds that existed when this was written"
+            ),
+        };
+        seed_row(&b, id).await;
+        host.spawn(id)
+            .await
+            .unwrap_or_else(|e| panic!("`{kind}` fixture must spawn: {e}"));
+        assert!(
+            host.config_gate_ran(id),
+            "`{kind}` spawned without passing the shared configuration gate — \
+             its effective config and its `required` verdict came from a second \
+             copy of the ⊕, which is what §4.7 exists to prevent"
+        );
+        driven.push(kind.clone());
+    }
+    assert_eq!(driven, kinds, "every kind must have been driven");
+}
+
+/// §4.7 — the guard's **miss** branch, which nothing else in the suite reaches.
+///
+/// The guard is a conditional, so with every spawn path correctly wired there
+/// is no violation for it to catch: deleting it outright leaves the whole
+/// selection green (mutation row 5). The branch that matters is therefore
+/// tested head-on — an id that never spawned, so the witness is absent — rather
+/// than inferred from a table row that measures the guard's breadth instead of
+/// its teeth.
+///
+/// `cfg(debug_assertions)` because the teeth ARE `debug_assert!`: in a release
+/// build the same call logs and counts instead of panicking, which is the
+/// documented trade-off, not a second behaviour to assert here.
+#[cfg(debug_assertions)]
+#[tokio::test]
+#[should_panic(expected = "§4.7")]
+async fn the_config_gate_guard_panics_when_the_witness_is_absent() {
+    let b = boot().await;
+    let host = b.host();
+    assert!(!host.config_gate_ran("never-spawned"));
+    host.assert_config_gate_ran(
+        "never-spawned",
+        calm_server::plugin_host::ConnectorKind::McpHttp,
+    );
+}
+
+/// The release build's half of the same trade-off: a breach is COUNTED, not
+/// only logged.
+///
+/// Read together with the test above — one asserts the panic, this one asserts
+/// the durable record the panic is not — this is the whole of what
+/// `assert_config_gate_ran` does on a miss. It runs the guard through
+/// `catch_unwind` because in a debug build the record is written and then the
+/// process is told to die; the record must survive that ordering, since the
+/// ordering is what makes the release build's evidence exist at all.
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn a_config_gate_breach_is_counted_not_only_logged() {
+    let b = boot().await;
+    let host = b.host();
+    assert_eq!(host.config_gate_breaches("never-spawned"), 0);
+    let host_for_guard = std::sync::Arc::clone(&host);
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        host_for_guard.assert_config_gate_ran(
+            "never-spawned",
+            calm_server::plugin_host::ConnectorKind::McpHttp,
+        );
+    }))
+    .is_err();
+    assert!(panicked, "a debug build must still fail loudly");
+    assert_eq!(
+        host.config_gate_breaches("never-spawned"),
+        1,
+        "the breach must outlive the log line: this count is the only evidence a \
+         release build leaves behind"
+    );
 }

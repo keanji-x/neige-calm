@@ -1083,7 +1083,11 @@ impl Manifest {
                 let block = self.mcp_http.as_ref().ok_or_else(|| {
                     ManifestError::invalid("mcp_http", "required when `kind` is \"mcp-http\"")
                 })?;
-                block.validate()?;
+                // #1284 §2.3(c) — same reason the `cli-query` arm passes it:
+                // the url's `{{config.*}}` slots are only checkable against
+                // the manifest's own `config_schema`, which the block cannot
+                // see.
+                block.validate(self.config_schema.as_ref())?;
             }
             ConnectorKind::CliQuery => {
                 let block = self.cli_query.as_ref().ok_or_else(|| {
@@ -1183,8 +1187,66 @@ impl Manifest {
 }
 
 impl McpHttpBlock {
-    fn validate(&self) -> Result<(), ManifestError> {
-        validate_mcp_http_url(self.url.trim())?;
+    fn validate(&self, config_schema: Option<&Value>) -> Result<(), ManifestError> {
+        let raw = self.url.trim();
+        // #1284 §2.3(c) — the url may carry `{{config.<key>}}` slots, and a
+        // templated url has no final form at parse time. What IS checkable
+        // here is what S3a checks for argv slots: that every slot is
+        // well-formed and names a key this manifest's `config_schema`
+        // declares, so a typo is an authoring error rather than a bring-up
+        // mystery.
+        //
+        // **How much of the url IS checkable at parse time depends on the
+        // §2.3(c) tier**, and the tier is a field of this very block:
+        //
+        // * **No slots** — the url is its own final form; the full validator
+        //   runs, exactly as before.
+        // * **Slots + `api_key_secret` (keyed)** — the origin is locked to the
+        //   manifest literal, so *every* rendering of this template has the
+        //   literal's scheme, host and port. Substituting each slot with
+        //   [`ORIGIN_PROBE`] and running **the same
+        //   [`validate_mcp_http_url`]** on the result is therefore not a
+        //   second, weaker copy of the render-time check: it is that function,
+        //   on a string whose origin is the one that will actually be
+        //   contacted. It refuses a template that embeds userinfo, a backslash
+        //   or a control character, a non-`http(s)` or non-canonical spelling,
+        //   a fragment, or a slot in the port (a port is digits, so the probe
+        //   makes the parse fail) — none of which any configured value could
+        //   ever repair. See [`probe_literal_url`].
+        // * **Slots and no key (unkeyed)** — the whole url, host included, is
+        //   replaceable, so the template carries no origin to validate:
+        //   `{{config.endpoint}}` probes to a bare label that is not a URL at
+        //   all. Nothing is checked here beyond slot well-formedness, and
+        //   [`resolve_mcp_http_url`] is the gate.
+        //
+        // What is NOT decided here for the keyed tier is *where* the slots sit
+        // (a host slot probes to a perfectly valid url); that stays with
+        // [`lock_origin`] at render time, together with the componentwise
+        // origin comparison. [`crate::plugin_host::http_mcp::HttpMcpClient`]
+        // cannot be constructed without [`ResolvedMcpUrl`], so there is no path
+        // from a manifest to a request that skips it.
+        let slots = url_config_slots(raw)
+            .map_err(|reason| ManifestError::invalid("mcp_http.url", reason))?;
+        if slots.is_empty() {
+            validate_mcp_http_url(raw)?;
+        } else {
+            for (_, key) in &slots {
+                if !config_schema_declares(config_schema, key) {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.url",
+                        format!(
+                            "config slot `{key}` is not a top-level property of this \
+                             manifest's `config_schema`; a url slot is filled from the \
+                             operator's configuration, so an undeclared one could never \
+                             receive a value"
+                        ),
+                    ));
+                }
+            }
+            if self.api_key_secret.is_some() {
+                probe_literal_url(raw)?;
+            }
+        }
         // The ceiling is enforced where the manifest is PARSED, not where the
         // spawn reads it: a connector whose bring-up budget would stall boot
         // must fail to load, so an operator learns at install time rather than
@@ -1608,6 +1670,368 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
             "must not embed userinfo credentials; use `api_key_secret` + \
              `api_key_in` so the value lives in `secrets.json`",
         ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #1284 §2.3(c) — `mcp_http.url` configuration slots
+// ---------------------------------------------------------------------------
+
+/// The stand-in this module substitutes for a slot when it needs the url's
+/// **manifest-literal** origin — the origin the author wrote, with the
+/// operator's values not yet in it.
+///
+/// It is a legal host label AND a legal path/query byte, so substituting it
+/// yields a string the real parser can parse wherever the slot sits. That is
+/// what makes "the slot is inside the origin" a *positive* observation
+/// (`host_str()` contains it) rather than a hand-rolled re-parse of the
+/// authority: the decision is made by `url::Url`, the same parser
+/// [`validate_mcp_http_url`] uses.
+///
+/// A manifest whose literal host genuinely contains this string would be
+/// refused as if it had a slot there. That is a false positive we accept: the
+/// name is not one a real host carries, and the failure direction is closed.
+const ORIGIN_PROBE: &str = "neige-config-slot";
+
+/// The **manifest-literal url** of a (possibly templated) `mcp_http.url`: every
+/// slot replaced by [`ORIGIN_PROBE`], then held to [`validate_mcp_http_url`] —
+/// the same function, not a restatement of its rules — and parsed.
+///
+/// Only meaningful for the **keyed** tier, and that is what makes it sound:
+/// there the origin is locked to the manifest literal, so the probe render has
+/// the scheme, host and port every configured render will have. Whatever the
+/// validator refuses about this string, it would refuse about every rendering,
+/// which is why the keyed tier can run it at manifest-parse time
+/// ([`McpHttpBlock::validate`]) as well as at render time ([`lock_origin`]).
+///
+/// Both call sites are deliberate rather than redundant: the parse-time one
+/// gives the author an install-time error instead of a bring-up mystery, and
+/// the render-time one holds for an [`McpHttpBlock`] that never went through
+/// [`Manifest::parse`] — which is the invariant [`ResolvedMcpUrl`] carries.
+fn probe_literal_url(raw: &str) -> Result<url::Url, ManifestError> {
+    let field = "mcp_http.url";
+    let bad = |reason: String| ManifestError::invalid(field, reason);
+    let probe = render_url_slots(raw, |_| Ok(ORIGIN_PROBE.to_string())).map_err(&bad)?;
+    validate_mcp_http_url(&probe).map_err(|e| {
+        let detail = match &e {
+            ManifestError::Invalid { reason, .. } => reason.clone(),
+            other => other.to_string(),
+        };
+        bad(format!(
+            "with each configuration slot replaced by a stand-in this url is refused by \
+             the manifest's own validator, and no configured value could repair it: \
+             {detail}"
+        ))
+    })?;
+    url::Url::parse(&probe).map_err(|e| bad(format!("not a valid absolute URL: {e}")))
+}
+
+/// A `mcp_http.url` that has been rendered against a plugin's effective
+/// configuration, re-validated by [`validate_mcp_http_url`], and — when the
+/// connector holds an API key — checked to still point at the manifest's own
+/// origin.
+///
+/// **This type is the invariant**, in the same sense
+/// [`crate::plugin_host::http_mcp::HttpCredential`] is: `HttpMcpClient::new`
+/// takes one, and [`resolve_mcp_http_url`] is the only way to obtain one, so no
+/// call site — here, in a test, or in a module that does not exist yet — can
+/// aim the client at a url that has not been through §2.3(c). Reading
+/// `block.url` and calling the constructor is not a thing the type system
+/// allows any more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMcpUrl(String);
+
+impl ResolvedMcpUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Every `{{…}}` occurrence in a `mcp_http.url`, as `(byte range, key)`.
+///
+/// The namespace is S3a's: a slot is `{{config.<key>}}` and nothing else. A
+/// url has no agent-supplied arguments — there is no `tools/call` in scope
+/// when a connector is brought up — so the bare `{{name}}` form
+/// ([`ArgvSlot::Argument`]) is refused by name rather than silently treated as
+/// configuration. Stray braces are refused for the same reason
+/// `CliQueryTool::validate` refuses them: a typo must fail loudly instead of
+/// being passed through as a literal that lands on the wire.
+fn url_config_slots(raw: &str) -> Result<Vec<(std::ops::Range<usize>, &str)>, String> {
+    let stray = |what: &str| {
+        format!(
+            "stray `{what}` in `mcp_http.url`: a configuration slot is written `{{{{{CONFIG_SLOT_PREFIX}<key>}}}}`"
+        )
+    };
+    let mut out: Vec<(std::ops::Range<usize>, &str)> = Vec::new();
+    let mut i = 0usize;
+    while let Some(rel) = raw[i..].find("{{") {
+        let start = i + rel;
+        if raw[i..start].contains("}}") {
+            return Err(stray("}}"));
+        }
+        let body = start + 2;
+        let Some(erel) = raw[body..].find("}}") else {
+            return Err("unterminated `{{` in `mcp_http.url`".to_string());
+        };
+        let inner = &raw[body..body + erel];
+        if inner.contains("{{") {
+            return Err(stray("{{"));
+        }
+        let key = inner
+            .strip_prefix(CONFIG_SLOT_PREFIX)
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "`{{{{{inner}}}}}` is not a configuration slot: an `mcp_http.url` \
+                     placeholder must be written `{{{{{CONFIG_SLOT_PREFIX}<key>}}}}`. A url is \
+                     rendered at bring-up, where no agent argument exists"
+                )
+            })?;
+        out.push((start..body + erel + 2, key));
+        i = body + erel + 2;
+    }
+    if raw[i..].contains("}}") {
+        return Err(stray("}}"));
+    }
+    Ok(out)
+}
+
+/// Substitute every slot in `raw` with what `value_for` returns for its key.
+fn render_url_slots(
+    raw: &str,
+    mut value_for: impl FnMut(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let slots = url_config_slots(raw)?;
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0usize;
+    for (range, key) in slots {
+        out.push_str(&raw[cursor..range.start]);
+        out.push_str(&value_for(key)?);
+        cursor = range.end;
+    }
+    out.push_str(&raw[cursor..]);
+    Ok(out)
+}
+
+/// One effective-configuration value as it goes into a url.
+///
+/// **Not percent-encoded, on purpose.** Encoding would silently change what the
+/// operator wrote — `a/b` is a path separator or a literal slash depending on
+/// who decides — and this kernel has no standing to decide. Instead the
+/// rendered string goes through [`validate_mcp_http_url`], whose canonical-form
+/// rule refuses anything the parser would have had to re-spell. So a value
+/// needing encoding is a refusal naming the field, never a request to a target
+/// the operator did not write.
+///
+/// **One exception, so this is not read as "every odd value is refused".** A
+/// truncated percent sequence — a bare `%`, or `a%zz` — is left alone by the
+/// URL parser (verified against `url` 2.5.8): it re-serializes byte for byte,
+/// so the canonical-form rule has nothing to object to and the value ships as
+/// written. It changes what the *path or query* says, never the origin, so the
+/// first-hop guarantee is untouched; the upstream server decides what a stray
+/// `%` means to it.
+fn config_url_value(
+    key: &str,
+    effective: &serde_json::Map<String, Value>,
+) -> Result<String, String> {
+    match effective.get(key) {
+        None | Some(Value::Null) => Err(format!(
+            "`mcp_http.url` has a `{{{{{CONFIG_SLOT_PREFIX}{key}}}}}` slot but no value is in \
+             force for `{key}`. Set it under Settings › Plugins, then start the \
+             connector again."
+        )),
+        Some(Value::String(s)) => Ok(s.clone()),
+        Some(Value::Number(n)) => Ok(n.to_string()),
+        Some(Value::Bool(b)) => Ok(b.to_string()),
+        Some(other) => Err(format!(
+            "configuration key `{key}` holds {}, which has no rendering inside a url \
+             (`config_schema` can only declare string, integer, number and boolean)",
+            json_value_type_name(other)
+        )),
+    }
+}
+
+fn json_value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// #1284 §2.3(c) — render `mcp_http.url`'s configuration slots and decide
+/// whether the result may be contacted.
+///
+/// Two tiers, and the discriminant is `api_key_secret` — a manifest field of
+/// type `Option<String>`, so which tier applies is decided by the manifest, not
+/// by anyone's judgement:
+///
+/// * **`api_key_secret` present ⇒ the origin is locked.** The rendered
+///   `(scheme, host, port)` must equal the manifest literal's, item by item;
+///   a slot sitting *in* the origin is refused outright. The operator can still
+///   configure path and query — they cannot change where the credential goes.
+/// * **`api_key_secret` absent ⇒ the whole url may be replaced**, host
+///   included. There is no credential to divert, so the argument below does not
+///   apply, and a self-hosted or multi-environment connector stays configurable.
+///
+/// **Two things the tiering deliberately does not treat as holes.**
+///
+/// * *An operator may well put a credential in an unkeyed connector's url* —
+///   §2.6 gives `config_schema` no `secret: true`, so a token in a query slot
+///   is stored and displayed like any other value. That is not a tiering bug:
+///   under the unkeyed tier the host and that value are written by the **same**
+///   owner/dev, so nothing crosses a trust boundary. What the keyed tier
+///   protects is the opposite arrangement — a secret placed in `secrets.json`
+///   over SSH being redirected by someone who only holds a UI session.
+/// * *A keyed connector's query slot can inject a second `api_key=`.* The value
+///   `a&api_key=zz` renders into the query, and
+///   [`crate::plugin_host::http_mcp::HttpMcpClient::new`] then appends the real
+///   key after it; most servers read the first occurrence, so an operator can
+///   degrade or break this connector's own authentication. The credential still
+///   goes only to the locked origin — nothing is exfiltrated — so this is a
+///   self-inflicted denial of service by the one role that could disable the
+///   plugin outright, and it is left as such rather than met with a query
+///   grammar of our own.
+///
+/// **Why the asymmetry** (§2.3(c), v5). Re-running [`validate_mcp_http_url`]
+/// only proves the result is a well-formed URL: it refuses an empty authority,
+/// backslashes and control characters, a parse failure, a non-`http(s)` scheme,
+/// a non-canonical spelling, a missing host, a fragment and userinfo — and it
+/// refuses **none** of plaintext HTTP, an arbitrary host or port, localhost, or
+/// a private address. So for a connector that holds a key, an unrestricted url
+/// slot is a UI-writable "send this credential anywhere" primitive: writing
+/// `secrets.json` needs SSH, while writing this field needs one owner/dev
+/// session, and those are trust thresholds an order of magnitude apart. For a
+/// connector with no key that argument does not exist at all, so no restriction
+/// is imposed.
+///
+/// **The origin lock is a FIRST-HOP guarantee, and it is the first half of a
+/// pair.** This function pins only where *this kernel* sends the request — it
+/// says nothing about what the endpoint answers with. The complementary half
+/// is #1286, already landed: [`crate::plugin_host::http_mcp::HttpMcpClient::new`]
+/// builds its agent with `.redirects(0)`, so a `3xx` from the locked origin is
+/// an error rather than a second request, and a manifest-chosen header (which
+/// `ureq` does not strip across hosts the way it special-cases `Authorization`)
+/// can never be replayed to an attacker-selected host. Read the two together:
+/// the lock decides the one origin a keyed connector may be pointed at, and the
+/// zero-redirect agent keeps the credential from leaving it. Neither is a
+/// restatement of the other, so removing either reopens a distinct hole —
+/// this one a UI-writable url slot, that one an upstream `Location:` header.
+///
+/// Failures are `Err(String)`: bring-up renders them as `Unavailable` +
+/// `last_error`, which §2.4 calls a connector's normal terminal state, not a
+/// kernel error.
+pub fn resolve_mcp_http_url(
+    block: &McpHttpBlock,
+    effective: &serde_json::Map<String, Value>,
+) -> Result<ResolvedMcpUrl, String> {
+    let raw = block.url.trim();
+    let rendered = render_url_slots(raw, |key| config_url_value(key, effective))?;
+
+    // THE validator, called — not restated. Everything it refuses about a
+    // literal manifest url it refuses about a rendered one, including the
+    // WHATWG retargeting cases (`\`, control characters, non-canonical
+    // spellings) that a configuration value is the newest way to introduce.
+    validate_mcp_http_url(&rendered).map_err(|e| e.to_string())?;
+
+    if block.api_key_secret.is_some() {
+        lock_origin(raw, &rendered)?;
+    }
+    Ok(ResolvedMcpUrl(rendered))
+}
+
+/// The keyed tier's extra check: `rendered`'s origin must be the manifest's.
+fn lock_origin(raw: &str, rendered: &str) -> Result<(), String> {
+    let refusal = |detail: String| {
+        format!(
+            "`mcp_http.url` origin is locked because this connector holds an API key \
+             (`mcp_http.api_key_secret`): {detail}. A configuration slot may fill the \
+             path or the query, never the scheme, host or port — otherwise configuring \
+             the plugin would be enough to send the credential somewhere else."
+        )
+    };
+
+    // The literal origin, obtained by holding the template — every slot
+    // replaced by a probe — to the manifest's own url validator. A slot in the
+    // port makes that fail (a port is digits); a slot in the scheme or host
+    // makes the probe show up in one of them, which is the check below.
+    let literal = probe_literal_url(raw).map_err(|e| {
+        refusal(format!(
+            "the manifest url does not survive its own validator once its slots are \
+             accounted for ({e})"
+        ))
+    })?;
+    // The probe may appear in the **path or the query and nowhere else**.
+    //
+    // Userinfo is the position this check used to miss, and it was not
+    // theoretical: `https://user{{config.x}}@h.example/mcp` probes to a url
+    // that parses, whose host is `h.example` and whose probe sits only in the
+    // *username* — and then the configured value `.evil.example/` renders
+    // `https://user.evil.example/@h.example/mcp`, whose authority ends at the
+    // first `/`, i.e. host `user.evil.example`, no userinfo, canonical, no
+    // fragment. Every later check passes and the credential goes to the
+    // operator's host.
+    //
+    // `validate_mcp_http_url` above already refuses userinfo outright, so the
+    // `username`/`password` arms below cannot fire today — they are dominated
+    // by the line above, not merely untested. They are written anyway because
+    // this is the place that states the whole rule, and a future relaxation of
+    // the validator must not silently re-open the hole.
+    if literal.scheme().contains(ORIGIN_PROBE)
+        || literal.host_str().is_some_and(|h| h.contains(ORIGIN_PROBE))
+        || literal.username().contains(ORIGIN_PROBE)
+        || literal.password().is_some_and(|p| p.contains(ORIGIN_PROBE))
+    {
+        return Err(refusal(
+            "a slot sits inside the origin of the manifest url".to_string(),
+        ));
+    }
+
+    // §2.3(c)'s named check: the rendered `(scheme, host, port)` compared with
+    // the manifest literal's, item by item.
+    //
+    // **Honest note on reachability.** No test in this repo makes THIS
+    // comparison be the thing that refuses: every value the author could find
+    // is already refused upstream — by the probe-position check above, by
+    // `validate_mcp_http_url` on the probe render (userinfo, backslashes,
+    // control characters, a slot in the port), or by the same validator on the
+    // rendered url (canonical form). "Covered upstream" is what the mutation
+    // table now records, and it is a weaker claim than the one that used to
+    // stand here: an earlier revision asserted no such value *could* exist,
+    // and a reviewer then built one — a slot in the userinfo — that walked
+    // straight past the probe check of the day and was stopped by this
+    // comparison and nothing else. The lesson is written down rather than
+    // smoothed over: a zero-red row is "not tested", never "unreachable".
+    // It is kept rather than dropped because the two halves are one mechanism:
+    // without the slot-in-origin refusal, "the manifest literal's origin" for a
+    // host slot would be *the operator's own value*, and this comparison would
+    // be vacuously true. Deleting either half alone leaves the other stating
+    // something weaker than §2.3(c).
+    let got = url::Url::parse(rendered)
+        .map_err(|e| refusal(format!("the rendered url does not parse ({e})")))?;
+    let origin_of = |u: &url::Url| {
+        format!(
+            "{}://{}:{}",
+            u.scheme(),
+            u.host_str().unwrap_or(""),
+            u.port_or_known_default()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )
+    };
+    if got.scheme() != literal.scheme()
+        || got.host_str() != literal.host_str()
+        || got.port_or_known_default() != literal.port_or_known_default()
+    {
+        return Err(refusal(format!(
+            "the manifest pins `{}` but the configured value resolves to `{}`",
+            origin_of(&literal),
+            origin_of(&got)
+        )));
     }
     Ok(())
 }
@@ -3370,6 +3794,359 @@ mod connector_kind_tests {
             );
             assert!(err.to_string().contains("mcp_http.url"), "{raw:?}: {err}");
         }
+    }
+
+    // ---- #1284 §2.3(c): `mcp_http.url` configuration slots ----------------
+
+    /// A `config_schema` declaring the keys the url fixtures below fill.
+    fn url_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "rev": { "type": "string" },
+                "endpoint": { "type": "string" },
+                "port": { "type": "string" },
+                "count": { "type": "integer" }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    /// Parse an `mcp-http` manifest whose url is `url`, with [`url_schema`]
+    /// declared and the API key present or absent as asked.
+    fn http_with_url(url: &str, keyed: bool) -> Result<Manifest, ManifestError> {
+        let mut block = mcp_http_block();
+        block["url"] = json!(url);
+        if !keyed {
+            block.as_object_mut().unwrap().remove("api_key_secret");
+            block.as_object_mut().unwrap().remove("api_key_in");
+        }
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": block,
+            "config_schema": url_schema(),
+        })))
+    }
+
+    fn resolve(url: &str, keyed: bool, config: Value) -> Result<ResolvedMcpUrl, String> {
+        let m = http_with_url(url, keyed).expect("fixture manifest must parse");
+        let effective = effective_config_for_test(&m, &config);
+        resolve_mcp_http_url(m.mcp_http.as_ref().unwrap(), &effective)
+    }
+
+    /// Like [`resolve`], but a manifest that does not parse is a REFUSAL rather
+    /// than a broken fixture.
+    ///
+    /// §2.3(c) refuses a keyed template at whichever of its two placements sees
+    /// it first — `McpHttpBlock::validate` for anything decidable from the
+    /// template alone, `lock_origin` for anything that needs the rendered
+    /// value — and a test that asserts *where* the refusal happened would
+    /// pin the placement instead of the rule.
+    fn refuse_or_resolve(url: &str, keyed: bool, config: Value) -> Result<ResolvedMcpUrl, String> {
+        match http_with_url(url, keyed) {
+            Err(e) => Err(e.to_string()),
+            Ok(m) => {
+                let effective = effective_config_for_test(&m, &config);
+                resolve_mcp_http_url(m.mcp_http.as_ref().unwrap(), &effective)
+            }
+        }
+    }
+
+    /// Go through the REAL merge, so these fixtures cannot disagree with what a
+    /// spawn would actually see.
+    fn effective_config_for_test(m: &Manifest, user: &Value) -> serde_json::Map<String, Value> {
+        crate::plugin_host::config::effective_config(m, user)
+    }
+
+    /// The positive half of the pair §4.6 asks for: a slot in the path and a
+    /// slot in the query render, and the result is contacted verbatim.
+    #[test]
+    fn a_url_slot_fills_the_path_and_the_query() {
+        let resolved = resolve(
+            "https://mcp.example.com/{{config.path}}?rev={{config.rev}}",
+            true,
+            json!({ "path": "v2/mcp", "rev": "7" }),
+        )
+        .expect("path and query slots are what the keyed tier allows");
+        assert_eq!(resolved.as_str(), "https://mcp.example.com/v2/mcp?rev=7");
+    }
+
+    /// A non-string scalar is still one value; a container is not.
+    #[test]
+    fn a_url_slot_renders_scalars_and_refuses_containers() {
+        let resolved = resolve(
+            "https://mcp.example.com/mcp?n={{config.count}}",
+            true,
+            json!({ "count": 12 }),
+        )
+        .expect("an integer has a rendering");
+        assert_eq!(resolved.as_str(), "https://mcp.example.com/mcp?n=12");
+
+        let err = resolve(
+            "https://mcp.example.com/mcp?n={{config.count}}",
+            true,
+            json!({ "count": [1, 2] }),
+        )
+        .expect_err("an array has no rendering inside a url");
+        assert!(err.contains("count"), "{err}");
+    }
+
+    /// The other half of the pair: with an API key in play, a slot that could
+    /// move the origin is refused — scheme, host and port alike. This is the
+    /// class `validate_mcp_http_url` does NOT catch (F19), so it is the class
+    /// the origin lock has to carry.
+    #[test]
+    fn a_keyed_connector_refuses_a_slot_anywhere_in_the_origin() {
+        let moves_origin = json!({ "endpoint": "evil.example", "port": "8443" });
+        for (url, config) in [
+            ("https://{{config.endpoint}}/mcp", moves_origin.clone()),
+            ("https://mcp.{{config.endpoint}}/mcp", moves_origin.clone()),
+            (
+                "{{config.endpoint}}://mcp.example.com/mcp",
+                moves_origin.clone(),
+            ),
+            (
+                "https://mcp.example.com:{{config.port}}/mcp",
+                moves_origin.clone(),
+            ),
+            // No path at all: the slot abuts the authority, so it IS the
+            // authority's tail.
+            (
+                "https://mcp.example.com{{config.endpoint}}",
+                moves_origin.clone(),
+            ),
+            // **Userinfo — the position the probe check used to miss.** The
+            // probe render `https://userneige-config-slot@h.example/mcp`
+            // parses, and its host is `h.example`: the probe lands in the
+            // USERNAME, which the old check did not look at. These two values
+            // then end the authority early, so the rendered host is
+            // `user.evil.example` / `user` — a different origin reached with a
+            // manifest whose literal origin never moved.
+            (
+                "https://user{{config.endpoint}}@h.example/mcp",
+                json!({ "endpoint": ".evil.example/" }),
+            ),
+            (
+                "https://user{{config.endpoint}}@h.example/mcp",
+                json!({ "endpoint": "/" }),
+            ),
+            // The password half of the same position.
+            (
+                "https://user:pw{{config.endpoint}}@h.example/mcp",
+                json!({ "endpoint": ".evil.example/" }),
+            ),
+        ] {
+            match refuse_or_resolve(url, true, config) {
+                // Any of §2.3(c)'s refusals may be the one that fires: the
+                // template-level validator (parse time or render time) names
+                // the field, the origin lock names the rule.
+                Err(err) => assert!(
+                    err.contains("origin is locked") || err.contains("mcp_http.url"),
+                    "{url}: {err}"
+                ),
+                Ok(resolved) => panic!(
+                    "{url} resolved to {} — a keyed connector's origin is not configurable",
+                    resolved.as_str()
+                ),
+            }
+        }
+    }
+
+    /// The **parse-time** placement of the keyed template check, on its own.
+    ///
+    /// A keyed connector's origin is locked to the manifest literal, so a
+    /// template that is not a legal url once its slots are stood in can never
+    /// be made legal by a configured value — and an author should learn that
+    /// when they install the plugin, not when an operator watches bring-up
+    /// fail. The unkeyed half of each pair is what shows this is the tier
+    /// talking and not a new global rule: there the whole url is replaceable,
+    /// so the template says nothing about what will be contacted.
+    #[test]
+    fn a_keyed_url_template_is_refused_at_install_time() {
+        for url in [
+            // Userinfo: refused for a literal url since #1164, and until now
+            // NOT refused for a templated one — the asymmetry this closes.
+            "https://user{{config.endpoint}}@h.example/mcp",
+            // A port is digits; the probe render does not parse at all.
+            "https://mcp.example.com:{{config.port}}/mcp",
+            // Scheme slot: the probe render is not `http(s)`.
+            "{{config.endpoint}}://mcp.example.com/mcp",
+            // WHATWG retargeting written into the template itself.
+            r"https://mcp.example.com\{{config.path}}",
+            "https://mcp.example.com/mcp#{{config.rev}}",
+        ] {
+            let err = http_with_url(url, true)
+                .expect_err("a keyed template must be refused at manifest-parse time");
+            let err = err.to_string();
+            assert!(err.contains("mcp_http.url"), "{url}: {err}");
+
+            // Unkeyed: the same template installs. The whole url is
+            // configurable there, so the manifest literal is not a promise
+            // about anything and `resolve_mcp_http_url` is the only gate.
+            http_with_url(url, false).unwrap_or_else(|e| {
+                panic!("unkeyed connectors keep their url wide open: {url}: {e}")
+            });
+        }
+    }
+
+    /// The **render-time** placement of the same check, reached the only way it
+    /// can be: an [`McpHttpBlock`] that never went through [`Manifest::parse`].
+    ///
+    /// This is the invariant [`ResolvedMcpUrl`] exists to carry — no call site,
+    /// present or future, gets a url past §2.3(c) by building the block itself
+    /// — so the parse-time placement above is a convenience for authors and
+    /// this one is the fence.
+    #[test]
+    fn a_hand_built_block_is_still_refused_at_render_time() {
+        let block = McpHttpBlock {
+            url: "https://user{{config.endpoint}}@h.example/mcp".to_string(),
+            api_key_secret: Some("API_KEY".to_string()),
+            api_key_in: Some("query:api_key".to_string()),
+            tools_allow: vec!["quote".to_string()],
+            request_timeout_ms: None,
+            bringup_timeout_ms: None,
+        };
+        let effective: serde_json::Map<String, Value> =
+            serde_json::from_value(json!({ "endpoint": ".evil.example/" })).unwrap();
+        let err = resolve_mcp_http_url(&block, &effective)
+            .expect_err("a userinfo slot moves the rendered host to the operator's value");
+        assert!(
+            err.contains("origin is locked") && err.contains("mcp_http.url"),
+            "{err}"
+        );
+    }
+
+    /// Same fixture, key removed: the tier flips and the whole url — host
+    /// included — becomes configurable. The discriminant is
+    /// `mcp_http.api_key_secret`, a manifest field, so this pair is what makes
+    /// the tiering visible rather than a sentence in a doc comment.
+    #[test]
+    fn an_unkeyed_connector_may_have_its_entire_url_configured() {
+        let resolved = resolve(
+            "{{config.endpoint}}",
+            false,
+            json!({ "endpoint": "http://192.168.1.9:8931/mcp" }),
+        )
+        .expect("with no credential to divert there is nothing to lock");
+        assert_eq!(resolved.as_str(), "http://192.168.1.9:8931/mcp");
+
+        // …and the identical manifest WITH a key refuses it, so the difference
+        // is the tier and not the fixture. Which of §2.3(c)'s two placements
+        // refuses is not the property: a whole-url template probes to a bare
+        // label, so the keyed tier now rejects it at manifest-parse time and
+        // the origin lock never gets a turn.
+        let err = refuse_or_resolve(
+            "{{config.endpoint}}",
+            true,
+            json!({ "endpoint": "http://192.168.1.9:8931/mcp" }),
+        )
+        .expect_err("a keyed connector may not have its whole url configured");
+        assert!(
+            err.contains("origin is locked") || err.contains("mcp_http.url"),
+            "{err}"
+        );
+    }
+
+    /// §4.6 — the WHATWG retargeting cases `validate_mcp_http_url` already
+    /// refuses in a manifest must be refused just as hard when they arrive as a
+    /// configuration value. This is the witness that the resolver calls THAT
+    /// function rather than restating its rules.
+    #[test]
+    fn a_configured_value_is_refused_by_the_real_url_validator() {
+        for value in [
+            r"mcp\evil.example",
+            "mcp\t.evil.example",
+            "mcp\n.evil.example",
+            "mcp#fragment",
+            "mcp\u{7f}",
+        ] {
+            let res = resolve(
+                "https://mcp.example.com/{{config.path}}",
+                true,
+                json!({ "path": value }),
+            );
+            let err = res
+                .err()
+                .unwrap_or_else(|| panic!("{value:?} must be refused"));
+            assert!(
+                err.contains("mcp_http.url"),
+                "{value:?} must be refused BY the url validator, naming the field: {err}"
+            );
+        }
+    }
+
+    /// A value that would have to be re-spelled to be a URL is refused rather
+    /// than silently percent-encoded into a different target.
+    #[test]
+    fn a_configured_value_needing_encoding_is_refused_not_encoded() {
+        let err = resolve(
+            "https://mcp.example.com/{{config.path}}",
+            true,
+            json!({ "path": "a b" }),
+        )
+        .expect_err("a space would have to be encoded");
+        assert!(err.contains("canonical"), "{err}");
+    }
+
+    /// §2.4's terminal state needs a reason an operator can act on: the slot
+    /// with nothing in force names the key.
+    #[test]
+    fn a_url_slot_with_no_value_in_force_is_refused_by_name() {
+        let err = resolve("https://mcp.example.com/{{config.path}}", true, json!({}))
+            .expect_err("an unfillable url slot must not be contacted");
+        assert!(
+            err.contains("`path`") && err.contains("Settings › Plugins"),
+            "{err}"
+        );
+    }
+
+    /// Parse-time half: a slot must name a declared `config_schema` property,
+    /// and the bare `{{name}}` form (S3a's agent-argument namespace) has no
+    /// meaning in a url at all.
+    #[test]
+    fn a_url_slot_must_be_a_declared_config_key() {
+        let err = expect_reject(
+            http_with_url("https://mcp.example.com/{{config.nope}}", true),
+            "an undeclared url slot",
+        );
+        assert!(err.to_string().contains("config slot `nope`"), "{err}");
+
+        let err = expect_reject(
+            http_with_url("https://mcp.example.com/{{path}}", true),
+            "a bare argument slot in a url",
+        );
+        assert!(
+            err.to_string().contains("must be written"),
+            "a url has no agent arguments: {err}"
+        );
+
+        let err = expect_reject(
+            http_with_url("https://mcp.example.com/{{config.}}", true),
+            "an empty config slot",
+        );
+        assert!(err.to_string().contains("mcp_http.url"), "{err}");
+
+        let err = expect_reject(
+            http_with_url("https://mcp.example.com/x}}", true),
+            "a stray closing brace",
+        );
+        assert!(err.to_string().contains("stray"), "{err}");
+    }
+
+    /// A url with no slots must behave exactly as it did before this slice:
+    /// validated at parse time, and resolvable with no configuration at all.
+    #[test]
+    fn an_unslotted_url_is_still_validated_at_parse_time() {
+        let err = expect_reject(
+            http_with_url("https://mcp.example.com/mcp#frag", true),
+            "a literal url with a fragment",
+        );
+        assert!(err.to_string().contains("mcp_http.url"), "{err}");
+
+        let resolved = resolve("https://mcp.example.com/mcp", true, json!({}))
+            .expect("a literal url resolves with no configuration");
+        assert_eq!(resolved.as_str(), "https://mcp.example.com/mcp");
     }
 
     /// Canonical-form equality is the robust half of the same rule: whatever

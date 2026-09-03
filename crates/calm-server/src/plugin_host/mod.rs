@@ -429,6 +429,28 @@ pub struct PluginHost {
     /// #1164 §2.7(1) — recorded order of the two connector-spawn steps whose
     /// RELATIVE ORDER is the invariant. See [`Self::connector_spawn_order`].
     spawn_order: std::sync::Mutex<HashMap<String, ConnectorSpawnOrder>>,
+    /// #1284 §4.7 — ids whose CURRENT spawn passed through
+    /// [`Self::config_for_spawn_or_unavailable`].
+    ///
+    /// Cleared per spawn attempt by [`Self::spawn_admitted`] and stamped by the
+    /// gate itself; read back by the same function once the kind arm has
+    /// returned `Ok`. See [`Self::assert_config_gate_ran`] for why this is a
+    /// live map rather than a list of three kinds someone counted.
+    config_gate: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// #1284 §4.7 — every breach [`Self::assert_config_gate_ran`] has seen,
+    /// as `plugin id → count`.
+    ///
+    /// In a debug build the first breach panics, so this map is what the
+    /// **release** build has instead of a process that stops. Without it the
+    /// entire production consequence of "a spawn bypassed the shared
+    /// configuration gate" is one `tracing::error!` line, which is gone the
+    /// moment log retention rolls; with it the fact is a value a health route
+    /// or an operator-facing check can read at any later point in the process's
+    /// life. It is deliberately NOT a `last_error`: the plugin is `Running` at
+    /// that point, and [`PluginRuntimeStatus::Running`] carries no error field
+    /// — inventing one would widen the plugin wire shape for a kernel
+    /// bookkeeping fault that is not about that plugin's health.
+    config_gate_breaches: std::sync::Mutex<HashMap<String, u64>>,
     /// #1196 S1 — **the** per-plugin-id lifecycle lock.
     ///
     /// One id's whole lifecycle vocabulary — install / enable / disable /
@@ -909,6 +931,7 @@ impl ConnectorSpawnOrder {
 async fn connect_mcp_http(
     id: &str,
     block: &manifest::McpHttpBlock,
+    url: &manifest::ResolvedMcpUrl,
     install_path: PathBuf,
 ) -> Result<(Arc<HttpMcpClient>, Vec<serde_json::Value>), String> {
     // §2.4 — a wrongly-permissioned secrets file refuses the enable outright.
@@ -945,7 +968,7 @@ async fn connect_mcp_http(
         None => None,
     };
 
-    let client = Arc::new(HttpMcpClient::new(id, block, api_key.as_ref()));
+    let client = Arc::new(HttpMcpClient::new(id, url, block, api_key.as_ref()));
 
     // Best-effort: the probed server class answers `tools/list` with no
     // handshake at all, so an `initialize` failure is informational. It shares
@@ -1003,6 +1026,8 @@ impl PluginHost {
             write,
             processes: std::sync::Mutex::new(ProcessTable::default()),
             spawn_order: std::sync::Mutex::new(HashMap::new()),
+            config_gate: std::sync::Mutex::new(std::collections::HashSet::new()),
+            config_gate_breaches: std::sync::Mutex::new(HashMap::new()),
             lifecycle: std::sync::Mutex::new(HashMap::new()),
             run_epoch_seq: std::sync::atomic::AtomicU64::new(1),
             lifecycle_db,
@@ -1320,21 +1345,43 @@ impl PluginHost {
     ///   enabled. That is precisely the hole S2's own review (P2-1) closed on
     ///   the `app` path, reopened one kind over.
     ///
-    /// S3b (`mcp-http` url slots) will be the third consumer, and is to call
-    /// this rather than grow a third copy. As of today `spawn_mcp_http` does
-    /// **not** call it: the only two call sites are the `app` and `cli-query`
-    /// spawn paths.
+    /// **Do not read a call-site count out of this comment.** S3b brought
+    /// `spawn_mcp_http` in rather than growing a third copy, but the reason a
+    /// future kind cannot skip the gate is not that someone kept a list here up
+    /// to date — comments that count call sites go stale on exactly the commit
+    /// that matters. The completeness of the call sites is held by the §4.7
+    /// witness instead: [`Self::spawn_admitted`] clears the witness bit before
+    /// branching on `manifest.kind`, this function stamps it on entry, and
+    /// [`Self::assert_config_gate_ran`] fires on any spawn that reached
+    /// `Running` without the stamp — for every kind, present and future. The
+    /// test side closes it from the other direction:
+    /// `every_connector_kind_spawns_through_the_shared_config_gate` derives the
+    /// kind universe from [`ConnectorKind`]'s own serde variant list, so a
+    /// fourth kind that never calls this function fails a test nobody had to
+    /// remember to extend. A fourth copy of the ⊕ is what those two catch; this
+    /// paragraph only points at them.
     ///
     /// **One carrier, two call orders — and the observable difference is real.**
     /// This function is shared, but the callers did not converge on WHERE they
-    /// call it, and this slice deliberately did not move either one (that is a
-    /// behaviour change and wants its own review):
+    /// call it, and no slice has moved either one (that is a behaviour change
+    /// and wants its own review):
     ///
     /// * the `app` path calls it **before** minting the process token and
     ///   before `emit_state(Spawning)`, so a plugin missing required
     ///   configuration emits `Unavailable` and nothing else;
-    /// * the `cli-query` path calls it **after** `emit_state(Spawning)`, so the
-    ///   same failure emits `Spawning` then `Unavailable` — two events.
+    /// * the connector paths call it **after** `emit_state(Spawning)`, so the
+    ///   same failure emits `Spawning` then `Unavailable` — two events. S3b
+    ///   placed `mcp-http`'s call to match `cli-query`'s rather than invent a
+    ///   third order.
+    ///
+    /// **That second bullet is an observation, not an invariant — and unlike
+    /// the §4.7 paragraph above it, nothing enforces it.** "Every connector
+    /// kind calls the gate after `Spawning`" is how the two of them happen to
+    /// be arranged today; there is no witness, no assertion and no test that
+    /// would go red if a future kind called it before, or if someone moved one
+    /// of these two. Read it as "here is the event prefix each existing path
+    /// produces", not as a contract a new path inherits: a §2.5 consumer that
+    /// needs the prefix to be uniform has to establish that itself.
     ///
     /// The terminal state, the error and the `last_error` wording are identical
     /// either way; what differs is the event prefix a §2.5 consumer sees.
@@ -1350,6 +1397,14 @@ impl PluginHost {
         guard: AdmissionGuard,
     ) -> Result<(serde_json::Map<String, serde_json::Value>, AdmissionGuard), HostError> {
         let id = lifecycle.id();
+        // §4.7 — the witness that this spawn went through THIS function.
+        // Stamped first, before either refusal arm, because "the gate ran" is
+        // the claim being recorded, not "the gate passed": a spawn refused
+        // here never reaches the check in `spawn_admitted` anyway.
+        self.config_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_string());
         let effective = match self.effective_config_for_spawn(id, manifest).await {
             Ok(effective) => effective,
             Err(detail) => {
@@ -2053,7 +2108,121 @@ impl PluginHost {
     /// lock). Owns the [`AdmissionGuard`]: every failure exit — `Err`
     /// return, task abort/drop at any `.await`, panic — drops the guard,
     /// which releases the reservation; the success swap disarms it.
+    ///
+    /// **#1284 §4.7 lives here**: this function is the single door every spawn
+    /// of every kind goes through, so it is where "the shared configuration
+    /// gate ran" is made checkable. It clears the witness, runs the kind arm,
+    /// and — for a spawn that reports success — asserts the witness is there.
+    /// See [`Self::assert_config_gate_ran`].
     async fn spawn_admitted(
+        self: &Arc<Self>,
+        lifecycle: &LifecycleGuard,
+        manifest: &Manifest,
+        guard: AdmissionGuard,
+        inherit: Option<CrashWindow>,
+    ) -> Result<(), HostError> {
+        self.config_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(lifecycle.id());
+        let outcome = self
+            .spawn_admitted_inner(lifecycle, manifest, guard, inherit)
+            .await;
+        if outcome.is_ok() {
+            self.assert_config_gate_ran(lifecycle.id(), manifest.kind);
+        }
+        outcome
+    }
+
+    /// #1284 §4.7 — a plugin that reached `Running` without passing
+    /// [`Self::config_for_spawn_or_unavailable`] is a fourth copy of the ⊕ in
+    /// the making, and this is the thing that says so.
+    ///
+    /// **Why this shape and not a list of the three consumers.** §4.7 asks for
+    /// set equality, not a sample, and a test that names `app`, `mcp-http` and
+    /// `cli-query` proves exactly three facts — it cannot fail for a fourth
+    /// spawn path, which is the failure the design predicted and S2/S3a then
+    /// produced in parallel. This check quantifies over *spawns* instead: every
+    /// successful spawn, of every kind, present and future, driven by any test
+    /// in the suite, has to have stamped the witness. There is no list to keep
+    /// up to date, so there is nothing to forget.
+    ///
+    /// **Its teeth are `debug_assert!`,** which is to say: the whole test suite
+    /// (built in debug, like CI) panics on the first spawn that skipped the
+    /// gate. In release it is a `tracing::error!` **plus a count in
+    /// [`Self::config_gate_breaches`]** instead, deliberately — the plugin is
+    /// at that point already `Running`, and tearing a healthy process down over
+    /// a bookkeeping discrepancy would be a worse failure than the one being
+    /// reported. The evidence a release build leaves therefore outlives its log
+    /// retention, and no debug build can pass its own tests.
+    ///
+    /// **Public** for the same reason [`Self::config_gate_ran`] is, and for one
+    /// more: the guard is a conditional, so with every spawn path wired there
+    /// is nothing in the suite for it to catch, and deleting its call site goes
+    /// unnoticed (mutation row 5b).
+    /// `the_config_gate_guard_panics_when_the_witness_is_absent` calls it
+    /// directly with an id that never spawned — the miss case — which is the
+    /// only way to test the branch that matters (row 5a).
+    pub fn assert_config_gate_ran(&self, id: &str, kind: ConnectorKind) {
+        let ran = self
+            .config_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id);
+        if ran {
+            return;
+        }
+        *self
+            .config_gate_breaches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.to_string())
+            .or_insert(0) += 1;
+        let msg = format!(
+            "#1284 §4.7: plugin `{id}` (kind `{}`) completed a spawn without passing \
+             `config_for_spawn_or_unavailable` — its effective configuration and its \
+             `required` verdict came from somewhere else, or from nowhere",
+            kind.wire_name()
+        );
+        tracing::error!("{msg}");
+        debug_assert!(false, "{msg}");
+    }
+
+    /// Whether `id`'s most recent spawn passed the shared configuration gate.
+    ///
+    /// Public for the same reason [`Self::connector_spawn_order`] is: the §4.7
+    /// meta test asserts a property of the PRODUCTION path, and a witness that
+    /// only exists under `cfg(test)` witnesses nothing about production.
+    ///
+    /// **"Most recent spawn" is exact, and narrower than it may read.** The
+    /// stamp is cleared at the top of every spawn attempt and set by the gate,
+    /// so a `true` says the gate ran during the latest attempt — NOT that the
+    /// attempt succeeded, and not that the plugin is running now: a spawn that
+    /// passed the gate and then failed at exec or handshake leaves it set. The
+    /// one consumer that matters ([`Self::assert_config_gate_ran`]) reads it
+    /// only on the success path, where that distinction cannot arise.
+    pub fn config_gate_ran(&self, id: &str) -> bool {
+        self.config_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }
+
+    /// #1284 §4.7 — how many times `id` completed a spawn without the witness.
+    ///
+    /// Zero on any healthy build. Non-zero is a kernel defect that a **release**
+    /// build survives (see [`Self::assert_config_gate_ran`]), and this is the
+    /// evidence it leaves behind once the log line has rolled away.
+    pub fn config_gate_breaches(&self, id: &str) -> u64 {
+        self.config_gate_breaches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    async fn spawn_admitted_inner(
         self: &Arc<Self>,
         lifecycle: &LifecycleGuard,
         manifest: &Manifest,
@@ -2319,6 +2488,29 @@ impl PluginHost {
         // `request_timeout_ms` is deliberately NOT consulted here: it is the
         // `tools/call` budget, it may be minutes long, and this expression is
         // awaited inline by `AppState::new`.
+        // #1284 §2.3(c) + §2.4 — the configuration this connector will run
+        // with, read through **the same gate every other kind uses** rather
+        // than a private copy of it (§4.7). What keeps that true is not this
+        // comment: `spawn_admitted` checks that every successful spawn of every
+        // kind stamped the gate's witness, so a path that grew its own copy
+        // fails in debug builds and logs in release.
+        //
+        // Placed after `emit_state(Spawning)` to match `spawn_cli_query`: both
+        // connector kinds therefore emit the same event prefix on a
+        // configuration refusal.
+        let (effective, guard) = self
+            .config_for_spawn_or_unavailable(lifecycle, manifest, guard)
+            .await?;
+
+        // §2.3(c) — render the url's `{{config.*}}` slots, re-validate with the
+        // manifest's own parser, and (when this connector holds an API key)
+        // refuse any render that moved the origin. The failure is a connector's
+        // normal terminal state, not a kernel error.
+        let url = match manifest::resolve_mcp_http_url(block, &effective) {
+            Ok(url) => url,
+            Err(reason) => return self.connector_unavailable(lifecycle, guard, reason).await,
+        };
+
         let per_request = Duration::from_millis(block.bringup_timeout_ms());
         // One formula, one place: `autospawn_enabled_within` widens the loop
         // budget by this same value, and the two drifting apart is exactly the
@@ -2326,7 +2518,7 @@ impl PluginHost {
         let budget = connector_bringup_budget(manifest);
         let outcome = tokio::time::timeout(
             budget,
-            connect_mcp_http(id, block, install_path.to_path_buf()),
+            connect_mcp_http(id, block, &url, install_path.to_path_buf()),
         )
         .await;
 
