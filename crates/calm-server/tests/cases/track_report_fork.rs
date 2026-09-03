@@ -1946,12 +1946,16 @@ async fn initial_track_does_not_require_report_startup_read() {
 // The door (`track_report::write::structural_init_report_tx`) is the create
 // paths' entry into the report write boundary. `fork_guard_exemption_invariant`
 // pins its *signature* — that it has no `EventBus`, no `EditAuthor`, no CAS
-// input. These three tests pin the behaviour that signature exists to produce,
-// end to end through `POST /api/tracks`, for **both** creation sources: a fork
-// and a template instantiation. Both go through the same door
+// input. The first two tests below pin the behaviour that signature exists to
+// produce, end to end through `POST /api/tracks`, for **both** creation
+// sources: a fork and a template instantiation. Both go through the same door
 // (`persist_initial_report_and_project_tasks_tx` served both before #1252 S2
 // merged it into the boundary), so a change that gave the door an event bus
 // would break both, and testing only one would leave half the door uncovered.
+//
+// The third is narrower than its neighbours and says so in its own doc comment:
+// the order of the door's two statements is **not** observable from this
+// surface, and the test that pins it lives in the `--lib` target.
 // ---------------------------------------------------------------------------
 
 /// Every persisted event of `kind` scoped to `track_id`, oldest first, as
@@ -2148,29 +2152,39 @@ async fn structural_init_leaves_one_card_added_and_no_card_updated() {
     }
 }
 
-/// Issue #1252 S2 — the two statements inside the door run in the order the
-/// projection needs, on the real fork route.
+/// Issue #1252 S2 — a forked task's `refs` are rewritten onto the copy and
+/// resolve against it.
 ///
-/// `write_report_row_and_project_tx` writes the report card's payload cache and
-/// then reprojects the track's tasks. The block-existence leg of projection
-/// resolves a task's `refs` by reading that cache, so the order is the contract:
-/// swap the two statements and a forked task whose `refs` point at another
-/// forked block is checked against the *previous* payload — on a create that is
-/// the birth skeleton, whose block ids are all different — and silently collects
-/// a `reference_missing` diagnostic. Silently, because a diagnostic is data,
-/// not an error: the create still answers 201.
+/// # What this does NOT pin, and how that was established
 ///
-/// Extracting those two statements out of `routes::tracks` and into the
-/// boundary is the one genuinely risky move in this slice, and the fork route
-/// had no test for the order. The in-crate
+/// It does not pin the statement order inside
+/// `track_report::write::write_report_row_and_project_tx`, and an earlier draft
+/// of this test claimed it did. **Measured, not argued**: swapping the row write
+/// and the task projection inside that function leaves this test GREEN. The
+/// reason is that `GET /api/tracks/{id}/report` recomputes `taskDiagnostics` at
+/// read time from the committed payload, so by the time this test looks, the
+/// cache holds the fork either way — the create-time projection's verdicts are
+/// simply not on this surface.
+///
+/// Nor is the difference visible in the `tasks` table: `prepare_fork_report`
+/// forces every copied task to `ready: false`, so a forked declaration is
+/// non-schedulable and projects no row whichever order ran. That is why the
+/// fork route had no order test before this slice, and it is not something a
+/// better assertion here would fix.
+///
+/// The test that *does* pin the order is
 /// `routes::tracks::tests::structural_door_writes_cache_crdt_and_projection_together`
-/// drives the door directly; this one drives `POST /api/tracks`.
+/// — the crate's `--lib` target, which reads the `TaskProjectionOutcome` the
+/// door returns rather than a re-derived read-path value. Under the same swap it
+/// goes red on a `reference_missing` diagnostic. Naming it here is the point: a
+/// gate run scoped to the integration binaries never builds that target.
 ///
-/// The fixture's `build` task carries `refs` into the source track's second
-/// prose block, which the fork rewrites to point at the *copy* of that block —
-/// so the ref can only resolve against this write's own snapshot.
+/// What this test is still worth: the fork's link rewriting and the copy's
+/// self-consistency end to end. The fixture's `build` task references the source
+/// track's second prose block; after the fork the reference must name the
+/// *copy* of that block, on the new track, and that block must be present.
 #[tokio::test]
-async fn forked_task_refs_resolve_against_this_writes_own_snapshot() {
+async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
     let boot = boot().await;
     let (status, source_report) = request_json(
         &boot.app,
@@ -2232,8 +2246,6 @@ async fn forked_task_refs_resolve_against_this_writes_own_snapshot() {
         .collect();
     assert!(
         dangling.is_empty(),
-        "the projection ran against a payload cache that did not hold this write — \
-         `write_report_row_and_project_tx` writes the row first for exactly this reason: \
-         {dangling:#?}"
+        "the fork left a reference that does not resolve against the copy: {dangling:#?}"
     );
 }
