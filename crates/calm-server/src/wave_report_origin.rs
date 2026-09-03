@@ -20,8 +20,16 @@
 //! structural initialization inside the create transaction (see
 //! `routes::waves::prepare_template_report`). What survives is exactly two
 //! `RestUser` sites and one `Agent` site — every one of them with an honest
-//! origin, which is the precondition S1 step 2 was blocked on. The count is
-//! pinned by the `persist_report_call_sites` CI ratchet, not by this comment.
+//! origin, which is the precondition S1 step 2 was blocked on.
+//!
+//! What backs each half of that: the *behaviour* of all three — which actor and
+//! which `EditAuthor` each one persists — is asserted by
+//! `tests/cases/report_write_characterization.rs`, which drives them through
+//! the real router and tool registry. That there are three and not four is a
+//! weaker claim: the `persist_report_call_sites` CI ratchet is a text census of
+//! per-file occurrences, so it catches a call site added by someone who did not
+//! know about it, and does not claim to catch one hidden on purpose. That
+//! script's "KNOWN GAPS" section enumerates what it misses.
 //!
 //! # Status: not wired into production
 //!

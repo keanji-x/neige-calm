@@ -13,10 +13,17 @@ set -euo pipefail
 # This is a **drift detector over an enumeration**, not a semantic gate. Its
 # whole promise is one sentence:
 #
-#   Any code line in a compiled Rust source that names one of these two symbols
-#   is counted; adding or removing one changes a count here and fails the gate,
-#   so the allowlist has to be edited and a reviewer sees which author the new
-#   call site passes.
+#   A code line in a compiled Rust source that names one of these two symbols
+#   is counted, so adding or removing one — while writing ordinary Rust, with
+#   no attempt to dodge a text scanner — changes a count here, fails the gate,
+#   and puts the new call site in front of a reviewer.
+#
+# **Threat model: unintentional drift.** Somebody adds a report writer and does
+# not know this census exists. That is what this catches. It is NOT an
+# adversarial gate: it is a `rg`/`awk` text scan, and a text scan cannot decide
+# what the compiler compiles. "KNOWN GAPS" below lists the ways a determined
+# author walks past it, and none of them is going to be closed here — see the
+# end of that section for what would actually close them.
 #
 # It matches the **identifier**, not `identifier(`. That is deliberate and it is
 # what closes the constructions a call-shaped regex walked past:
@@ -44,9 +51,15 @@ set -euo pipefail
 #   4. an alias split across lines (`use a::persist_report\n as save;`). The
 #      identifier still gets counted — only the louder alias-specific message is
 #      lost — so this degrades to "red for the ordinary reason", not to green.
-#   5. whether the origin role a production call site is *labelled* with in the
-#      census is the role it actually passes. See "THE ORIGIN COLUMN" below for
-#      exactly how far the mechanical check goes.
+#   5. which `EditAuthor` any call site passes — see (1). This gate reports file
+#      counts and nothing about attribution. What each of the three production
+#      decision points actually writes is pinned by
+#      `crates/calm-server/tests/cases/report_write_characterization.rs`, which
+#      drives them through the real router / tool registry and asserts the
+#      persisted `events.actor` and `WaveReportEdited.author`. That is the
+#      carrier for "three sites, each honest"; this census is not, and an
+#      earlier revision of it that tried to be — a hand-written `Role=N` column
+#      — was defeated three separate ways by a reviewer and has been deleted.
 #
 # What turns "who is writing" into a mechanical fact is #1252 S1 step 2's
 # origin-only constructors. This file is the interim, and it is a review aid.
@@ -101,7 +114,7 @@ set -euo pipefail
 # moves for any reason lands on a human.
 #
 # ---------------------------------------------------------------------------
-# THE ONE FILTER THERE IS, AND WHY IT CANNOT UNDER-COUNT
+# THE ONE FILTER THERE IS, AND HOW FAR IT HOLDS
 # ---------------------------------------------------------------------------
 #
 # Matching the bare identifier over the whole tree pins 26 files, ten of which
@@ -111,14 +124,26 @@ set -euo pipefail
 #
 #     its first non-blank characters are `//`  AND  it contains no `*/`
 #
-# The claim is that a dropped line can never carry executable code. Proof, by
-# the two lexer states a line can start in:
+# The filter holds for the two lexer states ordinary Rust puts a line in:
 #
-#   * Not inside a block comment. The leading `//` opens a line comment that
-#     runs to end of line. Everything after it is comment. No code.
+#   * Not inside any comment or literal. The leading `//` opens a line comment
+#     that runs to end of line. Everything after it is comment. No code.
 #   * Inside a block comment. The only way code can appear on this line is for
 #     the block to close first, and a block closes only at `*/`. The filter
 #     refuses to drop any line containing `*/`, so this line was not dropped.
+#
+# An earlier revision of this comment called that a *proof* that a dropped line
+# can never carry code. It is not one: it enumerated two lexer states and there
+# is a third. A line can begin inside a string literal, and then its leading
+# `//` is data, not a comment:
+#
+#     let _ = r#"open
+#     //"#; persist_report(..);
+#
+# The second line starts with `//`, contains no `*/`, is dropped — and the
+# `"#` closes the raw string so the call after it executes. An ordinary
+# multi-line `"..\n.."` literal does the same. This is not fixed here; see
+# KNOWN GAPS.
 #
 # An earlier revision dropped lines starting with `*` or `/*` as well. That was
 # wrong in the direction that costs the guarantee: `/* harmless */ persist_report(..)`
@@ -127,48 +152,72 @@ set -euo pipefail
 # production call could be added to a *new* file and stay green, because reverse
 # discovery finds the file but then computes 0 occurrences and skips it.
 #
-# The filter that remains errs the other way, on purpose: a trailing
+# The filter errs toward over-counting on purpose: a trailing
 # `// ... persist_report ...` on a code line, the body of any `/* */` block, and
 # the `// */ persist_report()` comment-toggle idiom are all counted. Over-counting
-# costs a census edit. Under-counting would cost the guarantee.
+# costs a census edit; under-counting costs the detection.
 #
 # The same filter is applied — by calling this same function, not by restating
 # it — before the alias rule below, so the two rules cannot disagree about what
 # a comment is.
 #
 # ---------------------------------------------------------------------------
-# THE ORIGIN COLUMN
+# KNOWN GAPS — open, and staying open
 # ---------------------------------------------------------------------------
 #
-# Column 3 of the census names the production call sites in that file and the
-# origin role each one writes as, `Role=N`, or `-` for none. The summary line at
-# the bottom is computed from this column: the total and the per-role breakdown
-# are both aggregates over it, so bumping the number in the summary is not
-# possible without editing the census. (Before, that sentence was a hardcoded
-# string and a fourth production call site could be added, censused correctly,
-# and still print "3".)
+# Each of these lets a real call site exist while this gate is green. They are
+# listed so that no reader, and no PR touching this file, mistakes the gate for
+# a closed guarantee. Nothing here is a TODO.
 #
-# What the gate checks about column 3:
+#   G1. **A code line whose start is inside a string literal.** The comment
+#       filter drops it (leading `//`, no `*/`) even though the literal ends
+#       mid-line and real code follows. Raw strings and ordinary multi-line
+#       strings both do this; see the example above.
 #
-#   * the role name is in `origin_markers` below — an invented role is red;
-#   * the declared count does not exceed that file's total occurrence count;
-#   * the role's marker regex occurs on at least one code line of that file.
-#     `RestUser` requires `EditAuthor::User`; `Agent` requires
-#     `report_op_attribution`, the function that derives the author from the
-#     caller's card role. Relabelling `decision_sink.rs` from `Agent` to
-#     `RestUser` without touching the code is therefore red.
+#   G2. **Files `rg` does not walk by default.** This scan passes neither
+#       `--hidden`, nor `--no-ignore`, nor `--follow`. So a Rust source under a
+#       dot-directory, a source matched by some `.gitignore` rule, and a
+#       symlinked tree are all invisible — to the counting pass *and* to the
+#       reverse-discovery pass, which is the one that would otherwise notice an
+#       uncensused file. Turning the three flags on trades this for scanning
+#       vendored and generated trees, which is its own kind of wrong; the trade
+#       has not been made.
 #
-# What it does not check, stated so the summary line is not read as more than it
-# is: dropping a call site's annotation entirely leaves the occurrence counts
-# untouched and goes green with a smaller total. The printed line is therefore
-# worded as what the census *declares*, which is exactly the artifact a reviewer
-# is being asked to read.
+#   G3. **Legitimate source under an excluded path.** `**/target/**` is
+#       excluded as build output, but `mod target;`, `#[path = "target/.."]`,
+#       or a Cargo `path = "target/.."` member are all legal and would be
+#       compiled while unscanned. Only the `tests/fixtures/ci-ratchets`
+#       exclusion is checked for reach-in (`assert_fixture_tree_is_inert`);
+#       `**/target/**` is not.
+#
+#   G4. **Reach-in shapes `assert_fixture_tree_is_inert` cannot see.** That
+#       check is itself a regex over `path =` / `include*!(` with a *literal*
+#       string. `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))`,
+#       a build.rs that emits the path, or a workspace member added by glob all
+#       compute the path instead of spelling it, and none of them is matched.
+#       Same for a `#[path]` reaching outside the repository entirely.
+#
+#   G5. **Everything in the "does NOT detect" list at the top** — an existing
+#       site changing its `EditAuthor`, a new wrapper's later callers, a raw
+#       `UPDATE cards SET ...`.
+#
+# Why these are accepted rather than patched: every one of them is a variation
+# on the same fact — a text scan cannot decide what `rustc` compiles, so each
+# patch buys one construction and the next reviewer finds another. Three rounds
+# of this issue's review went that way. What would actually close the set is a
+# compile-time visibility boundary — `persist_report*` not `pub` outside the
+# crate, gated behind `#[cfg(feature = "fixtures")]` for the test callers, so
+# the compiler enumerates the callers instead of `rg`. That is a build/behaviour
+# change and belongs to its own issue, not to this file.
 #
 # ---------------------------------------------------------------------------
 # THE CENSUS
 # ---------------------------------------------------------------------------
 #
-# Format: <file> <expected-code-line-occurrences> <origins> — classification.
+# Format: <file> <expected-code-line-occurrences> — classification.
+#
+# The classification column is prose for a reviewer. Nothing is derived from it
+# and nothing checks it; the numbers are the mechanical part.
 #
 # The three production *call sites* are the ones #1252 S1 step 2 threads
 # `WriteOrigin` through. Before #1300 there were six: `seed_template_wave` and
@@ -199,24 +248,24 @@ cd "$scan_root"
 scan_globs=(--glob '!**/target/**' --glob '!/tests/fixtures/ci-ratchets/**')
 inert_fixture_tree='tests/fixtures/ci-ratchets'
 
-# file<TAB>count<TAB>origins<TAB>why
+# file<TAB>count<TAB>why
 census=$(cat <<'CENSUS'
-crates/calm-server/src/wave_report.rs	3	-	the two definitions (`persist_report`, `persist_report_with_shadow`) plus the wrapper's own delegation from the first to the second
-crates/calm-server/src/routes/waves.rs	2	RestUser=1	production · REST whole-document write · ActorId::User + EditAuthor::User, and here that is honest: the caller is an authenticated browser request · plus its `use` import
-crates/calm-server/src/routes/wave_report_blocks.rs	2	RestUser=1	production · REST block write · ActorId::User + EditAuthor::User, same reason · plus its `use` import
-crates/calm-server/src/decision_sink.rs	2	Agent=1	production · the single MCP agent funnel · author derived from the caller's card role via `report_op_attribution`, never hardcoded · plus its `use` import
-crates/calm-server/src/report_backlinks.rs	2	-	#[cfg(test)] · a fixture inside `mod tests` (the attribute is at :228, the call at :291 — see the note above on why this is not filtered) · plus its `use` import
-crates/calm-server/src/wave_report_read.rs	2	-	#[cfg(test)] · same shape
-crates/calm-server/tests/cases/rest_wave_report.rs	3	-	integration test · REST report writes · import + two fixture calls
-crates/calm-server/tests/cases/wave_template_waves.rs	4	-	integration test · import + three fixture writes: two_waves_from_one_template_are_independent_and_identical (the edit that makes independence falsifiable), explicit_fork_report_from_is_not_overwritten, a_forged_template_key_cannot_influence_what_a_template_creates
-crates/calm-server/tests/cases/wave_vcs.rs	3	-	integration test · import + two fixture calls
-crates/calm-server/tests/cases/mcp_report_links.rs	2	-	integration test · import + one fixture call
-crates/calm-server/tests/cases/task_projection_acceptance.rs	2	-	integration test · import + one fixture call
-crates/calm-server/tests/cases/wave_projection_policy_patch.rs	2	-	integration test · import + one fixture call
-crates/calm-server/tests/cases/wave_report_fork.rs	2	-	integration test · import + one fixture call
-crates/calm-server/tests/scheduler.rs	2	-	integration test · import + one fixture call
-crates/calm-server/tests/cases/mcp_assistant_report_channel.rs	1	-	integration test · one fully-qualified fixture call
-crates/calm-server/tests/cases/mcp_assistant_tool_gate.rs	1	-	integration test · one fully-qualified fixture call
+crates/calm-server/src/wave_report.rs	3	the two definitions (`persist_report`, `persist_report_with_shadow`) plus the wrapper's own delegation from the first to the second
+crates/calm-server/src/routes/waves.rs	2	production · REST whole-document write · ActorId::User + EditAuthor::User, and here that is honest: the caller is an authenticated browser request · plus its `use` import
+crates/calm-server/src/routes/wave_report_blocks.rs	2	production · REST block write · ActorId::User + EditAuthor::User, same reason · plus its `use` import
+crates/calm-server/src/decision_sink.rs	2	production · the single MCP agent funnel · author derived from the caller's card role via `report_op_attribution`, never hardcoded · plus its `use` import
+crates/calm-server/src/report_backlinks.rs	2	#[cfg(test)] · a fixture inside `mod tests` (the attribute is at :228, the call at :291 — see the note above on why this is not filtered) · plus its `use` import
+crates/calm-server/src/wave_report_read.rs	2	#[cfg(test)] · same shape
+crates/calm-server/tests/cases/rest_wave_report.rs	3	integration test · REST report writes · import + two fixture calls
+crates/calm-server/tests/cases/wave_template_waves.rs	6	integration test · import + five fixture writes: two_waves_from_one_template_are_independent_and_identical (three edits — append, same-length rewrite, template-minted block — each making a different fan-out shape falsifiable), explicit_fork_report_from_is_not_overwritten, a_forged_template_key_cannot_influence_what_a_template_creates
+crates/calm-server/tests/cases/wave_vcs.rs	3	integration test · import + two fixture calls
+crates/calm-server/tests/cases/mcp_report_links.rs	2	integration test · import + one fixture call
+crates/calm-server/tests/cases/task_projection_acceptance.rs	2	integration test · import + one fixture call
+crates/calm-server/tests/cases/wave_projection_policy_patch.rs	2	integration test · import + one fixture call
+crates/calm-server/tests/cases/wave_report_fork.rs	2	integration test · import + one fixture call
+crates/calm-server/tests/scheduler.rs	2	integration test · import + one fixture call
+crates/calm-server/tests/cases/mcp_assistant_report_channel.rs	1	integration test · one fully-qualified fixture call
+crates/calm-server/tests/cases/mcp_assistant_tool_gate.rs	1	integration test · one fully-qualified fixture call
 CENSUS
 )
 
@@ -225,17 +274,8 @@ pattern='\bpersist_report(_with_shadow)?\b'
 # Renaming the symbol on import. Fails on sight rather than being counted.
 alias_pattern='\bpersist_report(_with_shadow)?\s+as\s'
 
-# Origin roles the census may use, and the regex each one has to be able to
-# point at on a code line of the file that declares it. Iteration order here is
-# the order the summary breakdown prints in.
-origin_roles=(RestUser Agent)
-declare -A origin_markers=(
-  [RestUser]='EditAuthor::User'
-  [Agent]='report_op_attribution'
-)
-
 # Emits `<line-number>:<text>` for every line of "$1" that is not comment-only,
-# where "comment-only" is exactly the rule proven in the header: leading `//`
+# where "comment-only" is exactly the rule stated in the header: leading `//`
 # and no `*/` anywhere on the line.
 code_lines() {
   awk '{
@@ -277,12 +317,10 @@ assert_fixture_tree_is_inert() {
 assert_fixture_tree_is_inert
 
 declare -A expected=()
-declare -A declared_origins=()
 
-while IFS=$'\t' read -r file count origins _why; do
+while IFS=$'\t' read -r file count _why; do
   [ -n "$file" ] || continue
   expected["$file"]="$count"
-  declared_origins["$file"]="$origins"
   if [ ! -f "$file" ]; then
     echo "::error::census lists $file, which does not exist — the allowlist is stale"
     failures=1
@@ -326,72 +364,18 @@ while IFS= read -r file; do
   done < <(code_lines "$file" | rg --regexp "$alias_pattern" || true)
 done < <(sources_matching "$alias_pattern")
 
-# Column 3 has to survive the checks the header promises for it before anything
-# is derived from it.
-declare -A origin_totals=()
-for role in "${origin_roles[@]}"; do origin_totals["$role"]=0; done
-
-for file in "${!declared_origins[@]}"; do
-  origins="${declared_origins[$file]}"
-  [ "$origins" != "-" ] || continue
-  file_declared=0
-  IFS=',' read -r -a entries <<<"$origins"
-  for entry in "${entries[@]}"; do
-    role="${entry%%=*}"
-    n="${entry#*=}"
-    if [ -z "${origin_markers[$role]+set}" ]; then
-      echo "::error::$file: census declares unknown origin role '$role'; known roles: ${origin_roles[*]}"
-      failures=1
-      continue
-    fi
-    case "$n" in
-      ''|*[!0-9]*)
-        echo "::error::$file: origin entry '$entry' is not <Role>=<count>"
-        failures=1
-        continue
-        ;;
-    esac
-    if [ ! -f "$file" ]; then continue; fi
-    # Not `rg --quiet`: it closes the pipe on the first hit, awk dies of SIGPIPE
-    # and `pipefail` turns a *found* marker into a failure.
-    marker_hits="$(code_lines "$file" | rg --count-matches --regexp "${origin_markers[$role]}" || true)"
-    if [ -z "$marker_hits" ] || [ "$marker_hits" = "0" ]; then
-      echo "::error::$file: census declares origin role '$role', but its marker /${origin_markers[$role]}/ appears on no code line of that file"
-      failures=1
-      continue
-    fi
-    origin_totals["$role"]=$((origin_totals[$role] + n))
-    file_declared=$((file_declared + n))
-  done
-  if [ -f "$file" ] && [ "$file_declared" -gt "${expected[$file]}" ]; then
-    echo "::error::$file: census declares $file_declared production call site(s) but only ${expected[$file]} occurrence(s)"
-    failures=1
-  fi
-done
-
 if [ "$failures" -ne 0 ]; then
   echo "::error::persist_report census drifted — update scripts/ci/ratchets/persist_report_call_sites.sh and say why in the PR"
   exit 2
 fi
 
-# Every number below is an aggregate over the census above; none of it is a
-# literal. "declares" is the honest verb — see "THE ORIGIN COLUMN".
+# Both numbers below are aggregates over the census above; neither is a literal.
 census_files=0
 census_occurrences=0
-while IFS=$'\t' read -r file count _origins _why; do
+while IFS=$'\t' read -r file count _why; do
   [ -n "$file" ] || continue
   census_files=$((census_files + 1))
   census_occurrences=$((census_occurrences + count))
 done <<<"$census"
 
-origin_total=0
-breakdown=""
-for role in "${origin_roles[@]}"; do
-  n="${origin_totals[$role]}"
-  [ "$n" -gt 0 ] || continue
-  origin_total=$((origin_total + n))
-  [ -z "$breakdown" ] || breakdown="$breakdown, "
-  breakdown="$breakdown$role x$n"
-done
-
-echo "persist_report census: $census_files files, $census_occurrences code occurrences; census declares $origin_total production call sites ($breakdown)"
+echo "persist_report census: $census_files files, $census_occurrences code occurrences"

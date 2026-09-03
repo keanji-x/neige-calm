@@ -613,11 +613,16 @@ pub(crate) async fn ensure_today_launchpad(
             //
             // Unlike the launchpad arm below, this one is genuinely reachable:
             // `cove_get_system()` runs OUTSIDE any transaction, so two
-            // concurrent `POST /api/today/launchpad/ensure` calls can both read
-            // `None` and both reach the mint. NOT two page loads — a page load
-            // calls only the read-only resolve and never gets here
-            // (INV-TODAYDOC-001); `ensure` has no production caller at all
-            // today, so the race needs two deliberate bootstrap requests.
+            // concurrent entries into this handler can both read `None` and
+            // both reach the mint. NOT two page loads — a page load calls only
+            // the read-only resolve and never gets here (INV-TODAYDOC-001).
+            // What *does* reach here in production is either a deliberate
+            // `POST /api/today/launchpad/ensure`, or `POST /api/today/summary`,
+            // which calls this handler directly
+            // (`routes::today_summary::write_today_summary`, the
+            // `ensure_today_launchpad(State(app.clone()), synthetic_actor())`
+            // call). So the race needs two concurrent such actions, not two
+            // page loads.
             // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
             // drives exactly that.
             Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => {

@@ -12,8 +12,11 @@
 //!
 //! **Covered: all 3 decision points.** It was 3 of 5 when this file was
 //! written; #1300 S2 removed the other two rather than covering them, so the
-//! set is now closed. The `persist_report_call_sites` CI ratchet is what keeps
-//! it closed — this header is a description, not a guard.
+//! set as it stands today is complete. Nothing keeps it that way in any strong
+//! sense: the `persist_report_call_sites` CI ratchet notices a fourth writer
+//! added by someone unaware of this file — it is a per-file text census, and
+//! its own "KNOWN GAPS" section lists what a text scan cannot see — and this
+//! header is a description, not a guard.
 //!
 //! | decision point | production entry driven here |
 //! |---|---|
@@ -993,7 +996,9 @@ async fn rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft() {
 /// production any more: `seed_template_wave` and
 /// `restamp_template_report_if_placeholder` are deleted, leaving
 /// `routes::waves::update_wave_report` as `persist_report`'s only production
-/// caller (the `persist_report_call_sites` census is where that is pinned).
+/// caller as of today (the `persist_report_call_sites` census is what would
+/// notice a second one being added inadvertently; it is a text census, not a
+/// proof).
 /// The reason to cover the leg independently survives the sharing, because it
 /// was never about who else passed the argument — it is about this leg not
 /// choosing it.

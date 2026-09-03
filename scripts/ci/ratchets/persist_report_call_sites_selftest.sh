@@ -156,8 +156,6 @@ alias_shaped_prose='/// Do not do this:
 // Example: use crate::wave_report::persist_report_with_shadow as save2;
 pub fn a() { unrelated(1); }
 '
-rest_user_call='pub fn a() { persist_report(1, ActorId::User, EditAuthor::User); }
-'
 reaches_into_fixture_tree='#[path = "../../../tests/fixtures/ci-ratchets/probe/inert.rs"]
 mod inert;
 pub fn a() { unrelated(1); }
@@ -167,15 +165,15 @@ echo "persist_report census selftest:"
 
 # 1 — an unlisted call site in a listed file fails.
 run_case "1 new call site" red "expected 1 persist_report occurrence" \
-  "$lib	1	-	fixture" "$lib" "$two_calls"
+  "$lib	1	fixture" "$lib" "$two_calls"
 
 # 2 — a listed call site that vanished fails (the census rotting into a fig leaf).
 run_case "2 removed call site" red "expected 1 persist_report occurrence" \
-  "$lib	1	-	fixture" "$lib" "$no_calls"
+  "$lib	1	fixture" "$lib" "$no_calls"
 
 # 3 — an unrelated edit inside an allowlisted file stays green.
 run_case "3 unrelated edit" green "" \
-  "$lib	1	-	fixture" "$lib" "$one_call_plus_comment"
+  "$lib	1	fixture" "$lib" "$one_call_plus_comment"
 
 # 4 — renaming the symbol on import is red on sight, in both `use` forms, and a
 #     literal call in the same file is red for the ordinary counting reason.
@@ -184,13 +182,13 @@ run_case "3 unrelated edit" green "" \
 #     filter as `^[^:]+:[0-9]+:^\s*(//|\*|/\*)`, whose second `^` can never
 #     match, so 4d was red.)
 run_case "4a alias binding" red "imported under another name" \
-  "$lib	0	-	fixture: alias only" "$lib" "$alias_call"
+  "$lib	0	fixture: alias only" "$lib" "$alias_call"
 run_case "4b pub use alias" red "imported under another name" \
-  "$lib	0	-	fixture: alias only" "$lib" "$pub_alias_call"
+  "$lib	0	fixture: alias only" "$lib" "$pub_alias_call"
 run_case "4c same line as a literal call" red "expected 0 persist_report occurrence" \
-  "$lib	0	-	fixture: alias only" "$lib" "$alias_made_literal"
+  "$lib	0	fixture: alias only" "$lib" "$alias_made_literal"
 run_case "4d alias shape quoted in prose" green "" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/src/docs_only.rs' "$alias_shaped_prose"
 
@@ -199,44 +197,44 @@ run_case "4d alias shape quoted in prose" green "" \
 #     that exist and whose counts already match, so "unlisted file" is the sole
 #     reason this can be red.
 run_case "5 uncensused file" red "is not in the census" \
-  "$lib	1	-	fixture" \
+  "$lib	1	fixture" \
   "$lib" "$one_call" \
   'crates/probe/src/other.rs' "$one_call"
 
 # 6 — a call whose `(` sits on the next line. Invisible to a `name\s*\(` regex,
 #     because ripgrep matches within a line.
 run_case "6 newline call" red "expected 0 persist_report occurrence" \
-  "$lib	0	-	fixture: no calls expected" "$lib" "$newline_call"
+  "$lib	0	fixture: no calls expected" "$lib" "$newline_call"
 
 # 7 — the function value bound to a local, then called through the binding.
 run_case "7 let-bound function value" red "expected 0 persist_report occurrence" \
-  "$lib	0	-	fixture: no calls expected" "$lib" "$let_binding"
+  "$lib	0	fixture: no calls expected" "$lib" "$let_binding"
 
 # 8 — the path handed to a macro as an argument.
 run_case "8 path as macro argument" red "expected 0 persist_report occurrence" \
-  "$lib	0	-	fixture: no calls expected" "$lib" "$macro_path_arg"
+  "$lib	0	fixture: no calls expected" "$lib" "$macro_path_arg"
 
 # 9 — a module under `crates/` but outside `src/`, the shape `#[path = "..."]`
 #     produces. Invisible while discovery was `crates/*/src`.
 run_case "9 module outside src/" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/report_writer.rs' "$one_call"
 
 # 10 — the comment filter, as a pair: prose mentions in an unlisted file stay
 #      green, and the same words on a code line go red.
 run_case "10a prose-only mention" green "" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/src/docs_only.rs' "$prose_only"
 run_case "10b same words on a code line" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/src/docs_only.rs' "$prose_moved_to_code"
 
 # 11 — a census entry pointing at a file that no longer exists.
 run_case "11 stale census entry" red "which does not exist" \
-  "crates/probe/src/gone.rs	1	-	fixture" "$lib" "$no_calls"
+  "crates/probe/src/gone.rs	1	fixture" "$lib" "$no_calls"
 
 # 12 — executable code whose first non-blank characters are a block-comment
 #      token. Each of these is a real call in a file the census does not list;
@@ -244,15 +242,15 @@ run_case "11 stale census entry" red "which does not exist" \
 #      zero, the reverse-discovery loop skipped the file for having no
 #      occurrences, and an unregistered production call was green.
 run_case "12a /* */ prefix on a call line" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/src/hidden.rs' "$block_open_prefix_call"
 run_case "12b */ closing a block, then a call" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/src/hidden.rs' "$block_close_prefix_call"
 run_case "12c // */ comment-toggle idiom" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/src/hidden.rs' "$toggle_idiom_call"
 
@@ -260,7 +258,7 @@ run_case "12c // */ comment-toggle idiom" red "is not in the census" \
 #      registers `../../plugins/git-forge/main.rs` as a `[[bin]]`, so this is the
 #      real repository shape, not a hypothetical.
 run_case "13 source outside crates/" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'plugins/git-forge/main.rs' "$one_call"
 
@@ -273,29 +271,16 @@ run_case "13 source outside crates/" red "is not in the census" \
 #      14c: the exclusion is justified by "nothing compiles it", so a scanned
 #      source that reaches into it is red.
 run_case "14a inert fixture tree ignored" green "" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'tests/fixtures/ci-ratchets/probe/crates/example/src/lib.rs' "$one_call"
 run_case "14b compiled crate-local tests/fixtures still scanned" red "is not in the census" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$no_calls" \
   'crates/probe/tests/fixtures/stub-plugin/main.rs' "$one_call"
 run_case "14c compiled source reaches into the inert tree" red "excluded from this scan because nothing compiles it" \
-  "$lib	0	-	fixture: no calls expected" \
+  "$lib	0	fixture: no calls expected" \
   "$lib" "$reaches_into_fixture_tree"
-
-# 15 — the origin column the summary line is derived from. 15a is the baseline;
-#      15b changes only the label, not a byte of code, and must be red, because
-#      the previous revision printed a hardcoded "3 production call sites
-#      (RestUser x2, Agent x1)" that no census edit could ever move.
-run_case "15a origin label backed by its marker" green "" \
-  "$lib	1	RestUser=1	fixture: production" "$lib" "$rest_user_call"
-run_case "15b role relabelled, code untouched" red "appears on no code line" \
-  "$lib	1	Agent=1	fixture: production" "$lib" "$rest_user_call"
-run_case "15c more origins declared than occurrences" red "but only 1 occurrence" \
-  "$lib	1	RestUser=2	fixture: production" "$lib" "$rest_user_call"
-run_case "15d invented role name" red "unknown origin role" \
-  "$lib	1	Kernel=1	fixture: production" "$lib" "$rest_user_call"
 
 if [ "$failures" -ne 0 ]; then
   echo "::error::persist_report census selftest failed"

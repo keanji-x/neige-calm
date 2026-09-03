@@ -426,12 +426,36 @@ async fn creating_from_a_template_mints_no_hidden_wave() {
 /// held at their original values and the case stayed green while a real user
 /// edit would clobber the other wave's document.
 ///
-/// The body edit is an appended prose paragraph rather than a rewrite, and
-/// that shape is deliberate: `guard_non_prose_stomp` refuses a prose-channel
-/// write that modifies or deletes a non-prose block, and the recipe body is
-/// almost entirely `task` fences. Appending after the last fence carries every
-/// fence through verbatim, so the write fails on independence if it fails at
-/// all — never on the guard, whose repair would be to weaken the case.
+/// The first body edit is an appended prose paragraph rather than a rewrite,
+/// and that shape is deliberate: `guard_non_prose_stomp` refuses a
+/// prose-channel write that modifies or deletes a non-prose block, and the
+/// recipe body is almost entirely `task` fences. Appending after the last fence
+/// carries every fence through verbatim, so the write fails on independence if
+/// it fails at all — never on the guard, whose repair would be to weaken the
+/// case.
+///
+/// ## Which fan-out shapes this case can see, and which it cannot
+///
+/// An append-only edit is not enough on its own: it grows the body and adds
+/// text that was not there before, so a fan-out that only fires on an
+/// *equal-length* body (`next.body.len() == current.body.len()`) would never
+/// run. Hence the second leg, which rewrites the appended paragraph in place at
+/// exactly the same byte length. Between the two legs, a fan-out keyed on
+/// "length grew", "new text appeared", "length is unchanged", or on nothing at
+/// all is caught.
+///
+/// The remaining shape is a fan-out keyed on the *block identity* of the edited
+/// block — one that copies across same-`template_id` waves only for block ids
+/// the template itself minted, and so never fires for a paragraph leg one
+/// introduced. Leg three closes it by editing the recipe's own intro prose
+/// block (`SMALL_CHANGE_INTRO`) in place. That block is prose, so
+/// `guard_non_prose_stomp` permits the edit; every `task` fence still travels
+/// through verbatim.
+///
+/// What no leg here covers: a fan-out that fires only on writes arriving
+/// through a *different* door than `persist_report` — this case drives the
+/// document leg only. `report_write_characterization` is where the per-door
+/// behaviour lives.
 #[tokio::test]
 async fn two_waves_from_one_template_are_independent_and_identical() {
     let boot = boot().await;
@@ -517,6 +541,143 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
         second_after.body, second.body,
         "editing one template-created wave changed the other's body: the two \
          waves share a document"
+    );
+
+    // ---- second edit: same length, no new text ----
+    //
+    // Everything above is an append: the body only ever grew and only ever
+    // gained a paragraph. A fan-out guarded on `next.body.len() ==
+    // current.body.len()` therefore never enters its own branch, and the
+    // assertions above hold while a real same-length user edit clobbers the
+    // other wave. This leg rewrites the paragraph appended above in place,
+    // byte-for-byte the same size, so that branch is the one taken.
+    const REPLACED: &str = "A paragraph only the first wave's author typed.";
+    assert_eq!(
+        APPENDED.len(),
+        REPLACED.len(),
+        "this leg is the equal-length one; if these two ever differ it silently \
+         degrades into a second append"
+    );
+    let same_len_body = first_after.body.replace(APPENDED, REPLACED);
+    assert_eq!(
+        same_len_body.len(),
+        first_after.body.len(),
+        "the replacement changed the document length, so this leg no longer \
+         exercises the equal-length branch"
+    );
+    assert_ne!(
+        same_len_body, first_after.body,
+        "the replacement must change something, or the re-read below asserts nothing"
+    );
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report, again");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, same_len_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("same-length edit to the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_replaced = report_card_payload(&first_detail);
+    assert!(
+        first_replaced.body.contains(REPLACED),
+        "the same-length edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_replaced.body
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_replaced = report_card_payload(&second_detail);
+    assert!(
+        !second_replaced.body.contains(REPLACED),
+        "a same-length edit to one template-created wave reached the other's \
+         body: the two waves share a document; body={}",
+        second_replaced.body
+    );
+    assert_eq!(
+        second_replaced.body, second.body,
+        "a same-length edit to one template-created wave changed the other's \
+         body: the two waves share a document"
+    );
+    assert_eq!(
+        second_replaced.summary, second.summary,
+        "a same-length edit to one template-created wave changed the other's \
+         summary: the two waves share a document"
+    );
+
+    // ---- third edit: a block the template itself minted ----
+    //
+    // Both edits so far touch a paragraph leg one introduced, so a fan-out
+    // keyed on "this block id came from the recipe" would never fire. This one
+    // rewrites the recipe's own intro prose (`SMALL_CHANGE_INTRO`) in place.
+    const RECIPE_PROSE: &str = "Short inspect";
+    const RECIPE_PROSE_EDITED: &str = "Quick inspect";
+    assert!(
+        first_replaced.body.contains(RECIPE_PROSE),
+        "the recipe's intro prose is not in the body, so this leg edits nothing; \
+         body={}",
+        first_replaced.body
+    );
+    let recipe_edited_body = first_replaced
+        .body
+        .replace(RECIPE_PROSE, RECIPE_PROSE_EDITED);
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report, third time");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(EDITED, recipe_edited_body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("edit a template-minted prose block of the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_recipe_edited = report_card_payload(&first_detail);
+    assert!(
+        first_recipe_edited.body.contains(RECIPE_PROSE_EDITED),
+        "the recipe-prose edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_recipe_edited.body
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_recipe_edited = report_card_payload(&second_detail);
+    assert_eq!(
+        second_recipe_edited.body, second.body,
+        "editing a template-minted block of one wave changed the other's body: \
+         the two waves share a document"
     );
 }
 

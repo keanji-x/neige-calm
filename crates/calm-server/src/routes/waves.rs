@@ -1549,16 +1549,29 @@ async fn create_wave_structure(
                     //     `template` overlay payload schema and is still
                     //     pinned by `payload_validation.rs`; `validate_overlay_payload`
                     //     would accept a payload carrying it.
-                    //   * **Route.** No external client can get such a payload
-                    //     as far as that validation. A template overlay is by
+                    //   * **Route.** The narrow fact, and no wider one: a row
+                    //     that `is_template_overlay` would recognise is by
                     //     definition `plugin_id = "kernel"` /
                     //     `entity_kind = "view"`, and since #1297
                     //     `overlays::ensure_overlay_write_allowed` rejects both
                     //     of those reserved namespaces with 403 *before*
                     //     `validate_overlay_payload` runs. So `POST /api/overlays`
-                    //     answers 403 Forbidden for this row, not 201 — pinned
+                    //     answers 403 Forbidden for *that* row, not 201 — pinned
                     //     by `wave_template_overlay::
                     //     overlay_post_cannot_mark_an_existing_wave_as_template`.
+                    //
+                    //     It is NOT true that a `template_key` payload cannot
+                    //     be stored at all. `entity_kind = "wave"` is
+                    //     externally writable (`OVERLAY_ENTITY_SCOPE_REGISTRY`
+                    //     in `calm-truth::validation`), and payload validation
+                    //     is keyed on `kind`, not on the plugin, so
+                    //     `{plugin_id: "p1", entity_kind: "wave", kind:
+                    //     "template", payload: {schemaVersion: 1, template_key:
+                    //     ".."}}` passes both the 403 guard and
+                    //     `validate_overlay_payload` and lands in the table.
+                    //     That row is a plugin-owned overlay: `is_template_overlay`
+                    //     is false for it, so no kernel reader treats it as a
+                    //     template marker.
                     //
                     // Kernel-internal writers like this one call
                     // `overlay_upsert_tx` directly and never traverse that
@@ -3157,16 +3170,17 @@ pub(crate) async fn delete_wave(
     // kernel-owned", and an invariant with an exception is the shape this
     // design line keeps getting hurt by. What the wide rule costs is that the
     // launchpad wave — which *is* user-visible, on Today — cannot be deleted
-    // through this handler either. That is the accepted price, and the price is
-    // real rather than nominal: the only path that recreates the row is
-    // `POST /api/today/launchpad/ensure` (`routes::today::ensure_today_launchpad`),
-    // which as of today has **no production caller** — see the comment on its
-    // system-cove race arm in `routes/today.rs`. Loading Today runs the
-    // read-only resolve and never POSTs it (INV-TODAYDOC-001). So a permitted
-    // delete would not be silently undone by the next page load; it would leave
-    // Today's launchpad missing until someone issued that bootstrap request by
-    // hand. The ruling rests on where the ownership boundary is drawn, not on
-    // the deletion being harmless.
+    // through this handler either. That is the accepted price.
+    //
+    // What recreates the row is `routes::today::ensure_today_launchpad`, and it
+    // is reached two ways: the explicit `POST /api/today/launchpad/ensure`, and
+    // `POST /api/today/summary`, which calls it directly
+    // (`routes::today_summary::write_today_summary`). So a permitted delete
+    // would survive page loads — loading Today runs only the read-only resolve
+    // and never POSTs either endpoint (INV-TODAYDOC-001) — but the next Today
+    // summary a user asks for would rebuild the launchpad underneath them. The
+    // ruling does not rest on the deletion being hard to undo, or on it being
+    // harmless; it rests on where the ownership boundary is drawn.
     //
     // #1300 — this paragraph used to justify itself by the *other* residents
     // of the system cove, the three hidden template waves `ensure_templates`
