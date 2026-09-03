@@ -144,13 +144,11 @@ fn task_context_frozen() -> Event {
     }
 }
 
-fn events_row_count(repo: &SqlxRepo) -> impl std::future::Future<Output = i64> + '_ {
-    async move {
-        sqlx::query_scalar("SELECT COUNT(*) FROM events")
-            .fetch_one(repo.pool())
-            .await
-            .expect("count events")
-    }
+async fn events_row_count(repo: &SqlxRepo) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(repo.pool())
+        .await
+        .expect("count events")
 }
 
 /// One row per `(actor, scope, event)` the gate must refuse at this seam.
