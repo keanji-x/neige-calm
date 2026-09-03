@@ -10,7 +10,7 @@ use crate::operation::forge_action_adapter::{
     FORGE_CREDENTIAL_ENV_KEYS, FORGE_NONCREDENTIAL_ENV_KEYS, forge_passthrough_env_keys,
 };
 use crate::plugin_host::manifest::CliQueryBlock;
-use serde_json::json;
+use serde_json::{Map, json};
 
 fn tool(args: &[&str]) -> CliQueryTool {
     serde_json::from_value(json!({
@@ -28,6 +28,13 @@ fn block(v: Value) -> CliQueryBlock {
     serde_json::from_value(v).unwrap()
 }
 
+/// "This connector has no configuration in force." Spelled out rather than
+/// `Default::default()` at each call site so the tests that DO configure
+/// something stand out from the ones that never did.
+fn no_config() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
 // ---- argv templating ----------------------------------------------
 
 /// A `{{slot}}` element is replaced WHOLESALE, and only when it is the
@@ -37,7 +44,7 @@ fn block(v: Value) -> CliQueryBlock {
 #[test]
 fn a_slot_is_substituted_only_as_a_whole_argv_element() {
     let t = tool(&["quote", "{{symbol}}", "--sym={{symbol}}", "--json"]);
-    let argv = render_argv(&t, &json!({ "symbol": "700.HK" })).unwrap();
+    let argv = render_argv(&t, &json!({ "symbol": "700.HK" }), &no_config()).unwrap();
     assert_eq!(
         argv,
         vec!["quote", "700.HK", "--sym={{symbol}}", "--json"],
@@ -50,7 +57,12 @@ fn a_slot_is_substituted_only_as_a_whole_argv_element() {
 #[test]
 fn a_value_with_shell_metacharacters_is_one_literal_argv_element() {
     let t = tool(&["quote", "{{symbol}}"]);
-    let argv = render_argv(&t, &json!({ "symbol": "a b; rm -rf / && echo $HOME" })).unwrap();
+    let argv = render_argv(
+        &t,
+        &json!({ "symbol": "a b; rm -rf / && echo $HOME" }),
+        &no_config(),
+    )
+    .unwrap();
     assert_eq!(argv.len(), 2);
     assert_eq!(argv[1], "a b; rm -rf / && echo $HOME");
 }
@@ -61,7 +73,7 @@ fn a_value_with_shell_metacharacters_is_one_literal_argv_element() {
 fn a_missing_slot_is_refused_by_name_not_rendered_as_an_empty_element() {
     let t = tool(&["quote", "{{symbol}}"]);
     for arguments in [json!({}), json!({ "symbol": null }), json!(null)] {
-        let err = render_argv(&t, &arguments)
+        let err = render_argv(&t, &arguments, &no_config())
             .unwrap_err_or_panic("a missing slot must be refused", &arguments);
         assert!(err.contains("symbol"), "must name the slot: {err}");
     }
@@ -77,7 +89,7 @@ fn non_string_scalars_render_as_their_json_form() {
         (json!(true), "true"),
         (json!(false), "false"),
     ] {
-        let argv = render_argv(&t, &json!({ "symbol": value })).unwrap();
+        let argv = render_argv(&t, &json!({ "symbol": value }), &no_config()).unwrap();
         assert_eq!(argv, vec![expect.to_string()], "for {value}");
     }
 }
@@ -86,12 +98,12 @@ fn non_string_scalars_render_as_their_json_form() {
 fn arrays_and_objects_are_refused() {
     let t = tool(&["{{symbol}}"]);
     for value in [json!([1, 2]), json!({ "a": 1 })] {
-        let err = render_argv(&t, &json!({ "symbol": value.clone() }))
+        let err = render_argv(&t, &json!({ "symbol": value.clone() }), &no_config())
             .expect_err(&format!("{value} must be refused"));
         assert!(err.contains("symbol"), "{err}");
     }
     // …and a non-object `arguments` payload entirely.
-    assert!(render_argv(&t, &json!("nope")).is_err());
+    assert!(render_argv(&t, &json!("nope"), &no_config()).is_err());
 }
 
 /// v0 does not do full JSON-Schema validation; an unknown key is simply
@@ -99,7 +111,7 @@ fn arrays_and_objects_are_refused() {
 #[test]
 fn unknown_argument_keys_are_ignored() {
     let t = tool(&["quote", "{{symbol}}"]);
-    let argv = render_argv(&t, &json!({ "symbol": "X", "unused": "Y" })).unwrap();
+    let argv = render_argv(&t, &json!({ "symbol": "X", "unused": "Y" }), &no_config()).unwrap();
     assert_eq!(argv, vec!["quote", "X"]);
     assert!(!argv.iter().any(|a| a == "Y"));
 }
@@ -194,6 +206,7 @@ fn child_env_is_the_base_set_plus_allow_plus_secrets() {
         &service_env(),
         "/opt/lb/bin:/usr/bin:/bin",
         "s",
+        &no_config(),
     )
     .unwrap();
 
@@ -246,7 +259,8 @@ fn no_forge_credential_ever_reaches_the_child_env() {
     }));
 
     for (label, b) in [("plain", &plain), ("env_allow-requests-them", &greedy)] {
-        let env = build_child_env(b, &BTreeMap::new(), &svc, "/usr/bin", "s").unwrap();
+        let env =
+            build_child_env(b, &BTreeMap::new(), &svc, "/usr/bin", "s", &no_config()).unwrap();
         for key in FORGE_CREDENTIAL_ENV_KEYS {
             assert!(
                 !env.contains_key(*key),
@@ -347,7 +361,7 @@ fn a_non_credential_forge_key_named_by_env_allow_is_forwarded() {
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
     let svc = service_env();
-    let env = build_child_env(&b, &BTreeMap::new(), &svc, "/usr/bin", "s").unwrap();
+    let env = build_child_env(&b, &BTreeMap::new(), &svc, "/usr/bin", "s", &no_config()).unwrap();
     for key in FORGE_NONCREDENTIAL_ENV_KEYS {
         assert_eq!(
             env.get(*key),
@@ -372,7 +386,7 @@ fn secret_env_may_name_a_forge_key_and_gets_the_operators_own_value() {
         .into_iter()
         .collect();
     let svc = service_env();
-    let env = build_child_env(&b, &secrets, &svc, "/usr/bin", "s").unwrap();
+    let env = build_child_env(&b, &secrets, &svc, "/usr/bin", "s", &no_config()).unwrap();
     assert_eq!(env.get("GH_TOKEN").unwrap(), "operator-authored");
     assert_ne!(
         env.get("GH_TOKEN").unwrap(),
@@ -397,27 +411,385 @@ fn a_secret_env_key_with_no_secret_is_a_bring_up_failure() {
         &service_env(),
         "/usr/bin",
         "/plugins/lb/secrets.json",
+        &no_config(),
     )
     .unwrap_err();
     assert!(err.contains("LB_TOKEN"), "{err}");
     assert!(err.contains("/plugins/lb/secrets.json"), "{err}");
 }
 
-/// Neither `env_allow` nor `secret_env` may revert the per-connector PATH
-/// the command was pinned against.
+/// Neither `env_allow` nor `secret_env` may revert the per-connector PATH the
+/// command was pinned against — **one block per source**, on purpose.
+///
+/// These two used to be one fixture declaring `PATH` in `env_allow` AND in
+/// `secret_env`. #1284 §2.3(b)'s duplicate-target rule now refuses exactly that
+/// shape at parse time, so the combined fixture guarded a state no loadable
+/// manifest can reach; it only stayed green because `block` is a bare
+/// `serde_json::from_value` that never calls `validate` (S3a review P1). Split,
+/// each half is a manifest the parser admits, so both sources keep a
+/// reachable — and therefore non-vacuous — witness that PATH survives them.
 #[test]
-fn path_cannot_be_overridden_by_allow_or_secrets() {
+fn path_cannot_be_overridden_by_env_allow() {
     let b = block(json!({
         "command": "longbridge",
         "env_allow": ["PATH"],
+        "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+    }));
+    let env = build_child_env(
+        &b,
+        &BTreeMap::new(),
+        &service_env(),
+        "/opt/lb/bin",
+        "s",
+        &no_config(),
+    )
+    .unwrap();
+    assert_eq!(env.get("PATH").unwrap(), "/opt/lb/bin");
+}
+
+#[test]
+fn path_cannot_be_overridden_by_secret_env() {
+    let b = block(json!({
+        "command": "longbridge",
         "secret_env": ["PATH"],
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
     let secrets = [("PATH".to_string(), "/evil".to_string())]
         .into_iter()
         .collect();
-    let env = build_child_env(&b, &secrets, &service_env(), "/opt/lb/bin", "s").unwrap();
+    let env = build_child_env(
+        &b,
+        &secrets,
+        &service_env(),
+        "/opt/lb/bin",
+        "s",
+        &no_config(),
+    )
+    .unwrap();
     assert_eq!(env.get("PATH").unwrap(), "/opt/lb/bin");
+}
+
+// ---- #1284 S3a: config_env ------------------------------------------
+
+/// The injection itself: a manifest-declared key, valued from the plugin's
+/// effective configuration.
+#[test]
+fn config_env_carries_the_operators_value_into_a_manifest_declared_key() {
+    let b = block(json!({
+        "command": "longbridge",
+        "config_env": ["LB_ACCOUNT"],
+        "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+    }));
+    let config = [("LB_ACCOUNT".to_string(), "acct-42".to_string())]
+        .into_iter()
+        .collect();
+    let env = build_child_env(
+        &b,
+        &BTreeMap::new(),
+        &service_env(),
+        "/usr/bin",
+        "s",
+        &config,
+    )
+    .unwrap();
+    assert_eq!(env.get("LB_ACCOUNT").map(String::as_str), Some("acct-42"));
+}
+
+/// The other half of "the manifest owns the key": a configuration key the
+/// manifest did NOT list in `config_env` reaches the child under no name at
+/// all. Without this, "config_env declares the keys" would be satisfied by an
+/// implementation that exports the whole configuration.
+#[test]
+fn a_configuration_key_the_manifest_did_not_declare_reaches_the_child_under_no_name() {
+    let b = block(json!({
+        "command": "longbridge",
+        "config_env": ["LB_ACCOUNT"],
+        "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+    }));
+    let config: BTreeMap<String, String> = [
+        ("LB_ACCOUNT".to_string(), "acct-42".to_string()),
+        ("endpoint".to_string(), "https://api.example".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let env = build_child_env(
+        &b,
+        &BTreeMap::new(),
+        &service_env(),
+        "/usr/bin",
+        "s",
+        &config,
+    )
+    .unwrap();
+    assert_eq!(env.get("LB_ACCOUNT").map(String::as_str), Some("acct-42"));
+    assert!(
+        !env.values().any(|v| v == "https://api.example"),
+        "an undeclared configuration value must not appear under ANY key: {:?}",
+        env.keys().collect::<Vec<_>>()
+    );
+}
+
+/// A declared key with no value in force is simply not forwarded — unlike a
+/// missing `secret_env` key, which is a bring-up failure. The asymmetry is the
+/// §2.2 v6 adjudication: `config_schema.required` is where a manifest says a
+/// configuration key is mandatory, and `missing_required` refuses the bring-up
+/// before this function runs, so a second (silent, uncoordinated) mandatory
+/// rule here would fire on keys the author deliberately left optional.
+#[test]
+fn a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure() {
+    let b = block(json!({
+        "command": "longbridge",
+        "config_env": ["LB_ACCOUNT"],
+        "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+    }));
+    let env = build_child_env(
+        &b,
+        &BTreeMap::new(),
+        &service_env(),
+        "/usr/bin",
+        "s",
+        &no_config(),
+    )
+    .unwrap();
+    assert!(!env.contains_key("LB_ACCOUNT"), "{env:?}");
+}
+
+/// The flatten step: scalars become the same strings the argv renderer
+/// produces, `null` is "no value", and a container is a bring-up refusal that
+/// names the key (the `config_schema` subset cannot declare one, so reaching
+/// this arm means a row edited outside the API).
+#[test]
+fn configuration_values_flatten_to_one_string_or_refuse() {
+    let effective: Map<String, Value> = serde_json::from_value(json!({
+        "s": "text", "i": 3, "f": 1.5, "b": true, "gone": null
+    }))
+    .unwrap();
+    let flat = flatten_config(&effective).unwrap();
+    assert_eq!(flat.get("s").map(String::as_str), Some("text"));
+    assert_eq!(flat.get("i").map(String::as_str), Some("3"));
+    assert_eq!(flat.get("f").map(String::as_str), Some("1.5"));
+    assert_eq!(flat.get("b").map(String::as_str), Some("true"));
+    assert!(!flat.contains_key("gone"), "{flat:?}");
+
+    let bad: Map<String, Value> = serde_json::from_value(json!({ "list": [1, 2] })).unwrap();
+    let err = flatten_config(&bad).unwrap_err();
+    assert!(err.contains("list"), "{err}");
+}
+
+// ---- #1284 S3a: config argv slots -----------------------------------
+
+/// The namespace isolation, at the renderer. Paired on purpose (§4.4): the
+/// configuration slot takes the OPERATOR's value (positive), and the very same
+/// call supplies an argument literally named `config.endpoint`, which lands
+/// nowhere (negative). One assertion without the other proves nothing — a
+/// renderer that merged the two maps passes the positive half whenever the
+/// agent happens not to collide.
+#[test]
+fn an_agent_argument_cannot_displace_a_configuration_slot() {
+    let t: CliQueryTool = serde_json::from_value(json!({
+        "name": "quote",
+        "input_schema": { "type": "object", "properties": { "symbol": { "type": "string" } } },
+        "args": ["quote", "{{symbol}}", "--url", "{{config.endpoint}}"],
+    }))
+    .unwrap();
+    let config: BTreeMap<String, String> = [(
+        "endpoint".to_string(),
+        "https://operator.example".to_string(),
+    )]
+    .into_iter()
+    .collect();
+
+    let argv = render_argv(
+        &t,
+        &json!({ "symbol": "700.HK", "config.endpoint": "https://attacker.example" }),
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        argv,
+        vec!["quote", "700.HK", "--url", "https://operator.example"],
+        "the configuration slot must take the operator's value even when the call \
+         supplies an argument by that exact name"
+    );
+    assert!(
+        !argv.iter().any(|a| a.contains("attacker")),
+        "an agent-supplied `config.*` argument must reach the child under no slot: {argv:?}"
+    );
+}
+
+/// The mirror image: a configuration key is not reachable as a tool argument
+/// either. The two directions are one namespace, and a fallback lookup in
+/// EITHER direction would make the map a merge.
+#[test]
+fn a_configuration_value_never_fills_an_argument_slot() {
+    let t: CliQueryTool = serde_json::from_value(json!({
+        "name": "quote",
+        "input_schema": { "type": "object", "properties": { "endpoint": { "type": "string" } } },
+        "args": ["quote", "{{endpoint}}"],
+    }))
+    .unwrap();
+    let config: BTreeMap<String, String> = [(
+        "endpoint".to_string(),
+        "https://operator.example".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let err = render_argv(&t, &json!({}), &config)
+        .expect_err("an argument slot must not be filled from configuration");
+    assert!(err.contains("endpoint"), "{err}");
+}
+
+/// A configuration slot with no value in force is refused by name, and the
+/// message points at the restart that makes a fix take effect (§2.4) rather
+/// than handing the child an empty argv element.
+#[test]
+fn a_configuration_slot_with_no_value_is_refused_by_name() {
+    let t: CliQueryTool = serde_json::from_value(json!({
+        "name": "quote",
+        "input_schema": { "type": "object", "properties": {} },
+        "args": ["quote", "{{config.endpoint}}"],
+    }))
+    .unwrap();
+    let err = render_argv(&t, &json!({}), &no_config()).expect_err("no value, no rendering");
+    assert!(err.contains("endpoint"), "{err}");
+    assert!(err.contains("restart"), "{err}");
+}
+
+/// **The decisive one for "no fallback"** (S3a review P2-2).
+///
+/// Every other test in this file feeds the config map a value for the slot, or
+/// feeds `arguments` the *prefixed* key `config.endpoint` — and neither can see
+/// the one implementation the slice's core claim actually forbids:
+/// `config.get(key).or_else(|| obj.and_then(|m| m.get(key)))`. Under that
+/// mutation an agent supplies the BARE key and, for a slot the operator has not
+/// configured, wins outright. The whole suite stayed green against it; this is
+/// the input that does not.
+///
+/// So: nothing in `config`, and `arguments` carrying `endpoint` (bare). The
+/// refusal must stand and the attacker's value must reach no argv element —
+/// which also rules out the weaker "falls back but renders it somewhere else"
+/// shape.
+#[test]
+fn a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot() {
+    let t: CliQueryTool = serde_json::from_value(json!({
+        "name": "quote",
+        // Not `config.endpoint` — the manifest validator refuses that name, so
+        // the reachable shape is a property named exactly like the config KEY.
+        "input_schema": { "type": "object", "properties": { "endpoint": { "type": "string" } } },
+        "args": ["quote", "--url", "{{config.endpoint}}"],
+    }))
+    .unwrap();
+
+    let err = render_argv(
+        &t,
+        &json!({ "endpoint": "https://attacker.example" }),
+        &no_config(),
+    )
+    .expect_err(
+        "a configuration slot with no configured value must be refused, never \
+         back-filled from the agent's arguments",
+    );
+    assert!(err.contains("endpoint"), "must name the slot: {err}");
+    assert!(
+        !err.contains("attacker"),
+        "not even the diagnostic should echo the agent's value: {err}"
+    );
+
+    // …and the positive control: the SAME call renders fine once the operator
+    // configures the key, and renders the OPERATOR's value. Without this leg,
+    // "it was refused" is satisfiable by a renderer that refuses everything.
+    let config: BTreeMap<String, String> = [(
+        "endpoint".to_string(),
+        "https://operator.example".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    let argv = render_argv(
+        &t,
+        &json!({ "endpoint": "https://attacker.example" }),
+        &config,
+    )
+    .expect("a configured slot renders");
+    assert_eq!(argv, vec!["quote", "--url", "https://operator.example"]);
+    assert!(
+        !argv.iter().any(|a| a.contains("attacker")),
+        "the agent's bare `endpoint` must land in no argv element: {argv:?}"
+    );
+}
+
+/// S3a review P3 — a NUL inside a configured value is refused at flatten time,
+/// naming the KEY.
+///
+/// JSON can carry it and the write path stores it; `Command`'s `CString`
+/// conversion cannot. Without this the operator's only diagnostic is a spawn
+/// error naming the program (`nul byte found in provided data`), which points
+/// at the binary rather than at the configuration that broke it.
+#[test]
+fn a_nul_in_a_configured_value_is_refused_by_key_not_at_exec_time() {
+    let effective: Map<String, Value> =
+        serde_json::from_value(json!({ "endpoint": "https://a.example\u{0}evil" })).unwrap();
+    let err = flatten_config(&effective).expect_err("a NUL cannot reach argv or env");
+    assert!(err.contains("endpoint"), "must name the key: {err}");
+    assert!(err.contains("NUL"), "{err}");
+
+    // Other control characters are NOT refused: `execve` carries them, and a
+    // newline in a configured value is unusual but legal.
+    let ok: Map<String, Value> =
+        serde_json::from_value(json!({ "banner": "line1\nline2\ttabbed" })).unwrap();
+    let flat = flatten_config(&ok).expect("only NUL is unrepresentable");
+    assert_eq!(
+        flat.get("banner").map(String::as_str),
+        Some("line1\nline2\ttabbed")
+    );
+}
+
+/// S3a review P2-3 — an argv configuration slot with no value in force fails
+/// **bring-up**, not every later call.
+///
+/// The asymmetry with `config_env` (a declared env key with no value is simply
+/// absent, see
+/// `a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure`)
+/// is deliberate and is the point of this pair: "absent" is a representable
+/// state for an env key and is not one for an argv element. A manifest that
+/// declares `{{config.endpoint}}` with neither a `default` nor a
+/// `config_schema.required` entry would otherwise resolve, enable, publish as
+/// `Running`, and answer every `tools/call` with `invalid_params` — the exact
+/// anti-pattern `probe_fingerprint` refuses one field over.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho ok\n");
+    let b = block(json!({
+        "command": p.display().to_string(),
+        "tools": [{
+            "name": "quote",
+            "input_schema": { "type": "object", "properties": {} },
+            "args": ["quote", "--url", "{{config.endpoint}}"],
+        }],
+    }));
+
+    // `CliQueryRuntime` has no `Debug` on purpose (it holds secret values), so
+    // this cannot be an `expect_err`.
+    let Err(err) = bring_up("cli-test", &b, tmp.path(), &Map::new()).await else {
+        panic!("an unfillable argv slot must not come up as Running");
+    };
+    assert!(err.contains("endpoint"), "must name the key: {err}");
+    assert!(
+        err.contains("quote"),
+        "must name the tool that cannot be called: {err}"
+    );
+
+    // The positive control, same manifest: once the key has a value in force
+    // the connector comes up and the call renders. Without it, "bring-up fails"
+    // is satisfiable by a check that refuses every configuration slot.
+    let effective: Map<String, Value> =
+        serde_json::from_value(json!({ "endpoint": "https://operator.example" })).unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &effective)
+        .await
+        .expect("a configured slot comes up");
+    let res = rt.tools_call("quote", json!({})).await.unwrap();
+    assert_eq!(res.is_error, Some(false));
 }
 
 // ---- PATH resolution ------------------------------------------------
@@ -560,6 +932,7 @@ fn runtime_for(program: PathBuf, args: &[&str], timeout_ms: u64, cap: usize) -> 
         fingerprint: "test".to_string(),
         env: BTreeMap::new(),
         tools,
+        config: no_config(),
         timeout: Duration::from_millis(timeout_ms),
         max_output_bytes: cap,
     }
@@ -887,9 +1260,14 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
         }
     });
     let parsed = Manifest::parse(&doc.to_string()).expect("the ceiling itself must load");
-    let rt = bring_up("cli-test", parsed.cli_query.as_ref().unwrap(), tmp.path())
-        .await
-        .unwrap();
+    let rt = bring_up(
+        "cli-test",
+        parsed.cli_query.as_ref().unwrap(),
+        tmp.path(),
+        &Map::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(rt.max_output_bytes(), CLI_QUERY_MAX_OUTPUT_BYTES_CEILING);
     let res = rt.tools_call("q", json!({})).await.unwrap();
     assert_eq!(res.is_error, Some(false));
@@ -921,7 +1299,9 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
         // (r4 I3). The execution check below cannot: `"hello\n"` is under both
         // the ceiling and `usize::MAX`, so reading the raw `Option<usize>`
         // instead would leave it perfectly green.
-        let rt = bring_up("cli-test", block, tmp.path()).await.unwrap();
+        let rt = bring_up("cli-test", block, tmp.path(), &Map::new())
+            .await
+            .unwrap();
         assert_eq!(
             rt.max_output_bytes(),
             CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
@@ -980,7 +1360,9 @@ async fn bring_up_pins_an_absolute_path_and_records_a_fingerprint() {
         "command": p.display().to_string(),
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
+        .await
+        .unwrap();
     assert_eq!(rt.program(), p.as_path());
     assert_eq!(rt.fingerprint(), "--version: mytool 1.2.3");
 }
@@ -1010,7 +1392,9 @@ async fn the_version_probe_never_sees_a_secret_env_value() {
         "secret_env": ["LB_TOKEN"],
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
+        .await
+        .unwrap();
     assert_eq!(
         rt.fingerprint(),
         "--version: v1 token=[]",
@@ -1032,7 +1416,9 @@ async fn a_failing_version_probe_falls_back_instead_of_failing_bring_up() {
         "command": p.display().to_string(),
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
+        .await
+        .unwrap();
     assert!(
         rt.fingerprint().starts_with("size="),
         "expected the size+mtime fallback, got {}",
@@ -1068,7 +1454,9 @@ async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
     let started = std::time::Instant::now();
-    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
 
     assert!(
@@ -1117,7 +1505,9 @@ async fn a_version_probe_that_lingers_after_closing_stdout_stays_in_the_sub_budg
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
     let started = std::time::Instant::now();
-    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
 
     assert!(
@@ -1221,7 +1611,7 @@ async fn a_binary_that_cannot_be_executed_fails_bring_up_instead_of_enabling() {
             "command": path.display().to_string(),
             "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
         }));
-        let err = bring_up("cli-test", &b, tmp.path())
+        let err = bring_up("cli-test", &b, tmp.path(), &Map::new())
             .await
             .err()
             .unwrap_or_else(|| panic!("{} enabled despite being unrunnable", path.display()));
@@ -1304,7 +1694,9 @@ async fn the_childs_path_never_contains_a_relative_entry() {
         "search_path_extra": [".", "bin", "../up", "/opt/lb/bin"],
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
+        .await
+        .unwrap();
 
     let path = rt.child_path();
     for entry in path.split(':') {
@@ -1368,7 +1760,7 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
             "command": p.display().to_string(),
             "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
         }));
-        let rt = bring_up("cli-test", &b, tmp.path())
+        let rt = bring_up("cli-test", &b, tmp.path(), &Map::new())
             .await
             .expect("a non-UTF-8 service variable must not fail the enable");
         // A key whose VALUE is not UTF-8 is dropped, not forwarded lossily …

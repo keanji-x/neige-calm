@@ -15,6 +15,12 @@ concurrency:
   # and must not be cancelled by a later main push.
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
+# Every job in this workflow only needs to read the checkout. Keep the token
+# least-privileged, especially for the persistent self-hosted runner used by
+# trusted pushes to this repository's main branch.
+permissions:
+  contents: read
+
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
@@ -89,6 +95,7 @@ jobs:
         with:
           # The frozen-vector rationale check below audits every commit in the event range.
           fetch-depth: 0
+          persist-credentials: false
 
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
       # source of truth shared with local gates); rustup honors it as a
@@ -179,10 +186,15 @@ jobs:
           esac
 
       - name: install ripgrep for ratchets
+        if: runner.environment == 'github-hosted'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ripgrep
+
+      - name: verify self-hosted ratchet dependencies
+        if: runner.environment == 'self-hosted'
+        run: command -v rg
 
       - name: runtimes ratchet selftest
         run: scripts/ci/ratchets/selftest.sh
@@ -474,9 +486,24 @@ jobs:
     name: rust (test)
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
-    runs-on: ubuntu-latest
+    # This repository is public: fork PRs stay on isolated GitHub-hosted
+    # runners. Only trusted pushes to the canonical repository use the local
+    # machine. The repository check also keeps pushes in forks on hosted CI.
+    runs-on: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && 'neige-calm-main' || 'ubuntu-latest' }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.event_name == 'push' && github.repository == 'keanji-x/neige-calm' && '/home/runner/target-neige-calm-main' || format('{0}/target', github.workspace) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: prepare self-hosted Rust environment
+        if: runner.environment == 'self-hosted'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # Persistent hosts can have /tmp fixtures owned by another user.
+          # RUNNER_TEMP is job-scoped, writable, and cleaned by the runner.
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
       # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
@@ -498,17 +525,21 @@ jobs:
       # per-job RUSTFLAGS delta would split the shared `workspace` cache key
       # across jobs and invalidate every cached artifact. The ld symlink is
       # transparent to cargo fingerprints — cached dependency rlibs still hit;
-      # only the final link swaps tools. Added to every cargo-running job for
-      # tool consistency.
+      # only the final link swaps tools. The action writes under /usr/local,
+      # so trusted main pushes on the unprivileged self-hosted runner use the
+      # system linker instead.
       - uses: rui314/setup-mold@v1
+        if: runner.environment == 'github-hosted'
 
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           # Test artifacts are profile/feature-specific. Sharing this key with the faster OpenAPI
           # and release jobs made the first finisher persist a partial cache that could never be
           # augmented (GitHub cache keys are immutable), so every exact "hit" still rebuilt all 105
           # test binaries. Include workspace crates and rotate on Rust source changes; non-Rust PRs
           # then restore the complete test graph, while Rust PRs fall back and rebuild what changed.
+          # Self-hosted jobs skip this action and reuse their dedicated CARGO_TARGET_DIR directly.
           shared-key: rust-test
           key: ${{ hashFiles('**/*.rs') }}
           cache-workspace-crates: true
@@ -580,7 +611,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nextest-junit
-          path: target/nextest/ci/junit.xml
+          path: ${{ env.CARGO_TARGET_DIR }}/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1083,6 +1114,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
       # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
@@ -1099,7 +1132,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Share the cache with the `rust` job — same workspace, same lockfile.
+          # Share the cache with the release jobs — same workspace and lockfile.
           shared-key: workspace
 
       - uses: actions/setup-node@v4
