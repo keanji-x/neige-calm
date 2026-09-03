@@ -175,22 +175,11 @@
     align-items: center;
   }
 
-  /* The calendar agenda's empty line, and only that one now: a row-shaped slot
-     in a list of rows, so it keeps the row's height and the dashed frame that
-     says "a row would go here". The document's empty line used to share this
-     rule and no longer does — see `.documentEmpty`. */
-  .inlineEmpty {
-    display: flex;
-    align-items: center;
-    min-block-size: var(--row-h);
-    padding-inline: var(--space-4);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-  }
+  /* `.inlineEmpty` is gone. It styled two empty lines that wanted different
+     things, and gave both a dashed frame: the calendar agenda's now uses
+     `ui/panel-card`'s `PanelEmpty` — the same carrier as the conversation
+     module directly beside it in the same card — and the document's is
+     `.documentEmpty` below. Neither is framed any more. */
 
   /* The document's own empty line: body text, no frame. It is a sentence in the
      document's place, not a widget reporting that it has nothing — so it takes

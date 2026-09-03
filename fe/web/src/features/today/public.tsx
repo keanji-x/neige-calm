@@ -28,7 +28,7 @@ import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
-import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
+import { PanelCard, PanelEmpty, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './today.module.css';
@@ -734,7 +734,13 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
           {/* Only when *both* sources are empty. The string is the one the live
               contract pins; it satisfies §5.3 as well as any rewrite would. */}
           {scheduledAgenda.length === 0 && trackAgenda.length === 0 && (
-            <p className={styles.inlineEmpty}>Nothing scheduled.</p>
+            /* `PanelEmpty`, not a local class that merely looks like it. This
+               module's empty line and the conversation module's are the same
+               statement in the same card, and they had drifted apart: this one
+               carried a dashed frame, which drew a box around "there is nothing
+               here" and made an empty day read as a broken widget. Sharing the
+               carrier is what stops them drifting again. */
+            <PanelEmpty>Nothing scheduled.</PanelEmpty>
           )}
           {scheduledAgenda.map((event) => (
             <span key={`scheduled-${event.track.id}-${event.hour}`}>
