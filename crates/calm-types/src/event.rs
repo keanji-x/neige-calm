@@ -2457,7 +2457,7 @@ mod scope_tests {
                 path: "/commits/0/oid".into(),
             },
         );
-        let planner = ForgeEventSpec {
+        let event_spec = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
@@ -2466,7 +2466,7 @@ mod scope_tests {
             "commits": [{ "oid": "merge-sha" }],
         });
 
-        let payload = planner.extract_payload(0, Some(&stdout)).unwrap();
+        let payload = event_spec.extract_payload(0, Some(&stdout)).unwrap();
         assert_eq!(
             payload.get("head_sha"),
             Some(&serde_json::json!("head-sha"))
@@ -2486,12 +2486,12 @@ mod scope_tests {
                 path: "/missing".into(),
             },
         );
-        let planner = ForgeEventSpec {
+        let event_spec = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
 
-        let err = planner
+        let err = event_spec
             .extract_payload(0, Some(&serde_json::json!({})))
             .unwrap_err();
         assert_eq!(
@@ -2512,12 +2512,12 @@ mod scope_tests {
                 path: "/oid".into(),
             },
         );
-        let planner = ForgeEventSpec {
+        let event_spec = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
 
-        let err = planner.extract_payload(0, None).unwrap_err();
+        let err = event_spec.extract_payload(0, None).unwrap_err();
         assert_eq!(err, ForgeExtractError::MissingJsonStdout);
     }
 
@@ -2525,23 +2525,23 @@ mod scope_tests {
     fn forge_event_spec_exit_code_yields_json_number() {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert("exit_code".into(), FieldSource::ExitCode);
-        let planner = ForgeEventSpec {
+        let event_spec = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
 
-        let payload = planner.extract_payload(37, None).unwrap();
+        let payload = event_spec.extract_payload(37, None).unwrap();
         assert_eq!(payload.get("exit_code"), Some(&serde_json::json!(37)));
     }
 
     #[test]
     fn forge_event_spec_empty_fields_yields_empty_object() {
-        let planner = ForgeEventSpec {
+        let event_spec = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields: std::collections::BTreeMap::new(),
         };
 
-        let payload = planner.extract_payload(0, None).unwrap();
+        let payload = event_spec.extract_payload(0, None).unwrap();
         assert!(payload.is_empty());
     }
 

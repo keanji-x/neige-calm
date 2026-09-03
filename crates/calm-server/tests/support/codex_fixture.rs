@@ -60,7 +60,7 @@ pub const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
 pub const TASK_KEY: &str = "forge-e2e";
 pub const PLANNER_SESSION_ID: &str = "codex-forge-e2e-planner-session";
 
-pub struct FixturePlanner {
+pub struct FixtureSpec {
     pub goal: Option<String>,
     pub template_id: Option<String>,
     pub plan_source: PlanSource,
@@ -178,7 +178,7 @@ pub async fn worker_operation_for_task(repo: &SqlxRepo, task_id: &str) -> Option
 
 pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, String> {
     boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: Some(forge_goal()),
             template_id: None,
             plan_source: PlanSource::Injected,
@@ -192,7 +192,7 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
 }
 
 pub async fn boot_forge_e2e_fixture(
-    planner: FixturePlanner,
+    fixture: FixtureSpec,
     codex_bin: PathBuf,
 ) -> Result<Fixture, String> {
     let forge_env = setup_forge_env();
@@ -217,12 +217,12 @@ pub async fn boot_forge_e2e_fixture(
     let track_cwd = tmp.path().join("track-cwd");
     let origin_repo = tmp.path().join("origin.git");
 
-    match planner.repo_seed {
+    match fixture.repo_seed {
         RepoSeed::ReadmeOnly => init_bare_origin(&origin_repo, &tmp.path().join("seed")),
         RepoSeed::RustMicroCrate => seed_rust_micro_crate(&origin_repo, &tmp.path().join("seed")),
     }
     clone_for_track(&origin_repo, &track_cwd);
-    if let Some(issue) = &planner.issue_body {
+    if let Some(issue) = &fixture.issue_body {
         // The gh shim keys state by the `--repo` selector string. The capstone
         // goal pins the CLONE gitdir selector (forge_pr_goal precedent — the
         // shim rev-parses worker branches there without any push), but seed
@@ -271,14 +271,14 @@ pub async fn boot_forge_e2e_fixture(
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: track_cwd.display().to_string(),
-            template_id: planner.template_id.clone(),
+            template_id: fixture.template_id.clone(),
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .expect("create track");
-    if !planner.require_task_gates {
+    if !fixture.require_task_gates {
         sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
             .bind(track.id.as_str())
             .execute(sqlx_repo.pool())
@@ -299,7 +299,7 @@ pub async fn boot_forge_e2e_fixture(
     // the production-faithful planner card shape: a kind:"codex" card whose payload
     // is the `planner_harness_card_payload` JSON object (routes/tracks.rs:657) — the
     // adapter mutates that object in place (codex_thread_id, appserver_sock, …).
-    let (planner_kind, planner_payload) = match planner.plan_source {
+    let (planner_kind, planner_payload) = match fixture.plan_source {
         PlanSource::Injected => ("planner".to_string(), Value::Null),
         PlanSource::RealPlannerTurn => {
             let mut payload = serde_json::Map::new();
@@ -309,7 +309,7 @@ pub async fn boot_forge_e2e_fixture(
             );
             payload.insert("codex_source".into(), json!("shared"));
             payload.insert("planner_harness".into(), json!(true));
-            if let Some(goal) = planner
+            if let Some(goal) = fixture
                 .goal
                 .as_deref()
                 .map(str::trim)
@@ -371,7 +371,7 @@ pub async fn boot_forge_e2e_fixture(
         CardRole::ReportCard,
         track.id.clone(),
     );
-    if matches!(planner.plan_source, PlanSource::Injected) {
+    if matches!(fixture.plan_source, PlanSource::Injected) {
         seed_planner_session(&sqlx_repo, track.id.as_str(), planner_card.id.as_str()).await;
     }
 

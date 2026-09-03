@@ -3826,7 +3826,7 @@ fn spawn_neige_router(
     write: WriteContext,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Drain notifications in a separate task — they're lossy by planner and
+        // Drain notifications in a separate task — they're lossy by specification and
         // we don't yet act on any specific notification method, but logging
         // is useful for debugging plugin behaviour. We hold the JoinHandle
         // implicitly (it dies when this outer task exits).

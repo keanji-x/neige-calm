@@ -96,7 +96,7 @@ test.describe.serial('tui theme protocol', () => {
         area_id: areaId,
         title: trackTitle,
         // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-        // This planner is about the OSC theme protocol, not working
+        // This test is about the OSC theme protocol, not working
         // directories (the terminal card below still passes its own
         // `cwd: '/tmp'`, which is a real directory inside the kernel).
         // See `helpers/reset.ts::createTrackInArea` for why the invented

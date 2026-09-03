@@ -64,7 +64,7 @@ test('NewTaskForm "Use a different area" lets user override auto-match → new a
   const initialCwd = `${areaAFolder}/sub`;
   // Non-overlapping cwd for the actual submit — independent
   // namespace so it can't collide with area A's claim or any other
-  // planner's cwds.
+  // test's cwds.
   //
   // #1147 S3 — this one IS submitted as an *attached* workspace, so it
   // must exist and be a Git work tree the kernel can see. See

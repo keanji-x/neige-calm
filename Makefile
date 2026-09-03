@@ -252,7 +252,7 @@ proxy-forwarder-up: ## Ensure the host-loopback → docker0 proxy forwarder cont
 	    existing=$$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' $(PROXY_FORWARDER_NAME) 2>/dev/null || echo ""); \
 	    running=$$(docker inspect -f '{{.State.Running}}' $(PROXY_FORWARDER_NAME) 2>/dev/null || echo "false"); \
 	    if [ "$$existing" != "$$spec" ]; then \
-	        echo "  Forwarder planner changed ($$existing → $$spec); recreating"; \
+	        echo "  Forwarder label changed ($$existing → $$spec); recreating"; \
 	        docker rm -f $(PROXY_FORWARDER_NAME) >/dev/null; \
 	    elif [ "$$running" != "true" ]; then \
 	        docker start $(PROXY_FORWARDER_NAME) >/dev/null; \

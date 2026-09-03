@@ -3,7 +3,7 @@
 //! here so `GET /api/openapi.json` returns a single self-contained spec
 //! the frontend consumes to generate TypeScript types.
 //!
-//! The planner is the source-of-truth contract between `calm-server` and
+//! The document is the source-of-truth contract between `calm-server` and
 //! `web-calm` — adding a new public model or route means adding a path
 //! entry below alongside the handler annotation. The aggregator does not
 //! pull in WebSocket endpoints (those don't roundtrip JSON request/response

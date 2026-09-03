@@ -79,7 +79,7 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   // on a fresh empty repository.
   execFileSync('git', ['init', '--quiet', dirPath], { stdio: 'ignore' });
 
-  // Step 1 — seed an area via REST (no sidebar dependency; this planner
+  // Step 1 — seed an area via REST (no sidebar dependency; this test
   // doesn't exercise the sidebar create flow).
   const areaRes = await page.request.post('/api/areas', {
     data: { name: areaName, color: '#5a9' },

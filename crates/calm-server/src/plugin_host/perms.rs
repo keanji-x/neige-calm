@@ -136,7 +136,7 @@ impl UiPermissions {
 impl Manifest {
     /// Aggregate `can_call_tool` across every view's `permissions.tools` list.
     ///
-    /// The iframe transport is per-view in the planner (each `_meta.ui.permissions`
+    /// The iframe transport is per-view in the specification (each `_meta.ui.permissions`
     /// block is a property of a specific resource), but the kernel-side route
     /// `POST /api/plugins/:id/tool-call` is per-plugin. We resolve the mismatch
     /// conservatively by accepting the call if **any** view of the plugin would

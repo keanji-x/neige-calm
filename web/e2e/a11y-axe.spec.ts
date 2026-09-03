@@ -26,10 +26,10 @@
 //
 // We deliberately don't blanket-disable any rule. If a third-party
 // component fails a check, the right move is to call it out in the
-// finding (a comment on the failing planner) and decide whether to fix or
+// finding (a comment on the failing test) and decide whether to fix or
 // defer. The "common" pages (Today, Area, Track, Settings) MUST come out
 // clean — if axe ever turns up violations on those, fix the source, don't
-// silence the planner.
+// silence the test.
 
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
@@ -235,7 +235,7 @@ test.describe('a11y · axe', () => {
     // mutate state themselves, but some tests click through the AddPanel
     // trigger / codex modals and we don't want their residue (extra
     // cards, opened modals' overlay payloads) leaking into the next
-    // planner's DOM.
+    // test's DOM.
     await resetReplayServer(request);
   });
 
@@ -389,7 +389,7 @@ test.describe('a11y · axe', () => {
         await page.goto(`/calm/track/${trackId}?trace=1`);
         await waitForBootstrap(page);
         await applyTheme(page, theme);
-        // Same path as the keyboard planner: open AddPanel (glyph-only
+        // Same path as the keyboard test: open AddPanel (glyph-only
         // trigger since #594; aria-label "Add card" while closed), pick
         // the codex menuitem (the only built-in with a createSchema →
         // modal).

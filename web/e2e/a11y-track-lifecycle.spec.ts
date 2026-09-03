@@ -43,7 +43,7 @@ test.describe('track lifecycle', () => {
   test.beforeEach(async ({ page, request }) => {
     // Hermetic state — see `helpers/reset.ts`. Without this every
     // assertion below would interact with whatever tracks the previous
-    // planner left behind in the shared replay binary.
+    // test left behind in the shared replay binary.
     await resetReplayServer(request);
 
     // Mint a fresh area + track for each test. `createTrackInArea`

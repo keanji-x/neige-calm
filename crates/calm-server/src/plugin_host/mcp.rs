@@ -1,7 +1,7 @@
 //! Line-delimited JSON-RPC 2.0 client actor for talking to a plugin process.
 //!
 //! Wire format: one JSON object per line, terminated by `\n`. Matches the MCP
-//! `stdio` transport (modelcontextprotocol.io planner, 2025-11-25). NOT
+//! `stdio` transport (modelcontextprotocol.io specification, 2025-11-25). NOT
 //! Content-Length-framed — that's the HTTP transport, which we don't use.
 //!
 //! Topology (design doc §3.1): the kernel = MCP client, plugin = MCP server,
@@ -48,10 +48,10 @@ pub const KERNEL_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// MCP `tools/call` content block — text / image / etc. We only carry the
 /// fields we actually consume today (the `type` discriminator + `text`); other
-/// fields (`data`, `mimeType`, ...) are tolerated under `extra` so future planner
+/// fields (`data`, `mimeType`, ...) are tolerated under `extra` so future specification
 /// extensions don't break parsing.
 ///
-/// Planner ref: model-context-protocol 2025-11-25, `CallToolResult.content[]`.
+/// Specification ref: model-context-protocol 2025-11-25, `CallToolResult.content[]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentBlock {
     #[serde(rename = "type")]
@@ -65,10 +65,10 @@ pub struct ContentBlock {
     pub extra: serde_json::Map<String, Value>,
 }
 
-/// MCP `resources/read` content entry (M3). Planner 2026-01-26 §`ResourceContents`.
+/// MCP `resources/read` content entry (M3). Specification 2026-01-26 §`ResourceContents`.
 /// The kernel uses this for `ui://<plugin>/<view>` resources served from disk
 /// (see `plugin_host::resources`). Either `text` or `blob` is populated per
-/// the planner — we keep both `Option<String>` so we don't have to choose at
+/// the specification — we keep both `Option<String>` so we don't have to choose at
 /// parse time, and we forward `_meta` verbatim so the MCP Apps profile's
 /// `ui.csp` + `ui.permissions` round-trip without us pinning their shape.
 ///
@@ -90,14 +90,14 @@ pub struct ResourceContent {
 /// MCP `resources/read` result envelope. Per the spec, a single read may
 /// return multiple `ResourceContent` blocks (e.g. multi-part documents); for
 /// `ui://...` HTML resources the kernel always emits exactly one entry, but
-/// we keep the Vec shape so consumers stay planner-compliant.
+/// we keep the Vec shape so consumers stay specification-compliant.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceContents {
     #[serde(default)]
     pub contents: Vec<ResourceContent>,
 }
 
-/// MCP `tools/call` result shape (M2). Per planner 2025-11-25:
+/// MCP `tools/call` result shape (M2). Per specification 2025-11-25:
 /// `{ content: ContentBlock[], isError?: bool, _meta?: object,
 ///    structuredContent?: any }`. We only inspect `_meta.ui.resourceUri` and
 /// `is_error` for now — the rest is opaque pass-through to the caller.
@@ -121,7 +121,7 @@ pub struct CallToolResult {
     pub structured_content: Option<Value>,
 }
 
-/// JSON-RPC `id`. Plugins occasionally use strings (the planner allows it), so
+/// JSON-RPC `id`. Plugins occasionally use strings (the specification allows it), so
 /// we accept either on the wire and re-serialize verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
@@ -159,7 +159,7 @@ pub struct InboundNotification {
     pub params: Value,
 }
 
-/// JSON-RPC `error` object per §5.1 of the planner. The `code` ranges and the
+/// JSON-RPC `error` object per §5.1 of the specification. The `code` ranges and the
 /// kernel-extension codes (-32001..-32005) are documented in design doc §3.3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcError {
@@ -374,7 +374,7 @@ impl McpClient {
         Ok(client)
     }
 
-    /// `initialize` request per MCP planner: declare protocol version + the
+    /// `initialize` request per MCP specification: declare protocol version + the
     /// `experimental.dev.neige/kernel-callbacks` capability (design doc §3.1,
     /// migration doc §6/M1) so the plugin knows we accept `neige.*` callbacks
     /// and can opt in by echoing the capability back. We don't read every
@@ -467,7 +467,7 @@ impl McpClient {
             )));
         }
         // Validate `serverInfo` is *some* object if present — be lenient about
-        // missing optional fields; the planner lets implementations evolve.
+        // missing optional fields; the specification lets implementations evolve.
         if let Some(server_info) = value.get("serverInfo")
             && !server_info.is_object()
         {
@@ -478,7 +478,7 @@ impl McpClient {
         // Issue #45: enforce that the plugin echoes the exact protocol version
         // the kernel advertised. Pre-#45 the kernel sent `KERNEL_PROTOCOL_VERSION`
         // but accepted any (or missing) `result.protocolVersion`; a plugin
-        // claiming an incompatible planner revision would silently negotiate
+        // claiming an incompatible specification revision would silently negotiate
         // against a kernel that doesn't actually speak its dialect. We now
         // fail the handshake on mismatch — the existing initialize-failure
         // path reaps the child and surfaces `HostError::InitializeRejected`.
@@ -517,7 +517,7 @@ impl McpClient {
             .filter(|v| v.is_object())
             .unwrap_or_else(|| Value::Object(Default::default()));
         *self.server_capabilities.lock().unwrap() = caps;
-        // After initialize, MCP planner wants a `notifications/initialized` from
+        // After initialize, MCP specification wants a `notifications/initialized` from
         // the client. Fire-and-forget.
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
@@ -548,7 +548,7 @@ impl McpClient {
         match entry {
             None => false,
             Some(node) => {
-                // Per planner the value is an object with a `version` field. We
+                // Per specification the value is an object with a `version` field. We
                 // accept only `u32` exact-match; anything else (missing field,
                 // wrong type, wrong number) → treat as absent and warn so
                 // operators can see the version skew.
@@ -572,7 +572,7 @@ impl McpClient {
 
     /// MCP `tools/call` (M2): invoke a tool the plugin server registered via
     /// `tools/list`. Returns the parsed `CallToolResult`. Errors surface as
-    /// either a `RpcError` (transport-level / planner-shaped) or — when the tool
+    /// either a `RpcError` (transport-level / specification-shaped) or — when the tool
     /// itself signalled failure — `result.is_error == Some(true)` with
     /// human-readable text in `result.content` for the caller to relay.
     ///
@@ -598,7 +598,7 @@ impl McpClient {
 
     /// MCP `resources/read` (M3): fetch a resource by URI. Pattern-mirror of
     /// `tools_call`. Returns the parsed `ResourceContents` (one or more entries
-    /// per the planner). Note that `ui://<plugin>/<view>` resources are served by
+    /// per the specification). Note that `ui://<plugin>/<view>` resources are served by
     /// the *kernel*, not the plugin — this method is the plugin-facing
     /// counterpart for plugin-owned resource URIs (e.g. `neige://...` reads).
     /// The kernel-side `ui://` handler lives in `plugin_host::resources`.
@@ -812,7 +812,7 @@ where
                 Ok(Frame::Notification { method, params }) => {
                     let notif = InboundNotification { method, params };
                     // Bounded mpsc — drop if Slice C isn't draining. Notifs
-                    // are by planner lossy, so silent drop is correct semantics.
+                    // are by specification lossy, so silent drop is correct semantics.
                     if let Err(e) = in_notif_tx.try_send(notif) {
                         tracing::debug!(error = %e, "inbound notification dropped (buffer full or no consumer)");
                     }
@@ -864,7 +864,7 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
         .as_object()
         .ok_or_else(|| "frame is not an object".to_string())?;
 
-    // Per planner, `jsonrpc` MUST be "2.0". We accept missing for ergonomic stubs
+    // Per specification, `jsonrpc` MUST be "2.0". We accept missing for ergonomic stubs
     // but warn — production plugins should send it.
     let _jsonrpc = obj.get("jsonrpc");
 
@@ -1064,7 +1064,7 @@ mod tests {
                     })
                 } else if method == "tools/call" {
                     // Assert the kernel sent the expected shape so we know
-                    // tools_call's serialization matches the planner.
+                    // tools_call's serialization matches the specification.
                     let params = v.get("params").expect("params");
                     assert_eq!(params["name"], "make_status_card");
                     assert_eq!(params["arguments"]["x"], 1);
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[tokio::test]
     async fn resources_read_parses_contents_with_meta_ui() {
-        // M3: assert McpClient::resources_read serializes the planner wire shape
+        // M3: assert McpClient::resources_read serializes the specification wire shape
         // and parses contents[].{uri, mimeType, text, _meta} into
         // ResourceContents.
         let (kernel, plugin) = tokio::io::duplex(8 * 1024);

@@ -5,7 +5,7 @@
 // on a track, the card should render within a few seconds (POST →
 // server card.added event → eventBridge invalidates ['track', id] →
 // useTrackDetailQuery refetches → TrackGrid mounts the new card). This
-// planner pins that contract so a regression has a deterministic repro.
+// test pins that contract so a regression has a deterministic repro.
 //
 // Issue #175 — the kernel hides the system area that hosts the default
 // Today terminal, so we mint our own user area + track to test in.
@@ -35,7 +35,7 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
 
   // Step 2 — create a new track inside this area via the kernel REST
   // API directly. PR 3's NewTaskForm wires the area-page "+ New track"
-  // CTA to the same shared flow, but for this planner (which is purely
+  // CTA to the same shared flow, but for this test (which is purely
   // about the AddPanel terminal-card path inside an existing track)
   // the REST-direct route is faster and decouples this assertion from
   // the form's UI evolution. `page.request` resolves the relative URL
@@ -49,7 +49,7 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
       area_id: areaId,
       title: trackTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This planner is about the AddPanel terminal-card path, not working
+      // This test is about the AddPanel terminal-card path, not working
       // directories. See `helpers/reset.ts::createTrackInArea` for why
       // the invented `/tmp/playwright-area-<id>` attached path was
       // never valid.

@@ -466,7 +466,7 @@ export const putSettings = (b: SettingsPutBody) =>
  *     kernel-namespace tools, never the plugin's own server tools.
  *
  * Throws `CalmApiError` on non-2xx; the AppBridge `oncalltool` wrapper turns
- * those into planner-shaped `CallToolResult { isError: true }` payloads.
+ * those into specification-shaped `CallToolResult { isError: true }` payloads.
  */
 export async function toolCallFromIframe(
   pluginId: string,

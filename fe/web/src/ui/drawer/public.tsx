@@ -1,4 +1,4 @@
-// §7.6's drawer, built to the planner that was written before it existed.
+// §7.6's drawer, built to the specification that was written before it existed.
 //
 // It **overlays** the panel column, it does not squeeze the main column:
 // squeezing would reflow the document every time it opens or closes, which is

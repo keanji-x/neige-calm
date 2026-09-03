@@ -158,7 +158,7 @@ pub struct CardCreationFromTool {
 /// caller (M2's `routes::cards::create`) treats that as 422 / `not_a_card_tool`.
 ///
 /// We **do not** inspect `is_error` here — that's the caller's responsibility
-/// (per planner, a tool returning `isError: true` may still legitimately omit
+/// (per the specification, a tool returning `isError: true` may still legitimately omit
 /// `_meta.ui.resourceUri`, but the route should surface the failure as 502
 /// before reaching this extractor).
 ///
@@ -865,7 +865,7 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 // ===========================================================================
 // Unit tests — direct calls against `dispatch` with a hand-rolled
 // CallbackCtx (in-memory SqlxRepo + in-process EventBus + a stub McpClient
-// that we build with `tokio::io::duplex`). Slice C's binding planner calls these
+// that we build with `tokio::io::duplex`). Slice C's binding specification calls these
 // "acceptable as long as they cover every method"; the end-to-end stub
 // alternative is heavier and adds little extra signal once the router is
 // directly exercised.

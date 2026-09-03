@@ -60,7 +60,7 @@ test('NewTaskForm "Create new area" branch mints area + claims cwd', async ({ pa
   // its page. The sidebar has no `overflow: auto`
   // (body { overflow: hidden }), so once enough areas accumulate from
   // prior runs the "+ New area" row gets pushed outside the document
-  // and Playwright cannot scroll to it. This planner doesn't exercise the
+  // and Playwright cannot scroll to it. This test doesn't exercise the
   // sidebar-create flow (`track-create.spec.ts` owns that contract); it
   // only needs a user area to land on so `defaultAreaId` is set. The
   // starter area is *not* where the track should land — the form's
@@ -87,7 +87,7 @@ test('NewTaskForm "Create new area" branch mints area + claims cwd', async ({ pa
   const title = `E2E new-area track ${ts}`;
   await form.getByLabel(/task description/i).fill(title);
 
-  // Per-planner cwd namespace — `$HOME/neige-e2e-new-area-<ts>` belongs
+  // Per-test cwd namespace — `$HOME/neige-e2e-new-area-<ts>` belongs
   // to this run alone. No prior area claims this prefix, so resolve
   // misses and the radio picker appears.
   //

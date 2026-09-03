@@ -48,7 +48,7 @@ pub enum ProcessError {
 
 /// Wire-level failures from the JSON-RPC framer or the actor. These are
 /// distinct from `RpcError` (which models JSON-RPC's own `error` object
-/// per §5.1 of the JSON-RPC 2.0 planner).
+/// per §5.1 of the JSON-RPC 2.0 specification).
 #[derive(Debug, Error)]
 pub enum McpError {
     /// stdin/stdout I/O died — child closed its end, or we got an `EPIPE`.

@@ -53,7 +53,7 @@ use sha2::{Digest, Sha256};
 pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
-/// invalid / `0`. Mirrors the v2 planner for issue #136.
+/// invalid / `0`. Mirrors the v2 specification for issue #136.
 const DEFAULT_PERMITS: usize = 8;
 
 /// The report-edit authors that wake the planner agent, as a single source of

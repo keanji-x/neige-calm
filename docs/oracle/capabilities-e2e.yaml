@@ -81,7 +81,7 @@
     with the replay baseURL, separate from `a11y`.
   why: >
     It drives a dedicated `color-anchor.html` harness page rather than the SPA,
-    so it cannot share the a11y project's planner glob.
+    so it cannot share the a11y project's test glob.
   source: web/playwright.config.ts:128-135
   authoritative_test: web/playwright.config.ts:128
   owner_slice: none/e2e/infra
@@ -117,7 +117,7 @@
     `**/_scroll-probe.spec.ts` and `**/color-system-anchor.spec.ts`.
   why: >
     Keeps `npx playwright test --project=chromium` runnable without cargo on PATH
-    (playwright.config.ts:28-32); the probe and color-anchor planners need harnesses chromium
+    (playwright.config.ts:28-32); the probe and color-anchor tests need harnesses chromium
     does not provide.
   source: web/playwright.config.ts:108-113
   authoritative_test: web/playwright.config.ts:108
@@ -283,12 +283,12 @@
   statement: >
     Setup must probe for a usable `codex` CLI (CALM_CODEX_BIN → pinned nvm path →
     ~/.local/bin, ~/bin → nvm dir scan → `bash -lc 'command -v codex'`) and write the
-    absolute path or the `__missing__` sentinel to a cache file that codex-dependent planners
+    absolute path or the `__missing__` sentinel to a cache file that codex-dependent tests
     read synchronously to self-skip.
   why: >
     _setup/replay-server.shared.ts:77-96 — the login-shell fallback honours profile-augmented
     PATH (nvm/asdf/pnpm) even when the Playwright worker inherited a stripped env; the file
-    handoff is needed because setup runs in a different worker than the planner.
+    handoff is needed because setup runs in a different worker than the test.
   source: web/e2e/_setup/replay-server.shared.ts:97-139
   authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:77-79
   owner_slice: none/e2e/infra
@@ -305,7 +305,7 @@
     Codex resolution must run AFTER the replay server is confirmed ready.
   why: >
     _setup/replay-server.setup.ts:152-156 (#177) — a codex-resolution hiccup must gate only
-    the planner that needs codex, never the rest of the a11y suite.
+    the test that needs codex, never the rest of the a11y suite.
   source: web/e2e/_setup/replay-server.setup.ts:151-167
   authoritative_test: web/e2e/_setup/replay-server.setup.ts:157
   owner_slice: none/e2e/infra
@@ -320,7 +320,7 @@
   family: reset-hook
   statement: >
     A `POST /dev/reset` hook on the replay binary must wipe every row from the in-memory repo
-    and reseed the original fixture event stream, and every a11y planner must call it in
+    and reseed the original fixture event stream, and every a11y test must call it in
     `beforeEach`.
   why: >
     helpers/reset.ts:1-17 — a single in-memory kernel serves the whole a11y project; without a
@@ -375,7 +375,7 @@
     (`POST /api/tracks/:id/cards`), and a per-track view-mode overlay (`POST /api/overlays`).
   why: >
     helpers/reset.ts:42-59,81-87,125,148-153,178-190 — post-#175 the sidebar has no seeded
-    area, so every planner must create the areas/tracks it needs; the iframe card exists so card
+    area, so every test must create the areas/tracks it needs; the iframe card exists so card
     surfaces can be populated without a terminal/codex daemon.
   source: web/e2e/helpers/reset.ts:61-219
   authoritative_test: web/e2e/helpers/reset.ts:61
@@ -397,7 +397,7 @@
     #250 PR2 put cwd into this body (since #1131 the server takes it as optional); #177 made
     theme required end-to-end. Funnelling this helper's
     callers through one literal is what keeps the shared seed path from drifting away from the
-    server's accepted body. Scope is exactly this helper: planners that inline their own
+    server's accepted body. Scope is exactly this helper: tests that inline their own
     `POST /api/tracks` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
     do not go through it, and this entry does not claim anything about them. The server-side
     contract itself (a body missing theme is rejected 422) is
@@ -564,7 +564,7 @@
     reviewing|done|canceled|failed) must be pinned as a TS string-literal union in the e2e
     tree, mirroring the Rust enum's lowercase serde tags.
   why: >
-    helpers/lifecycle.ts:24-30 — compile-time typo detection in planners instead of runtime
+    helpers/lifecycle.ts:24-30 — compile-time typo detection in tests instead of runtime
     404/403 confusion.
   source: web/e2e/helpers/lifecycle.ts:31-40
   authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:80
@@ -695,7 +695,7 @@
     The WS phase-frame drop filter must be installed BEFORE `page.goto` and used only by
     seed-path tests.
   why: >
-    helpers/planner-chat.ts:169-170 — live / input / interrupt planners depend on real phase frames
+    helpers/planner-chat.ts:169-170 — live / input / interrupt tests depend on real phase frames
     and would hang forever with the filter installed.
   source: web/e2e/helpers/planner-chat.ts:166-171
   authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:57
@@ -749,7 +749,7 @@
   kind: capability
   family: auth
   statement: >
-    Chromium-project planners must be able to log in via `POST /api/auth/login` with
+    Chromium-project tests must be able to log in via `POST /api/auth/login` with
     `{username, password}` defaulting to owner/dev and overridable via PROBE_USERNAME /
     PROBE_PASSWORD.
   why: >
@@ -768,10 +768,10 @@
   kind: invariant
   family: cleanup
   statement: >
-    Every chromium-project planner that mints areas must track their ids and
+    Every chromium-project test that mints areas must track their ids and
     `DELETE /api/areas/<id>` them in `afterEach`, tolerating 404.
   why: >
-    track-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break planners
+    track-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break tests
     that assume a zero-area baseline (notably golden-path). The delete cascades through
     tracks → cards → terminals.
   source: web/e2e/track-create.spec.ts:27-43
@@ -1016,7 +1016,7 @@
     accumulate the `+ New area` row is pushed outside the document and cannot be scrolled to.
   why: >
     track-create-auto-match.spec.ts:82-90 — a real, currently-shipped limitation that forces
-    multi-area planners to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
+    multi-area tests to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
     silently changes which flows are reachable.
   source: web/e2e/track-create-auto-match.spec.ts:82-90
   authoritative_test: web/e2e/track-create-auto-match.spec.ts:91
@@ -1057,7 +1057,7 @@
     NewTaskForm must expose a `Task description` textarea, a `Working directory` input, and a
     `Create task` submit button.
   why: >
-    track-create.spec.ts:81-96 — these three are the minimal field set every creation planner in
+    track-create.spec.ts:81-96 — these three are the minimal field set every creation test in
     the suite drives.
   source: web/e2e/track-create.spec.ts:81-96
   authoritative_test: web/e2e/track-create.spec.ts:82
@@ -1580,7 +1580,7 @@
     what keeps the resolve handler's filter set to AT MOST ONE row per query path — so the
     handler's `max_by_key(path.len())` longest-prefix tiebreak is dead from the HTTP surface.
   why: >
-    a11y-cwd-resolve.spec.ts:28-36,264-272 — deliberately NOT covered by a Playwright planner;
+    a11y-cwd-resolve.spec.ts:28-36,264-272 — deliberately NOT covered by a Playwright test;
     the branch is only reachable by seeding overlapping rows through the raw repo, which is a
     Rust-integration-test concern.
   source: web/e2e/a11y-cwd-resolve.spec.ts:264-272
@@ -1789,7 +1789,7 @@
   family: card-create
   statement: >
     Activating the terminal menuitem must create a card immediately with no modal (zero config)
-    and persist a terminal card row on the track — the planner polls `/api/tracks` for that track until
+    and persist a terminal card row on the track — the test polls `/api/tracks` for that track until
     `containsTerminalCard` holds, so a UI-only success does not satisfy this.
   why: >
     a11y-keyboard.spec.ts:360-414 — terminal has no createSchema; the poll against
@@ -2031,7 +2031,7 @@
     such cards can retain focus and wedge the walk.
   why: >
     a11y-keyboard.spec.ts:838-841 — a real, load-bearing testing constraint that a rewrite's
-    new planners will re-discover the hard way.
+    new tests will re-discover the hard way.
   source: web/e2e/a11y-keyboard.spec.ts:838-842
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:841
   owner_slice: none/e2e/a11y-keyboard
@@ -2049,7 +2049,7 @@
     `HTTPS proxy` textboxes plus `Reset` and `Save` buttons, all reachable by Tab from body.
   why: >
     a11y-keyboard.spec.ts:851-882 — Reset and Save both start disabled (form clean, no edits);
-    the planner asserts existence + reachability, not enabled state.
+    the test asserts existence + reachability, not enabled state.
   source: web/e2e/a11y-keyboard.spec.ts:860-882
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:851
   owner_slice: features/settings
@@ -2530,7 +2530,7 @@
     opens an `<input aria-label="Area name">` that auto-focuses with the value pre-selected.
   why: >
     a11y-track-area-ops.spec.ts:253-265 — EditableTitle in Area.tsx; the microtask `select()` in
-    `enter()` is why planners must `selectText()` before `fill()` for determinism.
+    `enter()` is why tests must `selectText()` before `fill()` for determinism.
   source: web/e2e/a11y-track-area-ops.spec.ts:253-282
   authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:241
   owner_slice: features/area/page
@@ -2747,7 +2747,7 @@
   statement: >
     `DELETE /api/areas/:id` must cascade through tracks → cards → terminals.
   why: >
-    track-create.spec.ts:24-26 — relied on by every chromium planner's cleanup hook; without the
+    track-create.spec.ts:24-26 — relied on by every chromium test's cleanup hook; without the
     cascade the suite leaks orphan tracks and terminals.
   source: web/e2e/track-create.spec.ts:21-26
   authoritative_test: web/e2e/track-create.spec.ts:33
@@ -3185,7 +3185,7 @@
     sidebar live, via the resulting `EventScope::System` `area.updated` / `track.updated` WS
     frames, with no reload.
   why: >
-    helpers/reset.ts:42-52 — every a11y planner depends on this; it is also the everyday multi-tab /
+    helpers/reset.ts:42-52 — every a11y test depends on this; it is also the everyday multi-tab /
     agent-driven-mutation contract.
   source: web/e2e/helpers/reset.ts:42-79
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:157
@@ -3982,7 +3982,7 @@
     params (JSON string), created_at_ms}` with `method: "item/completed"` and a
     `params.item.content[].text` payload.
   why: >
-    track-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the planner
+    track-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the test
     route-fulfills it, so this IS the pinned contract.
   source: web/e2e/track-report-view.spec.ts:78-101
   authoritative_test: web/e2e/track-report-view.spec.ts:149
@@ -4180,7 +4180,7 @@
     ZERO registered xterm dump hooks until a terminal card is added.
   why: >
     new-terminal-osc-echo.spec.ts:174-178 and tui-theme-protocol.spec.ts:117-119 — an explicit
-    architectural change; planners count "+1 dump hook" relative to a likely-zero baseline.
+    architectural change; tests count "+1 dump hook" relative to a likely-zero baseline.
   source: web/e2e/new-terminal-osc-echo.spec.ts:174-178
   authoritative_test: web/e2e/tui-theme-protocol.spec.ts:119
   owner_slice: features/planner/chat
@@ -4449,8 +4449,8 @@
     `web/src/api/themeRgb.ts` and be importable by e2e specs.
   why: >
     new-terminal-card.spec.ts:54-57 and tui-theme-protocol.spec.ts:4 — every track-creating fixture
-    in the suite carries the dark sentinel, and the tui-theme planner imports the real constants so a
-    palette change cannot silently desync planner from app.
+    in the suite carries the dark sentinel, and the tui-theme test imports the real constants so a
+    palette change cannot silently desync test from app.
   source: web/e2e/tui-theme-protocol.spec.ts:4
   authoritative_test: web/e2e/tui-theme-protocol.spec.ts:167
   owner_slice: app/theme
@@ -4761,7 +4761,7 @@
     the same path but `/tmp` is NOT shared.
   why: >
     track-create-browse-cwd.spec.ts:13-21 — a directory the test mkdirs under /tmp is invisible to
-    the kernel, so the picker planner times out hunting an entry that does not exist from the
+    the kernel, so the picker test times out hunting an entry that does not exist from the
     kernel's POV. Directory-picker fixtures must live under $HOME.
   source: web/e2e/track-create-browse-cwd.spec.ts:13-25
   authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:57
@@ -4794,7 +4794,7 @@
   kind: invariant
   family: timeouts
   statement: >
-    Planners that traverse lazy-loaded chunks against a cold Vite dev server must raise their timeout
+    Tests that traverse lazy-loaded chunks against a cold Vite dev server must raise their timeout
     to 60–90s; the 30s default routinely blows on the first cold run.
   why: >
     a11y-177-theme-toggle-no-remount.spec.ts:85-89, new-terminal-osc-echo.spec.ts:113-117,
@@ -4813,7 +4813,7 @@
   family: hermeticity
   statement: >
     Only the replay-backed `a11y` project is hermetic; the `chromium` project targets a shared
-    developer stack, so every chromium planner must namespace its cwds/titles with `Date.now()` (and
+    developer stack, so every chromium test must namespace its cwds/titles with `Date.now()` (and
     where needed `Math.random()`) to avoid tripping `area_folders.UNIQUE(path)`.
   why: >
     track-create.spec.ts:12-17 and a11y-track-area-ops.spec.ts:20-27 — concurrent or repeated runs
@@ -4836,7 +4836,7 @@
     no real PTY/codex flow can be exercised there.
   why: >
     a11y-keyboard.spec.ts:19-29 and new-terminal-osc-echo.spec.ts:47-54 — this is why terminal
-    OSC/exit/wheel planners must live in the chromium project and cannot be moved into the a11y gate.
+    OSC/exit/wheel tests must live in the chromium project and cannot be moved into the a11y gate.
   source: web/e2e/a11y-keyboard.spec.ts:19-29
   authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:47-54
   owner_slice: none/e2e/infra
@@ -4850,7 +4850,7 @@
   kind: invariant
   family: hermeticity
   statement: >
-    Every a11y planner must clear the trace ring buffer AFTER bootstrap completes, so per-test
+    Every a11y test must clear the trace ring buffer AFTER bootstrap completes, so per-test
     assertions never see the bootstrap path's own `area.updated` / `track.updated` frames.
   why: >
     a11y-keyboard.spec.ts:203-212 — bootstrap pollution is the single most common source of

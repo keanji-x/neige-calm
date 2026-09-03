@@ -22,8 +22,8 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
        Today. */
     { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
     /* #1211 — the new-track page. Added here rather than left to the create
-       planner: this is a real route with its own heading, a `contenteditable` and
-       two chips, and none of that is exercised for contrast or naming by a planner
+       test: this is a real route with its own heading, a `contenteditable` and
+       two chips, and none of that is exercised for contrast or naming by a test
        that only drives it. It is anchored on the composer because the page has
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },

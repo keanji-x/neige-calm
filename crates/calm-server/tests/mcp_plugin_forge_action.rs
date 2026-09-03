@@ -879,7 +879,7 @@ async fn boot_plugin_host(
     env.insert("STUB_FORGE_IDEM_KEY".into(), json!(mode.idem_key()));
     env.insert("STUB_FORGE_PARKED".into(), json!(mode.parked().to_string()));
     env.insert(
-        "STUB_FORGE_EVENT_PLANNER_JSON".into(),
+        "STUB_FORGE_EVENT_SPEC_JSON".into(),
         json!(mode.event_spec_json()),
     );
     env.insert("STUB_FORGE_CONTEXT_JSON".into(), json!(mode.context_json()));

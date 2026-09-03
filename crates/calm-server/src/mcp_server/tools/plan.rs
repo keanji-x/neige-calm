@@ -65,7 +65,7 @@ pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
 
 /// Gate timeout defaults/caps (design §4.1 rule 7). The task-verify
 /// adapter re-clamps defensively at run time
-/// (`task_verify_adapter::GatePlanner::timeout_secs_clamped`).
+/// (`task_verify_adapter::GateSpec::timeout_secs_clamped`).
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_upsert_descriptor(), wrap(plan_upsert));
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
@@ -145,7 +145,7 @@ struct NormalizedTask {
     depends_on: Vec<String>,
     priority: i64,
     /// Canonical gate serialization (rule 7 shape, validated; wire
-    /// shape = `task_verify_adapter::GatePlanner`). Deterministic per
+    /// shape = `task_verify_adapter::GateSpec`). Deterministic per
     /// input, so the rule-5 idempotency check covers gates too.
     gate_json: Option<String>,
     /// Rule 6 escape hatch was supplied.
@@ -275,7 +275,7 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
 /// canonical `gate_json` (a pure function of the input — `None` fields
 /// omitted, fixed key insertion order — so rule-5 byte-identical
 /// idempotency covers gates). The wire shape matches
-/// `task_verify_adapter::GatePlanner`.
+/// `task_verify_adapter::GateSpec`.
 #[cfg(test)]
 fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
     validate_gate_shape(key, gate)?;
@@ -1262,7 +1262,7 @@ mod tests {
 
     /// PR-C deleted the rule-8 slice guard: a well-shaped gate is now
     /// ACCEPTED and stored canonically. The stored bytes must parse as
-    /// the task-verify runner's `GatePlanner` wire shape, and the
+    /// the task-verify runner's `GateSpec` wire shape, and the
     /// canonicalization must be deterministic (rule-5 idempotency).
     #[test]
     fn declared_gate_accepted_and_stored_canonically() {
@@ -1274,13 +1274,13 @@ mod tests {
         ));
         let n = normalize_task_input(t).expect("gate accepted in PR-C");
         let gate_json = n.gate_json.expect("gate stored");
-        let planner: crate::operation::task_verify_adapter::GatePlanner =
-            serde_json::from_str(&gate_json).expect("stored bytes parse as GatePlanner");
-        assert_eq!(planner.cwd.as_deref(), Some("/repo"), "gate.cwd is trimmed");
-        assert_eq!(planner.timeout_secs, Some(600));
-        assert_eq!(planner.steps.len(), 2);
-        assert_eq!(planner.steps[0].name, "test");
-        assert_eq!(planner.steps[0].cmd, "cargo test");
+        let parsed: crate::operation::task_verify_adapter::GateSpec =
+            serde_json::from_str(&gate_json).expect("stored bytes parse as GateSpec");
+        assert_eq!(parsed.cwd.as_deref(), Some("/repo"), "gate.cwd is trimmed");
+        assert_eq!(parsed.timeout_secs, Some(600));
+        assert_eq!(parsed.steps.len(), 2);
+        assert_eq!(parsed.steps[0].name, "test");
+        assert_eq!(parsed.steps[0].cmd, "cargo test");
 
         // Deterministic: the same input normalizes to the same bytes.
         let mut t2 = raw_task("a");

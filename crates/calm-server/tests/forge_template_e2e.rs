@@ -905,7 +905,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
                     "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
                 }
             }))
-            .expect("merge event planner"),
+            .expect("merge event specification"),
         ),
         context: serde_json::Map::new(),
         probe: Some(ProbeSpec {

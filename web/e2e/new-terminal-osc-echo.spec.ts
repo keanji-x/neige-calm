@@ -48,12 +48,12 @@
 // -----------------
 // Runs in the `chromium` Playwright project, which targets the
 // developer's `make dev` stack at http://localhost:4041/calm/. This
-// planner needs a REAL PTY-backed terminal running the host's `$SHELL` to
+// test needs a REAL PTY-backed terminal running the host's `$SHELL` to
 // reproduce the echo, and the replay binary used by the `a11y` project
 // stubs the daemon out (`DaemonClient::new_stub()`), so the chromium /
 // `make dev` path is the only env that can exercise it.
 //
-// NOTE on the anchor's assumption: this planner drives the host's real
+// NOTE on the anchor's assumption: this test drives the host's real
 // `$SHELL`, so its anchor only holds if that shell does NOT enable
 // DECSET 1004 at the prompt (true for zsh/bash, which enable only
 // bracketed paste 2004). The deterministic, hermetic CI anchor is
@@ -152,7 +152,7 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
       area_id: areaId,
       title: trackTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This planner is about OSC echo through the terminal card, not
+      // This test is about OSC echo through the terminal card, not
       // working directories. See `helpers/reset.ts::createTrackInArea`
       // for why the invented `/tmp/playwright-area-<id>` attached path
       // was never valid.

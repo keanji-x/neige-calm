@@ -193,7 +193,7 @@ function PluginIframeCard({
 
       // §3.2 of the migration doc: pass `null` for the MCP client and
       // register an `oncalltool` that routes to the kernel REST endpoint.
-      // `toolInfo` in the planner carries a `tool: Tool` definition (the planner
+      // `toolInfo` in the specification carries a `tool: Tool` definition (the specification
       // assumes a chat host where an LLM picked the tool). Neige doesn't
       // have a Tool object handy at mount time, so we stash the card id
       // under the host-context's open index signature instead — plugin
@@ -237,7 +237,7 @@ function PluginIframeCard({
           })) as Record<string, unknown> | null;
           // The kernel dispatcher returns the inner `neige.*` handler's
           // value (e.g. `{ ok: true }`). Surface it under `structuredContent`
-          // so the iframe sees a planner-shaped CallToolResult.
+          // so the iframe sees a specification-shaped CallToolResult.
           return {
             content: [],
             structuredContent: result ?? {},

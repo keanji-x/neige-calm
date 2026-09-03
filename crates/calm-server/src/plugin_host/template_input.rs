@@ -138,8 +138,8 @@ pub fn validate_object_schema(root_path: &str, schema: &Value) -> Result<(), Sch
         None => &empty,
     };
 
-    for (name, planner) in properties {
-        validate_property(name, planner).map_err(|e| SchemaError {
+    for (name, property_schema) in properties {
+        validate_property(name, property_schema).map_err(|e| SchemaError {
             path: path(&format!(".properties.{name}{}", e.path)),
             reason: e.reason,
         })?;
@@ -179,14 +179,14 @@ pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
     validate_object_schema("input_schema", schema)
 }
 
-/// Validate one property planner; error paths are relative to the property
+/// Validate one property schema; error paths are relative to the property
 /// (empty string = the property object itself).
-fn validate_property(_name: &str, planner: &Value) -> Result<(), SchemaError> {
-    let planner = planner
+fn validate_property(_name: &str, schema: &Value) -> Result<(), SchemaError> {
+    let schema = schema
         .as_object()
         .ok_or_else(|| SchemaError::new("", "must be a JSON object"))?;
 
-    for key in planner.keys() {
+    for key in schema.keys() {
         if !PROPERTY_KEYWORDS.contains(&key.as_str()) {
             return Err(SchemaError::new(
                 format!(".{key}"),
@@ -197,13 +197,13 @@ fn validate_property(_name: &str, planner: &Value) -> Result<(), SchemaError> {
         }
     }
 
-    if let Some(description) = planner.get("description")
+    if let Some(description) = schema.get("description")
         && !description.is_string()
     {
         return Err(SchemaError::new(".description", "must be a string"));
     }
 
-    let ty = planner
+    let ty = schema
         .get("type")
         .ok_or_else(|| SchemaError::new(".type", "is required"))?
         .as_str()
@@ -215,7 +215,7 @@ fn validate_property(_name: &str, planner: &Value) -> Result<(), SchemaError> {
         ));
     }
 
-    if let Some(members) = planner.get("enum") {
+    if let Some(members) = schema.get("enum") {
         // v1 subset: string enums only — an enum riding next to
         // `type: "integer"` etc. is declarable-but-unsatisfiable and is
         // rejected outright.
@@ -239,8 +239,8 @@ fn validate_property(_name: &str, planner: &Value) -> Result<(), SchemaError> {
         }
     }
 
-    if let Some(default) = planner.get("default")
-        && let Err(reason) = check_value(default, planner)
+    if let Some(default) = schema.get("default")
+        && let Err(reason) = check_value(default, schema)
     {
         return Err(SchemaError::new(
             ".default",
@@ -293,10 +293,10 @@ pub fn validate_instance(root_path: &str, schema: &Value, input: &Value) -> Resu
         // Unreachable-by-construction: the sweep above refused every key that
         // is not in `properties`. Written as a `?` rather than an `unwrap` so a
         // future regression up there fails closed instead of panicking.
-        let planner = properties
+        let schema = properties
             .get(key)
             .ok_or_else(|| undeclared_key_error(root_path, key))?;
-        check_value(value, planner.as_object().unwrap_or(&empty))
+        check_value(value, schema.as_object().unwrap_or(&empty))
             .map_err(|reason| format!("{root_path}.{key}: {reason}"))?;
     }
 
@@ -354,9 +354,9 @@ pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), Stri
     validate_instance("template_input", schema, input)
 }
 
-/// Check a single value against a property planner's `type` + `enum`.
-fn check_value(value: &Value, planner: &Map<String, Value>) -> Result<(), String> {
-    let ty = planner
+/// Check a single value against a property schema's `type` + `enum`.
+fn check_value(value: &Value, schema: &Map<String, Value>) -> Result<(), String> {
+    let ty = schema
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("string");
@@ -382,7 +382,7 @@ fn check_value(value: &Value, planner: &Map<String, Value>) -> Result<(), String
         }
         return Err(format!("expected type `{ty}`"));
     }
-    if let Some(members) = planner.get("enum").and_then(Value::as_array)
+    if let Some(members) = schema.get("enum").and_then(Value::as_array)
         && !members.contains(value)
     {
         let allowed: Vec<&str> = members.iter().filter_map(Value::as_str).collect();

@@ -87,10 +87,10 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 | `INV-A11Y-010` | `waiting on you` | 锚点漂移：`Sidebar.tsx:58-66` 指的是 `writeExpandedAreas`，与 statement 毫无关系 | source → `Sidebar.tsx:271-290`（`aria-label="Waiting on you"` 分区 + `title={area ? …}` 那行） |
 | `INV-APP-047` | `/api/auth/whoami` | 锚点漂移：只引了 close handler，漏掉真正发探测的 `probeUnauthorized` | source → `events.ts:313-359,558-566` |
 | `E2E-INV-INFRA-017` | `/dev/reset` | 锚点漂移：`reset.ts:16-17` 全是注释（注释被扫描器剥离） | source → `reset.ts:31-33`（用 `REPLAY_PORT` 拼 `/dev/reset` 的那行） |
-| `E2E-CAP-SHELL-006` | `/calm`、`/calm/` | statement 把 `basepath: '/calm'` 整体塞进反引号，抽不出可匹配片段；且真正定义 basepath 的是 router 不是 planner | statement 改写成 `` `basepath` set to `/calm` ``；source 加 `web/src/app/router.tsx:153-161` |
-| `E2E-CAP-SHELL-010` | `Open user menu` | `/calm/settings` 在 planner 里写成转义正则 `/\/calm\/settings…/`，字面不存在；真正可锚的是 accessible name | statement 把 `` `Open user menu` `` 改成 `"Open user menu"`（展示文案），命中 `a11y-keyboard.spec.ts:855` |
+| `E2E-CAP-SHELL-006` | `/calm`、`/calm/` | statement 把 `basepath: '/calm'` 整体塞进反引号，抽不出可匹配片段；且真正定义 basepath 的是 router 不是 test | statement 改写成 `` `basepath` set to `/calm` ``；source 加 `web/src/app/router.tsx:153-161` |
+| `E2E-CAP-SHELL-010` | `Open user menu` | `/calm/settings` 在 test 里写成转义正则 `/\/calm\/settings…/`，字面不存在；真正可锚的是 accessible name | statement 把 `` `Open user menu` `` 改成 `"Open user menu"`（展示文案），命中 `a11y-keyboard.spec.ts:855` |
 | `E2E-INV-CWD-004` | `siblingPrefix`、`claim` | statement 与实现不符：`/work/repository` / `/work/repo` 是示意写法，代码用的是 `/work-${ts}/…` | statement 改成引用真实变量名 `siblingPrefix` / `claim`，示意路径去掉反引号 |
-| `E2E-CAP-TERMINAL-006` | `signal_killed` | statement 与实现不符：`signal` 在被引 planner 里只出现在注释；承载 signal 语义的是 `XtermView` 的 `signal_killed` 字段 | statement `` `signal` `` → `` `signal_killed` ``；source → `XtermView.tsx:60-90 terminal-clean-exit.spec.ts:120-127` |
+| `E2E-CAP-TERMINAL-006` | `signal_killed` | statement 与实现不符：`signal` 在被引 test 里只出现在注释；承载 signal 语义的是 `XtermView` 的 `signal_killed` 字段 | statement `` `signal` `` → `` `signal_killed` ``；source → `XtermView.tsx:60-90 terminal-clean-exit.spec.ts:120-127` |
 | `E2E-INV-ENV-002` | `echo`（`/etc/services` 天然锚不住） | 锚点漂移：`92-96` 全是注释，真正的 POSIX echo 循环在 99 行 | source → `wheel-track-switch.spec.ts:92-100`。这条的否定半句（「没有 `/etc/services`」）原理上锚不住，但肯定半句锚住了，无需 pending |
 | `CAP-REPORT-SHELL-014` | `Multiple report cards found. Showing the earliest.` | 锚点漂移：没引渲染横幅的 `DuplicateReportBanner` | source 增补 `TrackReportPage.tsx:197-202` |
 | `INV-REPORT-BACKLINK-010` | `cites block` | 锚点漂移：没引渲染 `· cites block {id}` 的那段 JSX | source 增补 `TrackReportPage.tsx:704-708` |

@@ -4,7 +4,7 @@
 // Unit coverage already exists for `normalize_path` and
 // `is_descendant_of` in `crates/calm-server/src/routes/area_folders.rs`;
 // integration coverage for the CRUD + overlap-409 invariants lives in
-// `crates/calm-server/tests/area_folders.rs`. This planner is the missing
+// `crates/calm-server/tests/area_folders.rs`. This test is the missing
 // HTTP-level cwd-resolution test exercised through the web's wire
 // path. It pins the end-to-end contracts a `make dev` user actually
 // hits when their browser asks "which area owns this cwd?":
@@ -37,7 +37,7 @@
 //
 // Runs in the hermetic `a11y` Playwright project so the REST surface
 // is exercised against the in-memory replay binary (no `make dev`
-// dependency; no cross-planner state bleed thanks to
+// dependency; no cross-test state bleed thanks to
 // `resetReplayServer`).
 //
 // Note: there is no area-folder management UI in the web app as of
@@ -56,7 +56,7 @@ type ResolveBody = { area_id: string; folder_id: number; folder_path: string };
 
 /** Claim `path` for `areaId` via `POST /api/areas/:id/folders`. Asserts
  *  201 so a server-side conflict (overlap with an existing claim, bad
- *  path shape, etc.) surfaces in the planner that triggered it instead
+ *  path shape, etc.) surfaces in the test that triggered it instead
  *  of as a confusing later assertion failure. */
 async function claimFolder(
   request: APIRequestContext,
@@ -111,7 +111,7 @@ test('multi-area disjoint claims resolve to the correct area', async ({ request 
   // Paths are namespaced per-run so a concurrent / repeated run on a
   // shared server can't trip area_folders.UNIQUE(path). In the a11y
   // project this is hermetic via resetReplayServer; the convention
-  // makes the planner safe to re-read against a non-hermetic server.
+  // makes the test safe to re-read against a non-hermetic server.
   const ts = Date.now();
   const pathA = `/work-${ts}-alpha`;
   const pathB = `/work-${ts}-bravo`;
@@ -268,7 +268,7 @@ test('sibling-prefix path is NOT a match (guards against naive string prefix)', 
 // in `crates/calm-server/tests/area_folders.rs` (cases (3) ancestor,
 // (4) descendant, (2) equal, plus the cross-area case
 // `cross_area_overlap_409_descendant`). It does not need a Playwright
-// planner — the wire path here adds no signal beyond the Rust integration
+// test — the wire path here adds no signal beyond the Rust integration
 // test and pays the browser tax for nothing.
 
 // ---------------------------------------------------------------------------
