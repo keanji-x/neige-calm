@@ -627,6 +627,7 @@
     position: absolute;
     inset-block-start: 50%;
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+    z-index: var(--z-raised);
     translate: 0 -50%;
 
     /* Hover-revealed visually; the button remains in the focus order, and

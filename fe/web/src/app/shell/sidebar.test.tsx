@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Behaviour of the workspace rail: disclosure, badges, create/delete, menu.
+// Behaviour of the workspace rail: disclosure, badges, create/delete, account menu.
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -216,12 +216,21 @@ describe('rename area', () => {
     expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 
-  it('uses F2 as the keyboard equivalent for rename', async () => {
-    renderSidebar();
+  it('uses F2 as the keyboard equivalent and restores focus after commit or cancel', async () => {
+    const onRenameArea = vi.fn();
+    renderSidebar({ onRenameArea });
     const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
     disclosure.focus();
     await userEvent.keyboard('{F2}');
-    expect(screen.getByRole('textbox', { name: 'Rename area Work' })).toBeTruthy();
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rename area Work' }), '{Enter}');
+    await waitFor(() => expect(document.activeElement)
+      .toBe(screen.getByRole('button', { name: 'Collapse area Work' })));
+
+    await userEvent.keyboard('{F2}');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rename area Work' }), 'discarded{Escape}');
+    await waitFor(() => expect(document.activeElement)
+      .toBe(screen.getByRole('button', { name: 'Collapse area Work' })));
+    expect(onRenameArea).not.toHaveBeenCalled();
   });
 });
 

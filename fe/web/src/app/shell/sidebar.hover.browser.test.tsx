@@ -49,4 +49,7 @@ it('reveals Area delete only while the row is hovered on a desktop pointer', asy
   await page.getByRole('button', { name: 'Collapse area Work' }).hover();
   await waitFor(() => expect(getComputedStyle(remove).opacity).toBe('1'));
   expect(getComputedStyle(remove).pointerEvents).toBe('auto');
+
+  await page.getByRole('button', { name: 'Delete area Work' }).click();
+  expect(page.getByRole('dialog', { name: 'Delete Work?' })).toBeTruthy();
 });

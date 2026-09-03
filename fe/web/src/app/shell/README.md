@@ -60,9 +60,9 @@ because it is per-row data. The running pulse is a token-timed animation
 - The area count badge is `aria-hidden`: the row's accessible name already
   carries the area name, and a bare number read after it is noise.
 - The disclosure chevron is decorative inside the Area button. The permanent
-  new-Track button and the Area actions-menu trigger are siblings, so no
+  new-Track button and the hover-revealed Area delete are siblings, so no
   interactive element is nested inside another.
-- On a no-hover primary pointer the Area actions trigger is permanently visible;
+- On a no-hover primary pointer the Area delete is permanently visible;
   a wide viewport does not imply a mouse. Activating an Area initial in the
   collapsed rail focuses and scrolls to the disclosure revealed by expansion.
 - **Intentionally not done:** no skip-to-main link (INV-A11Y-058). The rail is
@@ -103,9 +103,9 @@ line, watch the named test go red) before landing.
   whose accessible name is per-area (`New track in <area>`), plus a `title`; the
   rail has one per area, so a shared `"New track"` name would be N
   indistinguishable controls (§4.4 also forbids the tooltip standing in for the
-  name). It sits at the trailing edge with the hover-revealed actions menu one
+  name). It sits at the trailing edge with hover-revealed delete one
   control-step inboard, and `.areaRow` reserves both gutters at rest, so neither
-  control moves on hover. The menu stays visible under `(hover: none)`. Both
+  control moves on hover. Delete stays visible under `(hover: none)`. Both
   marks are stroked `ui/icon` glyphs, not literal
   characters — an icon box with bare text is a source-contract violation. The
   collapsed strip gets no `+`: one glyph per area, and that glyph is the area.
@@ -117,7 +117,7 @@ line, watch the named test go red) before landing.
 
 ## Deliberate gaps
 
-- Area drag-reorder is not in the rail. Rename and delete live in each Area
-  group's actions menu.
+- Area drag-reorder is not in the rail. Double-click (or F2) renames an Area;
+  delete appears on row hover and still uses typed confirmation.
 - The sidebar's new-area flow is the sole consumer of `AREA_PALETTE`; it picks
   a colour at random and sends it to the kernel (INV-DUP-006).

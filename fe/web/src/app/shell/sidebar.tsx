@@ -473,13 +473,13 @@ function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete
  * activation models — see the rule above. The cost is real and worth naming:
  * middle-click, open-in-new-tab and copy-link do not work on it.
  *
- * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only the
- * actions menu is hover-revealed. The `+` is permanent because starting a Track
+ * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only delete
+ * is hover-revealed. The `+` is permanent because starting a Track
  * is the rail's one creative action and a control you have to discover by
  * hovering is a control most people never find.
  *
  * They do not share a slot, and neither ever moves: `+` sits at the trailing
- * edge, the menu one control-step inboard, and the row reserves both gutters at
+ * edge, delete one control-step inboard, and the row reserves both gutters at
  * rest. The track row's status dot/delete pair *does* share one slot — that
  * works because the two marks are the same size and mean the same place. Two
  * live buttons cannot do that, so this row spends the second 20px instead.
@@ -500,19 +500,27 @@ function AreaGroup({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(area.name);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const localDisclosureRef = useRef<HTMLButtonElement | null>(null);
+  const restoreDisclosureFocusRef = useRef(false);
 
   useEffect(() => {
-    if (!editing) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      return;
+    }
+    if (!restoreDisclosureFocusRef.current) return;
+    restoreDisclosureFocusRef.current = false;
+    localDisclosureRef.current?.focus();
   }, [editing]);
 
   const beginRename = () => {
     setDraft(area.name);
     setEditing(true);
   };
-  const commitRename = () => {
+  const commitRename = (restoreFocus = false) => {
     const name = draft.trim();
+    restoreDisclosureFocusRef.current = restoreFocus;
     setEditing(false);
     if (name !== '' && name !== area.name) onRename(area.id, name);
   };
@@ -527,11 +535,12 @@ function AreaGroup({
             aria-label={`Rename area ${area.name}`}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            onBlur={commitRename}
+            onBlur={() => commitRename()}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') { event.preventDefault(); commitRename(); }
+              if (event.key === 'Enter') { event.preventDefault(); commitRename(true); }
               else if (event.key === 'Escape') {
                 event.preventDefault();
+                restoreDisclosureFocusRef.current = true;
                 setDraft(area.name);
                 setEditing(false);
               }
@@ -539,7 +548,10 @@ function AreaGroup({
           />
         ) : (
           <button
-            ref={disclosureRef}
+            ref={(element) => {
+              localDisclosureRef.current = element;
+              disclosureRef(element);
+            }}
             type="button"
             data-nc-role="row"
             className={styles.areaRow}

@@ -8,8 +8,8 @@ Area is a workspace grouping, not a page or a conversation scope.
 | `new-track/public.tsx` | `<NewTrackForm>` — the route-owned create composer for a Track in one Area. |
 
 The desktop rail owns Area disclosure and management. Selecting an Area expands
-or collapses its Tracks; it never navigates. Rename and delete live in the Area
-group's actions menu, and the permanent `+` navigates to `/area/{id}/new`.
+or collapses its Tracks; it never navigates. Double-click (or F2) renames, hover
+reveals delete, and the permanent `+` navigates to `/area/{id}/new`.
 
 On mobile, the Areas sheet keeps the same hierarchy as a list drill-in:
 `Areas → Tracks → Track page`.
