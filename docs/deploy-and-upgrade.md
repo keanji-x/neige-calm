@@ -122,17 +122,29 @@ mcp_stdio_shim_bin   = "~/.local/share/neige-app/releases/current-server/bin/nei
 #   neige-app auto-defaults to sqlite://<data_dir>/calm.db?mode=rwc
 #   when child.db_url is unset. Explicit "mock" stays in-memory (dev only).
 
-[upgrade.source]
-type = "git"
+[source]
 url  = "https://github.com/keanji-x/neige-calm.git"
-ref  = "main"
+branch = "main"
+
+[systemd]
+bin = "~/.local/bin/neige-app"
 TOML
 ```
 
 ### 2.5 Install + start the systemd user unit
 
-`neige-app system install --config ~/.config/neige-app/config.toml`
-writes `~/.config/systemd/user/neige-app.service`. Then:
+First create the stable executable path named by `[systemd].bin`:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sfn ~/.local/share/neige-app/releases/current-server/bin/neige-app \
+  ~/.local/bin/neige-app
+```
+
+`~/.local/bin/neige-app system install --config ~/.config/neige-app/config.toml`
+writes `~/.config/systemd/user/neige-app.service`. It does **not** copy a
+release, create the `current-*` symlinks, or start systemd; steps 2.2–2.4 and
+the stable executable link above are prerequisites. Then:
 
 `system install` bakes the caller's `$PATH` into the unit; use
 `--path "$PATH"` if the install shell has the wrong PATH. Warnings like
@@ -184,34 +196,38 @@ curl -X POST http://127.0.0.1:4050/upgrade/apply \
 
 ```json
 {
-  "source":         { ... },          // optional; merges into config [upgrade.source]
+  "source":         { ... },          // optional; merges into config [source]
   "allowBreaking":  false,            // optional; required for breaking apply to commit
-  "dryRun":         false             // optional; compute verdict only, zero writes
+  "dryRun":         false             // optional; validate local package + compute verdict, zero writes
 }
 ```
 
 Common bodies:
 
 ```bash
-# Use config's [upgrade.source] as-is
+# Use config's [source] as-is
 -d '{}'
 
-# Override just the ref (commit/tag/branch); url + type from config
--d '{"source":{"ref":"479afae"}}'
+# Override the configured branch (`ref` is accepted as an API alias)
+-d '{"source":{"ref":"release/next"}}'
 
 # Full source override
--d '{"source":{"type":"git","url":"https://...","ref":"479afae"}}'
+-d '{"source":{"type":"git","url":"https://...","ref":"release/next"}}'
 
 # Local pre-built package
 -d '{"source":{"url":"/abs/path/to/release-dir"}}'
 
-# Dry-run any source → verdict only, no disk writes (local source only;
-# git sources must build to compute a verdict, so git + dry-run is rejected)
+# Dry-run a local package → verify every manifested byte and compute the
+# verdict, with no disk writes. Git sources are rejected because they must build.
 -d '{"source":{"url":"/abs/.../release-dir"}, "dryRun": true}'
 
 # Breaking opt-in
--d '{"source":{"ref":"v1.0.0"}, "allowBreaking": true}'
+-d '{"source":{"ref":"release/v1"}, "allowBreaking": true}'
 ```
+
+Remote source checkout currently resolves `origin/<ref>`, so the override must
+name a branch. Tags and arbitrary commit SHAs are not supported by this source
+path yet; use a local pre-built package for an immutable release artifact.
 
 Response (always the same shape):
 
@@ -231,7 +247,7 @@ Response (always the same shape):
   "deferred":             [],
   "durationMs":           1718,
   "error":                null,
-  "releaseHistoryEntry":  { /* full entry as written to release-history.jsonl */ }
+  "releaseHistoryEntry":  { /* response metadata; dryRun does not append it to history */ }
 }
 ```
 
@@ -240,17 +256,20 @@ Response (always the same shape):
 | `verdict.kind` + flag             | Trigger                                                        | apply does                                                             | calm-server PID | proc-supervisor PID |
 |-----------------------------------|----------------------------------------------------------------|------------------------------------------------------------------------|------------------|----------------------|
 | `noop`                            | All unit hashes match installed                                | Short-circuits before staging; writes a noop history entry             | unchanged        | unchanged            |
-| `preserving`                      | `productMajor` unchanged; only `calmServer` changed            | Backup DB → swap `current-server` symlink → `/restart` → 60s healthcheck → success | **new PID** | unchanged            |
+| `preserving`                      | `productMajor` unchanged; only `calmServer` changed            | Backup DB → swap `current-server` symlink → `/restart` → derived healthcheck → success | **new PID** | unchanged            |
 | `preserving` + `deferred`         | Only `calmProcSupervisor` (or other `deferUntilFullReboot` unit) changed | Swap symlink only; supervisor process keeps running old binary         | unchanged        | unchanged            |
 | `preserving` + `refreshFrontend`  | Only `web` changed                                             | Swap `current-web` symlink + write sentinel file for frontend polling  | unchanged        | unchanged            |
-| `preserving` + healthcheck fail   | Apply ran, healthcheck timed out (60s) or new calm-server exited | Auto-rollback: revert symlinks, restore DB backup, `/restart` old binary | unchanged        | unchanged            |
-| `breaking` + `allowBreaking=false`| `productMajor` changed / wire incompat / destructive DB migration | `400 result=rejected`; no disk writes                                   | unchanged        | unchanged            |
+| `preserving` + healthcheck fail   | Apply ran, the derived healthcheck timed out, or new calm-server exited | Auto-rollback: revert symlinks, restore DB backup, `/restart` old binary | **new PID on old binary** | unchanged            |
+| `breaking` + `allowBreaking=false`| `productMajor` changed / wire incompat / destructive DB migration | `400 result=rejected`; no staging, symlink, or DB activation; rejection is appended to history | unchanged | unchanged |
 | `breaking` + `allowBreaking=true` | Same                                                           | Swap all symlinks → `202 result=committed` → kill calm-server + proc-supervisor → exec self | **dies, new on respawn** | **dies, new on respawn** |
 
 The healthcheck uses a **startup-progress** model: a process that hasn't
 yet bound the port is treated as "starting" (keep polling); a process
-that has **exited** triggers immediate rollback. Slow DB migrations
-under sqlx are tolerated up to the 60s ceiling.
+that has **exited** triggers immediate rollback. The deadline is derived from
+calm-server's shared-Codex app-server timing knobs as
+`2 × start-timeout + stop-grace + 60s` (360s at defaults), capped at 30 days.
+These are not `[timing].stop_grace_ms`; healthy boots return on the first
+successful probe.
 
 ## 5. History + rollback + full-reboot
 
@@ -298,13 +317,14 @@ deferred` apply to actually activate the new proc-supervisor binary.
 - **Concurrent apply**: a second `/upgrade/apply` while one is in flight
   returns `409 apply_in_progress` immediately. Only one upgrade at a
   time; no queue.
-- **Dry-run**: `{"dryRun": true}` computes the verdict from the local
-  source's `manifest.json` (git sources require `dryRun: false` because
-  the source needs to be built to compute a verdict). No disk writes.
+- **Dry-run**: `{"dryRun": true}` validates the local package's release id,
+  manifested SHA-256/byte lengths, symlink-free payload, and absence of extra
+  files before computing the verdict. Git sources require `dryRun: false`
+  because the source needs to be built. No disk writes or staging occur.
 - **Rejected / dry-run / noop never stage**: these short-circuit before
-  the `staged/<release_id>/` directory is created (and clean it up if
-  the source already existed). A second apply with the same `release_id`
-  after a rejection just works.
+  the `staged/<release_id>/` directory is created. A second apply with the
+  same `release_id` after a rejection just works, provided no stale staged
+  directory was created by some earlier mutating attempt.
 - **Supervisor restart-rate limit**: if calm-server crashes more than
   10 times in 60 seconds, neige-app sets `desired_running=false` and
   stops respawning. Reset with `POST /restart`. Visible on `/status`.
@@ -348,7 +368,8 @@ breaking upgrade was a mistake.
 
 ## 8. Pre-flight checklist before applying to production
 
-1. `dryRun` against the target ref → confirm verdict is `preserving`,
+1. Build or download the target ref as a local package, then run `dryRun`
+   against that package → confirm verdict is `preserving`,
    `requiresDbBackup` matches expectation, no breaking surprises.
    **Caveat for breaking verdicts, see §8.1**: `requiresDbBackup` is
    hardcoded `false` for `breaking`, which is not the same as "no backup
@@ -545,7 +566,10 @@ Zero output (and exit 0) means no installed plugin is affected.
   is rollback-able today.
 - **CLI wrappers** (#402): `neige-app system history`, `system rollback`,
   `system full-reboot` are not yet shipped; use the curl recipes above.
-- **Healthcheck timeout `[upgrade.healthcheck]`** (#402): hardcoded 60s.
+- **Dedicated healthcheck configuration `[upgrade.healthcheck]`** (#402):
+  not yet supported. The current deadline is derived from calm-server's
+  shared-Codex app-server start/stop knobs and a fixed 60s margin;
+  `[timing].stop_grace_ms` does not participate.
 - **PTY survival under real workload** (#401): proven only for the
   thread-based fake supervisor in CI; real-world supervisor PID
   survival has been validated via manual deploy testing (PRs #397,
