@@ -32,10 +32,11 @@
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { defaultShouldDehydrateQuery, type Query } from '@tanstack/react-query';
 import { createStore, get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval';
+import { IDB_DB_NAME } from '../../../fe/core/keys/storage.ts';
 import pkg from '../../package.json';
 
-/** IndexedDB database name. Owned exclusively by the calm web app. */
-export const IDB_DB_NAME = 'neige-calm';
+export { IDB_DB_NAME };
+
 /** Object store inside that DB. */
 export const IDB_STORE_NAME = 'query-cache';
 /** Key under which the serialized PersistedClient blob is written. The `v1`

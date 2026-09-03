@@ -1203,14 +1203,14 @@
   why: >
     上一会话的 `since` 游标若留着，下一个用户立刻登录就会把旧事件重播进新会话；
     游标本来就是单用户的，丢弃才正确。IDB 同理 —— 死行 id 不得上色。
-  source: web/src/app/SessionProvider.tsx:112-144
-  authoritative_test: web/src/app/SessionProvider.test.tsx:111
+  source: fe/web/src/app/auth/session-gate.tsx:22-30,61-69 ; fe/web/src/app/auth/production-app.tsx:55-69 ; fe/web/src/app/events/browser-cursor-store.ts:1,83-89 ; fe/core/keys/storage.ts:12-14
+  authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:62-93 ; fe/web/src/app/auth/production-app.contract.test.tsx:30-67
   owner_slice: features/auth/session
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-114
   kind: invariant
@@ -1219,9 +1219,9 @@
     新前端收到全局 unauthorized 信号时，必须清空 QueryClient 中的上一会话缓存，
     再把会话态翻回 unauthed。
   why: >
-    即使游标和 IndexedDB 的完整 legacy 清理尚未迁移，上一用户的私有 query 数据也不得在登录页后留存。
-  source: fe/web/src/app/auth/session-gate.tsx:16-18,41-49
-  authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:44-46
+    Query cache 是完整 unauthorized 清理链的第一步；上一用户的私有 query 数据不得在登录页后留存。
+  source: fe/web/src/app/auth/session-gate.tsx:22-34,61-69
+  authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:41-60
   owner_slice: features/auth/session
   intentional_omission: false
   runtime_layer: features

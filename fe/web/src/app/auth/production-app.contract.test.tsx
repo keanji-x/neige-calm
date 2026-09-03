@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mountProductionApp } from './production-app.tsx';
+import { IDB_DB_NAME } from '../../../../core/keys/storage.ts';
+import { mountProductionApp, ProductionApp } from './production-app.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { logoutOperation, runOperation } from '../providers/queries.ts';
 import { bootCards } from '../cards.ts';
 
-const mocks = vi.hoisted(() => ({ render: vi.fn() }));
+const mocks = vi.hoisted(() => ({ render: vi.fn(), cursorClear: vi.fn() }));
 
 vi.mock('react-dom/client', () => ({ createRoot: vi.fn(() => ({ render: mocks.render })) }));
 vi.mock('../composition.ts', () => ({ createBrowserEventComposition: vi.fn(() => ({
-  store: { clear: vi.fn() }, stream: {},
+  store: { clear: mocks.cursorClear }, stream: {},
 })) }));
 vi.mock('../providers/transport.ts', () => ({ createFetchTransport: vi.fn(() => ({ send: vi.fn() })) }));
 vi.mock('../router/public.tsx', () => ({ createAppRouter: vi.fn(() => ({})) }));
@@ -22,13 +24,15 @@ vi.mock('../providers/queries.ts', async (importOriginal) => {
   return { ...actual, logoutOperation: vi.fn(() => ({ method: 'POST', path: '/logout' })), runOperation: vi.fn() };
 });
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => { vi.clearAllMocks(); mocks.cursorClear.mockReset(); });
 
 describe('production app mount', () => {
-  it('wires sign-out through logout completion and then reloads the browser', async () => {
+  it('clears every session artifact after logout completion and then reloads the browser', async () => {
     let finishLogout!: () => void;
     vi.mocked(runOperation).mockReturnValue(new Promise<void>((resolve) => { finishLogout = resolve; }));
-    const reload = vi.fn();
+    const sequence: string[] = [];
+    const reload = vi.fn(() => { sequence.push('reload'); });
+    const deleteDatabase = vi.fn((name: string) => { sequence.push(`indexed-db:${name}`); });
     const root = document.createElement('div');
     const storage = {
       length: 0, clear: vi.fn(), getItem: vi.fn(() => null), key: vi.fn(() => null),
@@ -38,10 +42,15 @@ describe('production app mount', () => {
     mountProductionApp(root, {
       storage,
       reload,
-      deleteDatabase: vi.fn(),
+      deleteDatabase,
     });
     const routerOptions = vi.mocked(createAppRouter).mock.calls[0]?.[0];
     expect(routerOptions).toBeDefined();
+    const rendered = mocks.render.mock.calls[0]?.[0] as ReactElement<Parameters<typeof ProductionApp>[0]>;
+    const clear = rendered.props.client.clear.bind(rendered.props.client);
+    rendered.props.client.setQueryData(['private'], 'cached');
+    vi.spyOn(rendered.props.client, 'clear').mockImplementation(() => { sequence.push('query'); clear(); });
+    mocks.cursorClear.mockImplementation(() => { sequence.push('cursor'); });
 
     routerOptions?.onSignOut();
     expect(logoutOperation).toHaveBeenCalledOnce();
@@ -50,6 +59,11 @@ describe('production app mount', () => {
 
     finishLogout();
     await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(rendered.props.client.getQueryData(['private'])).toBeUndefined();
+    expect(mocks.cursorClear).toHaveBeenCalledOnce();
+    expect(deleteDatabase).toHaveBeenCalledWith(IDB_DB_NAME);
+    expect(IDB_DB_NAME).toBe('neige-calm');
+    expect(sequence).toEqual(['query', 'cursor', `indexed-db:${IDB_DB_NAME}`, 'reload']);
   });
 
   it('assembles the card runtime exactly once and injects that instance into the router', () => {

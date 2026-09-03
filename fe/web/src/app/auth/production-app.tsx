@@ -4,9 +4,10 @@ import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createUnauthorizedChannel, type UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import { IDB_DB_NAME } from '../../../../core/keys/storage.ts';
 import { LoginPage } from '../../features/auth/login-page/public.tsx';
 import { loginWithTransport } from './login.ts';
-import { SessionGate } from './session-gate.tsx';
+import { clearSessionArtifacts, SessionGate } from './session-gate.tsx';
 import { createBrowserEventComposition } from '../composition.ts';
 import { EventBridge } from '../events/event-bridge.tsx';
 import { AppProviders, type ProviderRuntime } from '../providers/public.tsx';
@@ -25,6 +26,7 @@ export function ProductionApp({ transport, unauthorized, client, runtime, cursor
   renderLogin: () => ReactNode; renderError: (retry: () => void) => ReactNode;
 }>) {
   return <StrictMode><SessionGate transport={transport} unauthorized={unauthorized} client={client}
+    runtime={runtime} cursorStore={cursorStore}
     renderLogin={renderLogin} renderError={renderError}>
     <AppProviders client={client} runtime={runtime} cursorStore={cursorStore} renderEventBridge={renderEventBridge}>
       <RouterProvider router={router} />
@@ -50,14 +52,17 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   // make, built from this app's transport and its 401 channel so a card's read
   // hits the same session handling as every other read (see `CardFilesPort`).
   const host = createCardHost(registry, { files: createCardFilesPort(transport, unauthorized) });
-  const router = createAppRouter({ transport, unauthorized, client, cards: { registry, host }, onSignOut: () => {
-    void runOperation(transport, logoutOperation(), unauthorized).finally(browser.reload);
-  } });
   const runtime: ProviderRuntime = {
     fetchVersion: () => runOperation(transport, serverVersionOperation(), unauthorized),
     reload: browser.reload, deleteDatabase: browser.deleteDatabase,
-    idbDatabaseName: 'calm', storage: browser.storage,
+    idbDatabaseName: IDB_DB_NAME, storage: browser.storage,
   };
+  const router = createAppRouter({ transport, unauthorized, client, cards: { registry, host }, onSignOut: () => {
+    void runOperation(transport, logoutOperation(), unauthorized).finally(() => {
+      clearSessionArtifacts(client, events.store, runtime);
+      browser.reload();
+    });
+  } });
   createRoot(root).render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={events.store} router={router}
     renderLogin={() => <LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={browser.reload} />}
