@@ -17,15 +17,16 @@ function git(...args) {
 
 try {
   const feRoot = join(import.meta.dirname, '../..');
+  const head = process.env.OWNERSHIP_HEAD_SHA ?? 'HEAD';
   const base = resolveOwnershipBase(
     join(feRoot, '..'),
     process.env.OWNERSHIP_BASE_SHA ?? '',
-    process.env.OWNERSHIP_HEAD_SHA ?? 'HEAD',
+    head,
     process.env.OWNERSHIP_EVENT_NAME,
     process.env.OWNERSHIP_PUSH_FORCED === 'true',
   );
   const commits = ownershipCommitsForEvent(process.env.OWNERSHIP_EVENT_NAME,
-    () => gitOwnershipCommits(join(feRoot, '..'), base));
+    () => gitOwnershipCommits(join(feRoot, '..'), base, head));
   const repositoryViolations = validateOwnership(
     ownershipManifest, repositoryFiles(join(feRoot, '..')), commits,
   );
@@ -94,6 +95,22 @@ try {
     }
   }
 
+  if (resolveOwnershipBase(repository, fixtureBase, approvedPushHead, 'pull_request') !== fixtureBase) {
+    throw new Error('pull request range did not resolve through its merge base');
+  }
+  for (const [baseSha, headSha] of [
+    ['0'.repeat(40), approvedPushHead],
+    [fixtureBase, '0'.repeat(40)],
+    ['f'.repeat(40), approvedPushHead],
+  ]) {
+    try {
+      resolveOwnershipBase(repository, baseSha, headSha, 'pull_request');
+      throw new Error('ownership checker silently accepted an invalid pull request range');
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('cannot audit ownership pull request')) throw error;
+    }
+  }
+
   const headParent = git('rev-parse', 'HEAD~1').trim();
   if (resolveOwnershipBase(repository, '0'.repeat(40)) !== headParent) throw new Error('zero base did not fall back to HEAD~1');
   if (resolveOwnershipBase(repository, 'f'.repeat(40)) !== headParent) throw new Error('missing injected base did not fall back to HEAD~1');
@@ -111,6 +128,20 @@ try {
     throw new Error('non-ancestor injected base leaked target-branch commits into the ownership range');
   }
 
+  git('checkout', 'main');
+  git('merge', '--no-ff', 'advanced-target', '-m', 'merge fixture');
+  const mergeHead = git('rev-parse', 'HEAD').trim();
+  const explicitLinearCommits = gitOwnershipCommits(repository, fixtureBase, approvedPushHead);
+  if (explicitLinearCommits.length !== 1 || explicitLinearCommits[0]?.sha !== approvedPushHead) {
+    throw new Error('synthetic merge checkout leaked into an explicit linear pull request range');
+  }
+  try {
+    gitOwnershipCommits(repository, fixtureBase, mergeHead);
+    throw new Error('ownership checker silently accepted a merge commit');
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('rebase merge commits before review')) throw error;
+  }
+
   git('branch', '-D', 'origin/main');
   try {
     resolveOwnershipBase(repository, '');
@@ -122,8 +153,11 @@ try {
   console.log(`ownership push readonly negative: RED (${pushViolations[0].message})`);
   console.log('ownership push readonly approved: GREEN');
   console.log('ownership push invalid ranges: fail-closed for zero before/after, forced push, unavailable history');
+  console.log('ownership pull request ranges: merge-base resolved, invalid or unavailable history fails closed');
   console.log('ownership injected-base fallback: zero or unavailable SHA resolves to HEAD~1');
   console.log(`ownership non-ancestor base: ${advancedTarget} -> merge-base ${divergentBase}; range contains feature ${featureHead} only`);
+  console.log(`ownership merge range: RED (${mergeHead} requires rebase before review)`);
+  console.log(`ownership explicit head: ${approvedPushHead} stays linear under synthetic merge checkout ${mergeHead}`);
   console.log('ownership single-commit fallback: fail-closed with a two-commit diagnostic');
   console.log('ownership missing-ref check: fail-closed with git fetch origin main guidance');
 } finally {

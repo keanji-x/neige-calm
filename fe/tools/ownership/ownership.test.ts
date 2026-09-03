@@ -4,6 +4,7 @@ import { parse } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
 import {
   OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, ownershipCommitsForEvent, repositoryFiles, validateOwnership,
+  validateOwnershipPullRequestBody,
   type OwnershipCommit, type OwnershipEntry,
 } from './validator';
 import { ownershipManifest } from '../../ownership-manifest.mjs';
@@ -21,6 +22,9 @@ function fixtureFiles(root: string): string[] {
 }
 function fixtureCommits(caseName: string, kind: 'positive' | 'negative'): OwnershipCommit[] {
   return parse(readFileSync(resolve(fixtures, caseName, kind, 'commits.yaml'), 'utf8')) as OwnershipCommit[];
+}
+function fixtureBody(caseName: string, kind: 'positive' | 'negative'): string {
+  return readFileSync(resolve(fixtures, caseName, kind, 'body.md'), 'utf8');
 }
 
 describe('ownership fixtures', () => {
@@ -43,6 +47,11 @@ describe('ownership fixtures', () => {
       'readonly-change-trailer': () => validateOwnership(entries('readonly', 'negative'), [], [{
         sha: 'abc123', message: 'change without approval', paths: ['fe/web/src/styles/tokens.css'],
       }]),
+      'readonly-change-pr-body': () => validateOwnershipPullRequestBody('pull_request', [{
+        sha: 'abc123',
+        message: 'change\n\nOWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997)',
+        paths: ['fe/web/src/styles/tokens.css'],
+      }], ''),
     };
     expect(new Set(Object.keys(evidence))).toEqual(new Set(OWNERSHIP_RULES));
     for (const [rule, runEvidence] of Object.entries(evidence)) {
@@ -191,5 +200,38 @@ describe('ownership event routing', () => {
       message: 'push-negative changes frozen fe/web/src/styles/tokens.css without an OWNERSHIP-CHANGE trailer',
     }]);
     expect(validateOwnership(manifest, [], fixtureCommits('push-readonly-trailer', 'positive'))).toEqual([]);
+  });
+});
+
+describe('ownership trailer transfer into the squash body', () => {
+  it('accepts the positive fixture with every exact commit trailer in the pull request body', () => {
+    expect(validateOwnershipPullRequestBody(
+      'pull_request',
+      fixtureCommits('pull-request-body-trailer', 'positive'),
+      fixtureBody('pull-request-body-trailer', 'positive'),
+    )).toEqual([]);
+  });
+
+  it('rejects a same-path summary that omits one exact commit trailer', () => {
+    expect(validateOwnershipPullRequestBody(
+      'pull_request',
+      fixtureCommits('pull-request-body-trailer', 'negative'),
+      fixtureBody('pull-request-body-trailer', 'negative'),
+    )).toEqual([{
+      rule: 'readonly-change-pr-body',
+      message: 'commit-two has OWNERSHIP-CHANGE: fe/package.json — keep the plan purity guard (#1119) but the pull request body does not preserve it for the squash commit',
+    }]);
+  });
+
+  it('does not impose pull request metadata on push or local runs', () => {
+    const commits = fixtureCommits('pull-request-body-trailer', 'negative');
+    expect(validateOwnershipPullRequestBody('push', commits, '')).toEqual([]);
+    expect(validateOwnershipPullRequestBody(undefined, commits, '')).toEqual([]);
+  });
+
+  it('accepts a pull request with no ownership trailers and no body', () => {
+    expect(validateOwnershipPullRequestBody('pull_request', [{
+      sha: 'ordinary', message: 'ordinary change', paths: ['fe/tools/ownership/validator.ts'],
+    }], '')).toEqual([]);
   });
 });

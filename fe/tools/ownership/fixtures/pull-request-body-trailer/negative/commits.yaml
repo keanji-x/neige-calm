@@ -1,0 +1,14 @@
+- sha: commit-one
+  message: |-
+    expose the mutation plan command
+
+    OWNERSHIP-CHANGE: fe/package.json — expose the mutation plan command (#1119)
+  paths:
+    - fe/package.json
+- sha: commit-two
+  message: |-
+    keep the plan purity guard
+
+    OWNERSHIP-CHANGE: fe/package.json — keep the plan purity guard (#1119)
+  paths:
+    - fe/package.json
