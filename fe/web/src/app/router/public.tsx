@@ -1791,7 +1791,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         />
       )}
       conversationList={chat.list}
-        conversationAction={chat.action}
+      conversationAction={chat.action}
       /* Undefined while the resolve is in flight, `null` when the server says
          there is no launchpad yet. The page
          decides the empty state from `report_has_noninitial_content` and from

@@ -130,14 +130,29 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .terminalSlot {
-    display: grid;
-    flex: 1 1 auto;
-    place-items: center;
-    min-block-size: var(--slot-h);
-    padding-block: var(--space-4);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-md);
+  /* The day's report, and the one place on this page that is a document rather
+     than a list of rows. Type one step up from the surrounding ambience and a
+     reading measure so long lines do not run the full column at 1440. */
+  .document {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-inline-size: 0;
+    max-inline-size: var(--measure-prose);
+    /* `--text-lg` is the prose rank, and `--measure-prose` is measured for it
+       (tokens.css) — the two only mean anything as a pair. `ReportDocument`
+       already reads at this rank, so this sets the region around it, and the
+       empty line (`.documentEmpty`) is sized against a document rather than
+       against a label.
+
+       It does NOT resize the trigger or its notice, and neither should it:
+       `.moreButton` declares `--text-xs` itself, and a declaration beats an
+       inherited value, so the button stays 11px on purpose — it is a
+       disclosure-weight control beside a document, not part of the prose.
+       The notice inherits, so it is pinned back to interface rank below. */
+    font-size: var(--text-lg);
+    line-height: var(--leading-loose);
+    color: var(--text-1);
   }
 
   /* The status bar's overflow control. Text-weight, aligned with the rows it
@@ -167,21 +182,57 @@
     align-items: center;
   }
 
-  .slotNote,
-  .inlineEmpty {
-    font-size: var(--text-xs);
+  /* What the last press answered, at interface rank.
+     `app/router` renders the notice as a bare `[data-nc-role="hint"]` with no
+     type of its own, so inside `.document` it would inherit the prose rank and
+     the darkest text colour — 18px `--text-1` beside an 11px `--text-3`
+     button, which reads as the page's most important sentence when it is an
+     aside about a press that did not do anything. It answers a control, so it
+     takes the control's register.
+
+     One selector covers both shapes: the refusal (`data-nc-role="hint"`) and
+     the failure (`role="alert"` on the same element, which the rule below only
+     steps up in colour — a failure is worth more contrast, not more size). */
+  .summaryTrigger [data-nc-role='hint'] {
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-3);
   }
 
-  .inlineEmpty {
-    display: flex;
+  .summaryTrigger [role='alert'] {
+    color: var(--text-2);
+  }
+
+  /* `.inlineEmpty` is gone. It styled two empty lines that wanted different
+     things, and gave both a dashed frame: the calendar agenda's now uses
+     `ui/panel-card`'s `PanelEmpty` — the same carrier as the conversation
+     module directly beside it in the same card — and the document's is
+     `.documentEmpty` below. Neither is framed any more. */
+
+  /* The empty day: the document region with nothing in it yet, so the sentence
+     that says so sits in the middle of the space the document would have
+     filled. `flex: 1` is what claims that space — the main column stopped
+     having anything below this region when the terminal placeholder went, so
+     there is room to be in the middle of. */
+  .documentVacant {
+    flex: 1 1 auto;
+    justify-content: center;
     align-items: center;
-    min-block-size: var(--row-h);
-    padding-inline: var(--space-4);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-sm);
+    text-align: center;
+    min-block-size: var(--slot-h);
+  }
+
+  /* The document's own empty line. It is a sentence standing where the document
+     will stand, not a widget reporting that it has nothing — so it is set in
+     the report's face (`.calm-prose` is serif at `--text-lg`) and one rank
+     larger, with only the colour stepped back. No frame. */
+  .documentEmpty {
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
   }
 
   .emptyPage {
