@@ -725,6 +725,53 @@ async fn evaluate_schedulability_with_tree_term(
     include_read_state: bool,
     tree_term: TrackTreeTerm,
 ) -> Result<Vec<BlockVerdict>> {
+    evaluate_schedulability_with_tree_term_after_snapshot(
+        conn,
+        track_id,
+        declarations,
+        block_local_diags,
+        include_read_state,
+        tree_term,
+        std::future::ready(()),
+    )
+    .await
+}
+
+/// Test-only interleaving seam. `after_snapshot` runs after the one fact query
+/// has completed and before any verdict consumes it, so concurrency tests can
+/// mutate the database at a proven t0/t1 boundary without copying the
+/// production predicate or relying on scheduler timing.
+#[cfg(test)]
+pub(super) async fn evaluate_schedulability_after_snapshot_for_test(
+    conn: &mut SqliteConnection,
+    track_id: &str,
+    declarations: &[TaskDeclaration],
+    block_local_diags: &[Vec<Diagnostic>],
+    include_read_state: bool,
+    after_snapshot: impl std::future::Future<Output = ()>,
+) -> Result<Vec<BlockVerdict>> {
+    let tree = super::track_tree::track_tree_term(&mut *conn, track_id).await?;
+    evaluate_schedulability_with_tree_term_after_snapshot(
+        conn,
+        track_id,
+        declarations,
+        block_local_diags,
+        include_read_state,
+        tree.term,
+        after_snapshot,
+    )
+    .await
+}
+
+async fn evaluate_schedulability_with_tree_term_after_snapshot(
+    conn: &mut SqliteConnection,
+    track_id: &str,
+    declarations: &[TaskDeclaration],
+    block_local_diags: &[Vec<Diagnostic>],
+    include_read_state: bool,
+    tree_term: TrackTreeTerm,
+    after_snapshot: impl std::future::Future<Output = ()>,
+) -> Result<Vec<BlockVerdict>> {
     let references_by_declaration = declarations
         .iter()
         .map(declaration_references)
@@ -748,6 +795,7 @@ async fn evaluate_schedulability_with_tree_term(
         &reference_requests,
     )
     .await?;
+    after_snapshot.await;
     let configured_policy = state.policy;
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
     // share)` where `share` is this track's deterministic slice of the root's
