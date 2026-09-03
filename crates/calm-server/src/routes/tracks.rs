@@ -35,7 +35,8 @@ use crate::db::sqlite::{
     MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, TrackWorkspacePlan, area_folder_create_tx,
     area_folders_list_all_tx, card_create_with_id_tx, card_update_with_crdt_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx,
-    project_tasks_tx, terminal_delete_tx, track_create_tx, track_delete_tx, track_update_tx,
+    project_tasks_tx, terminal_delete_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
+    track_update_tx,
 };
 use crate::db::{RepoRead, write_with_actor_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -216,6 +217,20 @@ pub struct CreateTrackRequest {
     pub cwd: Option<String>,
     #[serde(default)]
     pub template_id: Option<String>,
+    /// A user-defined recipe (`track_recipes` row, #1292) to start from.
+    ///
+    /// Deliberately **not** folded into `template_id`. That field's value
+    /// lands on `tracks.template_id`, which the track start path later
+    /// resolves against running plugins' manifests to recover a bound
+    /// template descriptor. A recipe id has no manifest to resolve against,
+    /// so putting one there would make every recipe-created track log a
+    /// resolution failure while starting — an error record for an entirely
+    /// normal situation.
+    ///
+    /// Supplying both is a 400: two starting points is not a preference to
+    /// resolve, it is a request that does not name one thing.
+    #[serde(default)]
+    pub recipe_id: Option<String>,
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub template_input: Option<serde_json::Value>,
@@ -233,10 +248,10 @@ pub struct CreateTrackRequest {
 }
 
 impl CreateTrackRequest {
-    /// `(body, fork_report_from, cwd_omitted, as_template)`. `cwd_omitted` is
+    /// `(body, fork_report_from, recipe_id, cwd_omitted, as_template)`. `cwd_omitted` is
     /// true when the client sent no `cwd` / `null`; that is a different branch
     /// from an explicit empty string, which still 400s.
-    fn into_parts(self) -> (NewTrack, Option<String>, bool, bool) {
+    fn into_parts(self) -> (NewTrack, Option<String>, Option<String>, bool, bool) {
         let cwd_omitted = self.cwd.is_none();
         (
             NewTrack {
@@ -255,6 +270,7 @@ impl CreateTrackRequest {
                 theme: self.theme,
             },
             self.fork_report_from,
+            self.recipe_id,
             cwd_omitted,
             self.as_template,
         )
@@ -648,7 +664,17 @@ pub(crate) async fn create_track(
     actor: Actor,
     Json(request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
-    let (mut p, fork_report_from, cwd_omitted, as_template) = request.into_parts();
+    let (mut p, fork_report_from, recipe_id, cwd_omitted, as_template) = request.into_parts();
+
+    // #1292 — two starting points is not a preference to resolve, it is a
+    // request that does not name one thing. Refused here, before any other
+    // work, so the `init` match below can treat the combination as
+    // unreachable rather than silently picking a winner.
+    if p.template_id.is_some() && recipe_id.is_some() {
+        return Err(CalmError::BadRequest(
+            "track create: give `template_id` or `recipe_id`, not both".into(),
+        ));
+    }
     // PR6 (#136) — track create now atomically mints a `CardRole::Planner`
     // codex card alongside the track row. Both rows commit in one tx
     // and both `Event::TrackUpdated` + `Event::CardAdded` envelopes
@@ -820,10 +846,32 @@ pub(crate) async fn create_track(
     // attached-workspace check and the area 404 — so none of those 4xx left
     // freshly minted tracks behind. Nothing is minted here any more, so that
     // ordering constraint is gone with the seeding it constrained.
-    let init = match (&admission, fork_report_from) {
-        (_, Some(source_track_id)) => TrackInit::Fork { source_track_id },
-        (Some(admission), None) => TrackInit::Template { key: admission.key },
-        (None, None) => TrackInit::Blank,
+    // #1292 — a recipe is a third source, resolved at the same priority as a
+    // built-in template. An explicit `fork_report_from` still wins over both.
+    let init = match (&admission, recipe_id, fork_report_from) {
+        // Both a built-in and a recipe. The guard at the top of this function
+        // already refused this combination before any work, so reaching here
+        // means that guard was removed or bypassed. That is a reason to return
+        // the same 400 — not to panic: the exclusivity is a property of *this*
+        // match's inputs, and it should hold locally instead of depending on a
+        // caller ~180 lines up that nothing mechanically ties to this arm.
+        //
+        // This arm sits *before* the fork arm, and matches `_` on
+        // `fork_report_from`, on purpose: a request naming two starting points
+        // is ambiguous whether or not it also asks for a fork, and ambiguity is
+        // not something a priority rule gets to resolve. Ordering it after the
+        // fork arm would let `template_id + recipe_id + fork_report_from`
+        // silently take the fork path and swallow the contradiction — exactly
+        // the hole this fallback exists to close.
+        (Some(_), Some(_), _) => {
+            return Err(CalmError::BadRequest(
+                "track create: give `template_id` or `recipe_id`, not both".into(),
+            ));
+        }
+        (_, _, Some(source_track_id)) => TrackInit::Fork { source_track_id },
+        (Some(admission), None, None) => TrackInit::Template { key: admission.key },
+        (None, Some(recipe_id), None) => TrackInit::Recipe { recipe_id },
+        (None, None, None) => TrackInit::Blank,
     };
 
     let workspace_root = s.workspace_root.clone();
@@ -1157,6 +1205,16 @@ enum TrackInit {
     /// Instantiate a template recipe. The roster's own `&'static` key, never
     /// the caller's string — see [`TemplateAdmission::key`].
     Template { key: &'static str },
+    /// Instantiate a **user-defined** recipe (`track_recipes` row, #1292).
+    ///
+    /// Distinct from [`TrackInit::Template`] rather than folded into it,
+    /// because the two resolve from different places and only one of them
+    /// can fail at runtime: a built-in key is a `&'static` borrow out of the
+    /// roster and its payload is a Rust constant, while this one is a row
+    /// that may have been deleted between the picker's read and this create.
+    /// Collapsing them would make the infallible case carry the fallible
+    /// one's error paths.
+    Recipe { recipe_id: String },
     /// Copy an existing track's report.
     Fork { source_track_id: String },
 }
@@ -1414,6 +1472,29 @@ async fn create_track_structure(
                 let init_snapshot = match &init {
                     TrackInit::Blank => None,
                     TrackInit::Template { key } => Some(prepare_template_report(key)?),
+                    TrackInit::Recipe { recipe_id } => {
+                        // Read inside this transaction, like `Fork` and unlike
+                        // `Template`: the row can be edited or deleted
+                        // concurrently, so the create must see one consistent
+                        // version of it rather than one read before the tx and
+                        // a different reality inside.
+                        let recipe = track_recipe_get_tx(tx, recipe_id)
+                            .await?
+                            .ok_or_else(|| {
+                                CalmError::BadRequest(format!(
+                                    "track create: recipe `{recipe_id}` does not exist"
+                                ))
+                            })?;
+                        // The stored body is already normalized — the write
+                        // boundary did it (`routes::track_recipes`). Nothing is
+                        // re-normalized here, which is what makes "what the
+                        // picker shows" and "what create produces" the same
+                        // bytes rather than two transforms that must agree.
+                        Some(prepare_initial_report_payload(
+                            recipe_id,
+                            TrackReportPayload::new(recipe.title, recipe.body),
+                        )?)
+                    }
                     TrackInit::Fork { source_track_id } => {
                     let source_track_id = source_track_id.as_str();
                     let source_id = TrackId::from(source_track_id.to_string());

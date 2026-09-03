@@ -19,6 +19,8 @@ mod track_delete_forge_fence;
 mod track_fsm_golden;
 #[path = "cases/track_pin.rs"]
 mod track_pin;
+#[path = "cases/track_recipe_instantiate.rs"]
+mod track_recipe_instantiate;
 #[path = "cases/track_recipes.rs"]
 mod track_recipes;
 #[path = "cases/track_report_fork.rs"]
