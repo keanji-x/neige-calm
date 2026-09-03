@@ -17,21 +17,23 @@
 //! "KNOWN GAPS" section listed what a text scan cannot see — so this header
 //! said, correctly, that it was a description and not a guard.
 //!
-//! #1318 §1 changed that. The writer is now `track_report::write::persist`, a
-//! **private** `fn`: `rustc` limits its callers to `mod write` and any
-//! descendants, and the CI gate below forbids descendants, so between them the
-//! caller set is `crates/calm-server/src/track_report/write.rs`. A fourth entry
-//! point has to be cut in that file. So the two halves of "three sites, each
-//! honest" now have different carriers, and only the first one is a test:
+//! #1318 §1 changed one half of that. The writer is now
+//! `track_report::write::persist`, a **private** `fn`, so `rustc` confines the
+//! code that can name it to `mod write` and that module's descendants. That is
+//! a proof. The narrower reading — "and that subtree is one file" — is *not*
+//! proved: it rests on a text gate whose own header declares the constructions
+//! it cannot see. So the two halves of "three sites, each honest" now have
+//! different carriers, and only the first one is a test:
 //!
 //! * *each honest* — this file. It drives each decision point through the real
 //!   router / tool registry and asserts the persisted `events.actor` and
 //!   `TrackReportEdited.author`.
-//! * *only three* — the module boundary for the `rustc` half, plus
-//!   `scripts/ci/ratchets/report_write_boundary.sh` for the shapes that would
-//!   widen that one file without `rustc` objecting (the writer going `pub` or
-//!   `#[cfg]`, a `mod` / `#[path]` / `include!` / `macro_rules!` / `impl`
-//!   appearing there, a `pub use` re-export, the entry set changing).
+//! * *only three* — the module subtree, by `rustc`; plus
+//!   `scripts/ci/ratchets/report_write_boundary.sh` as a **drift detector** for
+//!   the shapes that would widen that subtree without `rustc` objecting (the
+//!   writer going `pub` or `#[cfg]`, a `mod` / `#[path]` / `include!` / macro /
+//!   `impl` / `trait` appearing there, a `pub use`, the entry set changing).
+//!   That gate is a review aid, not a guarantee — read its KNOWN GAPS.
 //!
 //! Read that module's header before relying on this, because what is
 //! closed is narrower than it sounds: three is the number of *doors*, not the

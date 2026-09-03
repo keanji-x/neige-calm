@@ -34,10 +34,11 @@
 //! the real router and tool registry. That there are three and not four used
 //! to be the weaker claim, carried by a text census whose own "KNOWN GAPS"
 //! section listed what it could not see. #1318 §1 replaced that carrier: the
-//! writer is private to its module, so a fourth *entry point* does
-//! not compile unless it is added to that module (and its CI gate forbids the
-//! module from having submodules, which is what makes "that one file" the
-//! whole of it). What is closed is the door count, not the caller count —
+//! writer is private to its module, so a fourth *entry point* does not compile
+//! unless it is added to that module's subtree (its CI gate tries to keep that
+//! subtree equal to one file, and declares the constructions it cannot see —
+//! it is a drift detector, not a proof). What is closed is the door count in
+//! that subtree, not the caller count —
 //! `write::agent_report_op` still takes its whole quadruple from its caller.
 //! See that module's header for the rest of what the boundary does not
 //! close.

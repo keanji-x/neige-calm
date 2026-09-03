@@ -13,13 +13,23 @@ set -euo pipefail
 #     two rules cannot tell you which one is live — that is how the old census
 #     shipped a case that stayed green after its rule was deleted.
 #
-#     Two cases here legitimately trip two rules, and pretending otherwise was a
-#     review finding: making the writer `pub(crate)` changes the entry set too
-#     (R1 + R3), and `#[path = "..."] mod helper;` is one line carrying both a
-#     `#[path]` and a `mod` (R2 twice). Both pin the message of the rule they
-#     are *for*, and R1/R2 are ordered before R3, so the pinned substring can
-#     only have come from the intended rule. Cases that could be made
-#     single-rule were.
+#     Several cases here legitimately trip two rules, and an earlier version of
+#     this note undercounted them — it said "two", which a review channel
+#     checked and disproved. The real list: the writer going `pub(crate)` also
+#     changes the entry set (R1 + R3); `#[path = "..."] mod helper;` carries
+#     both a `#[path]` and a `mod` (R2 twice); `include!` trips R0's macro rule
+#     as well as R2; every fixture whose body is `unimplemented!()` trips R0's
+#     macro rule alongside the rule it is for; and `pub use … as` trips both the
+#     alias rule and R2b. Each still pins the message of the rule it is *for*,
+#     and the rules run in a fixed order with every failure printed, so a
+#     pinned substring can only have come from the intended rule. What these
+#     cases do not do is isolate it — that is the honest limit, and it is
+#     written here rather than asserted away.
+#
+#     The no-op check below proves a case's mutation changed *something*. It
+#     does not prove the change was one line, landed where intended, or is legal
+#     Rust; two fixtures have been wrong in exactly those ways and were caught
+#     by review, not by this suite.
 #   * **Red for the stated reason.** Each red case pins a substring of the
 #     message. Exit-1-for-any-reason is not evidence: the gate exits 1 when the
 #     file is missing too.

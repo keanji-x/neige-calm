@@ -19,19 +19,58 @@ set -euo pipefail
 # the root cause was never the regex: a text scan cannot decide what `rustc`
 # compiles.
 #
-# #1318 §1 changed the thing being checked instead. The writer
-# (`track_report::write::persist`) is now a **private** `fn` inside
-# `crates/calm-server/src/track_report/write.rs`. Note precisely what `rustc`
-# gives and what it does not: a private item is visible to its module **and
-# that module's descendants**, not to "the file". So the two halves are
+# #1318 §1 changed the thing being checked instead, and the honest statement of
+# what that bought is two sentences long — one proof, one drift detector.
 #
-#   * `rustc` — nothing outside `mod write` and its descendants can call it;
-#   * R2 below — `mod write` has no descendants.
+# **The proof.** `track_report::write::persist` is a private `fn`, so code that
+# can name it is confined to `mod write` and that module's descendants. Rust
+# privacy is per module *subtree*, not per file. Four review rounds looked for a
+# counterexample to this half and found none: a proc-macro expanding here
+# produces a descendant of `write` (so it is inside the boundary, not around
+# it), `include!` content belongs to the module that invoked it, and a
+# `#[cfg]`-alternative `write` is a different module in a build where this
+# `persist` does not exist. This half carries the slice.
 #
-# Only together do they say "one file". The enumeration this gate defends is
-# therefore one file long, and every historical bypass is irrelevant to it: an
-# alias, a macro path or a `#[path]` module elsewhere in the repo cannot reach
-# a private item, so there is nothing for them to hide.
+# **The drift detector.** Everything below is an attempt to keep that subtree
+# equal to one file. It is a text scan, so it is a review aid with the same
+# threat model #1300's census declared for itself: it catches somebody adding a
+# writer *without knowing this boundary exists*. It does not catch somebody
+# working around it, and the KNOWN GAPS section says how.
+#
+# Do not write "one file" anywhere without "as far as a text scan can tell".
+#
+# ---------------------------------------------------------------------------
+# KNOWN GAPS — declared, not chased
+# ---------------------------------------------------------------------------
+#
+# Four review rounds produced a new bypass each time; the rules grew each time;
+# the fifth round would produce another. That is the same loop #1300 exited by
+# writing its gaps down, and this file exits it here rather than one round
+# later. Every item below is a construction that compiles and stays GREEN:
+#
+#   G1 **Attribute and derive proc-macros.** `#[derive(InjectDoor)]` or
+#      `#[cfg_attr(all(), inject_door)]` expands to whatever it likes, including
+#      `pub(crate) mod smuggled { … super::persist(…) … }`. There is no
+#      `ident!` for the macro rule to see. `build.rs`-generated input is the
+#      same gap wearing a hat.
+#
+#   G2 **Macro names the regex does not shape-match.** A macro defined
+#      elsewhere and invoked as `super::DOOR!()` (all caps) misses the
+#      lowercase-anchored pattern, and `super::door` + newline + `!();` is one
+#      legal invocation split across two lines.
+#
+#   G3 **`use … as` split across lines.** The alias rule is line-oriented;
+#      `use std::include // …` then `as format;` is legal and invisible.
+#
+#   G4 **Anything needing a lexer.** The comment stripper does not know string
+#      literals (see its own note), and `attrs_above` balances brackets by
+#      counting characters, so a `[` inside `#[doc = "…[T"]` unbalances it.
+#
+# Closing G1–G4 means parsing Rust. The rules here are worth their weight
+# against unintentional drift and are not worth another round of regex; if this
+# boundary ever needs an adversarial guarantee, the answer is a compile-time
+# one (a `trybuild`-style compile-fail suite, or moving the entries behind a
+# type only this module can construct), not a longer scan.
 #
 # ---------------------------------------------------------------------------
 # WHAT IT CHECKS, AND WHAT EACH RULE IS FOR
@@ -53,9 +92,14 @@ set -euo pipefail
 #      declaration R1 inspects.
 #
 #   R2 The file declares no `mod`, no `#[path]`, no `include!` — the second
-#      half of the `rustc` argument above — and no `pub use` (R2b), which would
-#      hand the private writer out under another name without changing its own
-#      declaration.
+#      half of the argument above — and no `pub use` (R2b).
+#
+#      R2b's stated reason used to be wrong and is worth correcting rather than
+#      deleting: `pub use self::persist as …` does NOT compile (rustc answers
+#      E0364, "`persist` is private, and cannot be re-exported" — verified), so
+#      the rule is not holding back a hole rustc leaves open. What it does hold
+#      is the export surface: R3 counts `fn` declarations, so a `pub use`
+#      carrying some *other* item out of this file is an export R3 never sees.
 #
 #   R3 The exported entry set is exactly the four pinned `visibility|name`
 #      pairs. Adding a fifth door is a legitimate thing to do — it just has to
@@ -122,12 +166,18 @@ fail() {
 #
 # `/* */` is rejected outright rather than parsed: a block comment can hide a
 # declaration from a line-oriented stripper, and this file has never needed one.
-CODE="$(awk '{
-  if ($0 ~ /^[[:space:]]*\/\//) { print ""; next }
-  i = index($0, "//")
-  if (i > 0) { print substr($0, 1, i - 1); next }
-  print
-}' "$BOUNDARY_FILE")"
+# Whole-line `//` only. Trailing-comment stripping was tried in the previous
+# revision and is reverted here because it was worse than the problem it solved:
+# it has no idea what a string literal is, so
+#
+#     const _: &str = "https://x"; pub(crate) mod smuggled { … }
+#
+# got truncated at the `//` inside the URL and R2 never saw the `mod`. A false
+# GREEN, introduced by a fix. The cost of reverting is a false RED on a trailing
+# `// panic!()` — fail-closed, visible, and fixed by moving the comment to its
+# own line. Getting this right needs a lexer, which is the standing argument of
+# the KNOWN GAPS section below.
+CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_FILE")"
 
 # attrs_above <awk-ERE> — print the block of `#[…]` attribute lines *directly
 # above* the first line matching the pattern, and nothing else.
@@ -204,8 +254,8 @@ fi
 
 # `impl`: an `impl` block can carry a `pub(crate)` associated method that reaches
 # `persist` while sitting indented, below R3's column-0 anchor.
-if printf '%s' "$CODE" | rg -q '^\s*impl\b'; then
-  fail "R0: $BOUNDARY_FILE declares an \`impl\` block, which can carry an indented \`pub(crate)\` associated method that R3's column-0 anchor never sees. If one is genuinely needed, this gate has to grow a rule for it first."
+if printf '%s' "$CODE" | rg -q '^\s*(impl|(pub(\([^)]*\))?\s+)?trait)\b'; then
+  fail "R0: $BOUNDARY_FILE declares an \`impl\` block or a \`trait\`. Both can carry a method that reaches \`persist\` while sitting indented, below R3's column-0 anchor — a \`trait\` with a *default* method is the sharper one, because a sibling implements it with an empty block and then calls the default. If one is genuinely needed, this gate has to grow a rule for it first."
 fi
 
 # Macros, by ALLOWLIST rather than by blocklist — and this is the rule that

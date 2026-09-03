@@ -207,8 +207,10 @@ jobs:
 
       # #1318 §1 — replaced #1300's whole-repository `persist_report` census.
       # The writer is now private to `track_report::write`, so `rustc` decides
-      # the caller set and this gate only has to defend the four shapes that
-      # would widen that one file. The script states what it does not cover.
+      # the caller set (that module's subtree) and this gate is only a drift
+      # detector over the file, with the same threat model the census declared:
+      # it catches a writer added by somebody who does not know the boundary
+      # exists. The script's KNOWN GAPS section lists what it cannot see.
       - name: report-write boundary selftest (#1318)
         run: scripts/ci/ratchets/report_write_boundary_selftest.sh
 

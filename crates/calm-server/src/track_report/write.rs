@@ -47,9 +47,10 @@
 //!    and its descendants, by `rustc`. Read every "one file" in this repository
 //!    as "one file, as far as a text scan can tell".
 //!
-//! Step 1 is the part #1300 S2's text census could only approximate; step 2 is
-//! the small remainder that still needs a gate, over one file instead of the
-//! repository.
+//! Step 1 is the part #1300 S2's text census could only approximate, and it is
+//! the part that carries this slice. Step 2 is a text rule over one file
+//! instead of the repository — smaller than the census, and the same kind of
+//! thing: a review aid, with declared gaps.
 //!
 //! That census (`scripts/ci/ratchets/persist_report_call_sites.sh`) scanned the
 //! whole repository for two identifiers and shipped a `KNOWN GAPS` section that
@@ -62,8 +63,8 @@
 //!
 //! ## The entry points
 //!
-//! Everything outside this file goes through one of these, and each is named
-//! for the decision point it serves:
+//! Everything outside this module's subtree goes through one of these, and each
+//! is named for the decision point it serves:
 //!
 //! | entry | production caller | attribution |
 //! |---|---|---|
@@ -131,8 +132,8 @@
 //!    nothing: `Actor` is `pub struct Actor(pub String)` (`actor.rs:57`), so
 //!    any module can build `Actor("user".into())` and mint the token. That is a
 //!    marker, not a guard, and this file is not going to ship one.
-//! 3. **Editing this file.** The boundary makes a new *door* land here rather
-//!    than anywhere; it does not make landing here impossible.
+//! 3. **Editing this module.** The boundary makes a new *door* land in this
+//!    subtree rather than anywhere; it does not make landing here impossible.
 //!    `scripts/ci/ratchets/report_write_boundary.sh` pins the shapes that would
 //!    quietly widen it — [`persist`] gaining a `pub` or a `#[cfg]`, a `mod` /
 //!    `#[path]` / `include!` / `macro_rules!` / `impl` appearing here (each of
@@ -387,8 +388,9 @@ pub async fn persist_report(
 /// coming near this function (module header, "What is still not closed", item
 /// 4). Before #1318 §1 even the narrower claim was about a `pub(crate)`
 /// function anybody in the crate could call; now it is about a function only
-/// this module can reach, with the entry points above as the complete list of
-/// doors.
+/// this module's subtree can reach, with the entry points above as the list of
+/// doors that exist today — a list this module maintains, not one the compiler
+/// enumerates.
 ///
 /// Issue #247 PR1 — materializes the opaque CRDT blob alongside the
 /// legacy `payload` JSON. The CRDT is authoritative; the JSON column
