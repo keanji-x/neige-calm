@@ -463,11 +463,7 @@ impl CardDecisionSink {
             &self.write,
             actor,
             author,
-            ReportEditTarget {
-                wave,
-                report_card,
-                current_payload,
-            },
+            ReportEditTarget::for_resolved_parts(wave, report_card, current_payload)?,
             op,
             agent_message,
             lifecycle,

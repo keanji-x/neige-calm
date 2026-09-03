@@ -6,11 +6,11 @@ cove	crates	149
 cove	fe	1
 cove	docs	0
 cove	e2e	0
-wave	crates	26662
+wave	crates	26688
 wave	fe	6059
 wave	docs	2361
 wave	e2e	60
-spec	crates	5805
+spec	crates	5806
 spec	fe	621
 spec	docs	408
 spec	e2e	49

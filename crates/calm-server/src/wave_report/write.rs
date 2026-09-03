@@ -16,9 +16,17 @@
 //!    module does not compile (`error[E0603]: function `persist` is private`,
 //!    reproduced on this branch).
 //! 2. **`scripts/ci/ratchets/report_write_boundary.sh`** forbids this module
-//!    from having descendants at all (no `mod`, `#[path]`, `include!`, and no
-//!    `macro_rules!` that could expand to one). Only with that second step is
-//!    "this file and nothing else" true.
+//!    from having descendants at all: no `mod`, no `#[path]`, no `include!`,
+//!    and — the part that took two attempts — no macro invocation outside a
+//!    one-name allowlist. A review channel broke the first wording with a macro
+//!    *defined in another file* and invoked here on one line, expanding to
+//!    `pub(crate) mod smuggled { ... super::persist(.., Kernel, ..) }`. That
+//!    compiles, and the gate was green on it: it looked for `macro_rules!`
+//!    declared here and for a literal `mod`, and the construction has neither.
+//!    A blocklist cannot be finished, so the rule is now an allowlist.
+//!
+//!    Only with that second step is "this file and nothing else" true, and it
+//!    is a text rule — the weaker half of the two.
 //!
 //! Step 1 is the part #1300 S2's text census could only approximate; step 2 is
 //! the small remainder that still needs a gate, over one file instead of the
@@ -279,8 +287,10 @@ pub(crate) async fn agent_report_op(
 /// Not an entry point in the sense above: it exists so characterization and
 /// integration tests can write as any `EditAuthor` and observe what comes out,
 /// which is exactly the ability production code must not have. Gated to
-/// `cfg(any(test, feature = "fixtures"))`, and `fixtures` is off for every
-/// release build (see this module's header).
+/// `cfg(any(test, feature = "fixtures"))`, which keeps it out of a default
+/// build and **not** out of every release build — `fixtures` is an ordinary
+/// additive feature and the `replay` bin requires it. See this module's
+/// header; the guarantee is a convention in `Cargo.toml`, not the compiler.
 #[cfg(any(test, feature = "fixtures"))]
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_report(
@@ -354,10 +364,11 @@ pub async fn persist_report(
 /// is a read-cache the existing v1 REST / WS read paths and the
 /// frontend continue to consume.
 ///
-/// Issue #247 PR2 — every call also emits a structured
+/// Issue #247 PR2 — every successful call also emits a structured
 /// `Event::WaveReportEdited` carrying `(summary_before, summary_after,
 /// body_before, body_after, author, edit_id)` so PR4's UI can render an
-/// edit timeline and PR5's spec agent can wake on user-authored edits.
+/// edit timeline and PR5's spec agent can wake on user-authored edits. A
+/// failed call emits nothing: the transaction carries both events.
 ///
 /// Issue #247 PR3 — `author` became a parameter (was hard-coded `Spec`), and
 /// #1318 §1 narrowed who may supply it: only [`agent_report_op`] passes one

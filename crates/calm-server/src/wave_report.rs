@@ -597,17 +597,72 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
 /// Deliberately not the return type of [`resolve_report_for_wave`] itself: that
 /// function is `pub` and its tuple is destructured at ~20 test call sites, and
 /// churning those would have buried this slice's actual diff.
+///
+/// # The fields are private, and the constructor is fallible
+///
+/// Bundling three parameters into a struct with `pub(crate)` fields would have
+/// been the same three parameters with extra steps — worse, actually, because
+/// it reads like a checked value while checking nothing. A review channel built
+/// the construction: any sibling could write
+///
+/// ```ignore
+/// ReportEditTarget { wave: a, report_card: report_of_b, current_payload: payload_of_b }
+/// ```
+///
+/// and hand it to `write::rest_user_replace`. `write::persist` takes the row id
+/// from `report_card` and the event scope, the `PlanUpdated` target and the task
+/// reprojection from `wave`, so that call rewrites B's report while emitting A's
+/// events and rebuilding A's tasks. The hazard predates this type — the three
+/// were independent arguments before — but a type that says "the resolved
+/// report a write is about" has to earn the definite article.
+///
+/// So the fields are visible only inside `wave_report` and its descendants (i.e.
+/// this module and `write`), and every other module must go through [`resolve`]
+/// or [`for_resolved_parts`], which rejects the mismatch.
+///
+/// [`resolve`]: ReportEditTarget::resolve
+/// [`for_resolved_parts`]: ReportEditTarget::for_resolved_parts
 pub(crate) struct ReportEditTarget {
-    pub(crate) wave: Wave,
-    pub(crate) report_card: Card,
-    pub(crate) current_payload: WaveReportPayload,
+    wave: Wave,
+    report_card: Card,
+    current_payload: WaveReportPayload,
 }
 
 impl ReportEditTarget {
-    /// Resolve by id — the REST legs' entry, which had no reason to see the
-    /// three parts separately in the first place.
+    /// Resolve by wave id — the REST legs' entry, which had no reason to see the
+    /// three parts separately in the first place. Cannot produce a mismatch:
+    /// [`resolve_report_for_wave`] finds the report card *among that wave's
+    /// cards*.
     pub(crate) async fn resolve(repo: &dyn RouteRepo, id: &str) -> Result<Self, CalmError> {
         let (wave, report_card, current_payload) = resolve_report_for_wave(repo, id).await?;
+        Ok(Self {
+            wave,
+            report_card,
+            current_payload,
+        })
+    }
+
+    /// Build from parts a caller resolved itself — the MCP funnel, whose
+    /// resolver (`mcp_server::tools::wave_report::resolve_report_for_caller`)
+    /// derives the wave from the connection-bound spec card rather than from a
+    /// path parameter.
+    ///
+    /// Fallible on purpose. The check is one comparison and it is the whole
+    /// reason the fields are private: without it this constructor would be a
+    /// struct literal wearing a function's clothes.
+    pub(crate) fn for_resolved_parts(
+        wave: Wave,
+        report_card: Card,
+        current_payload: WaveReportPayload,
+    ) -> Result<Self, CalmError> {
+        if report_card.wave_id != wave.id {
+            return Err(CalmError::Internal(format!(
+                "wave_report: report card {} belongs to wave {}, not {} — a write built from                  these parts would rewrite one wave's report while emitting another's events",
+                report_card.id.as_str(),
+                report_card.wave_id.as_str(),
+                wave.id.as_str()
+            )));
+        }
         Ok(Self {
             wave,
             report_card,
@@ -698,6 +753,54 @@ mod tests {
                 .unwrap_err();
         assert!(
             matches!(error, CalmError::Conflict(message) if message.contains("9 unfinished spec task(s)") && message.contains("tree_task_budget of 8"))
+        );
+    }
+
+    /// #1318 §1 — the check that makes [`ReportEditTarget`] a resolved target
+    /// rather than three arguments in a trench coat.
+    ///
+    /// The construction a review channel built: hand the constructor wave A
+    /// with B's report card, and `write::persist` would rewrite B's row while
+    /// emitting A's events and reprojecting A's tasks. Nothing downstream
+    /// compares the two, so this is the only place it can be caught — which is
+    /// why the fields are private and this is the only door in.
+    ///
+    /// Both directions, because a constructor that rejected everything would
+    /// pass the first assertion on its own.
+    #[test]
+    fn report_edit_target_pairs_a_card_only_with_its_own_owner() {
+        fn parts(card_owner: &str) -> (Wave, Card) {
+            let owner = serde_json::from_value(json!({
+                "id": "w_a", "area_id": "a_1", "title": "A", "sort": 1.0,
+                "archived_at": null, "pinned_at": null, "cwd": "",
+                "created_at": 0, "updated_at": 0
+            }))
+            .expect("owner fixture");
+            let card = serde_json::from_value(json!({
+                "id": "c_1", "wave_id": card_owner, "kind": "wave-report",
+                "sort": 1.0, "payload": {}, "created_at": 0, "updated_at": 0
+            }))
+            .expect("card fixture");
+            (owner, card)
+        }
+
+        let (owner, own_card) = parts("w_a");
+        ReportEditTarget::for_resolved_parts(owner, own_card, WaveReportPayload::initial())
+            .expect("its own report card must build a target");
+
+        let (owner, foreign_card) = parts("w_b");
+        // `let ... else` rather than `expect_err`: the latter would need
+        // `ReportEditTarget: Debug`, and deriving it to serve one test is how a
+        // type grows an accessor nobody asked for.
+        let Err(error) =
+            ReportEditTarget::for_resolved_parts(owner, foreign_card, WaveReportPayload::initial())
+        else {
+            panic!("a report card from another owner must not build a target");
+        };
+        assert!(
+            matches!(&error, CalmError::Internal(message)
+                if message.contains("belongs to wave w_b, not w_a")),
+            "the error must name both so the mismatch is diagnosable, got: {error:?}"
         );
     }
 

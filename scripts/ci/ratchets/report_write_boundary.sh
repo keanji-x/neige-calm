@@ -138,11 +138,26 @@ CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_
 # — the cfg is attached to a const, the function is public in every build, and
 # the string is still inside the window. Here any non-attribute line resets the
 # block, so the const breaks adjacency and the cfg is not reported.
+#
+# A blank line does NOT break the block, and that is not laxity: doc comments and
+# `//` rationale lines between an attribute and its item are blanked to empty
+# lines by the stripper above, so treating a blank as a break made R4 go RED on
+# the perfectly ordinary
+#
+#     #[cfg(any(test, feature = "fixtures"))]
+#     /// Test-only direct access to the boundary.
+#     pub async fn persist_report(
+#
+# and made R1b go GREEN when a `// rationale` line sat between the writer's cfg
+# and the writer. Rust does not detach an attribute from its item across blank
+# lines or comments; neither does this. A non-empty, non-attribute line still
+# breaks the block, which is what keeps the decoy-`const` above caught.
 attrs_above() {
   printf '%s' "$CODE" | awk -v pat="$1" '
-    $0 ~ pat { print block; exit }
-    /^#\[/   { block = block $0 "\n"; next }
-               { block = "" }
+    $0 ~ pat         { print block; exit }
+    /^#\[/           { block = block $0 "\n"; next }
+    /^[[:space:]]*$/ { next }
+                     { block = "" }
   '
 }
 if printf '%s' "$CODE" | rg -q '/\*|\*/'; then
@@ -157,12 +172,37 @@ if printf '%s' "$CODE" | rg -q 'r#[a-z_]'; then
   fail "R0: $BOUNDARY_FILE uses a raw identifier (\`r#…\`). It defeats every name-based rule here while meaning the same thing to rustc."
 fi
 
-# Likewise `macro_rules!` and `impl`: a macro can expand to a `mod` declaration
-# or to an entry point (neither of which appears literally, so R2/R3 never see
-# them), and an `impl` block can carry a `pub(crate)` associated method that
-# reaches `persist` while sitting indented, below R3's column-0 anchor.
-if printf '%s' "$CODE" | rg -q '^\s*(macro_rules!|impl\b)'; then
-  fail "R0: $BOUNDARY_FILE declares a \`macro_rules!\` or an \`impl\` block. Both can introduce a module or an entry point that the name-based rules below cannot see; if one is genuinely needed, this gate has to grow a rule for it first."
+# `impl`: an `impl` block can carry a `pub(crate)` associated method that reaches
+# `persist` while sitting indented, below R3's column-0 anchor.
+if printf '%s' "$CODE" | rg -q '^\s*impl\b'; then
+  fail "R0: $BOUNDARY_FILE declares an \`impl\` block, which can carry an indented \`pub(crate)\` associated method that R3's column-0 anchor never sees. If one is genuinely needed, this gate has to grow a rule for it first."
+fi
+
+# Macros, by ALLOWLIST rather than by blocklist — and this is the rule that
+# actually holds up the `rustc` half of the argument in this gate's header.
+#
+# A macro *defined elsewhere* and invoked with one line here expands inside this
+# module. It was verified on this branch that
+#
+#     super::door!();      // expands to `pub(crate) mod smuggled { ... }`
+#                          // whose body calls super::persist(.., Kernel, ..)
+#
+# compiles, and that an earlier revision of this gate stayed GREEN on it: the
+# blocklist looked for `macro_rules!` *declared here* and for a literal `mod`,
+# and this construction has neither. The submodule is real, `persist` is
+# reachable from it, and "R2 forbids submodules" was false while it existed.
+#
+# A blocklist cannot be finished — the macro can be named anything. So the rule
+# is inverted: every macro invocation in this file must be on the list below,
+# which today is `format!` and nothing else. Adding to the list means arguing
+# that the macro cannot expand to an item, in front of a reviewer.
+macro_uses="$(
+  printf '%s' "$CODE" \
+    | rg --line-number --only-matching '(?:[A-Za-z_][A-Za-z0-9_]*::)*[a-z_][a-z0-9_]*!' \
+    | rg -v ':format!$' || true
+)"
+if [ -n "$macro_uses" ]; then
+  fail "R0: $BOUNDARY_FILE invokes or defines a macro outside the allowlist (\`format!\`). A macro can expand to a submodule or to an entry point that appears nowhere literally, so neither R2 nor R3 can see it — and a macro defined in another file expands inside this module all the same: $macro_uses"
 fi
 
 # --- R1: the writer stays private -------------------------------------------
@@ -209,9 +249,19 @@ fi
 # neither changed `actual_entries` and R3 stayed green on a new entry. Matching
 # every `pub` form means an unexpected one shows up in the diff below rather
 # than vanishing from it.
+#
+# Two shapes walked past the first revision, both verified against this gate:
+# `pub(crate) async fn fourth<T>(` (the `<T>` means the name is not followed by
+# `(`, so a pattern demanding one saw nothing) and
+# `pub(crate) async unsafe fn fifth(` (a qualifier the alternation did not list).
+# Hence: every qualifier is optional and repeatable, and the capture stops at the
+# name rather than requiring what comes after it.
+#
+# Reads CODE, not the raw file — a `pub(crate) async fn …(` quoted in this
+# module's own prose would otherwise be counted as an entry.
 actual_entries="$(
-  rg --no-line-number --replace '$1|$2' \
-    '^(pub(?:\([^)]*\))?)\s+(?:async\s+)?fn\s+([a-z_]+)\(' "$BOUNDARY_FILE" || true
+  printf '%s' "$CODE" | rg --no-line-number --replace '$1|$2' \
+    '^(pub(?:\([^)]*\))?)\s+(?:(?:async|unsafe|const|extern\s+"[^"]*")\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*).*$' || true
 )"
 if [ "$actual_entries" != "$EXPECTED_ENTRIES" ]; then
   fail "R3: the exported write-entry set changed. A new write shape is a real decision and has to be reviewed as one — update EXPECTED_ENTRIES in this gate in the same PR.
@@ -227,7 +277,7 @@ fi
 # somewhere nearby — see `attrs_above` for the decoy that "nearby" admits.
 if ! printf '%s' "$CODE" | rg -q '^pub async fn persist_report\('; then
   fail "R4: no \`pub async fn persist_report(\` found — if the test entry was renamed or removed, update R4 and EXPECTED_ENTRIES together"
-elif ! attrs_above '^pub async fn persist_report[(]' | rg -q '#\[cfg\(any\(test, feature = "fixtures"\)\)\]'; then
+elif ! attrs_above '^pub async fn persist_report[(]' | rg -q '^#\[cfg\(any\(test, feature = "fixtures"\)\)\]$'; then
   fail "R4: the test-only \`persist_report\` entry does not carry \`#[cfg(any(test, feature = \"fixtures\"))]\` in its own attribute block — without it, production builds get a \`pub\` writer that takes a caller-chosen EditAuthor"
 fi
 

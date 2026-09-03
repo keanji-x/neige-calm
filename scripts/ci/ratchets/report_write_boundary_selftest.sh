@@ -7,14 +7,29 @@ set -euo pipefail
 # A ratchet nobody has watched fail is a ratchet nobody knows works. Two
 # disciplines here, both inherited from the census selftest this replaces:
 #
-#   * **One violation per red case.** Every red fixture is the green fixture
-#     with exactly one line changed, and names the rule id it must trip. A
-#     fixture that breaks two rules at once cannot tell you which one is live —
-#     that is how the old census shipped a case that stayed green after its
-#     rule was deleted.
+#   * **One line changed per red case, and the rule id pinned.** Every red
+#     fixture is the green fixture with exactly one line changed and names the
+#     message it must produce. A fixture whose failure could come from either of
+#     two rules cannot tell you which one is live — that is how the old census
+#     shipped a case that stayed green after its rule was deleted.
+#
+#     Two cases here legitimately trip two rules, and pretending otherwise was a
+#     review finding: making the writer `pub(crate)` changes the entry set too
+#     (R1 + R3), and `#[path = "..."] mod helper;` is one line carrying both a
+#     `#[path]` and a `mod` (R2 twice). Both pin the message of the rule they
+#     are *for*, and R1/R2 are ordered before R3, so the pinned substring can
+#     only have come from the intended rule. Cases that could be made
+#     single-rule were.
 #   * **Red for the stated reason.** Each red case pins a substring of the
 #     message. Exit-1-for-any-reason is not evidence: the gate exits 1 when the
 #     file is missing too.
+#
+#     That substring test is bash's own `case`, not `printf | grep -qF`. The
+#     pipeline version failed roughly once in forty runs, reporting "red, but
+#     not for the stated reason" while printing an output that plainly contained
+#     the substring — i.e. the assertion, not the gate, was the flake. A gate
+#     suite that cries wolf at that rate is one people learn to re-run until it
+#     passes, so the assertion path now spawns no process at all.
 #
 # The green fixture is not a hand-written miniature — it is the real
 # `crates/calm-server/src/wave_report/write.rs`. A miniature would drift from
@@ -76,7 +91,7 @@ run_case() {
       if [ "$rc" -eq 0 ]; then
         echo "FAIL [$name]: expected red, gate passed"
         failures=$((failures + 1))
-      elif ! printf '%s' "$output" | grep -qF "$want_msg"; then
+      elif case "$output" in *"$want_msg"*) false ;; *) true ;; esac; then
         echo "FAIL [$name]: red, but not for the stated reason (wanted substring: $want_msg)"
         printf '%s\n' "$output"
         failures=$((failures + 1))
@@ -142,9 +157,11 @@ run_case "R3: a new pub(super) entry" red \
   '/^use super::\*;$/a\
 pub(super) async fn sneaky(repo: \&dyn RouteRepo) -> Result<Card, CalmError> { unimplemented!() }'
 
-# R3 — a new non-async entry. A `pub(crate) fn` returning a future reaches
-# `persist` exactly as well as an `async fn` does; the original pattern required
-# the `async` keyword and so never saw it.
+# R3 — a new non-async entry. What this proves is narrow and worth stating: that
+# R3 *sees the shape*. The body is `unimplemented!()`, so this fixture does not
+# itself reach `persist` — a real one would return `impl Future`. The shape is
+# what mattered, because the original pattern required the `async` keyword and
+# so never saw a `pub(crate) fn` at all.
 run_case "R3: a new non-async entry" red \
   "R3: the exported write-entry set changed" \
   '/^use super::\*;$/a\
@@ -180,15 +197,21 @@ run_case "R0: raw identifier" red \
   '/^use super::\*;$/a\
 const r#type: u8 = 0;'
 
-# R0 — `macro_rules!`. `items! { mod helper; }` is a legitimate submodule
-# declaration that appears nowhere literally, so R2 cannot see it.
+# R0 — `macro_rules!` declared here. This is the *declaration* half; the
+# invocation half (a macro defined in another file) is the case further down,
+# and that is the one that was actually green before this revision. Neither
+# fixture expands the macro: the rule rejects the construct rather than
+# analysing what it would produce.
 run_case "R0: macro_rules!" red \
   "R0:" \
   '/^use super::\*;$/a\
 macro_rules! items { ($($i:item)*) => {$($i)*}; }'
 
-# R0 — an `impl` block. Its associated methods are indented, so a
-# `pub(crate) async fn` inside one is an entry point R3 never sees.
+# R0 — an `impl` block. The fixture is empty on purpose: the rule rejects the
+# construct, not a particular body, and an empty one keeps the case to a single
+# violation. The reason the construct is rejected is that associated methods are
+# indented, so a `pub(crate) async fn` inside an impl is an entry point R3's
+# column-0 anchor never sees.
 run_case "R0: impl block" red \
   "R0:" \
   '/^use super::\*;$/a\
@@ -201,12 +224,58 @@ run_case "R1b: writer gains a cfg" red \
   '/^async fn persist($/i\
 #[cfg(feature = "fixtures")]'
 
-# R2b — a re-export hands the private writer out under another name. Its own
-# declaration is untouched, so R1 stays green.
+# R2b — a re-export in this file. Note what this case does and does not show:
+# `pub use self::persist as …` does NOT compile (rustc answers E0364, "`persist`
+# is private, and cannot be re-exported" — verified on this branch), so R2b is
+# not defending a hole rustc leaves open. What it defends is the export surface:
+# R3 counts `fn` declarations, so a `pub use` bringing some *other* item out of
+# this file would be an export R3 never sees. This case proves the rule fires;
+# it is not evidence of a bypass, and the gate's comment says so.
 run_case "R2b: pub use re-export" red \
   "R2b:" \
   '/^use super::\*;$/a\
 pub use self::persist as escape_hatch;'
+
+# R0 — a macro invocation whose definition lives in another file. This is the
+# construction that broke the previous revision: it compiles, it produces a real
+# `pub(crate) mod` inside this module whose body calls `persist` as Kernel, and
+# the blocklist-shaped rule was green on it because nothing named `mod` or
+# `macro_rules!` appears here.
+run_case "R0: macro invocation defined elsewhere" red \
+  "R0:" \
+  '/^use super::\*;$/a\
+super::door!();'
+
+# R3 — a generic fourth entry. The first revision required the name to be
+# followed by `(`, and `<T>` made the whole declaration invisible to it.
+run_case "R3: generic entry hides the paren" red \
+  "R3: the exported write-entry set changed" \
+  '/^use super::\*;$/a\
+pub(crate) async fn fourth<T>(repo: \&dyn RouteRepo) -> Result<Card, CalmError> { unimplemented!() }'
+
+# R3 — a qualifier the first revision's alternation did not list.
+run_case "R3: unsafe entry" red \
+  "R3: the exported write-entry set changed" \
+  '/^use super::\*;$/a\
+pub(crate) async unsafe fn fifth(repo: \&dyn RouteRepo) -> Result<Card, CalmError> { unimplemented!() }'
+
+# R4 — the cfg is gone, but its *text* survives inside a legal `#[doc]`
+# attribute that `attrs_above` collects. An unanchored search of the block found
+# the string and passed; the function is `pub` in every build.
+run_case "R4: cfg text hidden in a doc attribute" red \
+  "R4: the test-only \`persist_report\` entry does not carry" \
+  's|^#\[cfg(any(test, feature = "fixtures"))\]$|#[doc = r\
+"#[cfg(any(test, feature = \\"fixtures\\"))]"\
+]|'
+
+# GREEN — the false-red regression. A doc comment between an attribute and its
+# item is ordinary Rust and must not break the block: the stripper blanks that
+# line, and an earlier `attrs_above` treated the blank as a reset, so R4 went red
+# on a file nobody had weakened. Paired with the R4 red cases above, this
+# distinguishes "the rule is live" from "the rule fires at anything".
+run_case "green: doc comment between the cfg and the fn" green "" \
+  's|^#\[cfg(any(test, feature = "fixtures"))\]$|#[cfg(any(test, feature = "fixtures"))]\
+/// rationale line that used to break adjacency|'
 
 echo "----"
 echo "$cases case(s), $failures failure(s)"
