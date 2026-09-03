@@ -41,6 +41,17 @@ use crate::support::git_helpers::attached_repo_fixture;
 /// existing, inside a Git work tree. These fork fixtures only ever needed *a*
 /// target directory (they assert on report/CRDT rows, never on the path), so
 /// each named variant becomes a real, shared, idempotent Git work tree.
+/// The one spelling of an internal block reference these tests build.
+///
+/// Extracted so the fixture that plants the reference and the assertion that
+/// checks it after the fork cannot drift apart, and so the pair costs one
+/// occurrence of the retiring URI scheme instead of two. #1316 has not renamed
+/// the scheme yet, so each literal here is one more site that rename will have
+/// to find.
+fn internal_block_ref(track_id: &str, block_id: &str) -> String {
+    format!("neige://wave/{track_id}#{block_id}")
+}
+
 fn target_cwd(suffix: &str) -> String {
     attached_repo_fixture(&format!("track-report-fork-target{suffix}"))
 }
@@ -678,7 +689,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
                 "key": "build", "kind": "codex",
                 "goal": format!("Goal [internal](neige://wave/{target_track_id}#{internal_block_id})"),
                 "acceptance": format!("Accept <neige://wave/{target_track_id}#{internal_block_id}>") ,
-                "refs": [format!("neige://wave/{target_track_id}#{internal_block_id}")],
+                "refs": [internal_block_ref(&target_track_id, &internal_block_id)],
                 "ready": false, "declared_by": "spec"
             }
         }),
@@ -2276,9 +2287,7 @@ async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
     let forked = task_block_by_key(&report, "build");
     assert_eq!(
         forked["payload"]["refs"],
-        json!([format!(
-            "neige://wave/{target_track_id}#{internal_block_id}"
-        )]),
+        json!([internal_block_ref(&target_track_id, &internal_block_id)]),
         "the forked task must reference the copy of the source block: {forked}"
     );
     assert!(
