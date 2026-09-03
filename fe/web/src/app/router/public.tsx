@@ -651,7 +651,7 @@ type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
 /** What a caller may change without touching the draft's identity. `key` and
  *  `sentText` are deliberately absent: they move together or not at all, which
  *  is why `rekeyDraft` and `markDraftSent` are the only doors to them. */
-type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'error' | 'remedy'>>;
+type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'creating' | 'error' | 'remedy'>>;
 
 /**
  * The card runtime, created once at boot and injected like every other
@@ -784,13 +784,6 @@ function useConversationPanel(
      failed draft lives in `ConversationProvider`, keyed by Track, so this
      target can disappear on navigation without taking the retry key with it. */
   const [openTarget, setOpenTarget] = useState<OpenTarget | null>(null);
-  /* State, not a ref, unlike `store.send`'s `sendingRef`: `creating` is read by
-     the render (it disables the composer and both remedy buttons) and a ref
-     would not re-render. The double-submit a ref guards against cannot mint a
-     second card here — both posts carry the same draft key, and the server
-     collapses them onto one operation — so the guard a ref would add is one the
-     idempotency key already provides. */
-  const [creating, setCreating] = useState(false);
   /*
    * The conversation whose composer this route was asked to put the caret in
    * — a just-created track's planner row (#1211 S2), and nothing else.
@@ -824,6 +817,16 @@ function useConversationPanel(
   const sourceScopeId = source.kind === 'rows' ? source.scopeId : null;
   const draft = sourceScopeId === null ? null : registry.draftOf(sourceScopeId);
   const adoptedDraftId = sourceScopeId === null ? null : registry.adoptedDraftIdOf(sourceScopeId);
+  const creating = draft?.creating ?? false;
+  const discardUnsentDraft = registry.discardUnsentDraft;
+
+  /* Route-local drafts used to disappear automatically on unmount. Preserve
+     only work whose request actually left the browser; an untouched or locally
+     refused draft has no server identity that needs to outlive this route. */
+  useEffect(() => {
+    if (sourceScopeId === null) return;
+    return () => { discardUnsentDraft(sourceScopeId); };
+  }, [discardUnsentDraft, sourceScopeId]);
 
   /*
    * Adoption is the other half of the provider's draft transition. The
@@ -970,7 +973,7 @@ function useConversationPanel(
     registry.startDraft({
       scopeId: source.scopeId,
       key: mintIdempotencyKey(),
-      text: null, sentText: null, error: null, remedy: null,
+      text: null, sentText: null, creating: false, error: null, remedy: null,
     });
     setOpenTarget({ kind: 'draft' });
   };
@@ -1065,8 +1068,7 @@ function useConversationPanel(
        a scope switch — changes nothing rather than writing into whatever that
        scope holds by then. */
     let attempt = draft;
-    setCreating(true);
-    amendDraft(attempt, { text, error: null, remedy: null });
+    amendDraft(attempt, { text, creating: true, error: null, remedy: null });
     void (async () => {
       try {
         /*
@@ -1089,9 +1091,9 @@ function useConversationPanel(
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key));
       } catch (error: unknown) {
-        await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
-        setCreating(false);
+        amendDraft(attempt, { creating: false });
       }
     })();
   };
@@ -1102,34 +1104,33 @@ function useConversationPanel(
     derivedCardId: (idempotencyKey: string) => string,
     scopeId: string,
     attempt: ConversationDraft,
-  ): Promise<void> {
+  ): Promise<ConversationDraft> {
     const failure = error instanceof ApiError
       ? conversationCreateFailure(error.failure)
       : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
     const message = failure.message;
     switch (failure.kind) {
       case 'gone':
-        amendDraft(attempt, { error: message, remedy: null });
+        registry.discardDraft(attempt);
         go({ name: 'today' });
-        return;
+        return attempt;
       case 'exhausted':
         /* A spent key can never succeed again, so a new one is minted — and it
            takes `sentText` with it: nothing has been posted under this key, so
            the next press must not be read as "the reader changed the words".
            The words themselves are untouched, so that press is a genuinely new
            conversation carrying them. */
-        rekeyDraft(attempt, mintIdempotencyKey(), { error: message, remedy: 'retry' });
-        return;
+        return rekeyDraft(attempt, mintIdempotencyKey(), { error: message, remedy: 'retry' });
       case 'stale-payload':
         amendDraft(attempt, { error: message, remedy: 'new-conversation' });
-        return;
+        return attempt;
       case 'blocked':
         /* Nothing committed and the key is unspent, so both it and the words
            are kept. Whether resending them unchanged can work depends on the
            cause the sentence names — a 400 refuses the words themselves — and
            the composer is open either way. */
         amendDraft(attempt, { error: message, remedy: 'retry' });
-        return;
+        return attempt;
       case 'exists': {
         /* The derived card exists, so this key can never mint again. If the
            re-read turns it up we open it; if it says there is none, only a new
@@ -1141,7 +1142,7 @@ function useConversationPanel(
         const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
         if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
-        return;
+        return attempt;
       }
       case 'unavailable':
       case 'retry':
@@ -1162,7 +1163,7 @@ function useConversationPanel(
         if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
         }
-        return;
+        return attempt;
     }
   }
 
@@ -1171,8 +1172,7 @@ function useConversationPanel(
     const { create, refresh, scopeId, derivedCardId } = source;
     const text = draft.text;
     let attempt = draft;
-    setCreating(true);
-    amendDraft(attempt, { error: null, remedy: null });
+    amendDraft(attempt, { creating: true, error: null, remedy: null });
     void (async () => {
       try {
         /* Pressed deliberately, but the same fence applies: a new key is only
@@ -1188,9 +1188,9 @@ function useConversationPanel(
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key));
       } catch (error: unknown) {
-        await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
-        setCreating(false);
+        amendDraft(attempt, { creating: false });
       }
     })();
   };

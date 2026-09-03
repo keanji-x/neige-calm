@@ -22,6 +22,8 @@ export type ConversationDraft = Readonly<{
   text: string | null;
   /** The words actually posted under `key`, or null before any POST. */
   sentText: string | null;
+  /** The create/recovery chain for this key has not settled yet. */
+  creating: boolean;
   error: string | null;
   remedy: 'retry' | 'new-conversation' | null;
 }>;
@@ -45,6 +47,7 @@ type DraftMove = Readonly<
   | { kind: 'edit'; from: ConversationDraftId; next: (current: ConversationDraft) => ConversationDraft }
   | { kind: 'adopt'; from: ConversationDraftId; conversationId: string }
   | { kind: 'discard'; from: ConversationDraftId }
+  | { kind: 'discard-unsent'; scopeId: string }
   | { kind: 'finish-adoption'; scopeId: string; conversationId: string }
 >;
 
@@ -77,6 +80,12 @@ function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
       return slotHolds(slots[move.from.scopeId], move.from)
         ? withoutSlot(slots, move.from.scopeId)
         : slots;
+    case 'discard-unsent': {
+      const slot = slots[move.scopeId];
+      return slot?.kind === 'held' && slot.draft.sentText === null
+        ? withoutSlot(slots, move.scopeId)
+        : slots;
+    }
     case 'finish-adoption': {
       const slot = slots[move.scopeId];
       return slot?.kind === 'adopted' && slot.conversationId === move.conversationId
@@ -147,6 +156,7 @@ export type ConversationRegistry = Readonly<{
   /** Atomically retire `from` and leave its resulting row for that route to open. */
   adoptDraft: (from: ConversationDraftId, conversationId: string) => void;
   discardDraft: (from: ConversationDraftId) => void;
+  discardUnsentDraft: (scopeId: string) => void;
   adoptedDraftIdOf: (scopeId: string) => string | null;
   finishDraftAdoption: (scopeId: string, conversationId: string) => void;
   /* There is deliberately no "open the planner conversation of track W" slot here
@@ -224,6 +234,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const discardDraft = useCallback((from: ConversationDraftId) => {
     moveDraftTo({ kind: 'discard', from });
   }, []);
+  const discardUnsentDraft = useCallback((scopeId: string) => {
+    moveDraftTo({ kind: 'discard-unsent', scopeId });
+  }, []);
   const adoptedDraftIdOf = useCallback((scopeId: string) => {
     const slot = draftSlots[scopeId];
     return slot?.kind === 'adopted' ? slot.conversationId : null;
@@ -239,12 +252,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     () => ({
       conversations, turnsOf, remember, updateExisting,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
-      draftOf, startDraft, editDraft, adoptDraft, discardDraft,
+      draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
     }),
-    [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft, draftOf,
-      editDraft, finishDraftAdoption, remember, requestOpen, requestedOpenFocusesComposer,
-      requestedOpenId, startDraft, turnsOf, updateExisting],
+    [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
+      discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, remember, requestOpen,
+      requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf, updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

@@ -329,6 +329,73 @@ describe('track conversations', () => {
   });
 
   /*
+   * The request lifetime has to move with the draft too. If only `{ key,
+   * sentText }` survives a remount, the new route instance believes creation
+   * is idle. Editing then performs an absent list check while the original POST
+   * is still in flight, mints another key, and lets both requests create a row.
+   */
+  it('keeps an in-flight draft locked across a route remount', async () => {
+    let releaseFirst!: (response: ApiTransportResponse) => void;
+    const firstCreate = new Promise<ApiTransportResponse>((resolve) => { releaseFirst = resolve; });
+    let landed: Row | null = null;
+    const { requests, router } = setup((request) => {
+      if (request.path === CONVERSATIONS && request.method === 'GET' && landed !== null) {
+        return ok([assistantRow(), landed]);
+      }
+      if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
+      return creates(requests, CONVERSATIONS).length === 1
+        ? firstCreate
+        : created(derivedRow('w1', request));
+    });
+
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('words still in flight');
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+
+    await act(async () => { await router.navigate({ to: '/' }); });
+    await act(async () => { await router.navigate({ to: '/track/w1' }); });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+
+    expect(screen.getByText('words still in flight')).toBeTruthy();
+    expect(screen.getByText('Sending…')).toBeTruthy();
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    await write('edited while the first request is pending');
+    expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+
+    const first = creates(requests, CONVERSATIONS)[0];
+    landed = derivedRow('w1', first);
+    await act(async () => {
+      releaseFirst(created(landed));
+      await firstCreate;
+    });
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+  });
+
+  it('unlocks the fresh key after an exhausted attempt is rekeyed', async () => {
+    const { requests } = setup((request) => {
+      if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
+      return creates(requests, CONVERSATIONS).length === 1
+        ? failure(409, 'idempotency_key_exhausted', 'this key is used up')
+        : created(derivedRow('w1', request));
+    });
+
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('retry after exhaustion');
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    expect(retry.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(2));
+    const [exhausted, fresh] = creates(requests, CONVERSATIONS);
+    expect(fresh?.headers?.['Idempotency-Key'])
+      .not.toBe(exhausted?.headers?.['Idempotency-Key']);
+  });
+
+  /*
    * ── G5 ─────────────────────────────────────────────────────────────────────
    *
    * Visited, never opened — and that is the whole test. Opening a row remembers
