@@ -1115,9 +1115,10 @@ export interface paths {
         /**
          * `POST /api/waves/:id/report` — user-driven wave-report edit. The
          *     REST-side counterpart of the spec-MCP `calm.report.write` tool;
-         *     both paths funnel through [`crate::wave_report::persist_report`]
-         *     so the dual-event invariant (`CardUpdated` + `WaveReportEdited`)
-         *     and the CRDT write happen identically regardless of who's editing.
+         *     both paths funnel through the `wave_report::write` module — this
+         *     one via `rest_user_replace`, the tool via `agent_report_op` — so the
+         *     dual-event invariant (`CardUpdated` + `WaveReportEdited`) and the
+         *     CRDT write happen identically regardless of who's editing.
          * @description **Auth contract** (issue #247 PR3 acceptance):
          *
          *       * No session cookie → 401 (`auth::require_session` middleware

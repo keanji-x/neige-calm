@@ -21,9 +21,7 @@ use crate::state::WriteContext;
 use crate::wave_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
-use crate::wave_report::{
-    BlockOpOutcome, ReportDocOp, WaveReportPayload, persist_report_with_shadow,
-};
+use crate::wave_report::{self, BlockOpOutcome, ReportDocOp, ReportEditTarget, WaveReportPayload};
 use async_trait::async_trait;
 use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
 use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
@@ -455,20 +453,26 @@ impl CardDecisionSink {
                 wave_id: wave.id.clone(),
             });
         let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
-        persist_report_with_shadow(
+        // #1318 §1 — the writer is private to its module; this funnel
+        // reaches it through the one entry point that accepts a
+        // caller-decided attribution, because the decision above is genuinely
+        // this funnel's to make. The two REST entries cannot pass one at all.
+        wave_report::write::agent_report_op(
             self.repo.as_ref(),
             &self.events,
             &self.write,
             actor,
             author,
-            wave,
-            report_card,
-            current_payload,
+            ReportEditTarget {
+                wave,
+                report_card,
+                current_payload,
+            },
             op,
             agent_message,
             lifecycle,
             auto_promote_draft,
-            Some(recorder_shadow),
+            recorder_shadow,
         )
         .await
     }

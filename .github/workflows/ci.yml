@@ -215,14 +215,15 @@ jobs:
       - name: dropped runtimes table reintroduction ratchet (#679 PR10)
         run: scripts/ci/ratchets/dropped_runtimes_table.sh
 
-      # #1300 — the enumeration of report-write call sites, so a new one has to
-      # be declared and a reviewer sees which author it passes. A drift
-      # detector, not a semantic gate; the script states its four blind spots.
-      - name: persist_report census selftest (#1300)
-        run: scripts/ci/ratchets/persist_report_call_sites_selftest.sh
+      # #1318 §1 — replaced #1300's whole-repository `persist_report` census.
+      # The writer is now private to `wave_report::write`, so `rustc` decides
+      # the caller set and this gate only has to defend the four shapes that
+      # would widen that one file. The script states what it does not cover.
+      - name: report-write boundary selftest (#1318)
+        run: scripts/ci/ratchets/report_write_boundary_selftest.sh
 
-      - name: persist_report call-site census (#1300)
-        run: scripts/ci/ratchets/persist_report_call_sites.sh
+      - name: report-write boundary gate (#1318)
+        run: scripts/ci/ratchets/report_write_boundary.sh
 
       - name: no parallel operation-event entrance (#679 PR4)
         run: |

@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# #1318 §1 — the shapes that would quietly widen the wave-report write
+# boundary, checked over the one file that defines it.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS REPLACES, AND WHY IT IS SO MUCH SMALLER
+# ---------------------------------------------------------------------------
+#
+# It replaces `persist_report_call_sites.sh`, a 423-line per-file census of
+# every `persist_report*` mention in the repository. That gate existed because
+# the writer was `pub` / `pub(crate)`: any file in the crate could call it, so
+# the only way to know the caller set was to enumerate the whole tree. Four
+# review rounds found a new way past the enumeration each time — line-broken
+# calls, `use ... as` aliases, macro paths, `#[path]` modules, `include!`-
+# computed paths, non-`.rs` compiled sources, equal-count substitutions — and
+# the root cause was never the regex: a text scan cannot decide what `rustc`
+# compiles.
+#
+# #1318 §1 changed the thing being checked instead. The writer
+# (`wave_report::write::persist`) is now a **private** `fn` inside
+# `crates/calm-server/src/wave_report/write.rs`. Note precisely what `rustc`
+# gives and what it does not: a private item is visible to its module **and
+# that module's descendants**, not to "the file". So the two halves are
+#
+#   * `rustc` — nothing outside `mod write` and its descendants can call it;
+#   * R2 below — `mod write` has no descendants.
+#
+# Only together do they say "one file". The enumeration this gate defends is
+# therefore one file long, and every historical bypass is irrelevant to it: an
+# alias, a macro path or a `#[path]` module elsewhere in the repo cannot reach
+# a private item, so there is nothing for them to hide.
+#
+# ---------------------------------------------------------------------------
+# WHAT IT CHECKS, AND WHAT EACH RULE IS FOR
+# ---------------------------------------------------------------------------
+#
+#   R0 The file is readable by rules like these at all: no block comments (a
+#      line stripper cannot see through one), no raw identifiers (`r#persist`
+#      is `persist` to rustc and not to a regex), no `macro_rules!` (it can
+#      expand to a `mod` or to an entry point that appears nowhere literally),
+#      no `impl` block (it can carry a `pub(crate)` associated method that
+#      reaches the writer while sitting below R3's column-0 anchor). Each of
+#      these was a working bypass of an earlier revision of this gate; none is
+#      something this file has ever needed.
+#
+#   R1 `persist` is declared without `pub` (any form) and without a `#[cfg]`.
+#      A `pub(crate)` here hands the boundary back to the whole crate and this
+#      gate is the only thing that would notice — `rustc` is happy either way.
+#      The cfg half (R1b) is what stops a cfg'd-out decoy from being the
+#      declaration R1 inspects.
+#
+#   R2 The file declares no `mod`, no `#[path]`, no `include!` — the second
+#      half of the `rustc` argument above — and no `pub use` (R2b), which would
+#      hand the private writer out under another name without changing its own
+#      declaration.
+#
+#   R3 The exported entry set is exactly the four pinned `visibility|name`
+#      pairs. Adding a fifth door is a legitimate thing to do — it just has to
+#      be done in front of a reviewer, which is the same contract the census
+#      had, now over four lines instead of the repository.
+#
+#   R4 `persist_report`, the test-only entry, carries
+#      `cfg(any(test, feature = "fixtures"))` **in its own attribute block**,
+#      adjacency checked rather than proximity. Without the cfg that entry is a
+#      `pub` writer taking a caller-chosen `EditAuthor` in production builds —
+#      the exact hole #1300 spent two slices closing.
+#
+# What it does NOT check, and must not be described as checking:
+#
+#   * that no *other* code writes the `cards` row directly. The wave-create
+#     paths do, through `routes::waves::persist_initial_report_and_project_
+#     tasks_tx`, and so would a bare `UPDATE cards SET payload = ...,
+#     body_crdt = ...` in any other `write_with_*_typed` closure. Both bypass
+#     the module and this gate; #1252 §3 P2 records why that has no local
+#     solution.
+#   * **who calls the four entries, or with what.** `agent_report_op` is
+#     `pub(crate)` and takes `ActorId` / `EditAuthor` / `auto_promote_draft` /
+#     probe from its caller, so a sibling module can compose a combination no
+#     production path uses without touching the file this gate reads. Nothing
+#     here would notice. That is item 1 of the module's own "What is still not
+#     closed"; the carrier for the call sites that exist is
+#     `tests/cases/report_write_characterization.rs`, driven through the real
+#     router and tool registry.
+#   * anything about builds with `--features fixtures`, in which the test-only
+#     entry is compiled and public. R4 checks the cfg is present, not that the
+#     feature is off.
+
+script_dir="${BASH_SOURCE[0]%/*}"
+[ "$script_dir" != "${BASH_SOURCE[0]}" ] || script_dir=.
+# shellcheck source=scripts/ci/ratchets/lib.sh
+. "$script_dir/lib.sh"
+
+require_tool rg
+
+BOUNDARY_FILE="${REPORT_WRITE_BOUNDARY_FILE:-crates/calm-server/src/wave_report/write.rs}"
+require_path "$BOUNDARY_FILE"
+
+# The pinned entry set, one `visibility|name` per line. `pub(crate)` entries are
+# the production surface; the `pub` one is test-only and R4 additionally
+# requires its cfg.
+EXPECTED_ENTRIES="pub(crate)|rest_user_replace
+pub(crate)|rest_user_block_op
+pub(crate)|agent_report_op
+pub|persist_report"
+
+failures=0
+fail() {
+  echo "::error::$1"
+  failures=$((failures + 1))
+}
+
+# Every rule below reads CODE, a copy of the file with whole-line `//` comments
+# blanked out (line numbers preserved). Rules that matched the raw file were
+# unreadable in a different way: this module's own header names `mod`,
+# `#[path]`, `include!` and `pub` in prose, so a rule looking for those had to be
+# anchored tightly enough to miss the header — and tight anchoring is exactly
+# what the constructions below walked past. Blanking the prose lets the rules be
+# blunt.
+#
+# `/* */` is rejected outright rather than parsed: a block comment can hide a
+# declaration from a line-oriented stripper, and this file has never needed one.
+CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_FILE")"
+
+# attrs_above <awk-ERE> — print the block of `#[…]` attribute lines *directly
+# above* the first line matching the pattern, and nothing else.
+#
+# "Directly above" is the whole point, and it is what a `grep -B N` window got
+# wrong. With a window, this passes:
+#
+#     #[cfg(any(test, feature = "fixtures"))]
+#     const CFG_MARKER: () = ();
+#     #[allow(clippy::too_many_arguments)]
+#     pub async fn persist_report(          // unconditionally public
+#
+# — the cfg is attached to a const, the function is public in every build, and
+# the string is still inside the window. Here any non-attribute line resets the
+# block, so the const breaks adjacency and the cfg is not reported.
+attrs_above() {
+  printf '%s' "$CODE" | awk -v pat="$1" '
+    $0 ~ pat { print block; exit }
+    /^#\[/   { block = block $0 "\n"; next }
+               { block = "" }
+  '
+}
+if printf '%s' "$CODE" | rg -q '/\*|\*/'; then
+  fail "R0: $BOUNDARY_FILE contains a block comment. This gate strips only whole-line \`//\` comments, so a \`/* */\` can hide a declaration from every rule below. Use \`//\`."
+fi
+
+# Raw identifiers are rejected for the same reason: `r#persist` *is* `persist` to
+# rustc but not to a rule looking for `fn persist(`, so the pair
+# (`#[cfg(any())] async fn persist() {}` decoy, `pub(crate) async fn r#persist(`
+# real) would leave R1 inspecting the decoy. Nothing in this file needs one.
+if printf '%s' "$CODE" | rg -q 'r#[a-z_]'; then
+  fail "R0: $BOUNDARY_FILE uses a raw identifier (\`r#…\`). It defeats every name-based rule here while meaning the same thing to rustc."
+fi
+
+# Likewise `macro_rules!` and `impl`: a macro can expand to a `mod` declaration
+# or to an entry point (neither of which appears literally, so R2/R3 never see
+# them), and an `impl` block can carry a `pub(crate)` associated method that
+# reaches `persist` while sitting indented, below R3's column-0 anchor.
+if printf '%s' "$CODE" | rg -q '^\s*(macro_rules!|impl\b)'; then
+  fail "R0: $BOUNDARY_FILE declares a \`macro_rules!\` or an \`impl\` block. Both can introduce a module or an entry point that the name-based rules below cannot see; if one is genuinely needed, this gate has to grow a rule for it first."
+fi
+
+# --- R1: the writer stays private -------------------------------------------
+#
+# Anchored at column 0: `persist` is a top-level item, and anchoring keeps the
+# rule off the call sites inside the entry bodies (which are indented).
+writer_decl="$(printf '%s' "$CODE" | rg --no-line-number '^[[:alnum:]_()[:space:]]*\bfn persist\(' || true)"
+if [ -z "$writer_decl" ]; then
+  fail "R1: no top-level \`fn persist(\` declaration found in $BOUNDARY_FILE — the boundary this gate defends is not there, so every other rule below is checking nothing"
+elif [ "$(printf '%s\n' "$writer_decl" | wc -l)" -ne 1 ]; then
+  fail "R1: expected exactly one top-level \`fn persist(\` in $BOUNDARY_FILE, found: $writer_decl"
+elif printf '%s' "$writer_decl" | rg -q '\bpub\b'; then
+  fail "R1: the writer is declared \`pub\` — that reopens the boundary to the whole crate and rustc will not complain: $writer_decl"
+fi
+
+# R1b — the writer must not be `#[cfg]`-conditional. A cfg'd-out `persist` is
+# either a decoy (see the raw-identifier note above) or a boundary that exists
+# in some builds and not others, and "which builds" is precisely what this gate
+# cannot evaluate.
+if [ -n "$writer_decl" ] && attrs_above '^[a-zA-Z_ ()]*fn persist[(]' | rg -q '#\[[[:space:]]*cfg'; then
+  fail "R1b: the writer carries a \`#[cfg]\` attribute. The boundary must exist in every build, and a cfg'd \`persist\` lets a second, differently-gated one sit beside it."
+fi
+
+# --- R2: no declaration that extends this module to another file -------------
+escape_hatch="$(printf '%s' "$CODE" | rg --line-number '\bmod\b|#\[\s*path\s*=|(^|[^[:alnum:]_])include!\s*\(' || true)"
+if [ -n "$escape_hatch" ]; then
+  fail "R2: $BOUNDARY_FILE declares a submodule / \`#[path]\` / \`include!\`, which extends the writer's caller set to source outside this file: $escape_hatch"
+fi
+
+# R2b — no re-export. `pub use persist as …;` hands the private writer out under
+# a new name without changing its declaration, so R1 stays green.
+reexport="$(printf '%s' "$CODE" | rg --line-number '^\s*pub(\([^)]*\))?\s+use\b' || true)"
+if [ -n "$reexport" ]; then
+  fail "R2b: $BOUNDARY_FILE re-exports something. A \`pub use\` can hand out \`persist\` under another name while its own declaration stays private: $reexport"
+fi
+
+# --- R3: the exported entry set is exactly the pinned one --------------------
+#
+# The visibility group is `pub(?:\([^)]*\))?`, not `pub(?:\(crate\))?`, and the
+# `async` is optional. Both were holes in the first revision of this gate: a
+# `pub(super) async fn` is visible to `wave_report`, which can then `pub use` it
+# onward, and a plain `pub(crate) fn` returning a future reaches `persist` just
+# as well as an `async fn` does. Neither matched the narrower pattern, so
+# neither changed `actual_entries` and R3 stayed green on a new entry. Matching
+# every `pub` form means an unexpected one shows up in the diff below rather
+# than vanishing from it.
+actual_entries="$(
+  rg --no-line-number --replace '$1|$2' \
+    '^(pub(?:\([^)]*\))?)\s+(?:async\s+)?fn\s+([a-z_]+)\(' "$BOUNDARY_FILE" || true
+)"
+if [ "$actual_entries" != "$EXPECTED_ENTRIES" ]; then
+  fail "R3: the exported write-entry set changed. A new write shape is a real decision and has to be reviewed as one — update EXPECTED_ENTRIES in this gate in the same PR.
+expected:
+$EXPECTED_ENTRIES
+actual:
+$actual_entries"
+fi
+
+# --- R4: the test-only entry keeps its cfg ----------------------------------
+#
+# The cfg must be in the attribute block *attached to* the function, not merely
+# somewhere nearby — see `attrs_above` for the decoy that "nearby" admits.
+if ! printf '%s' "$CODE" | rg -q '^pub async fn persist_report\('; then
+  fail "R4: no \`pub async fn persist_report(\` found — if the test entry was renamed or removed, update R4 and EXPECTED_ENTRIES together"
+elif ! attrs_above '^pub async fn persist_report[(]' | rg -q '#\[cfg\(any\(test, feature = "fixtures"\)\)\]'; then
+  fail "R4: the test-only \`persist_report\` entry does not carry \`#[cfg(any(test, feature = \"fixtures\"))]\` in its own attribute block — without it, production builds get a \`pub\` writer that takes a caller-chosen EditAuthor"
+fi
+
+if [ "$failures" -ne 0 ]; then
+  echo "::error::report-write boundary gate: $failures rule(s) failed"
+  exit 1
+fi
+
+echo "OK: the wave-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, four exported entries, test entry cfg-gated)"

@@ -3,10 +3,8 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::EditAuthor;
-use crate::ids::ActorId;
 use crate::state::{AppState, RouteState};
-use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
+use crate::wave_report::{self, ReportDocOp, ReportEditTarget};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -111,22 +109,18 @@ async fn commit(
     op: ReportDocOp,
 ) -> Result<ReportBlockWriteResponse> {
     require_rest_user_actor(actor)?;
-    let (wave, report_card, current) =
-        resolve_report_for_wave(state.repo.as_ref(), wave_id).await?;
-    let (card, block) = persist_report_with_shadow(
+    let target = ReportEditTarget::resolve(state.repo.as_ref(), wave_id).await?;
+    // #1318 §1 — the writer is private to its module; this REST leg
+    // reaches it only through the entry point below.
+    // `ActorId::User` / `EditAuthor::User` used to be arguments here with a
+    // comment saying they always would be; now they are not expressible at
+    // this call site at all.
+    let (card, block) = wave_report::write::rest_user_block_op(
         state.repo.as_ref(),
         &state.events,
         &state.write,
-        ActorId::User,
-        EditAuthor::User,
-        wave,
-        report_card,
-        current,
+        target,
         op,
-        None,
-        None,
-        false,
-        None,
     )
     .await?;
     let payload: calm_types::wave_report::WaveReportPayload =

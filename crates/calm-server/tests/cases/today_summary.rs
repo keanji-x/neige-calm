@@ -219,9 +219,12 @@ impl Boot {
 
     /// Real activity: a user editing a wave's report through the REST route.
     ///
-    /// This is a production emitter — `persist_report` writes one `CardUpdated`
-    /// and one `WaveReportEdited` at `EventScope::Wave` — so it is the row shape
-    /// the projection has to be able to see, not a hand-built approximation.
+    /// This is a production emitter — `wave_report::write::persist` writes one
+    /// `CardUpdated` and one `WaveReportEdited`, both at `EventScope::Card`
+    /// (`write.rs`, the two `events.push` calls that share `scope`) — so it is
+    /// the row shape the projection has to be able to see, not a hand-built
+    /// approximation. The scope was written as `Wave` here before #1318 §1 and
+    /// was wrong then too; corrected while renaming the emitter.
     async fn edit_report(&self, wave_id: &str, summary: &str) {
         let (status, body) = self
             .request(

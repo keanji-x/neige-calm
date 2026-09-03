@@ -672,10 +672,12 @@ async fn write_replaces_body_and_emits_card_updated() {
             assert_eq!(c, &report_id, "card_id matches the report card");
             // Issue #247 PR3 — the MCP `report.write` / `report.edit`
             // wrapper now passes `EditAuthor::Spec` explicitly (was
-            // hard-coded in PR2). REST callers go through the same
-            // shared `wave_report::persist_report` but pass
-            // `EditAuthor::User` — see `tests/rest_wave_report.rs` for
-            // the User-author regression. Spec attribution stays the
+            // hard-coded in PR2). #1318 §1 — REST reaches the same
+            // private writer (`wave_report::write::persist`) but through
+            // a different door: `write::rest_user_replace`, which fixes
+            // `EditAuthor::User` in its own body rather than taking it
+            // from the handler. See `tests/rest_wave_report.rs` for the
+            // User-author regression. Spec attribution stays the
             // contract for every spec-MCP write.
             assert_eq!(*author, EditAuthor::Spec, "MCP path tags Spec");
             assert_eq!(agent_message.as_deref(), Some("rewrite report"));
