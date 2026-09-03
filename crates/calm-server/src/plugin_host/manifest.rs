@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::mcp_server::tools::plan::key_is_valid;
+use crate::validation::KERNEL_OVERLAY_PLUGIN_ID;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -781,6 +782,24 @@ impl Manifest {
                 "id",
                 "must match ^[a-z0-9][a-z0-9.-]{1,63}$ (reverse-DNS or slug, \
                  lowercase, 2–64 chars, alphanumerics plus '.' and '-')",
+            ));
+        }
+
+        // #1297: `kernel` is a reserved writer identity, not merely a naming
+        // convention. `card_fsm` stamps it on the overlay rows the scheduler
+        // and spec-harness admission read back as fact, and the callback path
+        // writes `ctx.plugin_id` verbatim — so a plugin that simply *named
+        // itself* `kernel` would forge that authorship without touching any
+        // of the guards on the REST side. The regex above admits it, so the
+        // refusal has to be explicit and it has to be here, at the only place
+        // a plugin id enters the system.
+        if self.id == KERNEL_OVERLAY_PLUGIN_ID {
+            return Err(ManifestError::invalid(
+                "id",
+                format!(
+                    "`{KERNEL_OVERLAY_PLUGIN_ID}` is reserved for kernel-authored rows \
+                     and cannot be claimed by a plugin",
+                ),
             ));
         }
 
@@ -2083,6 +2102,30 @@ mod tests {
         let json = hello_world().replace("dev.neige.hello-world", "dev_neige");
         let err = Manifest::parse(&json).unwrap_err();
         assert!(matches!(err, ManifestError::Invalid { field, .. } if field == "id"));
+    }
+
+    /// #1297: `kernel` satisfies the id regex, so without an explicit refusal
+    /// a plugin could register under it and — since the callback path writes
+    /// `ctx.plugin_id` verbatim — mint rows indistinguishable from the ones
+    /// `card_fsm` authors. The REST gate cannot see this route at all.
+    #[test]
+    fn reserved_kernel_id_rejected() {
+        let json = hello_world().replace("dev.neige.hello-world", KERNEL_OVERLAY_PLUGIN_ID);
+        let err = Manifest::parse(&json).unwrap_err();
+        match err {
+            ManifestError::Invalid { field, reason } => {
+                assert_eq!(field, "id");
+                assert!(reason.contains("reserved"), "reason={reason}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The neighbouring id is fine — the refusal is exact, not a prefix ban.
+    #[test]
+    fn kernel_prefixed_id_still_allowed() {
+        let json = hello_world().replace("dev.neige.hello-world", "kernel-helper");
+        Manifest::parse(&json).expect("`kernel-helper` is not the reserved id");
     }
 
     #[test]

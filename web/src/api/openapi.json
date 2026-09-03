@@ -1845,6 +1845,16 @@
               }
             }
           },
+          "403": {
+            "description": "Reserved kernel namespace (plugin_id or entity_kind)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -1877,6 +1887,16 @@
         "responses": {
           "204": {
             "description": "Overlay deleted"
+          },
+          "403": {
+            "description": "Reserved kernel namespace (plugin_id or entity_kind)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal error",
