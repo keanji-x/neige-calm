@@ -1947,11 +1947,14 @@ async fn initial_track_does_not_require_report_startup_read() {
 // paths' entry into the report write boundary. `fork_guard_exemption_invariant`
 // pins its *signature* — that it has no `EventBus`, no `EditAuthor`, no CAS
 // input. The first two tests below pin the behaviour that signature exists to
-// produce, end to end through `POST /api/tracks`, for **both** creation
-// sources: a fork and a template instantiation. Both go through the same door
-// (`persist_initial_report_and_project_tasks_tx` served both before #1252 S2
-// merged it into the boundary), so a change that gave the door an event bus
-// would break both, and testing only one would leave half the door uncovered.
+// produce, end to end through `POST /api/tracks`, for **all three** creation
+// sources that build an `init_snapshot`: a fork, a built-in template
+// instantiation, and a user recipe (`TrackInit::Recipe`, #1292 S2 — see
+// `routes::tracks`'s own "three initialization sources"). All three reach the
+// same door, so a change that gave it an event bus would break all three, and
+// testing a subset would leave part of the door uncovered — which is exactly
+// what happened between #1252 S2 and #1292 S2 landing: this comment said "both"
+// and the recipe arm was created afterwards, with no case here.
 //
 // The third is narrower than its neighbours and says so in its own doc comment:
 // the order of the door's two statements is **not** observable from this
@@ -2016,9 +2019,36 @@ async fn create_track_via_rest(boot: &Boot, title: &str, suffix: &str, extra: Va
     created["id"].as_str().unwrap().to_string()
 }
 
-/// Issue #1252 S2 / Q12 — **neither creation source emits a report edit.**
+/// Create a track recipe through the production REST route and return its id.
 ///
-/// A fork and a template instantiation both write the new track's report card
+/// The body is `track_recipe_instantiate`'s own `two_task_body` — the same
+/// shape #1292 S2 pins the recipe path with, reused rather than re-invented so
+/// that "the recipe path reaches the door" is asserted about the recipe shape
+/// that path is actually specified against.
+async fn create_recipe_via_rest(boot: &Boot, title: &str) -> String {
+    let (status, created) = request_json(
+        &boot.app,
+        "POST",
+        "/api/track-recipes".into(),
+        &boot.cookie,
+        Some(json!({
+            "title": title,
+            "body": crate::track_recipe_instantiate::two_task_body(),
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create recipe `{title}`: {created}"
+    );
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// Issue #1252 S2 / Q12 — **no creation source emits a report edit.**
+///
+/// A fork, a built-in template instantiation and a user recipe all write the
+/// new track's report card
 /// inside the create transaction. Doing that through a shared writer is exactly
 /// the change that "naturally" unifies them onto `write::persist`, which emits
 /// `card.updated` + `track.report_edited` on every successful call — so the
@@ -2030,14 +2060,14 @@ async fn create_track_via_rest(boot: &Boot, title: &str, suffix: &str, extra: Va
 /// the_structural_door_cannot_name_an_author_an_actor_or_a_revision`), and by
 /// this test end to end. **Must-red**: give the door an `EventBus` and emit a
 /// `TrackReportEdited` from it, and this goes red on whichever creation source
-/// you wired it into — which is why both are here.
+/// you wired it into — which is why all three are here.
 ///
 /// Scoped by `scope_track`, so the source track's own seeded edits (the
 /// fixture writes those through the real REST/`persist_report` path, which
 /// *does* emit) cannot mask a missing assertion: an unscoped count would be
 /// non-zero either way.
 #[tokio::test]
-async fn fork_and_template_create_emit_no_report_edited() {
+async fn every_creation_source_emits_no_report_edited() {
     let boot = boot().await;
 
     let forked = create_track_via_rest(
@@ -2054,11 +2084,19 @@ async fn fork_and_template_create_emit_no_report_edited() {
         json!({ "template_id": "small-change" }),
     )
     .await;
+    let recipe_id = create_recipe_via_rest(&boot, "no-report-edited recipe").await;
+    let from_recipe = create_track_via_rest(
+        &boot,
+        "no-report-edited recipe track",
+        "-no-edit-recipe",
+        json!({ "recipe_id": recipe_id }),
+    )
+    .await;
 
     // The fixture: both new tracks really do carry initialized report content,
     // so "no edit event" is a statement about a write that happened rather than
     // about a create that did nothing.
-    for track_id in [&forked, &templated] {
+    for track_id in [&forked, &templated, &from_recipe] {
         let (status, report) = request_json(
             &boot.app,
             "GET",
@@ -2078,7 +2116,11 @@ async fn fork_and_template_create_emit_no_report_edited() {
         );
     }
 
-    for (label, track_id) in [("fork", &forked), ("template", &templated)] {
+    for (label, track_id) in [
+        ("fork", &forked),
+        ("template", &templated),
+        ("recipe", &from_recipe),
+    ] {
         let edits = events_for_track(boot.repo.as_ref(), "track.report_edited", track_id).await;
         assert!(
             edits.is_empty(),
@@ -2091,7 +2133,7 @@ async fn fork_and_template_create_emit_no_report_edited() {
 /// Issue #1252 S2 / Q12, second half — the report card's **only** event is one
 /// `card.added`, attributed to the request's own actor.
 ///
-/// `fork_and_template_create_emit_no_report_edited` cannot see this: unifying
+/// `every_creation_source_emits_no_report_edited` cannot see this: unifying
 /// the create paths onto `write::persist` would emit `card.updated` *and*
 /// `track.report_edited`, but so would a narrower mistake that emits only the
 /// generic one. This is that leg. It also pins the attribution, which is where
@@ -2102,6 +2144,7 @@ async fn fork_and_template_create_emit_no_report_edited() {
 #[tokio::test]
 async fn structural_init_leaves_one_card_added_and_no_card_updated() {
     let boot = boot().await;
+    let recipe_id = create_recipe_via_rest(&boot, "one card.added recipe").await;
 
     for (label, suffix, extra) in [
         (
@@ -2113,6 +2156,11 @@ async fn structural_init_leaves_one_card_added_and_no_card_updated() {
             "template",
             "-one-card-added-template",
             json!({ "template_id": "small-change" }),
+        ),
+        (
+            "recipe",
+            "-one-card-added-recipe",
+            json!({ "recipe_id": recipe_id }),
         ),
     ] {
         let track_id =

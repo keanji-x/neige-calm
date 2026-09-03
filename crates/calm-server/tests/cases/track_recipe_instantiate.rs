@@ -145,7 +145,7 @@ async fn send(
     )
 }
 
-fn task_fence(payload: Value) -> String {
+pub(crate) fn task_fence(payload: Value) -> String {
     format!(
         "```neige-block task\n{}\n```\n",
         serde_json::to_string_pretty(&payload).unwrap()
@@ -153,7 +153,11 @@ fn task_fence(payload: Value) -> String {
 }
 
 /// A recipe body with two tasks, one depending on the other.
-fn two_task_body() -> String {
+///
+/// `pub(crate)` since #1252 R1/F4: `track_report_fork` needs the *same* recipe
+/// shape when it asserts that all three creation sources go through the
+/// structural door with the same absences.
+pub(crate) fn two_task_body() -> String {
     format!(
         "# Plan\n\nSet the thing up, then check it.\n\n{}{}",
         task_fence(json!({
