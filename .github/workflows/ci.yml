@@ -965,6 +965,7 @@ jobs:
           CALM_CODEX_HOST_BIN=${{ github.workspace }}/target/release/osc-probe-child
           CALM_EXTRA_MOUNT=/tmp
           CALM_WEB_DIST=/tmp
+          CALM_FE_DIST=/tmp
           CALM_PORT=4041
           CALM_DEV_AUTOLOGIN=true
           HTTP_PROXY=
@@ -1052,7 +1053,9 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: |
+            web/package-lock.json
+            fe/package-lock.json
 
       # See note above on --legacy-peer-deps in the `web-unit` job.
       - name: npm ci
@@ -1067,6 +1070,12 @@ jobs:
       - name: npm run build (web bundle for nginx)
         working-directory: web
         run: npm run build
+
+      - name: npm ci + build (next frontend bundle for nginx)
+        working-directory: fe
+        run: |
+          npm ci
+          npm run build
 
       # Stub the codex CLI mount so docker compose has an existing host path
       # for tier-1 cases that do not exercise live Codex work.

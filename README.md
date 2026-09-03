@@ -100,7 +100,9 @@ Start the stack:
 make dev
 ```
 
-Note the port printed by `make dev`. To preview the new frontend against that backend, run the following in another terminal, replacing `<printed-port>`:
+`make dev` builds and serves both frontends. Note the printed port, then open the new frontend at `http://localhost:<printed-port>/next/`; the bare root redirects there in Docker dev. The legacy frontend remains available at `http://localhost:<printed-port>/calm/` during the cutover.
+
+For frontend HMR instead of the built bundle, run the following in another terminal, replacing `<printed-port>`:
 
 ```bash
 FE_API_PROXY_TARGET=http://127.0.0.1:<printed-port> make fe-dev

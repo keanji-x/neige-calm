@@ -2,8 +2,13 @@
 
 This is an independent npm project; it deliberately is not a root workspace member.
 
-Run `make fe-dev` from the repository root, then open `http://localhost:5180/next/`.
-The `/next/` prefix matches the production mount path and also applies to LAN previews.
+`make dev` builds this frontend and serves it through the Docker stack at
+`http://localhost:<printed-port>/next/`. The legacy frontend remains available
+under `/calm/` during the cutover.
+
+For HMR, run `make fe-dev` from the repository root, then open
+`http://localhost:5180/next/`. The `/next/` prefix matches the built mount path
+and also applies to LAN previews.
 
 `@astryxdesign/core` is pinned exactly. Astryx shipped 12 releases in 5.5 weeks, 67% with breaking changes and no codemod, so upgrades must be reviewed as dedicated work.
 

@@ -6,7 +6,7 @@
 # backend lives on the compose bridge network; nginx is the only host-facing
 # entrypoint.
 #
-#   make dev                  # build + bring stack up in background
+#   make dev                  # build both frontends + bring stack up in background
 #   make dev-fresh            # wipe this DEV_ID's /tmp state, then start
 #   make prod                 # run host production process (no docker)
 #   make stop                 # tear stack down
@@ -78,8 +78,8 @@ export CALM_DB_URL
 export CALM_PLUGINS_DATA_DIR
 
 # Host production mode: no docker, no nginx. 4040 is reserved for prod by
-# default. calm-server serves web/dist itself and uses the host's HOME,
-# ~/.codex, PATH, and login shell.
+# default. calm-server serves both frontend bundles itself and uses the host's
+# HOME, ~/.codex, PATH, and login shell.
 LOCAL_SHELL ?= $(shell command -v zsh 2>/dev/null || getent passwd $(USER) | cut -d: -f7 2>/dev/null || echo /bin/sh)
 PROD_PORT ?= 4040
 PROD_LISTEN ?= 127.0.0.1:$(PROD_PORT)
@@ -109,10 +109,9 @@ XDG_DIRS := \
 #   make dev WORKTREE=/path/to/agent-XYZ    # build from that worktree
 #
 # Implementation: every source path the build touches is made absolute
-# relative to $(WORKTREE), and the four docker-compose env vars
-# (CALM_BIN / CALM_DAEMON_BIN / CALM_CODEX_BRIDGE_BIN / CALM_WEB_DIST)
-# are exported pointing at $(WORKTREE)'s target/release + web/dist so
-# the container picks up the right binaries.
+# relative to $(WORKTREE), and docker-compose asset variables are exported
+# pointing at $(WORKTREE)'s release binaries plus both frontend bundles so
+# the containers pick up the right worktree.
 #
 # Caveat: two stacks can run side-by-side only when both DEV_ID and CALM_PORT
 # differ. DEV_ID isolates compose resources + /tmp state; CALM_PORT isolates
@@ -162,6 +161,7 @@ export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
 export CALM_MCP_SHIM_BIN := $(MCP_SHIM)
 export CALM_PROC_SUPERVISOR_BIN := $(PROC_SUP)
 export CALM_WEB_DIST := $(DIST)
+export CALM_FE_DIST := $(FE_DIST)
 
 # Wipe the local sqlite DB (with a timestamped backup) before `up -d` so
 # the new stack boots from a clean schema. Useful when switching between
@@ -229,6 +229,13 @@ fe-build: $(FE_DIST) ## Build the next-generation frontend bundle (Node ^20.19 o
 fe-dev: $(FE_NODE_MODULES_STAMP) ## Preview the next-generation frontend at http://localhost:5180/next/.
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm run dev
+
+# nginx workers do not run as the host user. Vite honors a restrictive host
+# umask, so make only the public build outputs traversable/readable before bind
+# mounting them; source files and node_modules keep their original permissions.
+.PHONY: dev-bundles
+dev-bundles: build fe-build
+	chmod -R a+rX "$(DIST)" "$(FE_DIST)"
 
 # ---- docker lifecycle ---------------------------------------------------
 
@@ -315,7 +322,7 @@ e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence & tool-prefligh
 	scripts/e2e-isolated/check_tools.sh
 
 .PHONY: dev
-dev: proxy-forwarder-up build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
+dev: proxy-forwarder-up dev-bundles dirs ## Build both frontends, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
 ifeq ($(FRESH),1)
 	@echo "  FRESH=1 — stopping stack, removing container state, then bringing up"
 	-$(COMPOSE) down -v --remove-orphans
@@ -327,7 +334,8 @@ ifeq ($(RESET_DB),1)
 endif
 	$(COMPOSE) up -d --build
 	@echo ""
-	@echo "  → http://localhost:$(CALM_PORT)/"
+	@echo "  → new FE:    http://localhost:$(CALM_PORT)/next/"
+	@echo "  → legacy FE: http://localhost:$(CALM_PORT)/calm/"
 	@echo "  → API: http://localhost:$(CALM_PORT)/api/areas"
 	@echo "  dev id: $(DEV_ID)"
 	@echo "  state:  container $(CALM_CONTAINER_STATE_DIR) tmpfs"
@@ -335,12 +343,13 @@ endif
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: dev-fresh
-dev-fresh: proxy-forwarder-up build ## Remove this DEV_ID's containers/state, then start a fresh stack.
+dev-fresh: proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with both frontends.
 	-$(COMPOSE) down -v --remove-orphans
 	$(MAKE) dirs
 	$(COMPOSE) up -d --build
 	@echo ""
-	@echo "  → http://localhost:$(CALM_PORT)/"
+	@echo "  → new FE:    http://localhost:$(CALM_PORT)/next/"
+	@echo "  → legacy FE: http://localhost:$(CALM_PORT)/calm/"
 	@echo "  → API: http://localhost:$(CALM_PORT)/api/areas"
 	@echo "  dev id: $(DEV_ID)"
 	@echo "  state:  container $(CALM_CONTAINER_STATE_DIR) tmpfs"
@@ -373,7 +382,7 @@ shell: ## Drop into a shell in the server container (already at $HOME).
 
 .PHONY: health
 health: ## Smoke-test the API end-to-end through nginx.
-	@curl -fsS -w "  HTTP %{http_code}\n" http://localhost:$(CALM_PORT)/api/areas \
+	@curl -fsS -w "  HTTP %{http_code}\n" http://localhost:$(CALM_PORT)/api/version \
 	  && echo "ok" || (echo "down — try: make logs"; exit 1)
 
 # ---- host production lifecycle -----------------------------------------

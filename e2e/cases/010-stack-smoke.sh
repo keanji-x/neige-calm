@@ -46,11 +46,56 @@ process.stdout.write(`${planner.id}\t${report.id}\n`);
 '
 }
 
+stack_smoke_frontends() {
+  local origin root_headers root_status root_location
+  local next_index next_deep legacy_index legacy_deep asset_path asset_meta asset_status asset_type
+  origin="http://127.0.0.1:$PORT"
+
+  root_headers="$(curl -sS -D - -o /dev/null "$origin/")" \
+    || fail "curl failed for frontend root"
+  root_status="$(printf '%s\n' "$root_headers" | awk 'NR == 1 { sub(/\r$/, ""); print $2 }')"
+  root_location="$(printf '%s\n' "$root_headers" | awk 'tolower($1) == "location:" { sub(/\r$/, "", $2); print $2 }')"
+  [[ "$root_status" == "302" ]] \
+    || fail "frontend root returned HTTP $root_status instead of 302"
+  [[ "$root_location" == "/next/" ]] \
+    || fail "frontend root redirected to $root_location instead of /next/"
+
+  next_index="$(curl -fsS "$origin/next/")" \
+    || fail "new frontend index was not reachable"
+  next_deep="$(curl -fsS "$origin/next/track/e2e-deep-link")" \
+    || fail "new frontend deep link was not reachable"
+  [[ "$next_deep" == "$next_index" ]] \
+    || fail "new frontend deep link did not use the SPA index fallback"
+
+  asset_path="$(printf '%s' "$next_index" | node -e '
+const fs = require("fs");
+const html = fs.readFileSync(0, "utf8");
+const match = html.match(/(?:src|href)="(\/next\/assets\/[^"]+\.js)"/);
+if (match === null) process.exit(2);
+process.stdout.write(match[1]);
+')" || fail "new frontend index did not reference a /next/assets/*.js file"
+  asset_meta="$(curl -sS -o /dev/null -w $'%{http_code}\t%{content_type}' "$origin$asset_path")" \
+    || fail "curl failed for new frontend asset $asset_path"
+  IFS=$'\t' read -r asset_status asset_type <<<"$asset_meta"
+  [[ "$asset_status" == "200" ]] \
+    || fail "new frontend asset $asset_path returned HTTP $asset_status"
+  [[ "$asset_type" != text/html* ]] \
+    || fail "new frontend asset $asset_path fell through to the SPA index"
+
+  legacy_index="$(curl -fsS "$origin/calm/")" \
+    || fail "legacy frontend compatibility index was not reachable"
+  legacy_deep="$(curl -fsS "$origin/calm/track/e2e-deep-link")" \
+    || fail "legacy frontend compatibility deep link was not reachable"
+  [[ "$legacy_deep" == "$legacy_index" ]] \
+    || fail "legacy frontend deep link did not use the SPA index fallback"
+}
+
 case_run() {
   local auth_probe_status area_id track_id cards_json planner_card_id report_card_id code
 
   autologin_probe
   auth_probe_status="$AUTH_PROBE_STATUS"
+  stack_smoke_frontends
   init_workspace
   login_unless_autologin "$auth_probe_status"
 

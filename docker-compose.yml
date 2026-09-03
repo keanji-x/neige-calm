@@ -1,4 +1,4 @@
-# Runtime-only docker stack. Binary + web bundle are built on the host
+# Runtime-only docker stack. Binaries + frontend bundles are built on the host
 # (see Makefile); the containers just run them. This keeps iteration fast
 # and lets calm-server reach the host's $HOME and repo path via bind mounts,
 # so terminals/sessions/plugins see the same filesystem they would if you ran
@@ -192,7 +192,7 @@ services:
     restart: unless-stopped
 
   web:
-    # Same idea: nginx just serves the pre-built bundle and reverse-proxies
+    # Same idea: nginx serves both pre-built bundles and reverse-proxies
     # /api → server. No build step in docker. nginx listens on 8080 inside
     # the container; we publish that as CALM_PORT on the host. 4040 is
     # reserved for host prod, so docker dev defaults to 4041.
@@ -203,6 +203,7 @@ services:
       - server
     volumes:
       - ${CALM_WEB_DIST:-./web/dist}:/usr/share/nginx/html/calm:ro
+      - ${CALM_FE_DIST:-./fe/web/dist}:/usr/share/nginx/html/next:ro
       - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro
     ports:
       - "${CALM_PORT:-4041}:8080"

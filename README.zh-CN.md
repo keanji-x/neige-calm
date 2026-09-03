@@ -100,7 +100,9 @@ cp .env.example .env
 make dev
 ```
 
-记下 `make dev` 输出的端口。要让新前端连接这个后端，请在另一终端执行以下命令，并替换 `<printed-port>`：
+`make dev` 会同时构建并部署两个前端。记下输出端口，然后打开 `http://localhost:<printed-port>/next/`；Docker 开发环境的根路径也会跳转到这里。切换期间，旧前端仍可通过 `http://localhost:<printed-port>/calm/` 访问。
+
+如果需要前端 HMR，而不是使用构建后的 bundle，请在另一终端执行以下命令，并替换 `<printed-port>`：
 
 ```bash
 FE_API_PROXY_TARGET=http://127.0.0.1:<printed-port> make fe-dev
