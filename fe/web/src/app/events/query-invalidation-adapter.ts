@@ -62,6 +62,12 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
      invalidating a key with no mounted query neither marks nor refetches
      anything — and mapping them *later* is what would be dangerous: a mounted
      query with no adapter arm is a list that silently never refreshes. */
+  /* #1253 §6 — the Today resolve. One entry with no id: the kernel's partial
+     unique index makes `purpose = 'launchpad'` a singleton, and the id is what
+     that query is fetching. Without this arm `wave.report_edited`'s
+     `['today-launchpad']` is dropped right here and the page never learns the
+     report stopped being empty. */
+  if (head === 'today-launchpad' && key.length === 1) return queryKeys.todayLaunchpad();
   if (head === 'wave-conversations' && key.length === 1) return queryKeys.waveConversationsPrefix();
   if (head === 'wave-conversations' && typeof first === 'string' && key.length === 2) {
     return queryKeys.waveConversations(first);

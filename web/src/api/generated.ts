@@ -830,6 +830,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/today/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the summary conversation to write today's progress.
+         * @description See the module docs for the shape of the whole path; the comments below only
+         *     say what each step's alternative got wrong.
+         */
+        post: operations["write_today_summary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/version": {
         parameters: {
             query?: never;
@@ -1469,7 +1490,8 @@ export interface components {
              *     `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
-             *     `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
+             *     `spec_harness_dormant`, `today_summary_no_activity`,
+             *     `db_error`, `io_error`, `serde_error`,
              *     `codex_app_server`, `service_unavailable`, `internal`,
              *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
              */
@@ -2204,6 +2226,16 @@ export interface components {
              *     null-check there renders four empty headings instead of an empty state.
              */
             report_has_noninitial_content: boolean;
+            wave_id: string;
+        };
+        /** @description What the caller gets back on success. */
+        TodaySummaryStarted: {
+            /**
+             * @description The summary conversation's card. Stable for the launchpad's lifetime
+             *     (INV-TODAYDOC-011) and openable in Today's Conversations module.
+             */
+            card_id: string;
+            /** @description The launchpad wave, whose report the agent is being asked to rewrite. */
             wave_id: string;
         };
         /**
@@ -5215,6 +5247,57 @@ export interface operations {
                 };
             };
             /** @description Launchpad exists but harness failed to start */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    write_today_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodaySummaryStarted"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).
+             *     * `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;

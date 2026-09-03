@@ -291,3 +291,97 @@ describe('#1253 the first-run page still owns a document', () => {
     expect(screen.getByRole('alert').textContent).toContain('boom');
   });
 });
+
+describe('#1253 D5 the document’s trigger', () => {
+  const WRITE = 'Write today’s progress';
+  const REWRITE = 'Rewrite today’s progress';
+  const props = {
+    renderWaveRow, waves: [wave()], coves: [cove()], nowMs: NOW,
+    launchpadDocument: <p>the day&apos;s report</p>,
+  } as const;
+
+  /*
+   * No control at all when the composition offers none — not a disabled one.
+   *
+   * A disabled button is a promise it will work later. An absent one is the
+   * honest shape for "this composition has no trigger", which is what every
+   * suite in this file passes and what `features/**` alone can ever have: the
+   * endpoint lives in `app/router`.
+   */
+  it('renders nothing when no trigger was supplied', () => {
+    render(<TodayPage {...props} launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }} />);
+    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
+    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
+  });
+
+  /*
+   * The control appears whether or not anything happened today.
+   *
+   * This page cannot know — the design gives it no activity read, deliberately
+   * (D4 deleted the layer that would have offered one) — so hiding the button
+   * would be a guess, and the wrong guess makes the feature look broken. The
+   * gate is `POST /api/today/summary`'s, which refuses an empty window without
+   * creating a conversation or sending a message (INV-TODAYDOC-007).
+   */
+  it('offers the trigger in the empty state and a re-run once the report has content', async () => {
+    const pressed: string[] = [];
+    const { rerender } = render(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      onWriteSummary={() => pressed.push('empty')}
+    />);
+    await userEvent.click(screen.getByRole('button', { name: WRITE }));
+    expect(pressed).toEqual(['empty']);
+
+    rerender(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      onWriteSummary={() => pressed.push('rerun')}
+    />);
+    await userEvent.click(screen.getByRole('button', { name: REWRITE }));
+    expect(pressed).toEqual(['empty', 'rerun']);
+    expect(screen.getByText("the day's report")).toBeTruthy();
+  });
+
+  /* In flight the control says so and cannot fire again — one press, one
+     request, however fast the user is. */
+  it('is inert while a request is in flight', async () => {
+    const pressed: string[] = [];
+    render(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      onWriteSummary={() => pressed.push('again')}
+      summaryPending
+    />);
+    const button = screen.getByRole('button', { name: 'Writing…' });
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    await userEvent.click(button);
+    expect(pressed).toEqual([]);
+  });
+
+  /* The notice sits beside the button, not in place of the document: a refused
+     or failed trigger changed nothing about the report already on screen. */
+  it('shows the trigger’s answer without replacing the report', () => {
+    render(<TodayPage
+      {...props}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      onWriteSummary={() => undefined}
+      summaryNotice={<span>Nothing has happened in this workspace today yet.</span>}
+    />);
+    expect(screen.getByText('Nothing has happened in this workspace today yet.')).toBeTruthy();
+    expect(screen.getByText("the day's report")).toBeTruthy();
+  });
+
+  /* INV-TODAYDOC-002 — a failed resolve shows the failure and nothing else.
+     The trigger would rewrite a document the page could not even read. */
+  it('is absent when the resolve itself failed', () => {
+    render(<TodayPage
+      {...props}
+      launchpad={undefined}
+      launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
+      onWriteSummary={() => undefined}
+    />);
+    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
+    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
+  });
+});

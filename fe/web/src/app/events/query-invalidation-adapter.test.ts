@@ -44,9 +44,36 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['cove-conversations'])).toEqual(queryKeys.coveConversationsPrefix());
     expect(mapPlannedQueryKey(['wave-conversations'])).toEqual(queryKeys.waveConversationsPrefix());
     expect(mapPlannedQueryKey(['wave-conversations', 'w1'])).toEqual(queryKeys.waveConversations('w1'));
+    expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
     for (const dropped of [['wave-files'], ['wave-files', 'w1'], ['waves-range'], ['wave-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
+  });
+
+  /*
+   * #1253 §6 — the whole chain from "an agent wrote the report" to "Today
+   * redraws", asserted end to end through the pure plan and this adapter.
+   *
+   * Two links, and each is silent when it breaks. The plan has to emit
+   * `['today-launchpad']` and `['wave', id]` for `wave.report_edited`
+   * (`PolicyMap` is exhaustive over event kinds, not query keys, so their
+   * absence fails no golden), and this module has to map both rather than drop
+   * them — an unmapped key is discarded here without a warning. Either gap
+   * leaves the Today trigger looking like it did nothing.
+   */
+  it('turns a report edit into a refresh of the Today document and its resolve', () => {
+    const event = wireEventSchema.parse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
+        summary_before: '', summary_after: 'today', body_before: '', body_after: '# today',
+      },
+    });
+    const mapped = invalidationPlanFor(event).invalidate
+      .map(mapPlannedQueryKey)
+      .filter((key) => key !== null);
+    expect(mapped).toContainEqual(queryKeys.todayLaunchpad());
+    expect(mapped).toContainEqual(queryKeys.waveDetail('lp'));
   });
 
   /*

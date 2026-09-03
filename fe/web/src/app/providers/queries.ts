@@ -31,7 +31,8 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  todayLaunchpadOperation, type TodayLaunchpadWire,
+  todayLaunchpadOperation, todaySummaryOperation,
+  type TodayLaunchpadWire, type TodaySummaryWire,
 } from '../../../../core/domain/today.ts';
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
@@ -134,11 +135,11 @@ export const queryKeys = Object.freeze({
      the kernel's partial unique index makes `purpose = 'launchpad'` a
      singleton, and the id is what this query is fetching.
 
-     TODO(#1253 PR2): no event invalidates this key, and `wave.report_edited`
-     does not invalidate `['wave', id]` either — so once `POST
-     /api/today/summary` exists, a successful summary will change nothing on
-     screen until a reload. Both keys need adding to that policy in PR2. It is
-     inert in PR1: nothing here can change either value. */
+     PR2 put it on `wave.report_edited`'s invalidation list, together with
+     `['wave', id]`. Both are needed and neither is generated: the first
+     carries the empty-state predicate, the second carries the document, and
+     `PolicyMap` is exhaustive over event kinds rather than over query keys, so
+     no golden would have reported their absence. */
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
@@ -539,6 +540,58 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
     queryKey: queryKeys.todayLaunchpad(),
     queryFn: (): Promise<TodayLaunchpadWire | null> =>
       runOperation(transport, todayLaunchpadOperation(), unauthorized),
+  };
+}
+
+/**
+ * The Today trigger (#1253 D5), as one mutation.
+ *
+ * `failure` is handed back as an `ApiFailure` rather than as a sentence,
+ * because the wording is `core/domain/today`'s job: `todaySummaryFailure`
+ * matches on the machine-readable `code` there, where it is unit-testable and
+ * away from React.
+ *
+ * **`onSuccess` deliberately does not touch the document's keys.** A 200 means
+ * the message was enqueued, not that the agent has written anything — the write
+ * lands later as a `wave.report_edited` event, which the bridge turns into
+ * `['today-launchpad']` and `['wave', id]`. Refetching either here would fetch
+ * the *old* report, and worse, it would hide a broken invalidation chain behind
+ * a lucky refresh: the page would appear to update after a press even with both
+ * keys missing from the policy, which is the exact defect §6 exists to prevent.
+ * An earlier version invalidated `['wave', id]` here while this comment claimed
+ * it did not; the code was what moved.
+ *
+ * What IS true immediately is that the launchpad now carries a conversation, so
+ * the conversation lists — and only those — are invalidated. That "and only
+ * those" is asserted, not asserted-in-prose:
+ * `today-summary-write.contract.test.tsx` drives this hook and asserts the
+ * invalidated set by EQUALITY, so a third key added here turns it red too —
+ * "and only those" is the claim, and a denylist of the two keys that would hurt
+ * most would not have been it. Without that guard the document tests in
+ * `app/router` could pass on a refetch from here instead of on the invalidation
+ * policy they exist to pin.
+ */
+export type TodaySummaryMutation = Readonly<{
+  write: () => void;
+  pending: boolean;
+  failure: ApiFailure | null;
+}>;
+
+export function useTodaySummaryMutation(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+): TodaySummaryMutation {
+  const client = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (): Promise<TodaySummaryWire> =>
+      runOperation(transport, todaySummaryOperation(), unauthorized),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.waveConversationsPrefix() });
+    },
+  });
+  return {
+    write: () => { mutation.mutate(); },
+    pending: mutation.isPending,
+    failure: mutation.error instanceof ApiError ? mutation.error.failure : null,
   };
 }
 

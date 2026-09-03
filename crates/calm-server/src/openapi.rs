@@ -39,6 +39,7 @@ use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::threads::ThreadCardResolution;
 use crate::routes::today::{TodayLaunchpad, TodayLaunchpadResolved};
+use crate::routes::today_summary::TodaySummaryStarted;
 use crate::routes::version::VersionInfo;
 use crate::routes::wave_report_blocks::{
     CreateReportBlockBody, DeleteReportBlockBody, MoveReportBlockBody, ReportBlockWriteResponse,
@@ -102,6 +103,7 @@ use utoipa::OpenApi;
         crate::routes::waves::cat_wave_file,
         crate::routes::today::ensure_today_launchpad,
         crate::routes::today::resolve_today_launchpad,
+        crate::routes::today_summary::write_today_summary,
         // ---- cards ----
         crate::routes::cards::list_cards_by_wave,
         crate::routes::cards::create_card,
@@ -171,6 +173,7 @@ use utoipa::OpenApi;
         WaveWorkspacePatch,
         TodayLaunchpad,
         TodayLaunchpadResolved,
+        TodaySummaryStarted,
         WavesWindowQuery,
         WaveFsLsQuery,
         WaveFsCatQuery,

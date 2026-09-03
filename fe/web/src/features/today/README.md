@@ -77,8 +77,17 @@ Running and Recent are ambience and live in the panel.
   as one.** Suppressing a re-run button on it would mean a user reverting the
   document silently un-suppresses the button. Anything that needs "did the
   summary run" needs its own persistent marker or event.
-- **No trigger button.** `POST /api/today/summary` lands in #1253 PR2. Until
-  then the empty state is text only — not a stub, not a disabled control.
+- **The trigger** (#1253 PR2, D5) — `onWriteSummary` posts to
+  `POST /api/today/summary`, which takes no body and no prompt. The control is
+  offered in **both** states, with the label the only difference (`Write` /
+  `Rewrite`): the report's own contract is "a snapshot of now, rewritten every
+  time", so re-running is ordinary, and the predicate above cannot be used to
+  suppress it. It is **not** hidden when nothing has happened today — this page
+  has no activity read and by design never will (D4 deleted the layer that would
+  have offered one), so the gate is the server's: the endpoint computes the day's
+  window itself and refuses an empty one without creating a conversation or
+  sending a message (INV-TODAYDOC-007). The refusal comes back as
+  `summaryNotice` and reads as a fact about the day, not as an error.
 - **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
   reason for putting it above the document, so an uncapped list would not be a
   cosmetic problem — it would falsify the layout's justification. The overflow
@@ -89,15 +98,20 @@ Running and Recent are ambience and live in the panel.
   lives there — so "no waves, no coves" is an ordinary state for a workspace
   whose only content is the day's report.
 
-### TODO(#1253 PR2) — the document does not refresh on a report edit
+### The refresh chain, and why nothing generated protects it
 
-`core/events/invalidation-plan.ts`'s `wave.report_edited` policy invalidates
-`['wave-files']`, `['wave-report']` and `['wave-backlinks']` — **not**
-`['wave', id]`, which is the key this document is read through, and not
-`['today-launchpad']`, which is the key the empty-state predicate is read
-through. Neither matters in PR1, because PR1 has no action that can change
-either value. Whoever lands `POST /api/today/summary` must fix **both** keys,
-or the first bug report will be "I clicked the button and nothing happened".
+`core/events/invalidation-plan.ts`'s `wave.report_edited` policy now carries
+**four** keys. Two of them exist only for this page: `['wave', id]` is what the
+document is read through, and `['today-launchpad']` is what the empty-state
+predicate is read through. Without either, pressing the trigger leaves the page
+unchanged until a reload — the first bug report this feature would have got.
+
+`PolicyMap` is exhaustive over event **kinds**, not over query keys, so deleting
+either line adds no missing kind and turns no golden red. What guards them is
+two assertions and nothing else: the literal key list in
+`core/events/invalidation-plan.contract.test.ts`, and the end-to-end one in
+`app/events/query-invalidation-adapter.test.ts`, which also covers the second
+link — a planned key with no adapter arm is silently dropped.
 
 ## Deliberate gaps (do not "fix" these by accident)
 

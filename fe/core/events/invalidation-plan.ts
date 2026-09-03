@@ -247,8 +247,25 @@ function policies(): PolicyMap {
     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
     ...conversationLists(event.data.wave_id),
   ])),
+  /*
+   * #1253 §6 — four keys, and the last two are why the Today trigger visibly
+   * does anything.
+   *
+   * `['today-launchpad']` carries `report_has_noninitial_content`, which is the
+   * server-side predicate Today decides its empty state with: without it the
+   * first summary an agent ever writes leaves the page reading "Nothing written
+   * today yet." until a reload. `['wave', id]` is the wave detail the document
+   * is read out of (`readWaveReport` locates the report card by kind), so
+   * without it the region keeps drawing the previous body.
+   *
+   * **Nothing generated protects either line.** `PolicyMap` is exhaustive over
+   * event *kinds*, not over query keys, so deleting one adds no missing kind
+   * and no golden notices. The literal key list in
+   * `invalidation-plan.contract.test.ts` is the only guard there is.
+   */
   'wave.report_edited': plan((event) => result([
     ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],
+    ['today-launchpad'], ['wave', event.data.wave_id],
   ])),
   'overlay.set': plan((event, context) => {
     const keys: QueryKey[] = [];
