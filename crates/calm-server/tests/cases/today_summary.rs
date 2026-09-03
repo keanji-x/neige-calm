@@ -564,7 +564,7 @@ impl Boot {
     ///
     /// **The shutdown fences the only writer still live at this point in this
     /// fixture; it does not leave a final snapshot behind.**
-    /// `SpecHarness::shutdown` (`harness/run_loop.rs`) stores
+    /// The harness type's `shutdown` (`harness/run_loop.rs:190`) stores
     /// `shutting_down = true` as its *first*
     /// action, and `persist_snapshot_inner` early-returns `Ok(())` whenever
     /// that flag is set — so every persist from that harness from then on is a
@@ -577,17 +577,20 @@ impl Boot {
     /// "Only writer" is a fact about this moment, not a property of the row:
     /// `handle_state_json` has other writers that the `shutting_down` flag does
     /// not fence. The ones that rewrite the whole snapshot reach
-    /// `session_set_handle_state_tx`, and today that is the harness-start path
-    /// (`operation/spec_harness_start_adapter.rs`, reached only from a
-    /// request), `harness::persist_recovered_snapshot`, and
-    /// `replay::force_spec_phase` (`src/replay.rs`, the dev hook behind
-    /// `POST /dev/force-spec-phase`) — a grep, not a closed set, so read it as
+    /// `session_set_handle_state_tx`, and today that is the harness-start
+    /// adapter (its module is declared at
+    /// `operation/mod.rs:15`, the write is at that module's line 1019, and it
+    /// is reached only from a request), `harness::persist_recovered_snapshot`
+    /// (`harness/mod.rs:323`, writing at line 332), and the dev force-phase
+    /// hook (`src/replay.rs:445`, `#[cfg(feature = "fixtures")]`, writing at
+    /// line 596) — a grep, not a closed set, so read it as
     /// "these and whatever else that grep finds". None of them runs behind the
     /// clear here: staging's HTTP requests have all returned; this fixture
     /// assembles `AppState::from_parts` without arming deferred harness
     /// recovery and never calls `recover_harnesses_on_boot`, so no recovery
     /// task exists to persist one; and the dev hook's route is mounted only by
-    /// the separate `bin/replay.rs` binary, which this fixture never runs.
+    /// the separate replay binary (`src/bin/replay.rs:244`), which this
+    /// fixture never runs.
     ///
     /// **The abort is not a join, so the read-back polls.** `abort()` takes
     /// effect at the aborted task's next await, so a persist that passed the
@@ -628,7 +631,8 @@ impl Boot {
     /// is not a `user_message` matching one of them panics rather than being
     /// silently deleted. Nothing else is reachable in this fixture today (the
     /// derived card is `CardRole::Assistant`, and boot-recovery replay in
-    /// `harness/mod.rs` is gated on `CardRole::Spec`), but the guard no longer
+    /// `harness/mod.rs` is gated at line 149 on a persisted card role the
+    /// derived card does not have), but the guard no longer
     /// depends on that staying true.
     ///
     /// Both the guard and the read-back cover the `pending_queue` half only;
