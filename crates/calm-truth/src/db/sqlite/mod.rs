@@ -568,6 +568,9 @@ mod deadlock_semantics_tests;
 mod pool_memory_anchor_tests;
 
 #[cfg(test)]
+mod task_projection_snapshot_tests;
+
+#[cfg(test)]
 mod proposal_withdraw_upgrade_tests;
 
 // #1016 — `track_detail` ships `cards` / `overlays` as

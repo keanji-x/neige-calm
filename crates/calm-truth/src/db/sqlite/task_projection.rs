@@ -457,6 +457,69 @@ struct InflightTaskRow {
     declared_by: String,
 }
 
+/// One normalized reference lookup passed to [`track_projection_state`].
+///
+/// Declarations stay Rust-owned. SQL receives only the relational lookup keys
+/// it needs, as one JSON parameter, and returns facts; the verdict remains the
+/// single Rust predicate shared by reads and writes.
+#[derive(Serialize)]
+struct ReferenceLookupRequest {
+    reference: String,
+    lookup_kind: &'static str,
+    track_id: Option<String>,
+    block_id: Option<String>,
+    card_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReferenceTargetRow {
+    reference: String,
+    target_area: Option<String>,
+    target_kind: Option<String>,
+    block_exists: i64,
+}
+
+fn declaration_references(declaration: &TaskDeclaration) -> Vec<String> {
+    let mut references = declaration.refs.clone();
+    for text in [
+        Some(declaration.goal.as_str()),
+        declaration.acceptance.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        references.extend(scan_links(text).links.into_iter().filter_map(|link| {
+            link.dst_block_id
+                .map(|block| format!("neige://wave/{}#{block}", link.dst_track_id))
+        }));
+    }
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn reference_lookup_request(reference: &str) -> Option<ReferenceLookupRequest> {
+    if let Some((track_id, Some(block_id))) = parse_destination(reference) {
+        return Some(ReferenceLookupRequest {
+            reference: reference.into(),
+            lookup_kind: "track_block",
+            track_id: Some(track_id),
+            block_id: Some(block_id),
+            card_id: None,
+        });
+    }
+    reference
+        .strip_prefix("neige://card/")
+        .filter(|id| !id.is_empty() && !id.contains('/'))
+        .map(|card_id| ReferenceLookupRequest {
+            reference: reference.into(),
+            lookup_kind: "card",
+            track_id: None,
+            block_id: None,
+            card_id: Some(card_id.into()),
+        })
+}
+
 /// Everything the schedulability verdict needs from `tracks` + the in-flight
 /// `tasks` rows, read in ONE statement (#1016).
 struct TrackProjectionState {
@@ -468,6 +531,8 @@ struct TrackProjectionState {
     source_area: String,
     inflight: Vec<InflightTaskRow>,
     task_read_state: Vec<TaskReadState>,
+    frozen: Vec<FrozenDeclarationRow>,
+    reference_targets: BTreeMap<String, ReferenceTargetRow>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -478,10 +543,12 @@ struct TrackProjectionStateRow {
     area_id: String,
     inflight_json: String,
     task_read_state_json: String,
+    frozen_json: String,
+    reference_targets_json: String,
 }
 
-/// Reads the track's projection policy, its area, and every in-flight task
-/// row in a SINGLE statement.
+/// Materializes every database fact used by the local schedulability verdict
+/// in a SINGLE statement.
 ///
 /// This used to be four statements — policy/ceiling/gates, the in-flight key
 /// list, the ceiling-occupancy `count(*)`, and `SELECT area_id` — which is
@@ -494,24 +561,35 @@ struct TrackProjectionStateRow {
 /// fetch_one` that turned a concurrently deleted track into a 500 (it is the
 /// `NotFound` below, i.e. a 404, on the same row that carries the policy).
 ///
-/// The in-flight key set, ceiling occupancy, and orphan candidates are captured
-/// by the same statement.
+/// The in-flight key set, ceiling occupancy, orphan candidates, frozen
+/// declarations and reference targets are captured by the same statement.
 async fn track_projection_state(
     conn: &mut SqliteConnection,
     track_id: &str,
     include_read_state: bool,
+    reference_requests: &[ReferenceLookupRequest],
 ) -> Result<TrackProjectionState> {
-    let sql = if include_read_state {
-        r#"SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
+    let reference_requests_json = serde_json::to_string(reference_requests)
+        .map_err(|e| CalmError::Internal(format!("serialize task reference lookups: {e}")))?;
+    let row: Option<TrackProjectionStateRow> = sqlx::query_as(
+        r#"WITH reference_input(reference,lookup_kind,track_id,block_id,card_id) AS (
+               SELECT json_extract(value,'$.reference'),
+                      json_extract(value,'$.lookup_kind'),
+                      json_extract(value,'$.track_id'),
+                      json_extract(value,'$.block_id'),
+                      json_extract(value,'$.card_id')
+                 FROM json_each(?2)
+           )
+           SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
                    FROM tasks t
                    WHERE t.track_id = w.id
                        AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
-                   (SELECT json_group_array(json_object(
-                       'key', t.key, 'status', t.status,
-                       'status_detail', t.status_detail,
+                   CASE WHEN ?3 != 0 THEN (SELECT json_group_array(json_object(
+                        'key', t.key, 'status', t.status,
+                        'status_detail', t.status_detail,
                        'gate_result_json', t.gate_result_json,
                        'worker_card_id', t.worker_card_id,
                        'child_track_id', t.child_track_id,
@@ -520,25 +598,53 @@ async fn track_projection_state(
                          THEN 1 ELSE 0 END,
                        'context_stale_at_ms', t.context_stale_at_ms,
                        'context_closure_truncated', t.context_closure_truncated,
-                       'claim_context_json', t.claim_context_json))
-                   FROM tasks t WHERE t.track_id = w.id) AS task_read_state_json
-           FROM tracks w WHERE w.id = ?1"#
-    } else {
-        r#"SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
-                  (SELECT json_group_array(json_object(
-                       'key', t.key, 'status', t.status,
-                       'declared_by', t.declared_by))
-                   FROM tasks t
-                   WHERE t.track_id = w.id
-                       AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
-                   '[]' AS task_read_state_json
-           FROM tracks w WHERE w.id = ?1"#
-    };
-    let row: Option<TrackProjectionStateRow> = sqlx::query_as(sql)
-        .bind(track_id)
-        .fetch_optional(&mut *conn)
-        .await?;
+                        'claim_context_json', t.claim_context_json))
+                     FROM tasks t WHERE t.track_id = w.id)
+                   ELSE '[]' END AS task_read_state_json,
+                   (SELECT json_group_array(json_array(
+                        t.status,t.key,t.kind,t.goal,t.context_json,
+                        t.acceptance_criteria,t.cwd,t.depends_on_json,t.priority,
+                        t.gate_json,t.declared_by,t.decl_ready,t.decl_released_by_user))
+                      FROM tasks t
+                     WHERE t.track_id = w.id AND t.status != 'pending') AS frozen_json,
+                   (SELECT json_group_array(json_object(
+                        'reference', r.reference,
+                        'target_area', target.area_id,
+                        'target_kind', target_area.kind,
+                        'block_exists', CASE
+                            WHEN target.id IS NULL THEN 0
+                            WHEN r.lookup_kind = 'card' THEN 1
+                            ELSE EXISTS(
+                                SELECT 1
+                                  FROM cards report
+                                  JOIN json_each(report.payload,'$.blocks') block
+                                 WHERE report.track_id = target.id
+                                   AND report.kind = 'track-report'
+                                   AND json_extract(block.value,'$.id') = r.block_id)
+                        END))
+                      FROM reference_input r
+                      LEFT JOIN cards referenced_card
+                        ON r.lookup_kind = 'card' AND referenced_card.id = r.card_id
+                      LEFT JOIN tracks target
+                        ON target.id = CASE r.lookup_kind
+                            WHEN 'card' THEN referenced_card.track_id
+                            ELSE r.track_id
+                        END
+                      LEFT JOIN areas target_area ON target_area.id = target.area_id)
+                     AS reference_targets_json
+           FROM tracks w WHERE w.id = ?1"#,
+    )
+    .bind(track_id)
+    .bind(reference_requests_json)
+    .bind(i64::from(include_read_state))
+    .fetch_optional(&mut *conn)
+    .await?;
     let row = row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    let reference_targets =
+        serde_json::from_str::<Vec<ReferenceTargetRow>>(&row.reference_targets_json)?
+            .into_iter()
+            .map(|target| (target.reference.clone(), target))
+            .collect();
     Ok(TrackProjectionState {
         policy: row.automation_policy,
         ceiling: effective_limit(row.planner_task_ceiling, DEFAULT_PLANNER_TASK_CEILING),
@@ -546,6 +652,8 @@ async fn track_projection_state(
         source_area: row.area_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
+        frozen: serde_json::from_str(&row.frozen_json)?,
+        reference_targets,
     })
 }
 
@@ -556,59 +664,17 @@ async fn track_projection_state(
 /// drives, while the read-only path (`read.rs::task_diagnostics`) hands it a
 /// pooled connection in AUTOCOMMIT mode.
 ///
-/// Consistency on the READ path, stated precisely — including what is still
-/// broken. The local verdict core — policy, ceiling, in-flight occupancy,
-/// in-flight keys, the track's area — is ONE statement
-/// ([`track_projection_state`]). Before it, [`track_tree_term`] runs three
-/// autocommit statements (root walk, member/inventory walk, root budget); after
-/// it, two more kinds of reads remain outside that statement, each its own
-/// autocommit version:
+/// Consistency on the READ path: policy, ceiling, local in-flight occupancy,
+/// frozen declarations, task read state, source area and every normalized
+/// reference target are materialized by ONE autocommit statement
+/// ([`track_projection_state`]). It is therefore one SQLite snapshot without
+/// taking the writer slot or introducing the shared-cache deferred-reader
+/// deadlock pinned by `deferred_read_tx_deadlock_repro`.
 ///
-///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
-///     key is already executing"; and
-///   * the per-reference existence/area lookups, which are questions about
-///     OTHER tracks and cards and are inherently point-in-time.
-///
-/// The per-reference lookups really are only "possibly stale": they ask about
-/// unrelated entities and a stale answer is a stale answer.
-///
-/// The frozen scan is NOT merely stale — it can make the returned verdict set
-/// SELF-CONTRADICTORY, and this doc says so rather than rounding it down to
-/// "pointwise consistent". The core snapshot at t0 and the frozen scan at t1
-/// disagree about any task whose row changed in between. Concretely: a task
-/// that is in-flight at t0 and deleted (or driven terminal) before t1 still
-/// occupies a ceiling slot in `capacity`, yet no longer appears in
-/// `frozen_by_key`. The result can be a verdict carrying `schedulable = true`
-/// for a key whose slot the same call already counted as taken — a decision
-/// that no single database version would have produced. The reverse skew
-/// (row becomes frozen after t0) is the same shape.
-///
-/// This is not a #1016 regression: #1016 made the local verdict core atomic;
-/// PR-B later added the three tree reads and deliberately kept the read path
-/// in autocommit mode. Collapsing the remainder is a separate job:
-/// `evaluate_schedulability` fans out one data-dependent query per declared
-/// ref, so it cannot become a single statement without restructuring the
-/// predicate that the write path shares.
-///
-/// What keeps the skew off the correctness path: on the WRITE path all of
-/// this runs inside the caller's IMMEDIATE transaction, so the verdict that
-/// actually ADMITS tasks is fully atomic. The read path
-/// (`read.rs::task_diagnostics`) is a diagnostics surface — a contradictory
-/// verdict there is displayed, never acted on.
-///
-/// Why not an explicit deferred tx on the read path: it would hold R locks
-/// across statements and could cycle against an IMMEDIATE writer touching the
-/// same tables in the opposite order — the `SQLITE_LOCKED` (6) abort
-/// `deferred_read_tx_deadlock_repro` pins for the sibling reader. That cycle
-/// only exists on a shared-cache database (the in-memory sqlite used by CI
-/// and `make dev-fresh`); the production file database (PRIVATECACHE + WAL)
-/// gives readers a snapshot and never cycles. An autocommit statement that
-/// blocks unwinds its implicit transaction — releasing every table lock it
-/// took — before parking in `unlock_notify`, so it can never be the
-/// lock-HOLDING waiter (pinned by `deadlock_semantics_autocommit_join_*`).
-/// `begin_immediate_tx` would also be cycle-free and fully consistent, but it
-/// takes the writer slot and would serialize this read against every writer
-/// on production too — a real production cost for a non-production gap.
+/// [`track_tree_term`] still runs before that statement. Its bounded tree
+/// walks are a separate tree-budget term, while all local/reference facts in
+/// the #1027 tear are version-locked here. The WRITE path remains fully atomic
+/// because its caller supplies the enclosing IMMEDIATE transaction.
 /// Every declaration of a track whose tree root cannot be resolved is
 /// unschedulable, with a diagnostic that says so. Deliberately NOT "skip the
 /// tree term when there is no tree": one broken link would then exempt an
@@ -651,7 +717,27 @@ async fn evaluate_schedulability_with_tree_term(
     include_read_state: bool,
     tree_term: TrackTreeTerm,
 ) -> Result<Vec<BlockVerdict>> {
-    let state = track_projection_state(&mut *conn, track_id, include_read_state).await?;
+    let references_by_declaration = declarations
+        .iter()
+        .map(declaration_references)
+        .collect::<Vec<_>>();
+    let reference_requests = references_by_declaration
+        .iter()
+        .flatten()
+        .filter_map(|reference| reference_lookup_request(reference))
+        .fold(BTreeMap::new(), |mut requests, request| {
+            requests.entry(request.reference.clone()).or_insert(request);
+            requests
+        })
+        .into_values()
+        .collect::<Vec<_>>();
+    let state = track_projection_state(
+        &mut *conn,
+        track_id,
+        include_read_state,
+        &reference_requests,
+    )
+    .await?;
     let configured_policy = state.policy;
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
     // share)` where `share` is this track's deterministic slice of the root's
@@ -709,7 +795,7 @@ async fn evaluate_schedulability_with_tree_term(
         .into_iter()
         .collect();
     let mut verdicts = Vec::with_capacity(declarations.len());
-    for declaration in declarations {
+    for (declaration, references) in declarations.iter().zip(&references_by_declaration) {
         let mut diagnostics = block_local_diags
             .get(declaration.block_index.unwrap_or(usize::MAX))
             .cloned()
@@ -737,56 +823,37 @@ async fn evaluate_schedulability_with_tree_term(
                 Some("add_gate_or_reason".into()),
             ));
         }
-        let mut references = declaration.refs.clone();
-        for text in [
-            Some(declaration.goal.as_str()),
-            declaration.acceptance.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            references.extend(scan_links(text).links.into_iter().filter_map(|link| {
-                link.dst_block_id
-                    .map(|block| format!("neige://wave/{}#{block}", link.dst_track_id))
-            }));
-        }
-        references.sort();
-        references.dedup();
-        for reference in &references {
+        for reference in references {
             let destination = parse_destination(reference);
             let destination_track = destination.as_ref().map(|(track, _)| track.clone());
-            let target: Option<(String, String, i64)> = if let Some((dst_track, dst_block)) =
-                destination
-            {
-                let Some(dst_block) = dst_block else {
-                    diagnostics.push(reference_diagnostic(
-                        "reference_needs_block",
-                        reference,
-                        Some(dst_track),
-                    ));
-                    continue;
-                };
-                sqlx::query_as(
-                    "SELECT w.area_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.track_id=w.id AND card.kind='track-report' AND json_extract(block.value,'$.id')=?2) FROM tracks w JOIN areas c ON c.id=w.area_id WHERE w.id=?1",
-                )
-                    .bind(dst_track).bind(dst_block).fetch_optional(&mut *conn).await?
-            } else if let Some(card_id) = reference
-                .strip_prefix("neige://card/")
-                .filter(|id| !id.is_empty() && !id.contains('/'))
-            {
-                sqlx::query_as("SELECT w.area_id,c.kind,1 FROM cards card JOIN tracks w ON w.id=card.track_id JOIN areas c ON c.id=w.area_id WHERE card.id=?1")
-                    .bind(card_id).fetch_optional(&mut *conn).await?
-            } else {
+            if let Some((dst_track, None)) = destination {
+                diagnostics.push(reference_diagnostic(
+                    "reference_needs_block",
+                    reference,
+                    Some(dst_track),
+                ));
                 continue;
-            };
-            match target {
-                None => diagnostics.push(reference_diagnostic(
+            }
+            if reference_lookup_request(reference).is_none() {
+                continue;
+            }
+            let target = state.reference_targets.get(reference).ok_or_else(|| {
+                CalmError::Internal(format!(
+                    "task reference snapshot omitted normalized lookup {reference:?}"
+                ))
+            })?;
+            match (
+                target.target_area.as_deref(),
+                target.target_kind.as_deref(),
+                target.block_exists,
+            ) {
+                (None, _, _) | (_, None, _) => diagnostics.push(reference_diagnostic(
                     "reference_missing",
                     reference,
                     destination_track.clone(),
                 )),
-                Some((target_area, target_kind, _))
-                    if target_area != source_area && target_kind != "system" =>
+                (Some(target_area), Some(target_kind), _)
+                    if target_area != source_area.as_str() && target_kind != "system" =>
                 {
                     diagnostics.push(reference_diagnostic(
                         "reference_cross_area",
@@ -794,12 +861,12 @@ async fn evaluate_schedulability_with_tree_term(
                         destination_track.clone(),
                     ));
                 }
-                Some((_, _, 0)) => diagnostics.push(reference_diagnostic(
+                (Some(_), Some(_), 0) => diagnostics.push(reference_diagnostic(
                     "reference_missing",
                     reference,
                     destination_track,
                 )),
-                Some(_) => {}
+                (Some(_), Some(_), _) => {}
             }
         }
         if effective_wait
@@ -834,14 +901,11 @@ async fn evaluate_schedulability_with_tree_term(
     // Freeze all persisted declaration columns before ceiling admission. A stale
     // in-flight declaration cannot consume capacity, and a terminal key can never
     // produce a new live row.
-    let frozen: Vec<FrozenDeclarationRow> = sqlx::query_as(
-        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,decl_ready,decl_released_by_user FROM tasks WHERE track_id=?1 AND status!='pending'",
-    )
-    .bind(track_id)
-    .fetch_all(&mut *conn)
-    .await?;
-    let frozen_by_key: BTreeMap<_, _> =
-        frozen.into_iter().map(|row| (row.1.clone(), row)).collect();
+    let frozen_by_key: BTreeMap<_, _> = state
+        .frozen
+        .into_iter()
+        .map(|row| (row.1.clone(), row))
+        .collect();
     for (declaration, verdict) in declarations.iter().zip(&mut verdicts) {
         let Some((
             status,
