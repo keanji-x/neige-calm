@@ -610,7 +610,8 @@ impl Boot {
     /// practice is two *post-fix* starvation run sets on this PR, each the
     /// same repro (two cores, 12 parallel copies, 12 rounds = 144 runs): the
     /// set from the round that landed this fix, and a second set re-measured
-    /// on this branch head. 0 failures in each. The `105 of 144` figure
+    /// on commit `03f8ef69`, which carries this poll unchanged. 0 failures in
+    /// each. The `105 of 144` figure
     /// elsewhere in this file is a genuine pre-fix set; the `102 of 144` one
     /// is not — it was measured on the rejected drain-polling candidate fix
     /// described above. Both predate this poll, so neither says anything
