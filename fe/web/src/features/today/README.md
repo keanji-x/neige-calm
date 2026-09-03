@@ -81,7 +81,10 @@ easy to walk around:
   prop packs, so it has no name for any Today field; `TodayPage` names fields
   but cannot tell the viewports apart. While one function held both, an
   `if (compact) return <>{props.launchpadDocument}…</>` compiled clean and the
-  ledger had nothing to say about it.
+  ledger had nothing to say about it. The reach is exactly this: while
+  `public.tsx` does not import `useCompactViewport`, that escape cannot be
+  written there. Importing the hook back into it still compiles — measured —
+  so what this buys is a visible import instead of one line in a branch.
 - **The ledger is bound to the real signatures, in types.** `page-props.ts`
   asserts that the ledger's keys and `keyof TodayPageProps` are the *same set*
   and that neither side has an index signature; `page-props.test.ts` asserts

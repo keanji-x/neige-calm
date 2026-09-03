@@ -181,8 +181,11 @@ function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }>
  * happened out here rather than inside `TodayCompact`. `ViewportDispatch` now
  * holds the bit and is generic in both prop packs, so it cannot name a field;
  * this function can name fields but cannot tell the viewports apart. The prop
- * packs it builds are the only channel, and `compactProps` is typed
- * `TodayCompactProps`, so anything the ledger excludes is an excess property.
+ * packs it builds are the only channel *while that stays true*, and
+ * `compactProps` is typed `TodayCompactProps`, so anything the ledger excludes
+ * is an excess property. Re-importing `useCompactViewport` into this file
+ * re-opens the hole and compiles — that is the acknowledged residual, and it
+ * is an import in the header rather than a line hidden in a branch.
  */
 export function TodayPage(props: TodayPageProps) {
   return (

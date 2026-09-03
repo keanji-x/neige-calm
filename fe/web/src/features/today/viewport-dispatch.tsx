@@ -10,9 +10,17 @@
 //
 // So the bit moves here, into a component that is generic in both prop packs
 // and thus has no name for any field of either. The page keeps its props but
-// loses the bit; this keeps the bit but has nothing to apply it to. Neither
-// half can leak a prop into the wrong viewport, and that is a property of the
-// types rather than of anyone's discipline.
+// loses the bit; this keeps the bit but has nothing to apply it to.
+//
+// The exact reach of that, measured rather than asserted: while
+// `features/today/public.tsx` does not import `useCompactViewport`, no
+// viewport-conditional read of a `render: false` prop can be *written* there —
+// the name `compact` does not resolve (TS2304) and the prop cannot be routed
+// through `compactProps` either (TS2353). It does **not** stop someone from
+// importing the hook back into that file, which measures green; what it buys
+// is that the escape now costs a visible import instead of one line inside an
+// existing branch. Nothing here is a claim about `render: true` reaching the
+// DOM, which no type can carry.
 //
 // It lives in `features/today` rather than `ui/`: nothing about it is
 // Today-specific, but `ui/` is the wrong home for a one-caller abstraction,
