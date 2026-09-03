@@ -100,7 +100,7 @@
 //! The two `Kernel` rows are the blocker, and they are unrepresentable *by
 //! design*: #1300 removed kernel template seeding, which is why there is no
 //! `KernelSeed` variant (see [`WriteOrigin`]) — and `(Kernel, Spec)` never had
-//! an origin to begin with, since it pairs the kernel's actor with the spec's
+//! an origin to begin with, since it pairs the kernel's actor with an agent's
 //! attribution. So step 3 cannot simply thread an origin through these; it has
 //! to first decide, per fixture, whether the fixture is standing in for a real
 //! origin (and should be rewritten to use it) or is seeding rows directly
@@ -125,7 +125,7 @@
 //!   `track_report_read.rs`'s `assert_first_write_preserves_read_ids` fixture
 //!   plus `report_backlinks.rs`'s `report_as` helper as called by `report`.
 //! * `(Kernel, Spec)` — `tests/cases/mcp_assistant_tool_gate.rs`,
-//!   `tests/cases/rest_track_report.rs` (the spec-authored seed),
+//!   `tests/cases/rest_track_report.rs` (the agent-authored seed),
 //!   `tests/cases/track_projection_policy_patch.rs`, and `report_backlinks.rs`'s
 //!   `report_as` at its `EditAuthor::Spec` caller.
 //!
@@ -930,7 +930,7 @@ mod tests {
     // must add it back — that is the point at which the mutation becomes
     // detectable. See the `WriteOrigin::Fork` docs.
 
-    fn spec_session() -> ActorId {
+    fn ai_session() -> ActorId {
         ActorId::AiSpecSession(WorkerSessionId::from("sess_1".to_string()))
     }
 
@@ -954,18 +954,18 @@ mod tests {
         let (actor, author, auto_promote_draft, recorder_shadow) = verify_legacy_write_arguments(
             SITE_MCP_DECISION_SINK,
             &agent(CardRole::Spec, AgentProvider::Codex),
-            &spec_session(),
+            &ai_session(),
             EditAuthor::Spec,
             true,
         )
-        .expect("the MCP funnel's spec triple")
+        .expect("the MCP funnel's CardRole::Spec triple")
         .into_parts();
-        assert_eq!(actor, spec_session());
+        assert_eq!(actor, ai_session());
         assert_eq!(author, EditAuthor::Spec);
         assert!(auto_promote_draft);
         assert!(
             recorder_shadow.is_some(),
-            "a spec agent write is gated, so the check must hand back a probe"
+            "an agent write is gated, so the check must hand back a probe"
         );
 
         let (actor, author, auto_promote_draft, recorder_shadow) = verify_legacy_write_arguments(
@@ -990,7 +990,7 @@ mod tests {
         // both agent roles.
         assert!(
             recorder_shadow.is_some(),
-            "the assistant arm is gated exactly as the spec arm is"
+            "the assistant arm is gated exactly as the CardRole::Spec arm is"
         );
 
         for site in [SITE_REST_REPORT_BLOCKS, SITE_REST_REPORT_DOCUMENT] {
@@ -1027,13 +1027,8 @@ mod tests {
         let origin = agent(CardRole::Spec, AgentProvider::Codex);
         let cases: Vec<(&str, ActorId, EditAuthor, bool)> = vec![
             ("actor", ActorId::User, EditAuthor::Spec, true),
-            ("author", spec_session(), EditAuthor::Assistant, true),
-            (
-                "auto_promote_draft",
-                spec_session(),
-                EditAuthor::Spec,
-                false,
-            ),
+            ("author", ai_session(), EditAuthor::Assistant, true),
+            ("auto_promote_draft", ai_session(), EditAuthor::Spec, false),
         ];
         for (field, actor, author, auto_promote_draft) in cases {
             let error = verify_legacy_write_arguments(
@@ -1066,11 +1061,11 @@ mod tests {
         let error = verify_legacy_write_arguments(
             SITE_MCP_DECISION_SINK,
             &agent(CardRole::Assistant, AgentProvider::Codex),
-            &spec_session(),
+            &ai_session(),
             EditAuthor::Spec,
             true,
         )
-        .expect_err("an assistant origin may not carry the spec's arguments");
+        .expect_err("an assistant origin may not carry the other role's arguments");
         assert!(message(error).contains("mismatch on actor"));
     }
 

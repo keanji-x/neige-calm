@@ -15,12 +15,12 @@
 //!
 //! | test | mutation that turns it red |
 //! |---|---|
-//! | `mcp_spec_write_passes_the_origin_check` | any member of `commit_report_op`'s quadruple changed away from `policy_for`'s answer |
+//! | `mcp_report_write_tool_passes_the_origin_check` | any member of `commit_report_op`'s quadruple changed away from `policy_for`'s answer |
 //! | `mcp_assistant_write_keeps_its_own_recorder_probe` | `commit_report_op` passing `recorder_shadow: None` for `CardRole::Assistant` only (the characterization suite's gap 3) |
 //! | `rest_document_write_passes_the_origin_check` | any member of `routes::tracks::update_track_report`'s quadruple changed |
 //! | `rest_block_write_passes_the_origin_check` | any member of `routes::track_report_blocks::commit`'s quadruple changed |
 //! | `mcp_lifecycle_transition_consults_the_recorder_gate_on_its_own_leg` | deleting the `TrackLifecycle` `probe.record` block in `track_report.rs` (the characterization suite's gap 2, item 4) |
-//! | `mcp_assistant_write_is_refused_when_the_recorder_gate_denies` | `commit_report_op` passing anything but the probe `verify_legacy_write_arguments` returned — including `if role == Assistant { None } else { .. }` in the argument position. Red as a *different* refusal on this arm (the role gate's `scope.card` also objects); on the **Spec** arm the same mutation lets the write commit — see this test's docs |
+//! | `mcp_assistant_write_is_refused_when_the_recorder_gate_denies` | `commit_report_op` passing anything but the probe `verify_legacy_write_arguments` returned — including `if role == Assistant { None } else { .. }` in the argument position. Red as a *different* refusal on this arm (the role gate's `scope.card` also objects); on the **`calm.track.report.write`** arm the same mutation lets the write commit — see this test's docs |
 //! | `mcp_recorder_probe_gates_on_the_track_being_written` | feeding `AgentOrigin::track_id` (and so the probe's target track) from `identity.track_id` instead of the resolved `track.id` |
 //!
 //! The first four go red as a **refusal**: `verify_legacy_write_arguments`
@@ -85,7 +85,8 @@ async fn doc_rev(boot: &Boot) -> u64 {
     .doc_rev
 }
 
-/// The spec arm of the MCP funnel writes with the origin check in the way.
+/// The `calm.track.report.write` arm of the MCP funnel writes with the origin
+/// check in the way.
 ///
 /// The write succeeding is the assertion, and it is worth something only
 /// because the check fails closed: change any member of `commit_report_op`'s
@@ -94,7 +95,7 @@ async fn doc_rev(boot: &Boot) -> u64 {
 /// call is refused before the transaction opens, so both assertions below go
 /// red.
 #[tokio::test]
-async fn mcp_spec_write_passes_the_origin_check() {
+async fn mcp_report_write_tool_passes_the_origin_check() {
     let boot = boot().await;
     let pool = mcp_pool(&boot);
 
@@ -103,14 +104,14 @@ async fn mcp_spec_write_passes_the_origin_check() {
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
         json!({
-            "body": "# Spec wrote this\n",
-            "summary": "spec summary",
+            "body": "# Agent wrote this\n",
+            "summary": "agent summary",
             "message": "origin threading write",
             "if_doc_rev": 0
         }),
     )
     .await
-    .expect("the spec's own quadruple must equal the policy its origin declares");
+    .expect("the tool's own quadruple must equal the policy its origin declares");
 
     assert_eq!(report_edit_count(&pool).await, 1);
     assert_eq!(doc_rev(&boot).await, 1);
@@ -169,7 +170,7 @@ async fn mcp_assistant_write_keeps_its_own_recorder_probe() {
 /// [`mcp_assistant_write_is_refused_when_the_recorder_gate_denies`] for why no
 /// shape available at this entry point avoids that.
 ///
-/// The `Spec` case is the same construction
+/// The `CardRole::Spec` case is the same construction
 /// `report_write_characterization.rs::seed_foreign_track_spec_session` uses; the
 /// reason it is duplicated rather than shared is that the control group must
 /// stay untouched by this step.
@@ -193,7 +194,7 @@ async fn seed_foreign_track_session(
         })
         .await
         .expect("mint the foreign track");
-    let spec_card = boot
+    let card = boot
         .repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -204,11 +205,11 @@ async fn seed_foreign_track_session(
         })
         .await
         .expect("mint the foreign track's card");
-    set_persisted_card_role(boot.repo.as_ref(), spec_card.id.as_str(), role).await;
+    set_persisted_card_role(boot.repo.as_ref(), card.id.as_str(), role).await;
     seed_non_root_session_with_provider(
         boot.repo.as_ref(),
         &track.id,
-        &spec_card.id,
+        &card.id,
         session_id,
         WorkerProviderKind::Codex,
     )
@@ -250,8 +251,8 @@ async fn seed_foreign_track_session(
 /// is what the assertion above pins, and it is all it pins.
 ///
 /// **Do not read that as the probe being redundant.** It is not, and the
-/// counterexample is in this very file. On the Spec arm —
-/// `calm.track.report.write` — `enforce_role_resolving_session` resolves the
+/// counterexample is in this very file. On the arm entered through
+/// `calm.track.report.write`, `enforce_role_resolving_session` resolves the
 /// acting session to `ActorId::AiSpec(card)`, and by that code's own comment
 /// (`calm-truth/src/decision_gate.rs`, the `ActorId::AiSpecSession` arm) *"the
 /// AiSpec path in enforce_role does not re-check role/scope for ordinary
@@ -269,10 +270,11 @@ async fn seed_foreign_track_session(
 /// `CardDecisionSink::commit_report_op` makes that write commit. The other two
 /// come back as a different refusal, this test being one of them.
 ///
-/// So the correct statement of gap 3 is: on the Spec arm the recorder probe is
-/// the only thing standing between an off-track spec session and another
-/// track's report, and a suite that reads only persisted rows cannot see it
-/// **because the rows it leaves behind are the rows of a successful write.**
+/// So the correct statement of gap 3 is: on the `calm.track.report.write` arm
+/// the recorder probe is the only thing standing between an off-track agent
+/// session and another track's report, and a suite that reads only persisted
+/// rows cannot see it **because the rows it leaves behind are the rows of a
+/// successful write.**
 /// Step 3 must not treat the probe as deletable.
 #[tokio::test]
 async fn mcp_assistant_write_is_refused_when_the_recorder_gate_denies() {
@@ -364,8 +366,8 @@ async fn mcp_recorder_probe_gates_on_the_track_being_written() {
         TOOL_REPORT_WRITE,
         identity,
         json!({
-            "body": "# Spec wrote this\n",
-            "summary": "spec summary",
+            "body": "# Agent wrote this\n",
+            "summary": "agent summary",
             "message": "probe targets the written track",
             "if_doc_rev": 0
         }),
@@ -401,7 +403,7 @@ async fn mcp_recorder_probe_gates_on_the_track_being_written() {
 async fn mcp_lifecycle_transition_consults_the_recorder_gate_on_its_own_leg() {
     let boot = boot().await;
     let pool = mcp_pool(&boot);
-    const FOREIGN_SESSION_ID: &str = "foreign-track-spec-session";
+    const FOREIGN_SESSION_ID: &str = "foreign-track-agent-session";
     seed_foreign_track_session(&boot, FOREIGN_SESSION_ID, CardRole::Spec).await;
     assert_eq!(
         boot.repo
@@ -415,7 +417,8 @@ async fn mcp_lifecycle_transition_consults_the_recorder_gate_on_its_own_leg() {
     );
 
     let identity = ToolCallIdentity {
-        // This track's spec card — so the tool resolves this track's report…
+        // This track's own report-writing card — so the tool resolves this
+        // track's report…
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
         provider: AgentProvider::Codex,
@@ -423,7 +426,7 @@ async fn mcp_lifecycle_transition_consults_the_recorder_gate_on_its_own_leg() {
         session_id: FOREIGN_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "foreign-spec-thread".to_string(),
+        thread_id: "foreign-agent-thread".to_string(),
     };
 
     let error = call_tool(
