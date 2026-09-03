@@ -122,6 +122,21 @@
     color: var(--text-3);
   }
 
+  /* #1234 S1b-4b — the accessible-description carrier. The canonical clip block
+     (the same one `ui/schema-form/fields/DirectoryField` uses): `clip-path`
+     alone would leave the node selectable, and `display: none` would take it
+     out of the accessibility tree, which is the one tree it exists to be in. */
+  .srOnly {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   .empty {
     display: flex;
     min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));

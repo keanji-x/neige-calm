@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
-import { WavePage } from './public.tsx';
+import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
+import { WavePage, type WavePageProps } from './public.tsx';
 import { card, renderPage, wave } from './test-fixtures.tsx';
 
 afterEach(cleanup);
@@ -218,6 +219,35 @@ describe('WavePage task inventory', () => {
     expect(screen.getByRole('img', { name: 'Status: running' }).getAttribute('title')).toBe('running');
   });
 
+  /*
+   * **The same reason, on the phone**, and written beside the desktop assertion
+   * on purpose — the two are each other's control.
+   *
+   * The desktop's reveal button *encloses* the dot, so the kernel's reason is
+   * part of the button's accessible **name** (the regex above). Astryx lays the
+   * mobile row's meta lane out as a sibling of its invisible button, so the same
+   * shape there would leave the focused control named `delta` and nothing more:
+   * `failed — wave 9a4c is not a git repository` would be on screen and
+   * unreachable. It arrives as the control's accessible **description** instead,
+   * which adds the reason without overwriting the visible key.
+   */
+  it('gives the mobile Task row the same reason, as its control’s description', () => {
+    const { container } = renderPage({
+      tasks: [running('delta', 'failed', 'card-4', 'codex', 'wave 9a4c is not a git repository')],
+      panel: 'tasks',
+    });
+    const row = container.querySelector('[data-nc-mobile-panel] [data-nc-row="b-delta"]');
+    expect(row, 'the mobile task row must be on the page').not.toBeNull();
+    const control = within(row as HTMLElement).getByRole('button');
+    /* The name is the visible key, unchanged — this is a description, not a
+       second label. */
+    expect(control.textContent).toBe('delta');
+    const described = control.getAttribute('aria-describedby');
+    expect(described, 'the mobile reveal control must carry a description').not.toBeNull();
+    expect(document.getElementById(described!)?.textContent)
+      .toBe('failed — wave 9a4c is not a git repository');
+  });
+
   /* A row with no run has no dot at all: `Not ready` is a fact about the
      declaration, not a status, and giving it a coloured dot would state that
      something has been dispatched. */
@@ -341,6 +371,135 @@ describe('WavePage card inventory', () => {
     expect(screen.queryByRole('heading', { name: 'Cards' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'mobile-layout' }));
     expect(onOpenTask).toHaveBeenCalledWith('task-1');
+  });
+
+  /*
+   * **The mobile Task row is still a landing** (#1234 S1b-4b). The case above
+   * looks like it covers this and does not: `mobile-layout` as an exact
+   * accessible name matches the *desktop* reveal button, whose name is the task
+   * key alone — the mobile row's name has always carried its meta lane too. So
+   * the click reaches the row this test scopes to, inside the mobile panel.
+   *
+   * Interactivity is the one thing the projection declines to look at (§6.3:
+   * Astryx generates the element the painter cannot reach), and `reveal-block`
+   * is the single action this surface supports — so if it stopped being wired,
+   * every projection assertion in `mobile-projection.test.tsx` would stay green.
+   */
+  it('reveals the block when a mobile Task row is tapped', async () => {
+    const onOpenTask = vi.fn();
+    const { container } = renderPage({
+      tasks: [{
+        blockId: 'task-1', key: 'mobile-layout', state: 'ready', declaration: null,
+        status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+      }],
+      panel: 'tasks',
+      onOpenTask,
+    });
+    const row = container.querySelector('[data-nc-mobile-panel] [data-nc-row="task-1"]');
+    expect(row, 'the mobile task row must be on the page').not.toBeNull();
+    await userEvent.click(within(row as HTMLElement).getByRole('button'));
+    expect(onOpenTask).toHaveBeenCalledWith('task-1');
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * ── Δ2: the mobile module sequence has a carrier (#1234 S1b-4b) ───────────
+   *
+   * **What these two cases lock, and why they are not the menu restated.** On
+   * the desktop the row modules are a DOM sequence and `paintPanel` walks it, so
+   * "both surfaces show the same modules in the same order" is held by the
+   * traversal. Mobile drills into one module at a time, so that sequence lives
+   * in this menu — and until this slice it was two hand-written entries that
+   * merely *happened* to agree with `deriveWavePageView`. Nothing compared them,
+   * so the statement had no carrier on this side at all.
+   *
+   * Both halves are needed. The first compares the menu's labels against the
+   * derivation's `title`s, so a module added, dropped or reordered upstream
+   * moves the menu or goes red. The second follows each entry into the page it
+   * opens and reads the painted module's key, so an entry whose *label* is right
+   * and whose destination is not is caught too — a label sequence alone would be
+   * satisfied by two entries that both open Cards.
+   *
+   * `Outline` and `Conversations` are asserted in position as well: they are not
+   * row modules, and their staying put is the other half of "the derived entries
+   * go exactly here".
+   */
+  const MENU_CARDS = [card({ id: 'card-1', kind: 'terminal', title: 'Build log' })];
+  const MENU_TASKS: readonly ReportTaskRow[] = [{
+    blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+  }];
+
+  it('offers exactly the derived row modules, in the derivation’s order', async () => {
+    renderPage({
+      cards: MENU_CARDS,
+      tasks: MENU_TASKS,
+      outlineItems: [{ blockId: 'section-1', label: 'What changed', number: 1, children: [] }],
+    });
+    const modules = deriveWavePageView({ cards: MENU_CARDS, tasks: MENU_TASKS }).rowModules;
+    /* Not vacuous: a one-module derivation would make "the order matches" an
+       assertion about nothing. */
+    expect(modules.length).toBeGreaterThan(1);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Outline',
+      ...modules.map((module) => module.title),
+      'Conversations',
+      'Delete wave',
+    ]);
+  });
+
+  it('and each of those entries opens the module it names', async () => {
+    const modules = deriveWavePageView({ cards: MENU_CARDS, tasks: MENU_TASKS }).rowModules;
+    for (const [index, module] of modules.entries()) {
+      /* No `outlineItems`, so the derived entries start the list and their menu
+         position is their index in `rowModules`. */
+      const { container } = renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS });
+      await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+      await userEvent.click(screen.getAllByRole('menuitem')[index]);
+      const painted = container.querySelector('[data-nc-mobile-panel] [data-nc-module]');
+      expect(painted?.getAttribute('data-nc-module'), `menu entry ${index}`).toBe(module.key);
+      cleanup();
+    }
+  });
+
+  /*
+   * ── The drill-down dispatch has no default arm (#1234 S1b-4b review) ──────
+   *
+   * **The case above cannot see this.** It walks the modules the derivation has
+   * *today*, and a per-key dispatch names each of those explicitly, so that case
+   * is green under either shape of renderer — one that special-cases `cards` and
+   * `tasks`, and one that special-cases nothing but `outline` and
+   * `conversations`. The defect it misses lives outside today's two keys: with a
+   * trailing `else` for Conversations — which is what this file's renderer used
+   * to have — any panel value the dispatch does not name lands on the
+   * Conversations page. `tsc` has nothing to say about it: the `else` is total.
+   *
+   * **What this case does and does not claim.** It is deliberately narrow: a
+   * panel value the renderer does not special-case reaches the *row-module
+   * lookup* rather than the Conversations arm. `rowModule`'s error is the whole
+   * of the evidence — the only way to raise "has no … module" is to have gone
+   * through the lookup — and the value used is one that is not, and is not
+   * meant to become, a module key. So this asserts nothing about what the
+   * painter then draws, and nothing about a *future* `RowModuleView['key']`
+   * member: if the derivation ever gains one, the right behaviour is to paint
+   * it, and this case keeps holding unchanged because `no-such-module` still is
+   * not in `rowModules`. Widening the property to "every unnamed kind is
+   * painted" would need an injectable dispatch and a real third module; that is
+   * not bought here.
+   *
+   * The cast is only how an out-of-union runtime value is handed to a typed
+   * prop. The value is constructed *here*, by the test: the URL cannot produce
+   * it, because every production path into this prop runs through
+   * `asMobilePanel`, which folds anything outside the union to `null`. What it
+   * stands in for is a caller outside the type system — an unchecked dispatch
+   * site, or a `MobilePanelKind` member this file has not been taught.
+   */
+  it('routes an unrecognised panel value into the row-module lookup, not Conversations', () => {
+    const unknown = 'no-such-module' as NonNullable<WavePageProps['panel']>;
+    expect(() => renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS, panel: unknown }))
+      .toThrow('the wave page view has no no-such-module module');
   });
 
   it('moves the mobile Outline into its own list and returns to the selected report anchor', async () => {

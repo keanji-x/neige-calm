@@ -104,10 +104,12 @@ const taskRow: PanelRow = Object.freeze({
   ]),
 });
 
-/** The empty-token row. `core/domain/report.ts` treats `status === ''` as a
- *  legitimate state, and an empty token makes the text obligation vacuously
- *  true — a checker that compared the token by truthiness rather than by
- *  equality would never be caught without it. */
+/** The empty-token row. Today's derivation cannot produce it —
+ *  `deriveReportTasks` normalises `undefined | null | ''` alike to `null` — but
+ *  `RowStatus['token']` is a plain string and this checker is generic over
+ *  everything that type admits. An empty token makes the text obligation
+ *  vacuously true, so a checker that compared the token by truthiness rather
+ *  than by exact equality would never be caught without it. */
 const blankStatusRow: PanelRow = Object.freeze({
   id: 't2',
   title: 'T-2',
@@ -833,8 +835,9 @@ describe('a faithful painter is green', () => {
      *
      * This is a false-red guard with a date on it: the checker's ownership scope
      * began at `parentElement`, which reads this row as owning zero actions and
-     * reports `action-sequence` against a correct painter. S1b-4 would have hit
-     * it on its first render.
+     * reports `action-sequence` against a correct painter. It is no longer
+     * hypothetical — S1b-4b's mobile Task row paints exactly this shape, and
+     * `mobile-projection.test.tsx` runs the checker over it.
      *
      * The element is a `<div>` because this file's `mount` has no `<ul>` to put
      * an `<li>` in; the tag is immaterial to the checker, which by §6.3 declines

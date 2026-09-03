@@ -26,9 +26,7 @@ import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
-import {
-  MobileList, MobileListEmpty, MobileListItem, MobileListPage,
-} from '../../../ui/mobile-list/public.tsx';
+import { MobileList, MobileListItem, MobileListPage } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
@@ -40,6 +38,26 @@ import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import styles from './page.module.css';
+
+/**
+ * The mobile drill-down pages: two that are not row modules, plus one per row
+ * module the view model names.
+ *
+ * **The row-module half is spelled from the view model** (Δ2):
+ * `RowModuleView['key']` rather than `'cards' | 'tasks'`, so this type widens
+ * with the derivation instead of being a second list to keep in step. The other
+ * two are not row modules — `Outline` reads the report's anchors and
+ * `Conversations` is a router-composed slot — and they are written out, because
+ * pushing them into `rowModules` to make one loop out of every entry would let
+ * this page's navigation decide the view model's contents.
+ *
+ * The renderer below is written the same way round, and that is load-bearing:
+ * it special-cases exactly those two and sends **every other member** through
+ * `paintMobileModule`, so a row module the derivation gains reaches the painter
+ * here without an edit. Dispatching per known key instead — with a trailing
+ * `else` — is what would let a new module quietly open the Conversations page.
+ */
+type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 
 export type WavePageProps = Readonly<{
   wave: Wave;
@@ -98,8 +116,8 @@ export type WavePageProps = Readonly<{
    * offered on this viewport (`mobile-painter.tsx`'s capability table), so the
    * page it drilled into had nothing left to be.
    */
-  panel?: 'outline' | 'cards' | 'tasks' | 'conversations' | null;
-  onOpenPanel?: (panel: 'outline' | 'cards' | 'tasks' | 'conversations') => void;
+  panel?: MobilePanelKind | null;
+  onOpenPanel?: (panel: MobilePanelKind) => void;
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
@@ -114,8 +132,6 @@ function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
   if (lifecycle === 'draft' || lifecycle === 'done' || lifecycle === 'canceled') return null;
   return lifecycle;
 }
-
-type MobilePanelKind = 'outline' | 'cards' | 'tasks' | 'conversations';
 
 /**
  * The view model's module under `key`.
@@ -178,10 +194,12 @@ export function WavePage({
    * The page's other markers (`data-nc-wave-page`, `data-nc-role`,
    * `data-nc-panel`, the two inventory markers, …) are this page's own and stay.
    *
-   * **Since S1b-4a the mobile Cards page is a second renderer of the same
-   * derivation** (`paintMobileModule`), with `mobile-entry.test.tsx` holding
-   * that call the way `desktop-entry.test.tsx` holds the desktop's. The mobile
-   * Tasks page is still hand-composed below; that is S1b-4b.
+   * **Since S1b-4a/4b both mobile row-module pages are renderers of the same
+   * derivation** (`paintMobileModule`, one call per drill-down), with
+   * `mobile-entry.test.tsx` holding those calls the way `desktop-entry.test.tsx`
+   * holds the desktop's. `Outline` and `Conversations` are not row modules and
+   * stay hand-composed: they are not in `rowModules`, and pushing them in would
+   * let this page's navigation decide the view model's contents.
    */
   const panelView = deriveWavePageView({ cards, tasks });
   const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
@@ -253,7 +271,16 @@ export function WavePage({
   /* Rebuilt per render, like the desktop's: the page chrome it closes over —
      where Back goes, how the page animates in — is a fact about this render. */
   const mobilePainter = makeMobilePainter({
-    onOpenTask, backLabel: 'Report', onBack: closeMobilePanel, motion: mobileCardMotion,
+    /* The reveal navigation clears `?panel=` itself (§1.4), so the panel is left
+       rather than closed — closing it here too would be two moves for one. That
+       wrapper is why the painter takes a handler instead of the page's prop. */
+    onOpenTask: (blockId) => {
+      leaveMobilePanel();
+      onOpenTask?.(blockId);
+    },
+    backLabel: 'Report',
+    onBack: closeMobilePanel,
+    motion: mobileCardMotion,
   });
 
   const mobileActions = !boardOpen ? (
@@ -266,8 +293,32 @@ export function WavePage({
           ...(outlineItems.length > 0
             ? [{ label: 'Outline', onClick: () => openMobilePanel('outline') }]
             : []),
-          { label: 'Cards', onClick: () => openMobilePanel('cards') },
-          { label: 'Tasks', onClick: () => openMobilePanel('tasks') },
+          /*
+            ── Δ2: the module sequence is this menu ─────────────────────────
+            *
+            * On the desktop the two row modules are a DOM sequence and
+            * `paintPanel` walks it. Mobile drills into one at a time, so the
+            * sequence has no traversal to live in — it is a *navigation*
+            * structure, and until this slice it was two written-out entries
+            * that happened to agree with `deriveWavePageView`. Agreeing by
+            * coincidence is what the whole issue is about: the statement
+            * "**both surfaces show the same row modules, in the same order**"
+            * had no carrier on this side at all.
+            *
+            * It has one now — the derivation itself. A module the view model
+            * gains appears here; one it loses disappears; a reorder reorders
+            * the menu. `public.test.tsx`'s "the drill-down menu offers exactly
+            * the derived row modules" is what makes that mechanical, by
+            * comparing the menu against `rowModules` and following each entry
+            * into the page it opens.
+            *
+            * `Outline` above and `Conversations` below stay hand-written: they
+            * are not row modules (see `MobilePanelKind`).
+          */
+          ...panelView.rowModules.map((module) => ({
+            label: module.title,
+            onClick: () => openMobilePanel(module.key),
+          })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
           { label: 'Delete wave', onClick: () => deletion.request(wave.id) },
@@ -472,50 +523,7 @@ export function WavePage({
                   ])}
                 </MobileList>
               </MobileListPage>
-            ) : mobilePanelKind === 'cards' ? (
-              /*
-                ── The mobile Cards page goes through `core/view` (#1234 S1b-4a) ──
-                *
-                * One derivation, one painter, one module. What this branch used
-                * to do — walk `cards` itself and spell each row inline — is the
-                * half of the drift the desktop's own slice could not reach: an
-                * untitled card printed its kind twice here and nowhere else,
-                * `kernel-owned` was missing, and the row opened a detail page
-                * the desktop has no counterpart for.
-                *
-                * **One module, not the panel**: mobile drills into a module at
-                * a time, so this is `paintModule` (Δ2), and the module sequence
-                * lives in the navigation menu above.
-                *
-                * The two card actions are gone by decision, not by
-                * omission — see `mobile-painter.tsx`'s capability table.
-              */
-              paintMobileModule(mobilePainter, rowModule(panelView, 'cards'))
-            ) : mobilePanelKind === 'tasks' ? (
-              <MobileListPage
-                title="Tasks"
-                backLabel="Report"
-                motion={mobileCardMotion}
-                onBack={closeMobilePanel}
-              >
-                <MobileList>
-                  {tasks.map((task) => (
-                    <MobileListItem
-                      key={task.blockId}
-                      title={task.key}
-                      meta={task.state === 'ready' ? 'Ready'
-                        : task.state === 'withdrawn' ? 'Withdrawn'
-                          : task.state === 'unreadable' ? 'Unreadable' : 'Not ready'}
-                      onSelect={() => {
-                        leaveMobilePanel();
-                        onOpenTask?.(task.blockId);
-                      }}
-                    />
-                  ))}
-                  {tasks.length === 0 && <MobileListEmpty>No tasks declared yet.</MobileListEmpty>}
-                </MobileList>
-              </MobileListPage>
-            ) : (
+            ) : mobilePanelKind === 'conversations' ? (
               <MobileListPage
                 title="Conversations"
                 backLabel="Report"
@@ -526,14 +534,56 @@ export function WavePage({
                   {conversationList ?? <p>No conversations yet.</p>}
                 </div>
               </MobileListPage>
+            ) : (
+              /*
+                ── Every row module goes through `core/view` (#1234 S1b-4a/4b) ──
+                *
+                * One derivation, one painter, one module — and **one branch for
+                * all of them**. `Outline` and `Conversations` are handled above
+                * because they are not row modules; what is left of
+                * `MobilePanelKind` is exactly `RowModuleView['key']`, so this
+                * arm needs no key of its own and a module the derivation gains
+                * arrives here already painted. The shape it replaced dispatched
+                * on `'cards'` and `'tasks'` and let everything else fall into
+                * the Conversations page, which `tsc` had no reason to complain
+                * about. What holds the *shape* of this dispatch is
+                * `public.test.tsx`'s "routes an unrecognised panel value into
+                * the row-module lookup, not Conversations" — a narrow guard: it
+                * proves only that a kind this file does not name reaches the
+                * lookup on this arm rather than the Conversations page, not
+                * that a future module paints correctly once it exists.
+                *
+                * What each of the two branches used to do by hand is the drift
+                * the whole issue is about. Cards: an untitled card printed its
+                * kind twice here and nowhere else, `kernel-owned` was missing,
+                * and the row opened a detail page the desktop has no
+                * counterpart for. Tasks, the louder half: it re-worded
+                * `task.state` into four declaration words of its own, so a ready
+                * task carried one here and none on the desktop, and a dispatched
+                * one carried its readiness word here while the desktop showed
+                * the run. Both rules are `deriveReportTasks`' and now arrive
+                * through the derivation — a visible change, on the record as D8.
+                * Those four words are deliberately not quoted anywhere in this
+                * file: `mobile-projection.test.tsx`'s wording hygiene guard
+                * scans this source for them.
+                *
+                * **One module, not the panel**: mobile drills into a module at a
+                * time, so this is `paintModule` (Δ2), and the module sequence
+                * lives in the navigation menu above. The two card actions are
+                * gone by decision, not by omission — see `mobile-painter.tsx`'s
+                * capability table.
+              */
+              paintMobileModule(mobilePainter, rowModule(panelView, mobilePanelKind))
             ))}
           </div>
           <div
             className={styles.desktopPanelSurface}
             /* The projection's root on this surface. `.mobileListSurface` is a
                sibling and is in the DOM at the same time (the desktop side only
-               takes `inert`), so a whole-page scan would mix the two the moment
-               S1b-4 marks the mobile rows. */
+               takes `inert`), and since S1b-4a/4b it carries markers of its own,
+               so a whole-page scan would now mix the two. Each surface's scan is
+               rooted at its own marker: this attribute, and
+               `data-nc-mobile-panel` opposite. */
             data-nc-desktop-panel=""
             aria-hidden={mobilePanelOpen ? true : undefined}
             inert={mobilePanelOpen}
