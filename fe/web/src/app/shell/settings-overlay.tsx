@@ -14,13 +14,17 @@
 // owns the dialog, exactly as it already owns the New wave dialog and for the
 // same reason — two surfaces, one dialog, one set of strings.
 //
-// The routes stay real routes (`/settings`, `/settings/templates`,
-// `/settings/templates/$templateId`, `/settings/plugins`) and their components
-// render nothing. The URL is the *state* — which section is open, which
-// template is being edited, what a deep link means, what Back does — and this
-// file is the *view* of that state. Splitting them that way is what lets Back
-// leave the template editor instead of leaving Settings while the panel around
-// it never blinks.
+// The routes stay real routes (`/settings`, `/settings/appearance`,
+// `/settings/plugins`, `/settings/about`) and their components render nothing.
+// The URL is the *state* — which section is open, what a deep link means, what
+// Back does — and this file is the *view* of that state. Splitting them that
+// way is what keeps the panel from blinking as the reader moves between
+// sections.
+//
+// #1300 S1 removed `/settings/templates` and `/settings/templates/$templateId`
+// along with the template editor they existed for; templates are a read-only
+// recipe again, and `GET /api/wave-templates` is read only by the New wave
+// picker.
 
 import { useQuery } from '@tanstack/react-query';
 
@@ -31,14 +35,11 @@ import {
   AboutPane, AppearancePane, NetworkPane, SettingsSurface,
   type SettingsSection, type ThemeMode as SettingsThemeMode,
 } from '../../features/settings/public.tsx';
-import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
-import { useState } from '../../ui/state/public.ts';
 import {
   pluginsQueryOptions, settingsQueryOptions, usePluginMutations, useSettingsMutation,
-  useWaveTemplateMutation, useWaveTemplates,
 } from '../providers/queries.ts';
-import { routeParamFromPath, useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
+import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 
 /**
@@ -52,7 +53,6 @@ export function settingsSectionForPath(path: string): SettingsSection | null {
   if (path === '/settings/appearance') return 'appearance';
   if (path === '/settings/plugins') return 'plugins';
   if (path === '/settings/about') return 'about';
-  if (path === '/settings/templates' || path.startsWith('/settings/templates/')) return 'templates';
   return null;
 }
 
@@ -61,7 +61,6 @@ function targetForSection(section: SettingsSection): NavTarget {
   switch (section) {
     case 'network': return { name: 'settings' };
     case 'appearance': return { name: 'settings-appearance' };
-    case 'templates': return { name: 'settings-templates' };
     case 'plugins': return { name: 'settings-plugins' };
     case 'about': return { name: 'settings-about' };
   }
@@ -92,7 +91,6 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
       >
         <SectionPane
           section={section ?? 'network'}
-          path={path}
           transport={transport}
           unauthorized={unauthorized}
         />
@@ -102,13 +100,11 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
 }
 
 /** One switch, so a new section cannot forget to be rendered. */
-function SectionPane({ section, path, transport, unauthorized }: SettingsOverlayProps & {
+function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps & {
   section: SettingsSection;
-  path: string;
 }) {
   switch (section) {
     case 'appearance': return <AppearancePaneHost />;
-    case 'templates': return <TemplatesPaneHost path={path} transport={transport} unauthorized={unauthorized} />;
     case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'about': return <AboutPane />;
     case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
@@ -167,82 +163,3 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   );
 }
 
-/**
- * Settings › Templates (#1230) — the list, or one template's editor.
- *
- * Both read the **template list** — the same read the New wave picker uses.
- * There is no per-template endpoint: the list already carries `id` / `title` /
- * `tasks[{key, goal}]`, and a second read would be a second authority for the
- * same facts plus an N+1 whose failure modes have to be reasoned about apart
- * from the list's.
- */
-function TemplatesPaneHost({ path, transport, unauthorized }: SettingsOverlayProps & { path: string }) {
-  const go = useGo();
-  const templates = useWaveTemplates(transport, unauthorized);
-  const templateId = routeParamFromPath(path, '/settings/templates/');
-  if (templateId === undefined) {
-    return (
-      <TemplateListPage
-        templates={templates.loaded ? templates.templates : undefined}
-        loadError={templates.error}
-        onRetryLoad={templates.refetch}
-        onEdit={(id) => go({ name: 'settings-template', templateId: id })}
-      />
-    );
-  }
-  /*
-   * Keyed on the id: `saving` / `saveError` / `savedAt` are per-template facts,
-   * and this host is reused across ids. Without the key, one template's
-   * "Saved." and error banner render over the next template's editor, and an
-   * in-flight save suppresses the re-seed so template A's rows show under
-   * template B's title.
-   */
-  return (
-    <TemplateEditorSave
-      key={templateId}
-      templateId={templateId}
-      transport={transport}
-      unauthorized={unauthorized}
-    />
-  );
-}
-
-function TemplateEditorSave({ templateId, transport, unauthorized }: SettingsOverlayProps & {
-  templateId: string;
-}) {
-  const go = useGo();
-  const templates = useWaveTemplates(transport, unauthorized);
-  const saveTemplate = useWaveTemplateMutation(transport, unauthorized);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const template = templates.loaded
-    ? templates.templates.find((entry) => entry.id === templateId)
-    : undefined;
-  return (
-    <TemplateEditorPage
-      template={template}
-      /* An id that names no template is a load failure for this pane, not an
-         empty editor: blank fields for a template that does not exist would
-         invite a save against nothing. */
-      loadError={templates.loaded && template === undefined
-        ? `No template named ${templateId}.`
-        : templates.error}
-      onRetryLoad={templates.refetch}
-      saving={saving}
-      saveError={saveError}
-      savedAt={savedAt}
-      onOpenTemplates={() => go({ name: 'settings-templates' })}
-      onSave={(save) => {
-        setSaving(true);
-        setSaveError(null);
-        return saveTemplate(save)
-          .then(() => { setSavedAt(Date.now()); })
-          .catch((error: unknown) => {
-            setSaveError(error instanceof Error ? error.message : 'Save failed.');
-          })
-          .finally(() => { setSaving(false); });
-      }}
-    />
-  );
-}

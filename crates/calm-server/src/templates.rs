@@ -110,8 +110,13 @@ pub fn template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
 /// Keeping the payload whole removes the failure mode rather than patching it:
 /// there is no "unknown field" to lose, and the round trip is an identity on
 /// everything this module does not deliberately restamp. Nothing here needs the
-/// typed struct — the editor reads `key` and `goal`, and the write side hands
-/// the payload straight back to [`render_fence`].
+/// typed struct — the picker reads `key` and `goal`, and everything else is
+/// carried whole.
+///
+/// #1300 S1 deleted the Settings editor this paragraph used to name as the
+/// consumer. The reason to keep the payload whole did not go with it: the read
+/// still feeds `POST /api/waves`, so a field this function dropped would be a
+/// field an instantiated wave never receives.
 ///
 /// Still lenient in the one way `split_body` is: a slice that is not a
 /// well-formed `task` fence — prose, another kind, unparseable JSON — is
@@ -131,7 +136,7 @@ pub fn template_task_payloads_from_body(body: &str) -> Vec<Value> {
 ///
 /// Used by the read side to answer "what tasks does this template pre-set" for
 /// the New wave picker. Tombstones are *not* tasks the picker should advertise,
-/// but they must still survive the write side untouched — which is why the
+/// but they must still survive the read untouched — which is why the
 /// filtering happens here, at the projection, and never in
 /// [`template_task_payloads_from_body`].
 pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
@@ -806,7 +811,7 @@ mod repro_1239 {
             .collect();
         assert!(
             keys.contains(&"retired"),
-            "a tombstone must survive the read or a Settings save erases it; got {keys:?}"
+            "a tombstone must survive the read; got {keys:?}"
         );
     }
 }

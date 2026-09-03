@@ -129,7 +129,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
-    assert_eq!(v["apiVersion"].as_str().unwrap(), "2");
+    // #1300 S1: "2" -> "3" when `PUT /api/wave-templates/{id}` was deleted.
+    assert_eq!(v["apiVersion"].as_str().unwrap(), "3");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
@@ -145,12 +146,15 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 17);
+    // #1300 S1: 17 -> 18 so a cached bundle still rendering the deleted
+    // Settings > Templates editor gets the refresh curtain instead of a 404 on
+    // Save.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 18);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 17);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 18);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

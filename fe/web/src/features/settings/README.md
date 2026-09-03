@@ -71,13 +71,14 @@ deliberately does not draw one-off glyphs for this.
 | --- | --- | --- |
 | `/settings` | Network | `NetworkPane` (`public.tsx`) |
 | `/settings/appearance` | Appearance | `AppearancePane` (`public.tsx`) |
-| `/settings/templates` | Templates | `TemplateListPage` (`templates.tsx`) |
-| `/settings/templates/$templateId` | Templates › one template | `TemplateEditorPage` |
 | `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
 | `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
-Real routes rather than pane-local state: Back leaves the template editor
-instead of leaving Settings, and every pane can be linked to. The dialog around
+Real routes rather than pane-local state: every pane can be linked to, and Back
+leaves the pane rather than leaving Settings. (#1230 added a two-level Templates
+section here — a list and a per-template editor — which is why the rule is
+stated in terms of levels at all. #1300 S1 removed both; see "Templates are read
+only" below.) The dialog around
 them is owned by `app/shell` so it survives navigation between its own sections
 — see `app/shell/settings-overlay.tsx`.
 
@@ -134,10 +135,6 @@ Both are claims about *paint*, so both are held in the browser tier
 (`mobile.browser.test.tsx`): jsdom reports every element as visible and declines
 to compute `::placeholder`, so neither is falsifiable there.
 
-The template *editor* keeps its Save button, and should: it commits a whole
-document — a title plus every task goal — where "leaving the field" is not the
-moment the edit is finished.
-
 ## `null` clears a key (INV-SETTINGS-001)
 
 A field the user blanked is sent as `null`, **never `''`**. `core/domain/settings`
@@ -152,18 +149,7 @@ other.
 
 Re-seeding compares the incoming bag **by value**, not by object identity: a
 parent that hands back a fresh object every render must not wipe out what the
-user is typing. A genuine server-side change does re-seed. The template editor
-does the same thing with a serialized comparison, and seeds unconditionally on
-first sight — otherwise arriving with a save already in flight would leave the
-draft empty and the editor stuck on "Loading…".
-
-## Save is busy, not disabled (CR-6) — template editor only
-
-The one Save button left in this domain is the template editor's. While its save
-is in flight the button is **busy**, not `disabled`: focus is on it at exactly
-that moment, and a native `disabled` element is not focusable, so disabling it
-would throw focus to `<body>` mid-action. The re-entry guard is in `onClick`,
-where it can be read.
+user is typing. A genuine server-side change does re-seed.
 
 ## Appearance is deliberately not server-persisted
 
@@ -176,40 +162,39 @@ to this union at the router seam.
 
 While `settings === undefined` the Network pane renders a loading line and
 **no text input at all**. An empty form would let the user save blanks over real
-values before the bag has landed. The template list and editor hold the same
-rule for their own reads.
+values before the bag has landed.
 
-## The template editor's ceiling
+## Templates are read only (#1300 S1)
 
-**No rename, no delete, no reorder** — and that is a product limit, not an
-oversight. A template's tasks live in the template wave's report, so
-`wave_report_edit_guard` (#1179) governs them: a task `key` is immutable for the
-life of its block, and a live task may only leave a document as a tombstone that
-`prepare_fork_report` then copies into every wave forked afterwards. Both come
-back from the server as a 400, so the affordances are absent and the reason is
-printed on the page instead of discovered by failing. The full argument is in
-`crates/calm-server/src/routes/wave_templates.rs`.
+There is **no Templates section here**. #1230 added one — a list plus a
+per-template editor writing through `PUT /api/wave-templates/{id}` — and #1300
+removed both.
 
-**Sections are not editable here and never will be.** The four report sections
-(概要 / 待你定 / 已完成 / 决策) come from `CONTRACT_SECTION_RULES`, which every
-wave report shares — template-forked or not. They are not a per-template fact,
-and a "sections" control on this screen would say it edits one template while
-editing every wave. Making them configurable is its own issue.
+The editor had no storage of its own. A template was a hidden wave in the system
+cove, so "save a template" was an ordinary wave-report write, and #1300 removes
+that hidden wave because it is the last production path on which the kernel
+writes a report as `EditAuthor::User`. The editor went with its storage.
 
-**Whole task objects round-trip.** The editor reads `key` and `goal`; every other
-field is opaque cargo handed back untouched, because the server stores exactly
-what it is given.
+Its ceiling is worth recording, because it is what a replacement has to beat:
+the tasks lived in a wave report, so `wave_report_edit_guard` (#1179) governed
+them — a task `key` was immutable for the life of its block, and a live task
+could only leave as a tombstone that every later fork then copied. So the editor
+could reword and append, never rename, delete or reorder. Making templates
+editable again needs its own persistence model and version semantics, not a wave
+borrowed as template storage.
+
+Templates are still **listed**: `GET /api/wave-templates` feeds the New wave
+picker, and that read is unchanged.
 
 ## Accessibility contract
 
 - Errors render in `role="alert"`; `savedAt` drives a transient `Saved.` in
   `role="status"`.
-- A template row is named after its template — the row *is* the drill-in
-  target, so there is no "Edit" button to name.
 - **Intentionally not done:** no `<a href>` anywhere (INV-A11Y-061).
 
 ## Test contract
 
 `getByRole` / `getByLabelText` only — never a CSS class selector.
-`public.test.tsx` and `templates.test.tsx` hold behavior;
-`public.contract.test.tsx` holds invariants.
+`public.test.tsx` holds behavior; `public.contract.test.tsx` holds invariants —
+including the section list, which is where the removed Templates entry is
+asserted absent.

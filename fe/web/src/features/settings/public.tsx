@@ -60,7 +60,7 @@ import styles from './settings.module.css';
  * `/settings` resolves to, so the bare route lands on a real group rather than
  * on a container page.
  */
-export type SettingsSection = 'network' | 'appearance' | 'templates' | 'plugins' | 'about';
+export type SettingsSection = 'network' | 'appearance' | 'plugins' | 'about';
 
 /*
  * Icon names are astryx's built-in semantic set, which has 26 entries and none
@@ -76,7 +76,6 @@ export type SettingsSection = 'network' | 'appearance' | 'templates' | 'plugins'
 const SETTINGS_SECTIONS = Object.freeze([
   Object.freeze({ id: 'network', label: 'Network', icon: 'externalLink' }),
   Object.freeze({ id: 'appearance', label: 'Appearance', icon: 'viewColumns' }),
-  Object.freeze({ id: 'templates', label: 'Templates', icon: 'copy' }),
   Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'wrench' }),
   Object.freeze({ id: 'about', label: 'About', icon: 'info' }),
 ] as const);
