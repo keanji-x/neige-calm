@@ -1,9 +1,9 @@
 //! Track-report payload vocabulary (#679 PR1).
 //!
 //! [`TrackReportPayload`] is the Tier-A persisted card payload + TS-exported
-//! wire type, so it lives here. The persist boundary (`persist_report`,
-//! CRDT plumbing, REST/MCP resolvers) stays in calm-server's `track_report`
-//! module, which re-exports this type.
+//! wire type, so it lives here. The persist boundary (`write::persist` and
+//! its three entry points, CRDT plumbing, REST/MCP resolvers) stays in
+//! calm-server's `track_report` module, which re-exports this type.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

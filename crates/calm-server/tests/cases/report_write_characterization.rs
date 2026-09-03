@@ -10,13 +10,39 @@
 //! these assertions goes red, the semantics of a decision point changed —
 //! confirm the change was intended before touching the assertion.
 //!
-//! **Covered: all 3 decision points.** It was 3 of 5 when this file was
-//! written; #1300 S2 removed the other two rather than covering them, so the
-//! set as it stands today is complete. Nothing keeps it that way in any strong
-//! sense: the `persist_report_call_sites` CI ratchet notices a fourth writer
-//! added by someone unaware of this file — it is a per-file text census, and
-//! its own "KNOWN GAPS" section lists what a text scan cannot see — and this
-//! header is a description, not a guard.
+//! **Covered: all 3 decision points, and since #1318 §1 that set is closed by
+//! the compiler.** It was 3 of 5 when this file was written; #1300 S2 removed
+//! the other two rather than covering them. What kept the set at three was, at
+//! that point, only the `persist_report_call_sites` text census, whose own
+//! "KNOWN GAPS" section listed what a text scan cannot see — so this header
+//! said, correctly, that it was a description and not a guard.
+//!
+//! #1318 §1 changed one half of that. The writer is now
+//! `track_report::write::persist`, a **private** `fn`, so `rustc` confines the
+//! code that can name it to `mod write` and that module's descendants. That is
+//! a proof. The narrower reading — "and that subtree is one file" — is *not*
+//! proved: it rests on a text gate whose own header declares the constructions
+//! it cannot see. So the two halves of "three sites, each honest" now have
+//! different carriers, and only the first one is a test:
+//!
+//! * *each honest* — this file. It drives each decision point through the real
+//!   router / tool registry and asserts the persisted `events.actor` and
+//!   `TrackReportEdited.author`.
+//! * *only three* — the module subtree, by `rustc`; plus
+//!   `scripts/ci/ratchets/report_write_boundary.sh` as a **drift detector** for
+//!   the shapes that would widen that subtree without `rustc` objecting (the
+//!   writer going `pub` or `#[cfg]`, a `mod` / `#[path]` / `include!` / macro /
+//!   `impl` / `trait` appearing there, a `pub use`, the entry set changing).
+//!   That gate is a review aid, not a guarantee — read its KNOWN GAPS.
+//!
+//! Read that module's header before relying on this, because what is
+//! closed is narrower than it sounds: three is the number of *doors*, not the
+//! number of writes or of callers. `write::agent_report_op` is `pub(crate)`
+//! and takes `ActorId` / `EditAuthor` / `auto_promote_draft` / probe straight
+//! from whoever calls it, so a sibling module can still produce a combination
+//! no test here characterizes — without editing that file. This suite covers
+//! the three call sites that exist today; it is not a guard against a fourth
+//! caller of an existing door.
 //!
 //! | decision point | production entry driven here |
 //! |---|---|
@@ -63,13 +89,16 @@
 //!
 //! ## What the recorder coverage here can and cannot claim
 //!
-//! `persist_report_with_shadow` takes `recorder_shadow: Option<Arc<dyn
+//! The writer takes `recorder_shadow: Option<Arc<dyn
 //! RecorderShadowProbe>>` and calls `probe.record(...)` inside the write
-//! transaction (`track_report.rs:747` for `TrackLifecycle`, `:758` for
-//! `ReportWrite`). The MCP funnel builds its probe inline
-//! (`decision_sink.rs:452`, `CardDecisionSinkRecorderShadowProbe`); the
-//! trait is `pub(crate)`, so an out-of-crate test cannot substitute a
-//! counting double on the production assembly path.
+//! transaction — the `TrackLifecycle` leg first, then the `ReportWrite` leg,
+//! both before the doc is loaded. Only one of the three entry points can
+//! supply a probe: `write::agent_report_op`, whose parameter is a non-optional
+//! `Arc<dyn RecorderShadowProbe>` (the `Option` is `persist`'s, and the two
+//! REST entries hardcode `None`). The MCP funnel builds its probe inline
+//! (`decision_sink.rs`, `CardDecisionSinkRecorderShadowProbe`); the trait is
+//! `pub(crate)`, so an out-of-crate test cannot substitute a counting double
+//! on the production assembly path.
 //!
 //! What *is* asserted, deterministically and from the production boundary:
 //!
@@ -85,7 +114,8 @@
 //!   is shaped so that it is — delete the probe and that write succeeds. The
 //!   claim stops at that leg. The *other* one — the `TrackLifecycle` probe
 //!   that fires only when an explicitly requested lifecycle transition
-//!   applies (`track_report.rs:747`) — is reached by no call in this file:
+//!   applies (the `TrackLifecycle` arm in `track_report/write.rs`) — is
+//!   reached by no call in this file:
 //!   `calm.report.write` takes an optional `lifecycle` argument and none of
 //!   the calls below passes it, and `calm.report.blocks.upsert` has no such
 //!   argument at all. Its verdict is not observed elsewhere either, and that
@@ -137,7 +167,7 @@
 //! `mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objection`'s
 //! foreign-track session a stale `if_doc_rev` and today's code answers with
 //! the recorder refusal (`-32403`, "recorder gate denied report_write"),
-//! because the probe at `track_report.rs:758` runs before
+//! because the `ReportWrite` probe in `track_report/write.rs` runs before
 //! `apply_persisted_report_op`; move the probe below that call and the same
 //! request answers `-32001` "document revision conflict" instead. No
 //! assertion here reads that ordering, so the placement is unpinned — but
@@ -147,10 +177,13 @@
 //! an allow leaves no trace of the probe behind.
 //!
 //! **Gap 2 — the exact probe count, and the `TrackLifecycle` leg.**
-//! Production calls `record` once per write with
+//! For a write that enters through `write::agent_report_op` — the only door
+//! that carries a probe — production calls `record` once with
 //! `RecorderShadowDecisionKind::ReportWrite`, plus once with
 //! `TrackLifecycle` when an explicitly requested lifecycle transition fires;
-//! the auto-promotion branch is not probed at all. Note what the bullets
+//! the auto-promotion branch is not probed at all. The two REST doors pass
+//! no probe, so they call `record` zero times per write; "once per write" is
+//! a statement about the MCP door only. Note what the bullets
 //! above already pin, so that step 2 does not go rebuild it: at least one
 //! `ReportWrite` consultation on the MCP path, and that decision kind on
 //! the refusal path. What is unpinned is the *number*, and the
@@ -162,8 +195,9 @@
 //! 2. moving the `ReportWrite` `record` call to before the auto-promotion
 //!    branch (a special case of gap 1);
 //! 3. turning the single `ReportWrite` `record` call into several;
-//! 4. **deleting the `TrackLifecycle` `record` block outright**
-//!    (`track_report.rs:747`–`751`). This one is categorically worse than
+//! 4. **deleting the `TrackLifecycle` `record` block outright** (the
+//!    `RecorderShadowDecisionKind::TrackLifecycle` arm in
+//!    `track_report/write.rs`). This one is categorically worse than
 //!    1–3: those reorder or repeat a gate consultation, this removes one.
 //!    Confirmed by running it — the eight tests here stay green, and so does
 //!    the whole `calm-server` package under
@@ -188,10 +222,15 @@
 //! point, and nothing here notices.** This is its own class: not position,
 //! not count, not decision kind, but *which callers are still gated*.
 //! Confirmed by running it — making `CardDecisionSink::commit_report_op`
-//! pass `recorder_shadow: None` when `identity.role` is
-//! `CardRole::Assistant`, while keeping the probe for `Spec`, leaves all
-//! eight tests here green and the whole `calm-server` package green under
-//! `--features calm-server/codex-e2e`. The reason it hides: both refusal
+//! drop the probe when `identity.role` is `CardRole::Assistant`, while keeping
+//! it for `Spec`, leaves all eight tests here green and the whole
+//! `calm-server` package green under `--features calm-server/codex-e2e`. That
+//! run predates #1318 §1, when the funnel passed `recorder_shadow: None`
+//! directly; `write::agent_report_op` now takes a non-optional probe, so the
+//! same escape is spelled differently — hand it a `RecorderShadowProbe` whose
+//! `record` always returns `Ok`, or route the assistant leg through
+//! `write::rest_user_block_op`, which carries no probe at all. The gap is the
+//! same; only the spelling moved. The reason it hides: both refusal
 //! tests act as a Spec, and the two assistant writes (Codex and Claude)
 //! only read persisted results back, which look the same whether or not an
 //! allowing gate was consulted. Register it loudly because it is the shape
@@ -986,22 +1025,20 @@ async fn rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft() {
 /// (`routes::track_report_blocks::commit`) at one turns this test and
 /// `rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft` red.
 /// That matters because the two legs reach the write boundary by different
-/// doors: the document leg goes through `persist_report`, the wrapper that
-/// hard-codes `recorder_shadow: None`, while the block leg calls
-/// `persist_report_with_shadow` and chooses the argument itself. A single test
-/// covering "one of them" would leave whichever door it did not use unpinned.
+/// doors: the document leg goes through `write::rest_user_replace` and the
+/// block leg through `write::rest_user_block_op`. A single
+/// test covering "one of them" would leave whichever door it did not use
+/// unpinned.
 ///
-/// #1300 S2 — this sentence used to say the wrapper's `None` was "shared with
-/// the template seed/restamp writers". It is not shared with anything in
-/// production any more: `seed_template_track` and
-/// `restamp_template_report_if_placeholder` are deleted, leaving
-/// `routes::tracks::update_track_report` as `persist_report`'s only production
-/// caller as of today (the `persist_report_call_sites` census is what would
-/// notice a second one being added inadvertently; it is a text census, not a
-/// proof).
-/// The reason to cover the leg independently survives the sharing, because it
-/// was never about who else passed the argument — it is about this leg not
-/// choosing it.
+/// #1318 §1 — both doors now hard-code `recorder_shadow: None` inside the entry
+/// point, so neither handler chooses the argument. Before this slice the
+/// asymmetry was the other way round: the document leg went through a
+/// `persist_report` wrapper that supplied the `None`, while the block leg
+/// called the writer directly and chose it. The reason to cover each leg
+/// independently survives the change, and gets stronger: what is being pinned
+/// is that *this leg*, through *its own entry point*, reaches the write with no
+/// recorder gate — a claim about one door, which a test through the other door
+/// cannot make.
 ///
 /// This is a statement about *whether* the gate is consulted, not about an
 /// exact invocation count; see the module header's registered gaps.

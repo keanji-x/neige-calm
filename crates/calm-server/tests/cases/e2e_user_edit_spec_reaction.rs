@@ -472,7 +472,10 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_spec_reads_back_user_bo
 
     // ----- step 3: user edits via REST. We POST through the live
     // axum router so the auth + actor middleware and the
-    // `EditAuthor::User` pin in the handler all run end-to-end.
+    // `EditAuthor::User` pin all run end-to-end. #1318 §1 — that pin
+    // moved out of the handler and into the entry point it calls,
+    // `track_report::write::rest_user_replace`; driving the real route is
+    // what keeps this test covering it either way.
     let user_body = format!("{initial_body}\n## USER ADDED SECTION\nhand-typed line\n");
     let app = app(boot.state.clone(), boot.auth_state.clone());
     let cookie = login(&app).await;

@@ -467,10 +467,13 @@ pub enum Event {
     },
 
     /// Issue #247 PR2 — structured track-report edit-log entry. Emitted
-    /// alongside `Event::CardUpdated` from every
-    /// `mcp_server::tools::track_report::persist_report` call so PR4's UI
-    /// can render an edit timeline and PR5's spec agent can wake on
-    /// user-authored edits.
+    /// alongside `Event::CardUpdated` from every successful
+    /// `calm_server::track_report::write::persist` call so PR4's UI can
+    /// render an edit timeline and PR5's spec agent can wake on
+    /// user-authored edits. (#1318 §1 fixed the path here: the writer has
+    /// never lived under `mcp_server::tools`, and it is now private to
+    /// `track_report::write`, reachable through that module's three entry
+    /// points.)
     ///
     /// `CardUpdated` stays the generic "the row changed, re-fetch" signal
     /// every existing frontend subscriber already consumes — `TrackReportEdited`

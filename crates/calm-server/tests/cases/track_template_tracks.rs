@@ -416,7 +416,7 @@ async fn creating_from_a_template_mints_no_hidden_track() {
 /// is the *identical* half stated twice. The escape construction: make a report
 /// write fan out to every track carrying the same `template_id` (one extra
 /// `UPDATE ... WHERE template_id = ...` after `card_update_with_crdt_tx` in
-/// `track_report::persist_report`). The two documents are then genuinely one
+/// `track_report::write::persist`). The two documents are then genuinely one
 /// document behind two ids, and a create-time-only comparison stays green. So
 /// this case edits one track and re-reads the other; independence is only
 /// asserted about a state the two could actually disagree in.
@@ -431,10 +431,11 @@ async fn creating_from_a_template_mints_no_hidden_track() {
 ///
 /// ## Which fan-out shapes this case can see, and which it cannot
 ///
-/// Every leg goes through the same door — `persist_report` — and what varies
-/// between them is the *shape of the edit*, because a conditional fan-out only
-/// betrays itself on an edit that enters its branch. Four legs, each chosen for
-/// one branch predicate:
+/// Every leg reaches the same writer — `track_report::write::persist` — through
+/// the same door, `write::rest_user_replace`. What varies between them is the
+/// *shape of the edit*, because a conditional fan-out only betrays itself on an
+/// edit that enters its branch. Four legs, each chosen for one branch
+/// predicate:
 ///
 /// 1. **Append a prose paragraph.** The body grows and gains text that was not
 ///    there before. Catches a fan-out with no guard at all, and one keyed on
@@ -465,9 +466,10 @@ async fn creating_from_a_template_mints_no_hidden_track() {
 /// "template-minted block id", "length shrank". What is **not** covered, and
 /// these are real gaps rather than a rounding error:
 ///
-/// * a fan-out that fires only on writes arriving through a *different* door
-///   than `persist_report` — this case drives the document leg only;
-///   `report_write_characterization` is where the per-door behaviour lives;
+/// * a fan-out that fires only on writes arriving through a *different* door —
+///   `write::rest_user_block_op` or `write::agent_report_op`; this case drives
+///   the document leg only, and `report_write_characterization` is where the
+///   per-door behaviour lives;
 /// * a fan-out keyed on a predicate no leg happens to satisfy — an edit that
 ///   touches a `task` fence (which this case deliberately never does, since
 ///   the guard would reject it on the prose path), a summary-only write, a

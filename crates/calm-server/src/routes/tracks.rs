@@ -39,7 +39,7 @@ use crate::db::sqlite::{
 };
 use crate::db::{RepoRead, write_with_actor_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::{EditAuthor, Event, EventScope};
+use crate::event::{Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
@@ -67,8 +67,8 @@ use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_lifecycle::{track_get_tx, validate_transition};
 use crate::track_report::{
-    ReportBlock, TrackReportPayload, persist_report, report_blocks_snapshot_tx,
-    resolve_report_for_track, tasks_rebuild_tree_tx, tasks_rebuild_tx,
+    self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
+    tasks_rebuild_tree_tx, tasks_rebuild_tx,
 };
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
@@ -274,8 +274,9 @@ pub fn router() -> Router<AppState> {
         // authenticated; only `ActorId::User` is accepted (worker / spec /
         // plugin actors are rejected 403 even when carrying a valid
         // session cookie). The MCP `calm.report.{write,edit}` path is
-        // unchanged; both paths funnel through `track_report::persist_report`
-        // so the dual-event invariant + CRDT write stays one boundary.
+        // unchanged; both paths funnel through the `track_report::write`
+        // module — different entry points, one private writer — so the
+        // dual-event invariant + CRDT write stays one boundary.
         .route(
             "/api/tracks/{id}/report",
             get(get_track_report).post(update_track_report),
@@ -455,7 +456,7 @@ async fn template_track_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
 /// recipe: instantiating it is structural initialization of a new track, and it
 /// reads nothing.
 ///
-/// ## Why this does not go through `persist_report`
+/// ## Why this does not go through the report-edit boundary
 ///
 /// The seeding path did, and it had to name an author to do so. It named
 /// `EditAuthor::User` for a write no user made — the last production path on
@@ -3425,9 +3426,10 @@ pub(crate) async fn get_track_report(
 
 /// `POST /api/tracks/:id/report` — user-driven track-report edit. The
 /// REST-side counterpart of the spec-MCP `calm.report.write` tool;
-/// both paths funnel through [`crate::track_report::persist_report`]
-/// so the dual-event invariant (`CardUpdated` + `TrackReportEdited`)
-/// and the CRDT write happen identically regardless of who's editing.
+/// both paths funnel through the `track_report::write` module — this
+/// one via `rest_user_replace`, the tool via `agent_report_op` — so the
+/// dual-event invariant (`CardUpdated` + `TrackReportEdited`) and the
+/// CRDT write happen identically regardless of who's editing.
 ///
 /// **Auth contract** (issue #247 PR3 acceptance):
 ///
@@ -3491,24 +3493,24 @@ pub(crate) async fn update_track_report(
     // forge a Kernel write — but it's the wrong shape for *gating*:
     // an `X-Calm-Actor: ai:claude` header would pass a
     // `matches!(actor.to_actor_id(), ActorId::User)` check and reach
-    // the persist call. Today the handler hardcodes
-    // `EditAuthor::User` in the `persist_report` invocation below
-    // regardless, so no audit-log corruption is possible — but the
-    // OpenAPI / handler doc both claim "any non-user actor → 403" and
-    // we want that to be true by construction, not "true because the
-    // hardcoded author downstream covers for the gate." The raw
-    // string check makes the gate honest: the *only* declared actor
-    // that reaches `persist_report` here is exactly `"user"`. Every
-    // other validated header value (`ai:codex`, `ai:claude`,
-    // `ai:gpt5`, future `ai:*`) is 403.
+    // the persist call. Since #1318 §1 the handler cannot name an
+    // author at all — the entry point it calls fixes it
+    // — so no audit-log corruption is possible by construction rather
+    // than by a hardcoded argument a later edit could change. That
+    // still leaves the gate itself to make honest: the OpenAPI /
+    // handler doc both claim "any non-user actor → 403", and only this
+    // raw string check makes that true of the *request*, not merely of
+    // what got recorded. The only declared actor that reaches the
+    // persist entry here is exactly `"user"`. Every other validated
+    // header value (`ai:codex`, `ai:claude`, `ai:gpt5`, future `ai:*`)
+    // is 403.
     super::track_report_blocks::require_rest_user_actor(&actor)?;
 
     // Resolve the track + report card + current payload. 404 on missing
     // track; 500 (Internal) on missing report card (invariant; PR1
     // backfill plus the partial unique index on `cards.kind =
     // 'track-report'` guarantee one report row per track).
-    let (track, report_card, current_payload) =
-        resolve_report_for_track(s.repo.as_ref(), &id).await?;
+    let target = track_report::ReportEditTarget::resolve(s.repo.as_ref(), &id).await?;
 
     // Build the next payload from the request body. `schemaVersion` is
     // always the current constant — the field is not on the wire shape
@@ -3518,28 +3520,32 @@ pub(crate) async fn update_track_report(
 
     // Persist + emit. `EditAuthor::User` is the load-bearing
     // attribution — the wire shape doesn't accept `author` (see the
-    // request-body doc), so this is the only place User can be
-    // recorded. PR5's spec system prompt will wake on
+    // request-body doc), so nothing the caller sends can change it.
+    // PR5's spec system prompt will wake on
     // `TrackReportEdited { author: User }` specifically.
-    let updated = persist_report(
+    //
+    // #1318 §1 — the constant no longer lives here. It is inside
+    // `rest_user_replace`, one of three entry points into a module
+    // whose writer is private to it; this handler cannot
+    // name an author at all, so the "any non-user actor → 403" claim in
+    // the doc above and the recorded author cannot drift apart by
+    // editing this call. Read the old wording carefully before reusing
+    // it: this was never "the only place `User` is written" — the REST
+    // block endpoints record `User` too, through the sibling entry
+    // `rest_user_block_op`, and since #1318 so would any other caller of
+    // either REST entry.
+    let updated = track_report::write::rest_user_replace(
         s.repo.as_ref(),
         &s.events,
         &s.write,
-        ActorId::User,
-        EditAuthor::User,
-        track,
-        report_card,
-        current_payload,
+        target,
         next,
         if_doc_rev,
-        None,
-        None,
-        false,
     )
     .await?;
 
     // Project the persisted payload out of the updated card row. This
-    // is the CRDT-projected shape (`track_report::persist_report`
+    // is the CRDT-projected shape (the writer
     // re-derives summary/body from the doc post-update before writing
     // the JSON cache), so the response matches what the next reader
     // (frontend / other REST clients / WS subscribers) will see.

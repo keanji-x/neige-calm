@@ -1,17 +1,23 @@
 //! #1252 S1 step 1 — the write-origin vocabulary for track-report writes.
 //!
-//! Today `track_report::persist_report_with_shadow` takes a hand-assembled
-//! quadruple — `(actor, author, auto_promote_draft, recorder_shadow)` — and
-//! **three** production sites assemble it, in two layers. Two call it directly
-//! and pass all four: `decision_sink::CardDecisionSink::commit_report_op` and
-//! `routes::track_report_blocks::commit`. One goes through the
-//! `track_report::persist_report` wrapper and passes the first three, with the
-//! wrapper's hardcoded `recorder_shadow: None` supplied on its behalf:
-//! `routes::tracks::update_track_report`. Four independent arguments, four
-//! chances to get one wrong, and no place where the whole set is stated per
-//! caller. This module
-//! introduces the type that names *who is writing* ([`WriteOrigin`]) and the
-//! total function that turns it into the quadruple ([`policy_for`]).
+//! The writer — `track_report::write::persist` — takes a hand-assembled
+//! quadruple: `(actor, author, auto_promote_draft, recorder_shadow)`. This
+//! module introduces the type that names *who is writing* ([`WriteOrigin`])
+//! and the total function that turns it into that quadruple ([`policy_for`]).
+//!
+//! **#1318 §1 moved where the quadruple is assembled**, and S1 step 2's target
+//! surface shrank with it. The writer is now private to that module,
+//! reachable only through that module's three entry points, and two of the
+//! three assemble the quadruple themselves rather than taking it:
+//! `write::rest_user_replace` (for `routes::tracks::update_track_report`) and
+//! `write::rest_user_block_op` (for `routes::track_report_blocks::commit`) fix
+//! all four values in their own bodies, so those two call sites have no
+//! argument left to get wrong. Only `write::agent_report_op` still takes the
+//! quadruple, from the one caller that genuinely decides it —
+//! `decision_sink::CardDecisionSink::commit_report_op`, which derives
+//! `(author, auto_promote_draft)` from `identity.role` via
+//! `report_op_attribution`. So what step 2 has to thread is one entry point,
+//! not three call sites.
 //!
 //! **#1300 brought this count from six to three.** S1 deleted a direct caller,
 //! `routes::track_templates::update_track_template`, with the template editor.
@@ -25,11 +31,17 @@
 //! What backs each half of that: the *behaviour* of all three — which actor and
 //! which `EditAuthor` each one persists — is asserted by
 //! `tests/cases/report_write_characterization.rs`, which drives them through
-//! the real router and tool registry. That there are three and not four is a
-//! weaker claim: the `persist_report_call_sites` CI ratchet is a text census of
-//! per-file occurrences, so it catches a call site added by someone who did not
-//! know about it, and does not claim to catch one hidden on purpose. That
-//! script's "KNOWN GAPS" section enumerates what it misses.
+//! the real router and tool registry. That there are three and not four used
+//! to be the weaker claim, carried by a text census whose own "KNOWN GAPS"
+//! section listed what it could not see. #1318 §1 replaced that carrier: the
+//! writer is private to its module, so a fourth *entry point* does not compile
+//! unless it is added to that module's subtree (its CI gate tries to keep that
+//! subtree equal to one file, and declares the constructions it cannot see —
+//! it is a drift detector, not a proof). What is closed is the door count in
+//! that subtree, not the caller count —
+//! `write::agent_report_op` still takes its whole quadruple from its caller.
+//! See that module's header for the rest of what the boundary does not
+//! close.
 //!
 //! # Status: not wired into production
 //!
@@ -83,7 +95,7 @@
 //!
 //! [`WritePolicy`] has no field that can carry that id — it names an actor, an
 //! attribution, an auto-promote verdict and a recorder requirement, and none of
-//! the four is a plugin id — and `track_report::persist_report_with_shadow`
+//! the four is a plugin id — and the writer
 //! writes `author_plugin_id: None` unconditionally, with no parameter to
 //! override it. A plugin origin threaded through this module would therefore
 //! emit `{author: plugin, author_plugin_id: None}`: the one combination that
@@ -102,7 +114,7 @@
 //! change: (a) add the [`WriteOrigin`] variant, so the compiler forces every
 //! match here to state its policy explicitly, and (b) derive
 //! `author_plugin_id` from that origin and plumb it through to
-//! `persist_report_with_shadow`, so the emitted pair is consistent.
+//! `write::persist`, so the emitted pair is consistent.
 //!
 //! # Why there are no guard/CAS booleans here
 //!
@@ -224,7 +236,7 @@ pub struct AgentOrigin {
 /// Note *where* that refusal lands, because it is later than it looks. The gate
 /// runs on the batch the write closure returned
 /// (`write_with_actor_events`, `calm-truth/src/db/sqlite/events.rs`), and the
-/// fork's report copy — `routes::tracks::persist_fork_report_and_project_tasks_tx`
+/// fork's report copy — `routes::tracks::persist_initial_report_and_project_tasks_tx`
 /// — sits inside that closure. Under `ai:codex` the copy therefore **does
 /// execute**, and the whole transaction is then rolled back. The conclusion
 /// holds (a non-`User` initiator cannot complete a fork and leaves nothing
@@ -266,7 +278,7 @@ impl TrustedInitiator {
 /// (`routes::tracks::seed_template_track` /
 /// `restamp_template_report_if_placeholder`) was the only thing that would have
 /// needed one, and #1300 S2 removed it rather than naming it. Nothing reaches
-/// `persist_report_with_shadow` on the kernel's behalf any more.
+/// the report-edit boundary on the kernel's behalf any more.
 ///
 /// There is deliberately **no `Plugin` variant** either — see the module docs
 /// for why the shape is wrong and what adding one later has to include.
@@ -314,15 +326,17 @@ pub enum WriteAttribution {
 /// Whether the recorder gate is consulted for this write.
 ///
 /// Shaped to the variation today's call sites carry, and no wider. Across every
-/// production path that reaches `persist_report_with_shadow`, the
+/// production path that reaches the writer, the
 /// `recorder_shadow` argument takes exactly two values:
 ///
 /// * `Some(CardDecisionSinkRecorderShadowProbe { principal, track_id })` — the
-///   one agent funnel, `decision_sink::CardDecisionSink::commit_report_op`;
-/// * `None` — `routes::track_report_blocks::commit`, which calls it directly,
-///   plus `routes::tracks::update_track_report`, which goes through the
-///   `track_report::persist_report` wrapper — and that wrapper hardcodes `None`
-///   with no parameter to vary it.
+///   one agent funnel, `decision_sink::CardDecisionSink::commit_report_op`,
+///   via `write::agent_report_op`;
+/// * `None` — the two REST legs, `routes::track_report_blocks::commit` and
+///   `routes::tracks::update_track_report`. Since #1318 §1 neither passes the
+///   argument at all: `write::rest_user_block_op` and
+///   `write::rest_user_replace` hardcode `None` in their own bodies, with no
+///   parameter to vary it.
 ///
 /// So this enum has two variants, not three.
 ///
@@ -350,11 +364,12 @@ pub enum RecorderRequirement {
     /// No recorder gate on this write.
     ///
     /// For the REST-user sites this is a statement about a real
-    /// `persist_report_with_shadow` call that passes `None`. For
+    /// `write::persist` call that passes `None` — supplied by the entry
+    /// point rather than by the handler since #1318 §1. For
     /// [`WriteOrigin::Fork`] it is not: **the fork path never calls
-    /// `persist_report_with_shadow` at all.** It writes the copied report
+    /// `write::persist` at all.** It writes the copied report
     /// inside the track-creation transaction via `card_update_with_crdt_tx`
-    /// (`routes::tracks::persist_fork_report_and_project_tasks_tx`) and emits no
+    /// (`routes::tracks::persist_initial_report_and_project_tasks_tx`) and emits no
     /// `TrackReportEdited`. `NotGated` therefore records that a fork is subject
     /// to no recorder decision — not that some fork call site was observed
     /// passing `None`.
