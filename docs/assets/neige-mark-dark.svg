@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 384" role="img" aria-labelledby="title description">
+  <title id="title">Neige mark</title>
+  <desc id="description">Three geometric tracks form a quiet, simplified snow crystal.</desc>
+
+  <g
+    fill="none"
+    stroke="#AFC6FF"
+    stroke-width="34"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M 192 36 L 192 158 L 88 98" />
+    <path d="M 192 36 L 192 158 L 88 98" transform="rotate(120 192 192)" />
+    <path d="M 192 36 L 192 158 L 88 98" transform="rotate(240 192 192)" />
+  </g>
+</svg>
