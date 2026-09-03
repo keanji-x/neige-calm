@@ -101,10 +101,17 @@ set -euo pipefail
 #      is the export surface: R3 counts `fn` declarations, so a `pub use`
 #      carrying some *other* item out of this file is an export R3 never sees.
 #
-#   R3 The exported entry set is exactly the four pinned `visibility|name`
-#      pairs. Adding a fifth door is a legitimate thing to do — it just has to
+#   R3 The exported entry set is exactly the five pinned `visibility|name`
+#      pairs. Adding a sixth door is a legitimate thing to do — it just has to
 #      be done in front of a reviewer, which is the same contract the census
-#      had, now over four lines instead of the repository.
+#      had, now over five lines instead of the repository.
+#
+#      #1252 S2 is what that review looks like when it happens:
+#      `structural_init_report_tx` was added as the fourth production entry and
+#      this list went from four names to five in the same PR. That door does not
+#      reach `persist` at all — it shares only the row-write + task-projection
+#      pair — so R1's subject is unchanged; what R3 caught, and had to catch, is
+#      that the file's exported surface grew.
 #
 #   R4 `persist_report`, the test-only entry, carries
 #      `cfg(any(test, feature = "fixtures"))` **in its own attribute block**,
@@ -114,12 +121,15 @@ set -euo pipefail
 #
 # What it does NOT check, and must not be described as checking:
 #
-#   * that no *other* code writes the `cards` row directly. The track-create
-#     paths do, through `routes::tracks::persist_initial_report_and_project_
-#     tasks_tx`, and so would a bare `UPDATE cards SET payload = ...,
-#     body_crdt = ...` in any other `write_with_*_typed` closure. Both bypass
-#     the module and this gate; #1252 §3 P2 records why that has no local
-#     solution.
+#   * that no *other* code writes the `cards` row directly. A bare
+#     `UPDATE cards SET payload = ..., body_crdt = ...` in any
+#     `write_with_*_typed` closure would bypass the module and this gate;
+#     #1252 §3 P2 records why that has no local solution. Until #1252 S2 the
+#     track-create paths were a live instance of this: they wrote the report row
+#     through `routes::tracks::persist_initial_report_and_project_tasks_tx`.
+#     That function is gone — the create paths now enter this file through
+#     `structural_init_report_tx` — so the class stays open while its one known
+#     member does not.
 #   * **who calls the four entries, or with what.** `agent_report_op` is
 #     `pub(crate)` and takes `ActorId` / `EditAuthor` / `auto_promote_draft` /
 #     probe from its caller, so a sibling module can compose a combination no
@@ -148,6 +158,7 @@ require_path "$BOUNDARY_FILE"
 EXPECTED_ENTRIES="pub(crate)|rest_user_replace
 pub(crate)|rest_user_block_op
 pub(crate)|agent_report_op
+pub(crate)|structural_init_report_tx
 pub|persist_report"
 
 failures=0
@@ -366,4 +377,4 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, four exported entries, test entry cfg-gated)"
+echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, five exported entries, test entry cfg-gated)"

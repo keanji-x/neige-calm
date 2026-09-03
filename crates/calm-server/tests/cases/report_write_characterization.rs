@@ -148,18 +148,40 @@
 //! This file's only job is to be the control group for the S1 step-2
 //! refactor. A gap that is not written down here will be read as covered,
 //! so all four of these are listed on purpose, and every mutation named
-//! below was confirmed by applying it and watching all eight tests pass.
+//! below was confirmed by applying it and watching this file's tests pass.
 //!
-//! **Gap 1 — where the probe sits inside the transaction is not pinned by
-//! these eight tests.** Final database state cannot separate the
-//! placements: a denial rolls the transaction back, so "refused before the
-//! rows were written" and "rows written, then refused, then rolled back"
-//! leave byte-identical observations behind, and `doc_rev == 0` cannot tell
-//! them apart. Confirmed: moving the `ReportWrite` `probe.record` call to
-//! after `card_update_with_crdt_tx` — still inside the transaction — leaves
-//! every test here green, as does moving it above the auto-promotion
-//! branch. The claim these tests do carry is the one their names make: the
-//! refusal happens **before commit**, and nothing is left behind.
+//! **The counts below are measured against the 11 tests this file has today,
+//! not inferred from the 8 it had when the gaps were first written.** #1356
+//! added three tests without re-running the mutations, and #1252 S2 re-ran all
+//! six of them rather than editing "eight" to "eleven" — because a count is a
+//! claim about what stayed green, and only a run can update it. One statement
+//! did not survive: see gap 1.
+//!
+//! **Gap 1 — where the probe sits inside the transaction is only partly
+//! pinned, and it is less of a gap than it was.** Final database state cannot
+//! separate placements on the *allow* path: a denial rolls the transaction
+//! back, so "refused before the rows were written" and "rows written, then
+//! refused, then rolled back" leave byte-identical observations behind, and
+//! `doc_rev == 0` cannot tell them apart. Re-measured on 11 tests (#1252 S2),
+//! and the two halves came apart:
+//!
+//! * moving the `ReportWrite` `probe.record` call to **after** the row write
+//!   — still inside the transaction — leaves all 11 green. Unpinned, as
+//!   stated. (The row write is `write_report_row_and_project_tx` since #1252
+//!   S2; before it, the bare `card_update_with_crdt_tx` call.)
+//! * moving it **above the auto-promotion branch** is no longer green, and the
+//!   old text saying it was is now false. It reds exactly one test —
+//!   `mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_first`,
+//!   one of #1356's three — because hoisting the `ReportWrite` probe above the
+//!   auto-promotion branch also hoists it above the `TrackLifecycle` leg, and
+//!   that test asserts *which* leg refused: it gets `-32403 recorder gate
+//!   denied report_write` where the lifecycle leg's own refusal is required.
+//!   Which is the point of writing gaps down and re-running them: this one was
+//!   closed by a test written for something else, and nobody would have
+//!   noticed by reading.
+//!
+//! The claim these tests do carry is the one their names make: the refusal
+//! happens **before commit**, and nothing is left behind.
 //!
 //! This boundary is not blind to placement, though, and closing that would
 //! need no new seam — only **error precedence**. Observed, not argued: give
@@ -187,12 +209,19 @@
 //! `ReportWrite` consultation on the MCP path, and that decision kind on
 //! the refusal path. What is unpinned is the *number*. Each of the following
 //! changes was applied and keeps this suite green — the list is what has been
-//! *observed*, not a claim that nothing else slips through:
+//! *observed*, not a claim that nothing else slips through. Re-measured
+//! against all 11 tests by #1252 S2:
 //!
-//! 1. adding a `TrackLifecycle` `record` call to the auto-promotion branch;
-//! 2. moving the `ReportWrite` `record` call to before the auto-promotion
-//!    branch (a special case of gap 1);
-//! 3. turning the single `ReportWrite` `record` call into several.
+//! 1. adding a `TrackLifecycle` `record` call to the auto-promotion branch —
+//!    still green, 11/11;
+//! 2. turning the single `ReportWrite` `record` call into several — still
+//!    green, 11/11.
+//!
+//! A third item used to sit between these two: *moving the `ReportWrite`
+//! `record` call to before the auto-promotion branch (a special case of gap
+//! 1)*. It is struck rather than renumbered, because it is no longer a gap —
+//! it reds `mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_first`.
+//! See gap 1, where the same measurement is recorded from the placement side.
 //!
 //! The `TrackLifecycle` leg used to be listed here as a fourth, worse item:
 //! deleting the `RecorderShadowDecisionKind::TrackLifecycle` block from
@@ -221,14 +250,16 @@
 //! not count, not decision kind, but *which callers are still gated*.
 //! Confirmed by running it — making `CardDecisionSink::commit_report_op`
 //! drop the probe when `identity.role` is `CardRole::Assistant`, while keeping
-//! it for `Planner`, leaves all eight tests here green and the whole
+//! it for `Planner`, left all eight tests here green and the whole
 //! `calm-server` package green under `--features calm-server/codex-e2e`. That
 //! run predates #1318 §1, when the funnel passed `recorder_shadow: None`
 //! directly; `write::agent_report_op` now takes a non-optional probe, so the
 //! same escape is spelled differently — hand it a `RecorderShadowProbe` whose
 //! `record` always returns `Ok`, or route the assistant leg through
-//! `write::rest_user_block_op`, which carries no probe at all. The gap is the
-//! same; only the spelling moved. The reason it hides: both refusal
+//! `write::rest_user_block_op`, which carries no probe at all. #1252 S2 re-ran
+//! it in **that** spelling (an always-`Ok` probe for `CardRole::Assistant`
+//! only) against all 11 tests: still 11/11 green. The gap is the same; only
+//! the spelling moved. The reason it hides: both refusal
 //! tests act as a Planner, and the two assistant writes (Codex and Claude)
 //! only read persisted results back, which look the same whether or not an
 //! allowing gate was consulted. Register it loudly because it is the shape
@@ -241,9 +272,9 @@
 //! `decision_sink::report_op_attribution` maps `CardRole` to
 //! `(EditAuthor, auto_promote)` and refuses `Worker` / `ReportCard`
 //! outright; every call in this file arrives as `Planner` or `Assistant`, so
-//! replacing that refusal arm with `(EditAuthor::Planner, true)` leaves all
-//! eight tests here green — confirmed by running it, and by watching which
-//! test does go red under it. S1 step 2 replaces exactly that function, and
+//! replacing that refusal arm with `(EditAuthor::Planner, true)` leaves every
+//! test here green — 11/11, re-measured by #1252 S2 — and the assertion that
+//! does go red under it lives elsewhere, as the next sentence says. S1 step 2 replaces exactly that function, and
 //! the assertion that actually pins the refusal lives in another file and
 //! another *target*:
 //! `decision_sink::tests::report_op_attribution_refuses_worker_and_report_cards`

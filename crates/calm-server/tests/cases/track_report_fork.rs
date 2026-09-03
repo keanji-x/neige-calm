@@ -41,6 +41,17 @@ use crate::support::git_helpers::attached_repo_fixture;
 /// existing, inside a Git work tree. These fork fixtures only ever needed *a*
 /// target directory (they assert on report/CRDT rows, never on the path), so
 /// each named variant becomes a real, shared, idempotent Git work tree.
+/// The one spelling of an internal block reference these tests build.
+///
+/// Extracted so the fixture that plants the reference and the assertion that
+/// checks it after the fork cannot drift apart, and so the pair costs one
+/// occurrence of the retiring URI scheme instead of two. #1316 has not renamed
+/// the scheme yet, so each literal here is one more site that rename will have
+/// to find.
+fn internal_block_ref(track_id: &str, block_id: &str) -> String {
+    format!("neige://wave/{track_id}#{block_id}")
+}
+
 fn target_cwd(suffix: &str) -> String {
     attached_repo_fixture(&format!("track-report-fork-target{suffix}"))
 }
@@ -515,7 +526,8 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
 /// Counts every table the fork persistence path writes, so a "zero residue"
 /// assertion covers the whole surface: the track row, the attached area folder,
 /// both cards (planner + reportcard), the overlays, and the `tasks` rows that
-/// `persist_initial_report_and_project_tasks_tx` projects out of the copied report.
+/// `track_report::write::structural_init_report_tx` projects out of the copied
+/// report.
 async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
     calm_server::db::write_in_tx_typed(repo, |tx| {
         Box::pin(async move {
@@ -677,7 +689,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
                 "key": "build", "kind": "codex",
                 "goal": format!("Goal [internal](neige://wave/{target_track_id}#{internal_block_id})"),
                 "acceptance": format!("Accept <neige://wave/{target_track_id}#{internal_block_id}>") ,
-                "refs": [format!("neige://wave/{target_track_id}#{internal_block_id}")],
+                "refs": [internal_block_ref(&target_track_id, &internal_block_id)],
                 "ready": false, "declared_by": "spec"
             }
         }),
@@ -1936,5 +1948,371 @@ async fn initial_track_does_not_require_report_startup_read() {
             .and_then(Value::as_bool),
         Some(false),
         "canonical initial report must not require a startup read: {state}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1252 S2 — what the structural door may not do
+//
+// The door (`track_report::write::structural_init_report_tx`) is the create
+// paths' entry into the report write boundary. `fork_guard_exemption_invariant`
+// pins its *signature* — that it has no `EventBus`, no `EditAuthor`, no CAS
+// input. The first two tests below pin the behaviour that signature exists to
+// produce, end to end through `POST /api/tracks`, for **all three** creation
+// sources that build an `init_snapshot`: a fork, a built-in template
+// instantiation, and a user recipe (`TrackInit::Recipe`, #1292 S2 — see
+// `routes::tracks`'s own "three initialization sources"). All three reach the
+// same door, so a change that gave it an event bus would break all three, and
+// testing a subset would leave part of the door uncovered — which is exactly
+// what happened between #1252 S2 and #1292 S2 landing: this comment said "both"
+// and the recipe arm was created afterwards, with no case here.
+//
+// The third is narrower than its neighbours and says so in its own doc comment:
+// the order of the door's two statements is **not** observable from this
+// surface, and the test that pins it lives in the `--lib` target.
+// ---------------------------------------------------------------------------
+
+/// Every persisted event of `kind` scoped to `track_id`, oldest first, as
+/// `(actor, payload)` raw JSON.
+///
+/// Read out of the `events` table rather than off a broadcast channel: the
+/// persisted row is what the audit log, the goldens and replay all consume, and
+/// an event that is emitted but not persisted is not the thing being denied
+/// here.
+async fn events_for_track(repo: &dyn Repo, kind: &str, track_id: &str) -> Vec<(Value, Value)> {
+    let kind = kind.to_string();
+    let track_id = track_id.to_string();
+    let rows: Vec<(String, String)> = calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            Ok(sqlx::query_as(
+                "SELECT actor,payload FROM events WHERE kind=?1 AND scope_track=?2 ORDER BY id ASC",
+            )
+            .bind(kind)
+            .bind(track_id)
+            .fetch_all(&mut **tx)
+            .await?)
+        })
+    })
+    .await
+    .unwrap();
+    rows.into_iter()
+        .map(|(actor, payload)| {
+            (
+                serde_json::from_str(&actor).expect("events.actor is JSON"),
+                serde_json::from_str(&payload).expect("events.payload is JSON"),
+            )
+        })
+        .collect()
+}
+
+/// Create a track through the production REST route and return its id.
+async fn create_track_via_rest(boot: &Boot, title: &str, suffix: &str, extra: Value) -> String {
+    let mut body = json!({
+        "area_id": boot.area_id,
+        "title": title,
+        "sort": null,
+        "cwd": target_cwd(suffix),
+        "attach_folder": true,
+        "theme": routes::theme::RequestTheme::default_dark(),
+    });
+    for (key, value) in extra.as_object().expect("extra must be an object") {
+        body[key] = value.clone();
+    }
+    let (status, created) = request_json(
+        &boot.app,
+        "POST",
+        "/api/tracks".into(),
+        &boot.cookie,
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create `{title}`: {created}");
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// Create a track recipe through the production REST route and return its id.
+///
+/// The body is `track_recipe_instantiate`'s own `two_task_body` — the same
+/// shape #1292 S2 pins the recipe path with, reused rather than re-invented so
+/// that "the recipe path reaches the door" is asserted about the recipe shape
+/// that path is actually specified against.
+async fn create_recipe_via_rest(boot: &Boot, title: &str) -> String {
+    let (status, created) = request_json(
+        &boot.app,
+        "POST",
+        "/api/track-recipes".into(),
+        &boot.cookie,
+        Some(json!({
+            "title": title,
+            "body": crate::track_recipe_instantiate::two_task_body(),
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create recipe `{title}`: {created}"
+    );
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// Issue #1252 S2 / Q12 — **no creation source emits a report edit.**
+///
+/// A fork, a built-in template instantiation and a user recipe all write the
+/// new track's report card
+/// inside the create transaction. Doing that through a shared writer is exactly
+/// the change that "naturally" unifies them onto `write::persist`, which emits
+/// `card.updated` + `track.report_edited` on every successful call — so the
+/// thing most likely to be lost in this slice is the *absence* of that pair.
+/// Q12 ruled the absence is the contract.
+///
+/// It is carried by the door's signature (no `&EventBus`, no event in the
+/// return type — `fork_guard_exemption_invariant::
+/// the_structural_door_cannot_name_an_author_an_actor_or_a_revision`), and by
+/// this test end to end. **Must-red**: give the door an `EventBus` and emit a
+/// `TrackReportEdited` from it, and this goes red on whichever creation source
+/// you wired it into — which is why all three are here.
+///
+/// Scoped by `scope_track`, so the source track's own seeded edits (the
+/// fixture writes those through the real REST/`persist_report` path, which
+/// *does* emit) cannot mask a missing assertion: an unscoped count would be
+/// non-zero either way.
+#[tokio::test]
+async fn every_creation_source_emits_no_report_edited() {
+    let boot = boot().await;
+
+    let forked = create_track_via_rest(
+        &boot,
+        "no-report-edited fork",
+        "-no-edit-fork",
+        json!({ "fork_report_from": boot.source_track_id }),
+    )
+    .await;
+    let templated = create_track_via_rest(
+        &boot,
+        "no-report-edited template",
+        "-no-edit-template",
+        json!({ "template_id": "small-change" }),
+    )
+    .await;
+    let recipe_id = create_recipe_via_rest(&boot, "no-report-edited recipe").await;
+    let from_recipe = create_track_via_rest(
+        &boot,
+        "no-report-edited recipe track",
+        "-no-edit-recipe",
+        json!({ "recipe_id": recipe_id }),
+    )
+    .await;
+
+    // The fixture: both new tracks really do carry initialized report content,
+    // so "no edit event" is a statement about a write that happened rather than
+    // about a create that did nothing.
+    for track_id in [&forked, &templated, &from_recipe] {
+        let (status, report) = request_json(
+            &boot.app,
+            "GET",
+            format!("/api/tracks/{track_id}/report"),
+            &boot.cookie,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !report["blocks"].as_array().unwrap().is_empty(),
+            "structural init wrote nothing for {track_id}: {report}"
+        );
+        assert_eq!(
+            report["docRev"], 0,
+            "structural init must not advance docRev for {track_id}: {report}"
+        );
+    }
+
+    for (label, track_id) in [
+        ("fork", &forked),
+        ("template", &templated),
+        ("recipe", &from_recipe),
+    ] {
+        let edits = events_for_track(boot.repo.as_ref(), "track.report_edited", track_id).await;
+        assert!(
+            edits.is_empty(),
+            "{label} creation emitted a report edit; the structural door has no event bus to \
+             emit one with: {edits:#?}"
+        );
+    }
+}
+
+/// Issue #1252 S2 / Q12, second half — the report card's **only** event is one
+/// `card.added`, attributed to the request's own actor.
+///
+/// `every_creation_source_emits_no_report_edited` cannot see this: unifying
+/// the create paths onto `write::persist` would emit `card.updated` *and*
+/// `track.report_edited`, but so would a narrower mistake that emits only the
+/// generic one. This is that leg. It also pins the attribution, which is where
+/// the fork's "who" survives at all — the door emits nothing, so the create
+/// closure's `CardAdded` is the single record that a user did this.
+///
+/// **Must-red**: make the door emit `Event::CardUpdated` for the row it writes.
+#[tokio::test]
+async fn structural_init_leaves_one_card_added_and_no_card_updated() {
+    let boot = boot().await;
+    let recipe_id = create_recipe_via_rest(&boot, "one card.added recipe").await;
+
+    for (label, suffix, extra) in [
+        (
+            "fork",
+            "-one-card-added-fork",
+            json!({ "fork_report_from": boot.source_track_id }),
+        ),
+        (
+            "template",
+            "-one-card-added-template",
+            json!({ "template_id": "small-change" }),
+        ),
+        (
+            "recipe",
+            "-one-card-added-recipe",
+            json!({ "recipe_id": recipe_id }),
+        ),
+    ] {
+        let track_id =
+            create_track_via_rest(&boot, &format!("one card.added {label}"), suffix, extra).await;
+        let report_card = boot
+            .repo
+            .cards_by_track(&track_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|card| card.kind == "track-report")
+            .expect("created track has a report card");
+
+        let added: Vec<(Value, Value)> =
+            events_for_track(boot.repo.as_ref(), "card.added", &track_id)
+                .await
+                .into_iter()
+                .filter(|(_, payload)| payload["id"] == json!(report_card.id.as_str()))
+                .collect();
+        assert_eq!(
+            added.len(),
+            1,
+            "{label}: the report card must be announced exactly once: {added:#?}"
+        );
+        // `ActorId::User` is what `Actor::to_actor_id()` produces for this
+        // request; the fixture sends no `X-Calm-Actor`, which is the browser
+        // shape. Compared as the serialized `ActorId` the events table stores.
+        assert_eq!(
+            added[0].0,
+            serde_json::to_value(calm_server::ids::ActorId::User).unwrap(),
+            "{label}: the report card's `card.added` carries the request's actor"
+        );
+
+        let updated: Vec<(Value, Value)> =
+            events_for_track(boot.repo.as_ref(), "card.updated", &track_id)
+                .await
+                .into_iter()
+                .filter(|(_, payload)| payload["id"] == json!(report_card.id.as_str()))
+                .collect();
+        assert!(
+            updated.is_empty(),
+            "{label}: the structural door must not emit `card.updated` for the row it \
+             initializes: {updated:#?}"
+        );
+    }
+}
+
+/// Issue #1252 S2 — a forked task's `refs` are rewritten onto the copy and
+/// resolve against it.
+///
+/// # What this does NOT pin, and how that was established
+///
+/// It does not pin the statement order inside
+/// `track_report::write::write_report_row_and_project_tx`, and an earlier draft
+/// of this test claimed it did. **Measured, not argued**: swapping the row write
+/// and the task projection inside that function leaves this test GREEN. The
+/// reason is that `GET /api/tracks/{id}/report` recomputes `taskDiagnostics` at
+/// read time from the committed payload, so by the time this test looks, the
+/// cache holds the fork either way — the create-time projection's verdicts are
+/// simply not on this surface.
+///
+/// Nor is the difference visible in the `tasks` table: `prepare_fork_report`
+/// forces every copied task to `ready: false`, so a forked declaration is
+/// non-schedulable and projects no row whichever order ran. That is why the
+/// fork route had no order test before this slice, and it is not something a
+/// better assertion here would fix.
+///
+/// The test that *does* pin the order is
+/// `routes::tracks::tests::structural_door_writes_cache_crdt_and_projection_together`
+/// — the crate's `--lib` target, which reads the `TaskProjectionOutcome` the
+/// door returns rather than a re-derived read-path value. Under the same swap it
+/// goes red on a `reference_missing` diagnostic. Naming it here is the point: a
+/// gate run scoped to the integration binaries never builds that target.
+///
+/// What this test is still worth: the fork's link rewriting and the copy's
+/// self-consistency end to end. The fixture's `build` task references the source
+/// track's second prose block; after the fork the reference must name the
+/// *copy* of that block, on the new track, and that block must be present.
+#[tokio::test]
+async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
+    let boot = boot().await;
+    let (status, source_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/tracks/{}/report", boot.source_track_id),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let internal_block_id = block_index(&source_report)[2].0.clone();
+
+    let target_track_id = create_track_via_rest(
+        &boot,
+        "ref resolution fork",
+        "-ref-resolution",
+        json!({ "fork_report_from": boot.source_track_id }),
+    )
+    .await;
+
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/tracks/{target_track_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The fixture, asserted rather than assumed: the copied task really does
+    // reference a block of this same write, rewritten onto the new track.
+    let forked = task_block_by_key(&report, "build");
+    assert_eq!(
+        forked["payload"]["refs"],
+        json!([internal_block_ref(&target_track_id, &internal_block_id)]),
+        "the forked task must reference the copy of the source block: {forked}"
+    );
+    assert!(
+        report["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|block| block["id"] == json!(internal_block_id)),
+        "the referenced block must be part of the same write: {report}"
+    );
+
+    let dangling: Vec<&Value> = report["taskDiagnostics"]
+        .as_array()
+        .expect("taskDiagnostics array")
+        .iter()
+        .filter(|verdict| {
+            verdict["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "reference_missing")
+        })
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "the fork left a reference that does not resolve against the copy: {dangling:#?}"
     );
 }

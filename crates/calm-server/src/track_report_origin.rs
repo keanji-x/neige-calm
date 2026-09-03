@@ -236,9 +236,10 @@ pub struct AgentOrigin {
 /// Note *where* that refusal lands, because it is later than it looks. The gate
 /// runs on the batch the write closure returned
 /// (`write_with_actor_events`, `calm-truth/src/db/sqlite/events.rs`), and the
-/// fork's report copy — `routes::tracks::persist_initial_report_and_project_tasks_tx`
-/// — sits inside that closure. Under `ai:codex` the copy therefore **does
-/// execute**, and the whole transaction is then rolled back. The conclusion
+/// fork's report copy — `track_report::write::structural_init_report_tx`, the
+/// write boundary's structural door since #1252 S2 — sits inside that closure.
+/// Under `ai:codex` the copy therefore **does execute**, and the whole
+/// transaction is then rolled back. The conclusion
 /// holds (a non-`User` initiator cannot complete a fork and leaves nothing
 /// behind), but anyone adding a side effect to the copy stage that is not
 /// covered by the transaction — a file write, an outbound request, a metric —
@@ -367,12 +368,13 @@ pub enum RecorderRequirement {
     /// `write::persist` call that passes `None` — supplied by the entry
     /// point rather than by the handler since #1318 §1. For
     /// [`WriteOrigin::Fork`] it is not: **the fork path never calls
-    /// `write::persist` at all.** It writes the copied report
-    /// inside the track-creation transaction via `card_update_with_crdt_tx`
-    /// (`routes::tracks::persist_initial_report_and_project_tasks_tx`) and emits no
-    /// `TrackReportEdited`. `NotGated` therefore records that a fork is subject
-    /// to no recorder decision — not that some fork call site was observed
-    /// passing `None`.
+    /// `write::persist` at all.** It writes the copied report inside the
+    /// track-creation transaction through `write::structural_init_report_tx`
+    /// (#1252 S2; before that slice, through
+    /// `routes::tracks::persist_initial_report_and_project_tasks_tx`), and
+    /// emits no `TrackReportEdited`. That door has no recorder-probe parameter
+    /// at all, so `NotGated` records that a fork is subject to no recorder
+    /// decision — not that some fork call site was observed passing `None`.
     NotGated,
 }
 

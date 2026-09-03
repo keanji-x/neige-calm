@@ -465,6 +465,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "pulldown-cmark",
+ "quote",
  "rand 0.8.6",
  "semver",
  "serde",

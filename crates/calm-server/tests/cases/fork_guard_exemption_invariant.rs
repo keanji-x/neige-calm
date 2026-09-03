@@ -1,10 +1,609 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use quote::ToTokens;
+use syn::visit::Visit;
 use syn::{Item, ItemMod, UseTree, Visibility};
 
 const EXPORTED_ENTRY: &str = "guard_forked_blocks";
 const PRIVATE_IMPL: &str = "guard_forked_blocks_impl";
+
+/// #1252 S2 — the structural door of the report write boundary, and the struct
+/// carrying its whole argument set.
+const STRUCTURAL_DOOR: &str = "structural_init_report_tx";
+const STRUCTURAL_TARGET: &str = "InitialReportTarget";
+
+/// The structural door's parameter list, `(name, type-as-written)`, in order.
+///
+/// The types are here because a previous version of this gate pinned only the
+/// names, and a review channel walked through it by keeping every pinned name
+/// and swapping the type underneath: `tx: &mut StructuralTx<'_, '_>`, where
+/// `StructuralTx` is a one-line newtype in the same file holding
+/// `{ inner: &mut Transaction<..>, who: ActorId }`. The name `tx` was
+/// unchanged, the ident `ActorId` never appeared in this function's signature,
+/// and all four tests in this file stayed green.
+const DOOR_PARAMETERS: &[(&str, &str)] = &[
+    ("tx", "&mut sqlx::Transaction<'_, sqlx::Sqlite>"),
+    ("target", "InitialReportTarget<'_>"),
+];
+
+/// The structural door's return type, as written.
+///
+/// Half of the same bypass: `Emitted` was a file-local
+/// `type Emitted = Vec<Event>;` and the door returned
+/// `(Card, TaskProjectionOutcome, Emitted)`. No ident `Event` appears in the
+/// signature, so the name list below never saw it.
+const DOOR_RETURN: &str = "Result<(Card, TaskProjectionOutcome), CalmError>";
+
+/// Every field of the door's argument struct, `name -> type-as-written`.
+///
+/// The other bypass: field name `payload` kept, its type changed to
+/// `&'a InitContent<'a>` where `InitContent` is
+/// `{ inner: &'a TrackReportPayload, by: EditAuthor }`. That is #1115's hole
+/// re-opened — the door body could then call
+/// `guard_task_declarations(.., target.payload.by, ..)` — under a field name
+/// this gate already expected.
+const DOOR_TARGET_FIELDS: &[(&str, &str)] = &[
+    ("report_card_id", "&'a str"),
+    ("track_id", "&'a str"),
+    ("payload", "&'a TrackReportPayload"),
+    ("doc", "&'a mut ReportDoc"),
+    (
+        "declarations",
+        "&'a [calm_types::report_blocks::tasks::TaskDeclaration]",
+    ),
+    (
+        "diagnostics",
+        "&'a [Vec<calm_types::report_blocks::tasks::Diagnostic>]",
+    ),
+];
+
+/// Every name that must not appear anywhere in the structural door's signature
+/// or in the struct that carries its arguments.
+///
+/// This is the gate's **second** line of defence, behind the three tables
+/// above. The tables catch a pinned name with a different type under it; this
+/// list catches a concept arriving somewhere the tables have no row for — an
+/// added parameter, a seventh field, a changed generic — and names the concept
+/// in the failure message.
+///
+/// Both spellings of each concept, because the mutation this list exists to
+/// catch can arrive as either: the type (`EditAuthor`) or the parameter /
+/// field name it would land under (`author`). A future rename that keeps the
+/// concept has to be added here, which is the point — the list is the
+/// statement of what this door may not be able to say.
+const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
+    // #1115 — attribution in any shape. `Option<EditAuthor>` is the same hole
+    // with a nullable type, and both halves of it are named here.
+    "EditAuthor",
+    "author",
+    "WriteAttribution",
+    "attribution",
+    // The runtime enum this door was explicitly ruled not to take, plus the
+    // value it would be matched out of.
+    "WritePolicy",
+    "WriteOrigin",
+    "policy",
+    "origin",
+    // Q12 — no bus and no actor named in the signature. Not "no event
+    // anywhere": the pinned `TaskProjectionOutcome` carries a `kernel_events`
+    // vector, which the door's own body refuses when non-empty (#1252 R1/F3).
+    "EventBus",
+    "Event",
+    "events",
+    "ActorId",
+    "actor",
+    // No CAS input: the row was INSERTed by this same transaction.
+    "if_doc_rev",
+    "expected_rev",
+    "if_rev",
+    // No lifecycle leg and no draft promotion: the track is being created.
+    "TrackLifecycle",
+    "lifecycle",
+    "auto_promote_draft",
+    // No recorder gate: there is no agent principal on a create request.
+    "RecorderShadowProbe",
+    "RecorderShadowDecisionKind",
+    "recorder_shadow",
+    "probe",
+];
+
+/// For every spelling the three tables above use, the canonical path it is
+/// supposed to mean: `(canonical path, spelling as write.rs writes it)`.
+///
+/// `write.rs` carries one `const _: fn() = || { … };` block holding a
+/// `let _: fn(canonical) -> spelling = identical;` line per row, and `identical`
+/// is `fn identical<T>(T) -> T`, so each line compiles only while the two sides
+/// are the same type. That is what turns the text comparison the tables do into
+/// a statement about types: a `struct TrackReportPayload` defined in `write.rs`
+/// (the R3 bypass — same rendered text, a `by: EditAuthor` field inside) is a
+/// compile error at that line rather than a green table.
+const RESOLUTION_ANCHORS: &[(&str, &str)] = &[
+    (
+        "::sqlx::Transaction<'static, ::sqlx::Sqlite>",
+        "sqlx::Transaction<'static, sqlx::Sqlite>",
+    ),
+    ("::core::result::Result<u8, u8>", "Result<u8, u8>"),
+    ("crate::model::Card", "Card"),
+    (
+        "crate::db::sqlite::TaskProjectionOutcome",
+        "TaskProjectionOutcome",
+    ),
+    ("crate::error::CalmError", "CalmError"),
+    ("&'static ::core::primitive::str", "&'static str"),
+    (
+        "::calm_types::track_report::TrackReportPayload",
+        "TrackReportPayload",
+    ),
+    ("crate::track_report_doc::ReportDoc", "ReportDoc"),
+    ("::std::vec::Vec<u8>", "Vec<u8>"),
+    (
+        "::calm_types::report_blocks::tasks::TaskDeclaration",
+        "calm_types::report_blocks::tasks::TaskDeclaration",
+    ),
+    (
+        "::calm_types::report_blocks::tasks::Diagnostic",
+        "calm_types::report_blocks::tasks::Diagnostic",
+    ),
+];
+
+/// Every identifier appearing anywhere under a piece of syntax.
+///
+/// Used for the name checks, which are the ones that have to reach *inside* a
+/// type — `Option<EditAuthor>` nested in some position no table has a row for.
+/// [`rendered`] is the complementary tool: exact text for the positions that
+/// are pinned exactly.
+#[derive(Default)]
+struct Idents(BTreeSet<String>);
+
+impl<'ast> Visit<'ast> for Idents {
+    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+        self.0.insert(ident.to_string());
+    }
+}
+
+/// Every identifier under a *type*, lifetimes excluded.
+///
+/// Separate from [`Idents`] because the pinned types carry `'a` and `'_`, and a
+/// lifetime name is not a name anything can be bound to at a file's top level.
+#[derive(Default)]
+struct TypeIdents(BTreeSet<String>);
+
+impl<'ast> Visit<'ast> for TypeIdents {
+    fn visit_lifetime(&mut self, _: &'ast syn::Lifetime) {}
+
+    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+        self.0.insert(ident.to_string());
+    }
+}
+
+/// Every name a file's top-level items bind: what they declare, plus what their
+/// `use` statements bring into scope under either its own name or a rename.
+///
+/// This is the set that can shadow a glob import, which is why the shadowing
+/// check reads it rather than the declarations alone.
+fn top_level_bindings(items: &[Item]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in items {
+        match item {
+            Item::Struct(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Enum(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Union(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Type(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Trait(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::TraitAlias(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Fn(declared) => {
+                names.insert(declared.sig.ident.to_string());
+            }
+            Item::Const(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Static(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Mod(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Macro(declared) => {
+                if let Some(ident) = &declared.ident {
+                    names.insert(ident.to_string());
+                }
+            }
+            Item::Use(item_use) => {
+                let mut paths = Vec::new();
+                collect_use_paths(&item_use.tree, &mut Vec::new(), &mut paths);
+                for (_, bound) in paths {
+                    names.insert(bound);
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Every free function *called* under a piece of syntax, by its last path
+/// segment.
+///
+/// Distinct from [`Idents`], which sees a bare mention. `let _ =
+/// guard_forked_blocks;` puts the ident in the body and takes the call out of
+/// the program; only this visitor tells the two apart.
+#[derive(Default)]
+struct Calls(BTreeSet<String>);
+
+impl<'ast> Visit<'ast> for Calls {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*call.func
+            && let Some(last) = path.path.segments.last()
+        {
+            self.0.insert(last.ident.to_string());
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+/// The functions `body` calls in the shape `f(args)?;` — an unconditional
+/// statement of `body` itself, the `?` applied, at least one argument, and no
+/// argument that is an empty literal slice.
+///
+/// Each clause is here because a review channel wrote the version without it
+/// and stayed green while the belt was off the execution path. In order:
+///
+/// * *a call, not a mention* — `let _ = guard_forked_blocks;` (#1252 R1/F6);
+/// * *a statement of this body* — `if false { guard_forked_blocks(&blocks)?; }`
+///   and `match 0 { _ => { guard_forked_blocks(&blocks)?; } }` (#1252 R1/F6,
+///   R2);
+/// * *in expression position with `?`* — `let _ = guard_forked_blocks(&[]);`
+///   is an unconditional `let` whose initializer is a call, and it discards the
+///   `Err` the belt exists to produce (#1252 R3/C);
+/// * *not fed an empty literal* — `guard_forked_blocks(&[])?;` keeps the shape
+///   and hands the belt nothing to inspect (#1252 R3/C).
+///
+/// This is a list of refused shapes, not a proof that the belt runs: a call
+/// fed a variable this function never checks the provenance of is still green
+/// here, and so is one whose argument was emptied upstream. The behavioural
+/// half is stated on the test below, along with the measurement showing there
+/// is no behavioural detector for the call site itself.
+///
+/// The cost of the statement clause is that legitimately moving the belt under
+/// a condition, or binding its result, is red here too. That is the intended
+/// trade — the belt is an unconditional `?` today, and changing that is
+/// precisely the edit that should stop a reviewer.
+fn unconditional_checked_calls(body: &syn::Block) -> BTreeSet<String> {
+    fn peel(expr: &syn::Expr) -> &syn::Expr {
+        match expr {
+            syn::Expr::Paren(inner) => peel(&inner.expr),
+            syn::Expr::Group(inner) => peel(&inner.expr),
+            other => other,
+        }
+    }
+
+    fn is_empty_literal_slice(expr: &syn::Expr) -> bool {
+        match peel(expr) {
+            syn::Expr::Reference(reference) => is_empty_literal_slice(&reference.expr),
+            syn::Expr::Array(array) => array.elems.is_empty(),
+            _ => false,
+        }
+    }
+
+    let mut called = BTreeSet::new();
+    for statement in &body.stmts {
+        let syn::Stmt::Expr(expr, Some(_)) = statement else {
+            continue;
+        };
+        let syn::Expr::Try(tried) = peel(expr) else {
+            continue;
+        };
+        let syn::Expr::Call(call) = peel(&tried.expr) else {
+            continue;
+        };
+        let syn::Expr::Path(path) = &*call.func else {
+            continue;
+        };
+        let Some(last) = path.path.segments.last() else {
+            continue;
+        };
+        if call.args.is_empty() || call.args.iter().any(is_empty_literal_slice) {
+            continue;
+        }
+        called.insert(last.ident.to_string());
+    }
+    called
+}
+
+/// A piece of syntax as it is *written*, with every space removed.
+///
+/// Whitespace goes so that the expected spellings in the tables above can be
+/// written the way a human writes them (`&mut sqlx::Transaction<'_,
+/// sqlx::Sqlite>`) while the comparison stays immune to rustfmt's line
+/// wrapping and to `quote`'s own token spacing.
+///
+/// This compares *spelling*, not resolved meaning: it reads the path
+/// `sqlx::Transaction` as the string `sqlx::Transaction` and would not notice
+/// that path being re-exported onto something else inside the `sqlx` crate.
+/// What it does notice is any change to what is written in this repository's
+/// own `write.rs`, which is where a new type has to be introduced for the door
+/// to acquire an argument it must not have.
+fn rendered(tokens: &impl ToTokens) -> String {
+    tokens
+        .to_token_stream()
+        .to_string()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// #1252 S2 — the six absences on `track_report::write::structural_init_report_tx`
+/// are the whole content of that door, so they are a gate rather than a comment.
+///
+/// The door writes a forked or templated report onto the report card inside the
+/// track-creation transaction. What makes it safe is not something it does; it
+/// is what its argument set is: two parameters and six fields, each pinned here
+/// **by name and by written type**, plus a pinned return type. So the door has
+/// no author to give `guard_task_declarations` (#1115), no `EventBus` and no
+/// `ActorId` (Q12 — the `kernel_events` half of what it *returns* is refused by
+/// a guard in the door's own body, not by this signature; see `write.rs`), no
+/// prior revision to compare against, and no lifecycle, auto-promote or
+/// recorder-probe leg.
+///
+/// # What this test does and does not close
+///
+/// It closes **this signature drifting**: any change to either parameter's name
+/// or type, to any of the six fields' names or types, or to the return type,
+/// is red here, and a reviewer has to come back to this file and say why.
+/// That is a stronger statement than the one this test made before #1252 R1/F1,
+/// which pinned names only — and which a review channel walked past twice, in
+/// both cases by keeping every pinned name and defining one newtype in
+/// `write.rs` to change what the name stood for (see `DOOR_PARAMETERS` and
+/// `DOOR_TARGET_FIELDS` for the two constructions verbatim).
+///
+/// It does **not** close "the door cannot express an author" as a statement
+/// about the language. Rendered token text is not resolved types: a pinned
+/// spelling like `sqlx::Transaction` says nothing about what that path resolves
+/// to elsewhere, and nothing here constrains what a *pinned* type such as
+/// `ReportDoc` or `TrackReportPayload` may grow inside its own definition. The
+/// property under test is the shape of the signature as written, which is a
+/// syntactic fact — and drift in it is the failure mode this gate exists for.
+///
+/// It reads the file rather than the compiled crate on purpose: the door is
+/// `pub(crate)`, so no integration test can name it, and the property under
+/// test is the *shape of the signature*, which is a syntactic fact.
+#[test]
+fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/track_report/write.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let syntax = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+
+    let door = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == STRUCTURAL_DOOR => Some(function),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{STRUCTURAL_DOOR}` vanished from {}", path.display()));
+
+    // The parameter list itself, name *and* written type. This is the
+    // assertion that bites on an added argument even if its type is spelled in
+    // a way the name list below has never heard of — and, since R1/F1, on an
+    // argument that keeps its name and changes what that name stands for.
+    let parameters: Vec<(String, String)> = door
+        .sig
+        .inputs
+        .iter()
+        .map(|input| match input {
+            syn::FnArg::Receiver(_) => panic!("{STRUCTURAL_DOOR} must be a free function"),
+            syn::FnArg::Typed(typed) => match &*typed.pat {
+                syn::Pat::Ident(ident) => (ident.ident.to_string(), rendered(&*typed.ty)),
+                _ => panic!(
+                    "{STRUCTURAL_DOOR}: every parameter must be a plain `name: Type` binding"
+                ),
+            },
+        })
+        .collect();
+    let expected_parameters: Vec<(String, String)> = DOOR_PARAMETERS
+        .iter()
+        .map(|(name, ty)| {
+            (
+                (*name).to_string(),
+                rendered(&syn::parse_str::<syn::Type>(ty).unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        parameters, expected_parameters,
+        "the structural door takes the transaction and its target, and nothing else — neither \
+         under a new name nor under a new type wearing one of these two names"
+    );
+
+    // The return type, for the same reason: `TaskProjectionOutcome` is what
+    // this door hands back, and a third tuple member is how an event vector
+    // leaves it without any parameter changing.
+    let return_type = match &door.sig.output {
+        syn::ReturnType::Default => "()".to_string(),
+        syn::ReturnType::Type(_, ty) => rendered(ty),
+    };
+    assert_eq!(
+        return_type,
+        rendered(&syn::parse_str::<syn::Type>(DOOR_RETURN).unwrap()),
+        "the structural door returns the written card and the projection outcome, and nothing \
+         else: a widened return is how this door would come to emit"
+    );
+
+    let target = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item_struct) if item_struct.ident == STRUCTURAL_TARGET => {
+                Some(item_struct)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{STRUCTURAL_TARGET}` vanished from {}", path.display()));
+
+    // Fields, pinned name-to-written-type for the same reason: an added field
+    // is how an argument arrives once the parameter list is pinned, and a
+    // retyped field is how one arrives once the field names are pinned too.
+    let fields: BTreeMap<String, String> = target
+        .fields
+        .iter()
+        .map(|field| {
+            let name = field
+                .ident
+                .as_ref()
+                .unwrap_or_else(|| panic!("{STRUCTURAL_TARGET} must be a named struct"))
+                .to_string();
+            (name, rendered(&field.ty))
+        })
+        .collect();
+    let expected_fields: BTreeMap<String, String> = DOOR_TARGET_FIELDS
+        .iter()
+        .map(|(name, ty)| {
+            (
+                (*name).to_string(),
+                rendered(&syn::parse_str::<syn::Type>(ty).unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        fields, expected_fields,
+        "the structural door's argument struct carries report content and two ids — nothing that \
+         names a writer, an authority or a prior revision, and nothing that wraps one of these \
+         six types around something that does"
+    );
+
+    // And the name check over both, which is what catches the same concept
+    // arriving under a field this test already expects (a `payload` typed
+    // `WritePolicy`, say) or inside the return type.
+    let mut names = Idents::default();
+    names.visit_signature(&door.sig);
+    names.visit_item_struct(target);
+    let smuggled: Vec<&str> = FORBIDDEN_IN_THE_DOOR
+        .iter()
+        .copied()
+        .filter(|forbidden| names.0.contains(*forbidden))
+        .collect();
+    assert!(
+        smuggled.is_empty(),
+        "the structural door must not be able to name {smuggled:?}. Each of these is absent for a \
+         stated reason (see the door's own doc comment); reintroducing one is a design decision, \
+         not a signature tweak."
+    );
+}
+
+/// #1252 R3/A — the two ways the sibling test's text comparison can be walked
+/// past inside `write.rs`, closed.
+///
+/// The sibling test compares rendered token text. A review channel kept every
+/// pinned name *and* every pinned rendered type and still gave the door an
+/// author, by defining in `write.rs`
+///
+/// ```ignore
+/// pub(crate) struct TrackReportPayload {
+///     pub inner: calm_types::track_report::TrackReportPayload,
+///     pub by: EditAuthor,
+/// }
+/// ```
+///
+/// which shadows what `use super::*` brings in. `&'a TrackReportPayload`
+/// renders byte-for-byte the same, so the field table was green, and the door's
+/// body could call `guard_task_declarations(.., target.payload.by, ..)`.
+///
+/// Shadowing a glob import requires a binding at the shadowing file's top
+/// level, so this test takes both halves of that:
+///
+/// 1. no top-level item of `write.rs`, and no name it binds with a `use`, is
+///    spelled like a type the tables pin (`InitialReportTarget` excepted — the
+///    table for its fields is what pins that one);
+/// 2. the resolution anchors are present and cover every spelling in the
+///    tables, so the pinned spellings are checked by the compiler and not only
+///    by string comparison.
+///
+/// The second is the load-bearing one and the first is a faster failure
+/// message. Neither says anything about what a pinned type may grow inside its
+/// own definition, which stays what the sibling test's doc says it is.
+#[test]
+fn the_pinned_spellings_resolve_to_the_types_they_name() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/track_report/write.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let syntax = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+
+    let mut pinned = TypeIdents::default();
+    for (_, written) in DOOR_PARAMETERS.iter().chain(DOOR_TARGET_FIELDS) {
+        pinned.visit_type(&syn::parse_str::<syn::Type>(written).unwrap());
+    }
+    pinned.visit_type(&syn::parse_str::<syn::Type>(DOOR_RETURN).unwrap());
+    pinned.0.remove(STRUCTURAL_TARGET);
+
+    let shadows: Vec<String> = top_level_bindings(&syntax.items)
+        .into_iter()
+        .filter(|name| pinned.0.contains(name))
+        .collect();
+    assert!(
+        shadows.is_empty(),
+        "`{}` binds {shadows:?} at its top level, and every one of those spellings appears in a \
+         pinned signature. A same-named item defined or imported here shadows what `use super::*` \
+         provides, which leaves the pinned text identical while the door's argument set becomes \
+         something else.",
+        path.display()
+    );
+
+    // rustfmt wraps the longer anchors, and a wrapped `fn(A,) -> B` renders with
+    // a trailing comma the expected spelling below does not have. Dropping `,)`
+    // is the whole normalization needed; it is not a token the pinned types use
+    // for anything else.
+    let anchors: String = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Const(constant) if constant.ident == "_" => {
+                Some(rendered(constant).replace(",)", ")"))
+            }
+            _ => None,
+        })
+        .collect();
+    for (canonical, spelling) in RESOLUTION_ANCHORS {
+        let line = rendered(
+            &syn::parse_str::<syn::Type>(&format!("fn({canonical}) -> {spelling}")).unwrap(),
+        )
+        .replace(",)", ")");
+        assert!(
+            anchors.contains(&line),
+            "`{}` must anchor `{spelling}` to `{canonical}`: a `let _: fn({canonical}) -> \
+             {spelling} = identical;` line in its `const _` block. Without it that spelling is \
+             pinned as text only, and a shadowing item in this file satisfies the text.",
+            path.display()
+        );
+    }
+
+    let mut anchored = TypeIdents::default();
+    for (_, spelling) in RESOLUTION_ANCHORS {
+        anchored.visit_type(&syn::parse_str::<syn::Type>(spelling).unwrap());
+    }
+    let unanchored: Vec<&String> = pinned.0.difference(&anchored.0).collect();
+    assert!(
+        unanchored.is_empty(),
+        "the pinned signature names {unanchored:?}, which no row of RESOLUTION_ANCHORS covers. \
+         Every spelling the tables pin has to be anchored to a canonical path, or it is pinned as \
+         text only."
+    );
+}
 
 #[test]
 fn fork_rule_one_exemption_has_one_structural_entry() {
@@ -51,6 +650,103 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
     assert!(
         items.iter().all(|item| !matches!(item, Item::Enum(_))),
         "the exemption module must not reintroduce a constructible exemption enum"
+    );
+}
+
+/// Issue #1115 / #1252 S2 — the release belt stays in `prepare_fork_report`,
+/// upstream of the shared structural door.
+///
+/// # Why this is a syntactic assertion and not a behavioural one
+///
+/// Because a behavioural one does not exist, and that was established by
+/// running it rather than by argument. **Measured**: deleting the
+/// `guard_forked_blocks(&blocks)?` call from `prepare_fork_report` leaves the
+/// whole `calm-server` package green — 1259 tests, 0 failures. That is not a
+/// coverage hole to be patched with a better fixture; it is what the belt *is*.
+/// `normalize_task_privilege_fields` runs over every block first and strips
+/// `released_by_user` from every live task, and the tombstone arm's residues are
+/// refused earlier still by `validate_payload`, so no production input reaches
+/// the belt with the flag set. `fork_guard.rs` says this in its own words: "that
+/// no-op is the intended steady state, not evidence the rule is vacuous."
+///
+/// What the belt buys is measurable, just not from its own call site: delete the
+/// `payload.remove("released_by_user")` in `normalize_task_privilege_fields` and
+/// a fork sent with **no `X-Calm-Actor` header** — the #1115 accident's original
+/// shape, a browser fork — answers 400 carrying the belt's own message, red in
+/// `track_report_fork::forked_task_does_not_inherit_the_source_users_release`.
+/// That is the belt firing for a `User` author, which is the whole difference
+/// from §3.7 Rule 5. Re-branching it on the author instead reds
+/// `routes::tracks::fork_guard::tests::
+/// fork_guard_exempts_rule_one_but_belts_release_for_every_author`.
+///
+/// So the failure modes with no behavioural detector are the ones this test
+/// takes: the call disappearing, the call being *hollowed out* where it stands
+/// (#1252 R1/F6 — `let _ = guard_forked_blocks;` and `if false { … }` both left
+/// the earlier "the ident appears in the body" version of this assertion
+/// green), and the belt migrating onto the shared door.
+/// The second is the one #1252 S2 makes newly possible and explicitly vetoed —
+/// `track_report::write::structural_init_report_tx` serves `TrackInit::Template`
+/// as well as `TrackInit::Fork`, so a belt hung there would give template
+/// instantiation a guard it has never had, and would separate the belt from the
+/// normalization it belts. Both are one-line edits; both are red here.
+///
+/// It reads the source rather than linking against the symbols because both are
+/// module-private (`pub(in crate::routes::tracks)` and `pub(crate)`), which is
+/// the same reason the sibling test in this file parses `write.rs`.
+#[test]
+fn the_release_belt_stays_next_to_the_normalization_it_belts() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let tracks_path = manifest.join("src/routes/tracks.rs");
+    let tracks_source = std::fs::read_to_string(&tracks_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", tracks_path.display()));
+    let tracks = syn::parse_file(&tracks_source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", tracks_path.display()));
+    let prepare = tracks
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == "prepare_fork_report" => Some(function),
+            _ => None,
+        })
+        .expect("`prepare_fork_report` vanished from routes/tracks.rs");
+    // The belt: `guard_forked_blocks(<something not an empty literal>)?;` as an
+    // unconditional statement of the function body. See
+    // `unconditional_checked_calls` for the four hollowed-out shapes that were
+    // each green against an earlier, weaker version of this line.
+    assert!(
+        unconditional_checked_calls(&prepare.block).contains(EXPORTED_ENTRY),
+        "`prepare_fork_report` must call `{EXPORTED_ENTRY}(…)?` from an unconditional statement \
+         of its own body, on arguments that are not an empty literal slice: the belt and the \
+         normalization it belts are only meaningful adjacent to each other, and a call that is \
+         merely mentioned, nested under a condition, has its `Err` discarded, or is handed an \
+         empty slice is not the belt a fork passes through"
+    );
+
+    // The normalization it belts runs per block, so its call is inside the
+    // loop and the statement-level rule does not apply to it. Call position is
+    // still stronger than a bare mention.
+    let mut prepare_calls = Calls::default();
+    prepare_calls.visit_block(&prepare.block);
+    assert!(
+        prepare_calls.0.contains("normalize_task_privilege_fields"),
+        "`prepare_fork_report` must still call `normalize_task_privilege_fields`: the belt is a \
+         belt over that normalization, and means nothing without it"
+    );
+
+    let door_path = manifest.join("src/track_report/write.rs");
+    let door_source = std::fs::read_to_string(&door_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", door_path.display()));
+    let door = syn::parse_file(&door_source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", door_path.display()));
+    let mut door_names = Idents::default();
+    door_names.visit_file(&door);
+    assert!(
+        !door_names.0.contains(EXPORTED_ENTRY),
+        "the fork belt must not move onto the shared structural door: that door also serves \
+         `TrackInit::Template`, which has never carried this guard, and hanging it there \
+         separates the belt from the normalization in `prepare_fork_report` that it exists to \
+         catch a regression in"
     );
 }
 
