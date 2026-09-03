@@ -1,17 +1,36 @@
 # Pinned Rust toolchain (#1289) — the single source of truth for BOTH local
-# gates and CI. rustup honors this file as a directory override, so every
-# `cargo`/`rustc` invocation anywhere in this workspace uses exactly this
-# version regardless of what `rustup default` is set to; ci.yml therefore
-# names no toolchain at all (it just runs `rustup toolchain install`).
+# gates and CI. rustup resolves this file by walking UP from the process's
+# current working directory, so any `cargo`/`rustc` run *from inside this
+# checkout* uses exactly this version regardless of what `rustup default` is
+# set to; ci.yml therefore names no toolchain at all (it just runs
+# `rustup toolchain install`).
+#
+# The carrier is the cwd, not the manifest: `--manifest-path <other>/Cargo.toml`
+# from a cwd outside that checkout compiles the other tree's code with the
+# *caller's* override, not the callee's. The `build` target's
+# `cargo build --manifest-path $(WORKTREE)/Cargo.toml ...` (a prerequisite of
+# `make dev`, documented as `make dev WORKTREE=/path/to/agent-XYZ` — "build +
+# serve a different worktree's code without leaving the primary repo") is
+# exactly that shape: run from the primary repo it uses the PRIMARY pin, so
+# during a toolchain-bump PR it would not validate the bump worktree's pin.
+# CI is unaffected — every cargo step there runs with cwd inside the checkout
+# (e2e/run.sh even `cd`s to the repo root first).
 #
 # Before #1289, CI floated on `dtolnay/rust-toolchain@stable` while local
 # gates used whatever the last `rustup update` installed — PR #1277 was green
 # locally on 1.95.0 and red on CI's 1.98.0 (clippy::useless-borrows-in-formatting
-# widened its coverage in 1.97.0). Pinning both sides makes that class of
-# miss structurally impossible.
+# widened its coverage in 1.97.0). Pinning both sides closes that class of
+# miss for any cargo run from inside this checkout. It is NOT enforced
+# against three escape hatches, none of which has a gate today:
+#   1. `RUSTUP_TOOLCHAIN=...` in the environment — silently outranks this file;
+#   2. a non-rustup `cargo`/`rustc` earlier on PATH — never consults this file;
+#   3. the `--manifest-path`-from-outside case described above.
 #
 # To upgrade: bump `channel` here in a standalone PR so the new lint set gets
-# its own CI run and its own revert.
+# its own CI run and its own revert. Floor: every member crate is
+# `edition = "2024"`, which needs Rust >= 1.85 — do not lower `channel` below
+# that (there is deliberately no `rust-version` key; this file is the only
+# source of truth).
 [toolchain]
 channel = "1.98.0"
 components = ["rustfmt", "clippy"]

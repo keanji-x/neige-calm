@@ -41,8 +41,9 @@ jobs:
 
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
       # source of truth shared with local gates); rustup honors it as a
-      # directory override, so no version is named here. rustup ships
-      # preinstalled on GitHub-hosted runners.
+      # directory override, so no version is named here. The zero-argument
+      # form needs rustup >= 1.28 (where it was introduced); hosted runner
+      # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
@@ -393,8 +394,9 @@ jobs:
 
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
       # source of truth shared with local gates); rustup honors it as a
-      # directory override, so no version is named here. rustup ships
-      # preinstalled on GitHub-hosted runners.
+      # directory override, so no version is named here. The zero-argument
+      # form needs rustup >= 1.28 (where it was introduced); hosted runner
+      # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
