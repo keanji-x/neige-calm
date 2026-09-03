@@ -418,12 +418,20 @@ async fn creating_from_a_template_mints_no_hidden_wave() {
 /// this case edits one wave and re-reads the other; independence is only
 /// asserted about a state the two could actually disagree in.
 ///
-/// **Only `summary` is edited, deliberately.** `guard_non_prose_stomp` refuses
-/// a prose-channel write that alters a non-prose block, and the recipe body is
-/// almost entirely `task` fences — rewriting it here would fail on the guard
-/// rather than on independence, and the repair would be to weaken the case.
-/// The summary travels the same `persist_report` write and the same card
-/// payload, so it discriminates the same fan-out.
+/// **Both `summary` and `body` are edited.** An earlier cut moved only the
+/// summary and passed `first.body` back byte-for-byte, which left a narrower
+/// escape open: a fan-out guarded on `incoming.body != current.body` — i.e.
+/// one that copies the body across same-`template_id` waves only when it
+/// actually changed — never entered its own branch, so both body assertions
+/// held at their original values and the case stayed green while a real user
+/// edit would clobber the other wave's document.
+///
+/// The body edit is an appended prose paragraph rather than a rewrite, and
+/// that shape is deliberate: `guard_non_prose_stomp` refuses a prose-channel
+/// write that modifies or deletes a non-prose block, and the recipe body is
+/// almost entirely `task` fences. Appending after the last fence carries every
+/// fence through verbatim, so the write fails on independence if it fails at
+/// all — never on the guard, whose repair would be to weaken the case.
 #[tokio::test]
 async fn two_waves_from_one_template_are_independent_and_identical() {
     let boot = boot().await;
@@ -448,10 +456,18 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
 
     // ---- independence: edit one, re-read the other ----
     const EDITED: &str = "first wave's own summary";
+    const APPENDED: &str = "A paragraph only the first wave's author wrote.";
     assert_ne!(
         first.summary, EDITED,
         "the edit must change something, or the re-read below asserts nothing"
     );
+    assert!(
+        !first.body.contains(APPENDED),
+        "the body edit must change something, or the re-read below asserts nothing"
+    );
+    // Appended after the last task fence: every non-prose block travels
+    // through byte-identical, which is all `guard_non_prose_stomp` asks.
+    let edited_body = format!("{}\n\n{APPENDED}\n", first.body.trim_end());
     let (source_wave, report_card, current) =
         resolve_report_for_wave(boot.repo.as_ref(), &first_id)
             .await
@@ -466,8 +482,7 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
         source_wave,
         report_card,
         current,
-        // Same body, new summary — see the doc comment on `guard_non_prose_stomp`.
-        WaveReportPayload::new(EDITED, first.body.clone()),
+        WaveReportPayload::new(EDITED, edited_body.clone()),
         if_doc_rev,
         None,
         None,
@@ -478,10 +493,16 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
 
     let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
     assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    let first_after = report_card_payload(&first_detail);
     assert_eq!(
-        report_card_payload(&first_detail).summary,
-        EDITED,
-        "the edit did not land, so the re-read below proves nothing"
+        first_after.summary, EDITED,
+        "the summary edit did not land, so the re-read below proves nothing"
+    );
+    assert!(
+        first_after.body.contains(APPENDED),
+        "the body edit did not land, so the re-read below proves nothing; \
+         body={}",
+        first_after.body
     );
 
     let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
@@ -1650,11 +1671,27 @@ async fn creating_from_a_template_instantiates_its_recipe() {
 ///   * a recipe rewritten wholesale into a different workflow;
 ///   * a `TEMPLATES` entry whose `title` no longer describes its `key`.
 ///
-/// This case is the anchor for exactly that class and nothing else. It pins,
-/// per key, only the two facts that identify *which* recipe answered:
+/// This case anchors part of that class. It pins, per key, only the two facts
+/// that identify *which* recipe answered:
 ///
 ///   * the roster title, and
 ///   * the ordered task keys.
+///
+/// So it catches a swapped match arm, a retitled roster entry, and a renamed
+/// or reordered task. It does **not** catch the middle bullet in general: keep
+/// `inspect` / `implement` / `verify` as the keys and the title `Small change`
+/// while replacing every goal, acceptance criterion, `context` and dependency
+/// meaning, and `small-change` is a different workflow that both the derived
+/// oracle and this table accept. That residue is the same accepted gap the
+/// `templates` module doc records, for the same reason: the only way to close
+/// it is to transcribe the recipes by hand.
+///
+/// The `anchors.len() == TEMPLATES.len()` check below is likewise one-sided
+/// only. It stops a roster entry added or removed *without* touching this
+/// table; a change that edits both passes, as it must, since the table is
+/// hand-maintained. Nothing machine-checks that a row here still describes the
+/// workflow its key promises — human review of this table is the last step, and
+/// it is deliberately kept small enough to review.
 ///
 /// ## What is deliberately NOT pinned here
 ///

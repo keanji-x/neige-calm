@@ -865,10 +865,24 @@ pub(crate) async fn create_wave(
 /// system-cove template wave found by a database lookup, and this sentence
 /// named it. Both the wave and the lookup are gone.)
 pub(crate) struct TemplateAdmission {
-    /// The roster's own `&'static` key, not the caller's string. It is what
-    /// `WaveInit::Template` carries into the create transaction, so a future
-    /// case-folding or aliasing admission rule cannot leak an unnormalized key
-    /// into the recipe lookup or onto the wave row.
+    /// The roster's own `&'static` key, not the caller's string.
+    ///
+    /// It reaches exactly one consumer: `WaveInit::Template { key }`, i.e. the
+    /// **recipe lookup** (`templates::template_report`) inside the create
+    /// transaction. That side is what this borrow protects — a future
+    /// case-folding or aliasing admission rule cannot hand an unnormalized key
+    /// to `template_report`, because the value passed on is the roster's, not
+    /// the caller's.
+    ///
+    /// It does **not** reach the wave row. `CreateWaveRequest::into_parts`
+    /// puts the caller's original `template_id` string on `NewWave` (`:247`),
+    /// and that is what `wave_create_tx` binds into `waves.template_id`. The
+    /// two are identical only because `template_by_key` is an exact match
+    /// today; the very rule this field guards against would separate them —
+    /// `"SMALL-CHANGE"` admitted against roster key `"small-change"` would
+    /// instantiate the right recipe and store `"SMALL-CHANGE"` on the row.
+    /// Normalizing the stored id is a behaviour change and deliberately not
+    /// one this field makes.
     pub key: &'static str,
     /// The owning plugin, when a running trusted one claims this id. `None` is
     /// an ordinary template, not a rejection.
@@ -1528,10 +1542,28 @@ async fn create_wave_structure(
                 .await?;
                 let template_overlay = if as_template {
                     // #1300 — the `template_key` variant of this payload was
-                    // written only by the deleted seeding path. The field stays
-                    // in the overlay schema (`POST /api/overlays` still accepts
-                    // it, pinned by `payload_validation.rs`), but no kernel
-                    // writer mints one and no kernel reader consults one.
+                    // written only by the deleted seeding path. Two separate
+                    // layers, worth not conflating:
+                    //
+                    //   * **Schema.** `template_key` is still part of the
+                    //     `template` overlay payload schema and is still
+                    //     pinned by `payload_validation.rs`; `validate_overlay_payload`
+                    //     would accept a payload carrying it.
+                    //   * **Route.** No external client can get such a payload
+                    //     as far as that validation. A template overlay is by
+                    //     definition `plugin_id = "kernel"` /
+                    //     `entity_kind = "view"`, and since #1297
+                    //     `overlays::ensure_overlay_write_allowed` rejects both
+                    //     of those reserved namespaces with 403 *before*
+                    //     `validate_overlay_payload` runs. So `POST /api/overlays`
+                    //     answers 403 Forbidden for this row, not 201 — pinned
+                    //     by `wave_template_overlay::
+                    //     overlay_post_cannot_mark_an_existing_wave_as_template`.
+                    //
+                    // Kernel-internal writers like this one call
+                    // `overlay_upsert_tx` directly and never traverse that
+                    // router — but none of them mints a `template_key`, and no
+                    // kernel reader consults one.
                     let payload = template_overlay_payload();
                     validate_overlay_payload(OVERLAY_TEMPLATE_KIND, &payload)?;
                     Some(
@@ -3125,10 +3157,16 @@ pub(crate) async fn delete_wave(
     // kernel-owned", and an invariant with an exception is the shape this
     // design line keeps getting hurt by. What the wide rule costs is that the
     // launchpad wave — which *is* user-visible, on Today — cannot be deleted
-    // through this handler either. That is the accepted price, not an
-    // oversight: `POST /api/today/launchpad/ensure` recreates it on demand
-    // (`routes::today::ensure_today_launchpad`), so the delete would not stay
-    // done.
+    // through this handler either. That is the accepted price, and the price is
+    // real rather than nominal: the only path that recreates the row is
+    // `POST /api/today/launchpad/ensure` (`routes::today::ensure_today_launchpad`),
+    // which as of today has **no production caller** — see the comment on its
+    // system-cove race arm in `routes/today.rs`. Loading Today runs the
+    // read-only resolve and never POSTs it (INV-TODAYDOC-001). So a permitted
+    // delete would not be silently undone by the next page load; it would leave
+    // Today's launchpad missing until someone issued that bootstrap request by
+    // hand. The ruling rests on where the ownership boundary is drawn, not on
+    // the deletion being harmless.
     //
     // #1300 — this paragraph used to justify itself by the *other* residents
     // of the system cove, the three hidden template waves `ensure_templates`
