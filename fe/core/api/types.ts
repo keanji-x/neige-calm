@@ -75,7 +75,7 @@ export type ApiOperation<T> = Readonly<{
    * the client adds for a body.
    *
    * Here rather than folded into `body` because `POST
-   * /api/areas/{id}/conversations` takes `Idempotency-Key` as a *header* and
+   * /api/tracks/{id}/conversations` takes `Idempotency-Key` as a *header* and
    * rejects the request without it (400) — an operation that cannot express a
    * header cannot call it at all.
    */

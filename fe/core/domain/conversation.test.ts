@@ -6,14 +6,12 @@ import {
   TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
-import type { ApiFailure } from '../api/types.js';
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
-  CONVERSATION_STATE_SOURCE,
-  areaConversationCardId, areaConversationFailure, areaConversationsOperation,
-  createAreaConversationOperation, createTrackConversationOperation,
+  CONVERSATION_STATE_SOURCE, conversationCreateFailure,
+  createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurn, isLiveConversation, mergeTranscript, readableCommand,
-  reconcileUserEchoes, toAreaConversation, toTrackConversation, trackConversationCardId,
+  reconcileUserEchoes, toTrackConversation, trackConversationCardId,
   trackConversationsOperation,
   type Conversation, type ConversationKind, type ConversationTurn,
 } from './conversation.js';
@@ -77,94 +75,6 @@ describe('conversationNameFrom', () => {
   });
 });
 
-describe('area conversations', () => {
-  const row = {
-    id: 'card-9', trackId: 'chat-track', title: null, kind: 'shared-chat',
-    state: 'idle' as const, updatedAt: 42,
-  };
-
-  it('names a nameless area conversation Chat, never after its hidden track', () => {
-    expect(conversationName(toAreaConversation(row))).toBe('Chat');
-  });
-
-  it('leaves what the server does not send absent rather than inventing it', () => {
-    const conversation = toAreaConversation(row);
-    expect(conversation.trackTitle).toBeUndefined();
-    expect(conversation.turns).toBeUndefined();
-    expect(Object.hasOwn(conversation, 'trackTitle')).toBe(false);
-    expect(Object.hasOwn(conversation, 'turns')).toBe(false);
-  });
-
-  it('keeps a null state null: no session read is not a session that died', () => {
-    expect(toAreaConversation({ ...row, state: null }).state).toBeNull();
-    expect(isLiveConversation(null)).toBe(false);
-    expect(isLiveConversation('turn_pending')).toBe(true);
-  });
-
-  it('sends the idempotency key as a header, and the text as the whole body', () => {
-    const operation = createAreaConversationOperation('area 1', 'hello', 'key-1');
-    expect(operation.method).toBe('POST');
-    expect(operation.path).toBe('/api/areas/area%201/conversations');
-    expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-1' });
-    expect(operation.body).toEqual({ text: 'hello' });
-  });
-
-  it('decodes a list row into the app\'s own shape', () => {
-    const parsed = areaConversationsOperation('c1').responseSchema.parse([row]);
-    expect(parsed).toEqual([{
-      id: 'card-9', trackId: 'chat-track', title: null, kind: 'shared-chat',
-      state: 'idle', updatedAt: 42,
-    }]);
-  });
-
-  const http = (status: number, code: string, message: string): ApiFailure =>
-    ({ kind: status === 401 ? 'unauthorized' : 'http', status, code, message } as ApiFailure);
-
-  /* Not one of these is "409 means it already worked". Three of the four 409s
-     have no conversation behind them, and each one leaves the draft in a
-     different place. */
-  it.each([
-    ['no claimed folder', http(409, 'conflict', 'area c1 has no claimed folder'), 'blocked'],
-    ['a spent key', http(409, 'idempotency_key_exhausted', 'key exhausted'), 'exhausted'],
-    ['an edited body', http(409, 'conflict', 'operation idempotency key k already used with different payload'), 'stale-payload'],
-    ['a card that exists', http(409, 'conflict', 'card already exists'), 'exists'],
-    ['a missing area', http(404, 'not_found', 'area not found'), 'gone'],
-    ['a rejected request', http(400, 'bad_request', 'text must not be blank'), 'blocked'],
-    ['a server error', http(500, 'internal', 'boom'), 'retry'],
-    /* A separate kind for its *sentence*, not for a different resolution: on
-       this endpoint a 503 is raised while delivering the first message, i.e.
-       after the card was minted, so it is every bit as ambiguous as a 500 and
-       the panel resolves both the same way. */
-    ['a stopped agent server', http(503, 'codex_app_server', 'not running'), 'unavailable'],
-    ['an unavailable service', http(503, 'service_unavailable', 'try later'), 'unavailable'],
-  ])('reads %s as %s', (_label, failure, expected) => {
-    expect(areaConversationFailure(failure).kind).toBe(expected);
-  });
-
-  it('treats a lost connection as ambiguous, not as a refusal', () => {
-    expect(areaConversationFailure({ kind: 'transport', message: 'Transport request failed' }))
-      .toEqual({ kind: 'retry', message: 'Transport request failed' });
-  });
-
-  /*
-   * A golden, and the value is not ours: it is copied from the server's own
-   * golden assertion — `the_derived_card_id_depends_only_on_area_and_idempotency_key`
-   * in `crates/calm-server/src/routes/area_conversations.rs`, which pins
-   * `("area-1", "key-a")` to this exact id.
-   *
-   * Asserting the two sides agree is the entire point. A self-consistent
-   * derivation (`derive(a) === derive(a)`) would stay green while the client
-   * looked for a card id the server never mints — and the visible symptom of
-   * that is not an error but a *silence*: the draft would never recognise its
-   * own row and would keep offering to send it again.
-   */
-  it('derives the same card id the server does', () => {
-    expect(areaConversationCardId('area-1', 'key-a')).toBe('conv-268c82584d9a20bce6719d19f019cd36');
-    expect(areaConversationCardId('area-1', 'key-b')).not.toBe(areaConversationCardId('area-1', 'key-a'));
-    expect(areaConversationCardId('area-2', 'key-a')).not.toBe(areaConversationCardId('area-1', 'key-a'));
-  });
-});
-
 describe('track conversations', () => {
   const row = {
     id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
@@ -193,6 +103,20 @@ describe('track conversations', () => {
       .toBe(false);
     expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...row, state: null }]).success)
       .toBe(true);
+    expect(isLiveConversation(null)).toBe(false);
+    expect(isLiveConversation('turn_pending')).toBe(true);
+  });
+
+  it.each([
+    [{ kind: 'http', status: 409, code: 'idempotency_key_exhausted', message: 'key exhausted' }, 'exhausted'],
+    [{ kind: 'http', status: 409, code: 'conflict', message: 'already used with different payload' }, 'stale-payload'],
+    [{ kind: 'http', status: 409, code: 'conflict', message: 'card already exists' }, 'exists'],
+    [{ kind: 'http', status: 404, code: 'not_found', message: 'track not found' }, 'gone'],
+    [{ kind: 'http', status: 400, code: 'bad_request', message: 'text must not be blank' }, 'blocked'],
+    [{ kind: 'http', status: 503, code: 'service_unavailable', message: 'try later' }, 'unavailable'],
+    [{ kind: 'transport', message: 'request failed' }, 'retry'],
+  ] as const)('classifies conversation create failure %o as %s', (failure, expected) => {
+    expect(conversationCreateFailure(failure).kind).toBe(expected);
   });
 
   it('leaves the track title absent rather than inventing one, and names the row Assistant', () => {
@@ -200,16 +124,6 @@ describe('track conversations', () => {
     expect(conversationName(conversation)).toBe('Assistant');
     expect(Object.hasOwn(conversation, 'trackTitle')).toBe(false);
     expect(Object.hasOwn(conversation, 'turns')).toBe(false);
-  });
-
-  /*
-   * The two lists are separate kinds, not one kind with two sources. The
-   * server sends distinct markers and says the frontend branches on them; a
-   * transform that collapsed them would route assistant rows through the area
-   * chat's presentation, which is the exact mistake #1189 §4.1 warns about.
-   */
-  it('does not collapse into the area chat kind', () => {
-    expect(toTrackConversation(row).kind).not.toBe(toAreaConversation({ ...row, kind: 'shared-chat' }).kind);
   });
 
   it('posts the first message to the track, carrying the key as a header', () => {
@@ -227,18 +141,11 @@ describe('track conversations', () => {
    * `crates/calm-server/src/conversation_keys.rs`, whose doc comment names this
    * function as the mirror it must be written against.
    *
-   * The last assertion is the one that would survive a plausible mistake. The
-   * two derivations differ **only** in the namespace inside the hashed string —
-   * the visible `conv-` prefix is deliberately identical — so a track derivation
-   * that reused the area prefix produces a perfectly well-shaped id that names
-   * another endpoint's card, and a draft that adopted it would open an area chat
-   * as if it were the words just typed.
    */
   it('derives the same card id the server does, from its own namespace', () => {
     expect(trackConversationCardId('track-1', 'key-a')).toBe('conv-55cef7267426fe78493bdd46ca6b1220');
     expect(trackConversationCardId('track-1', 'key-b')).not.toBe(trackConversationCardId('track-1', 'key-a'));
     expect(trackConversationCardId('track-2', 'key-a')).not.toBe(trackConversationCardId('track-1', 'key-a'));
-    expect(trackConversationCardId('id-1', 'key-a')).not.toBe(areaConversationCardId('id-1', 'key-a'));
   });
 });
 
@@ -247,7 +154,7 @@ describe('track conversations', () => {
  *
  * The router branches on this to decide whether a row's state is the server's
  * reading or the route's own phase, and the branch it replaces was
- * `kind === 'shared-chat' ? … : …`: a kind added to the union fell into the
+ * `kind === 'track-assistant' ? … : …`: a kind added to the union fell into the
  * `else` and had the server's state silently swapped for an invented one. The
  * `Record` makes that a compile error; this test makes it one at runtime too,
  * for the same reason `register.contract.test.ts` re-checks `headless` — a type
@@ -255,7 +162,7 @@ describe('track conversations', () => {
  */
 describe('CONVERSATION_STATE_SOURCE', () => {
   const KINDS: readonly ConversationKind[] = [
-    'terminal', 'codex', 'claude', 'shared-spec', 'shared-chat', 'track-assistant',
+    'terminal', 'codex', 'claude', 'shared-spec', 'track-assistant',
   ];
 
   it('decides every kind, and only those', () => {
@@ -263,12 +170,12 @@ describe('CONVERSATION_STATE_SOURCE', () => {
     for (const kind of KINDS) expect(CONVERSATION_STATE_SOURCE[kind]).toMatch(/^(server|route)$/);
   });
 
-  /* The two server-listed kinds are exactly the two that arrive from a list
+  /* The server-listed kind is exactly the one that arrives from a list
      endpoint. Written out rather than derived, so widening it is a decision
      somebody has to make here. */
   it('names the listed kinds as the server\'s to report', () => {
     expect(KINDS.filter((kind) => CONVERSATION_STATE_SOURCE[kind] === 'server'))
-      .toEqual(['shared-chat', 'track-assistant']);
+      .toEqual(['track-assistant']);
   });
 });
 

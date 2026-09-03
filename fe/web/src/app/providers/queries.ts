@@ -43,8 +43,7 @@ import {
 } from '../../../../core/domain/track.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
-  plannerRunOperation, areaConversationsOperation, createAreaConversationOperation,
-  createTrackConversationOperation, trackConversationsOperation,
+  plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -142,25 +141,6 @@ export const queryKeys = Object.freeze({
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
-  /* The event bridge can only invalidate the `['area-conversations']` prefix —
-     no event carries an area id and no cached row can supply one — so this key
-     must keep the area id in second position for that prefix to reach it. */
-  areaConversations: (areaId: string) => ['area-conversations', areaId] as const,
-  /**
-   * The prefix `areaConversations` extends — the only shape the event bridge
-   * can name, and therefore the only thing that keeps this list live.
-   *
-   * `AREA_CONVERSATIONS` in `core/events/invalidation-plan` is the bare key by
-   * construction: no conversation-writing event carries a `area_id`, and an area
-   * chat track's detail is never fetched, so no cached row can supply one
-   * either. Naming the prefix here is what lets the adapter map that plan key
-   * instead of dropping it — without this entry the area drawer's `state` dots
-   * never move until something else refetches the list.
-   *
-   * A prefix invalidation reaches whichever area's list is cached — at most the
-   * open drawer's — and costs nothing when none is.
-   */
-  areaConversationsPrefix: () => ['area-conversations'] as const,
   /**
    * One track's conversation list (#1189 §4.1), keyed by its track.
    *
@@ -173,8 +153,7 @@ export const queryKeys = Object.freeze({
    * mounted query is a no-op in TanStack Query — it marks nothing and refetches
    * nothing — so the adapter may know a key before a query claims it. The
    * reverse order is the one that breaks: a query that mounts against a key no
-   * adapter arm maps is silently never invalidated, which is exactly the defect
-   * this pair of entries fixes for the area list.
+   * adapter arm maps is silently never invalidated.
    */
   trackConversations: (trackId: string) => ['track-conversations', trackId] as const,
   /**
@@ -233,17 +212,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   };
 }
 
-export function areaConversationsQueryOptions(
-  transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel,
-) {
-  return {
-    queryKey: queryKeys.areaConversations(areaId),
-    queryFn: (): Promise<Conversation[]> =>
-      runOperation(transport, areaConversationsOperation(areaId), unauthorized),
-  };
-}
-
-export type AreaConversationMutations = Readonly<{
+export type ConversationMutations = Readonly<{
   /**
    * Mint a conversation and deliver its first message.
    *
@@ -255,36 +224,6 @@ export type AreaConversationMutations = Readonly<{
   /** Re-read the list and hand back what it now holds. */
   refresh: () => Promise<Conversation[]>;
 }>;
-
-export function useAreaConversationMutations(
-  transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel,
-): AreaConversationMutations {
-  const client = useQueryClient();
-  const create = useMutation({
-    mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
-      runOperation(transport, createAreaConversationOperation(areaId, text, idempotencyKey), unauthorized),
-    onSuccess: (row) => {
-      /* Written through as well as invalidated: the drawer switches to this row
-         in the same tick, and a list that does not contain it yet would render
-         the panel with no active row until the refetch lands. A replayed key
-         answers with a row that is already there, so the write is by id. */
-      client.setQueryData<Conversation[]>(queryKeys.areaConversations(areaId), (current) => {
-        const rows = current ?? [];
-        return rows.some((candidate) => candidate.id === row.id)
-          ? rows.map((candidate) => candidate.id === row.id ? row : candidate)
-          : [...rows, row];
-      });
-      void client.invalidateQueries({ queryKey: queryKeys.areaConversations(areaId) });
-    },
-  });
-  return {
-    create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
-    refresh: () => client.fetchQuery({
-      ...areaConversationsQueryOptions(transport, areaId, unauthorized),
-      staleTime: 0,
-    }),
-  };
-}
 
 /**
  * One track's assistant conversations (#1189 §4.1).
@@ -304,26 +243,19 @@ export function trackConversationsQueryOptions(
 }
 
 /**
- * The track twin of `useAreaConversationMutations`, with the same two doors and
- * the same reasons for them.
- *
- * Not shared with the area version through a parameterised helper: the two
- * endpoints have different paths, different derived namespaces and different
- * cache keys, and the only thing a shared helper would save is four lines of
- * plumbing at the cost of making "which list does a create write through to?"
- * a question you have to trace.
+ * Creates and refreshes one Track's assistant-conversation list.
  */
 export function useTrackConversationMutations(
   transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
-): AreaConversationMutations {
+): ConversationMutations {
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
       runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey), unauthorized),
     onSuccess: (row) => {
-      /* Written through as well as invalidated, for the same reason the area
-         list is: the drawer switches to this row in the same tick and a list
-         that does not hold it yet renders with no active row. */
+      /* Written through as well as invalidated: the drawer switches to this row
+         in the same tick and a list that does not hold it yet renders with no
+         active row. */
       client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
         const rows = current ?? [];
         return rows.some((candidate) => candidate.id === row.id)
@@ -728,8 +660,7 @@ export function prefetchAreaList(client: QueryClient, transport: ApiTransportPor
 // Every mutation invalidates. A mutation may additionally write its response
 // through to the cache first, but only when that response *is* the new cache
 // value (an id-keyed row the server just returned) and the very next render
-// needs it — see `useAreaConversationMutations`, where the drawer switches to
-// the new row in the same tick. The invalidation still follows and reconciles;
+// needs it. The invalidation still follows and reconciles;
 // a write-through that guessed, or that stood in for one, would only widen the
 // window in which the cache and the server disagree.
 

@@ -279,9 +279,8 @@ pub struct PlannerHarnessStartOperationPayload {
     /// older binaries.
     #[serde(default)]
     pub create_card: Option<LazyMintCardSeed>,
-    /// #1098 slice 3, round-3 Y1 — SHA-256 (lower-case hex) of the area
-    /// conversation's first message, set only by
-    /// `POST /api/areas/{area_id}/conversations`.
+    /// SHA-256 (lower-case hex) of a lazily minted conversation's first
+    /// message, set by `POST /api/tracks/{track_id}/conversations`.
     ///
     /// This field is **never read** by this adapter. It exists so the first
     /// message body reaches `stable_payload_hash`, which is what makes

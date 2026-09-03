@@ -121,7 +121,6 @@ export type TrackPageProps = Readonly<{
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
-  /** CR-8 — after a successful delete, focus lands on the area page's title. */
   onRenameTrack: (title: string) => void | Promise<void>;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
 }>;
@@ -342,8 +341,7 @@ export function TrackPage({
         where the ancestor is otherwise unreachable; here it never was.
 
         The area dot went with it. It was the only colour in the header, and it
-        was sitting next to the area's own name — the same defect the area page
-        header had, one level down.
+        was sitting next to the area's own name and repeating the rail.
       */}
       {/*
         Page-aligned, not document-aligned. `align="document"` pushed the
@@ -417,9 +415,8 @@ export function TrackPage({
         /*
          * No identity row — `--header-h` is 62 here now, not 92.
          *
-         * The folder is real (unlike the area page's, which was synthesised
-         * from whatever its tracks happened to agree on, and was deleted). But
-         * being real is not the same as belonging in the chrome: a page header
+         * The folder is real, but being real is not the same as belonging in
+         * the chrome: a page header
          * is what you read on *every* visit, and a path you already chose when
          * you created the track is something you look up once, if ever. Three
          * rows of header to carry it was the page paying its largest fixed
@@ -468,7 +465,7 @@ export function TrackPage({
           largest fixed cost the page paid for its least-read fact.
         */}
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
-            drawer is open — see the same marker on the area page. */}
+            drawer is open. */}
         <aside
           id="mobile-track-panel"
           ref={mobilePanelRef}

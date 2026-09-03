@@ -33,6 +33,7 @@ export type SidebarProps = Readonly<{
   onGo: (target: NavTarget) => void;
   /** Colour is picked here, at random from `AREA_PALETTE` (INV-DUP-006). */
   onCreateArea: (name: string, color: string) => void | Promise<void>;
+  onRenameArea: (areaId: string, name: string) => void | Promise<void>;
   onDeleteArea: (areaId: string, signal: AbortSignal) => void | Promise<void>;
   /** Goes to the new-track page for this area. The rail does not own that
    *  page — it is the route `/area/{id}/new` (#1211) — and it reaches it
@@ -88,7 +89,7 @@ function randomAreaColor(): string {
  */
 export function Sidebar({
   areas, tracksByArea, tracks, currentPath, onGo,
-  onCreateArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
+  onCreateArea, onRenameArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
   onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
@@ -98,6 +99,8 @@ export function Sidebar({
   const [areaDraft, setAreaDraft] = useState('');
   const areaInputRef = useRef<HTMLInputElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingAreaFocusRef = useRef<string | null>(null);
   const trackConfirm = useDeleteConfirm(onDeleteTrack);
   const areaConfirm = useDeleteConfirm(onDeleteArea, () => onGo({ name: 'today' }));
   const writeFeedback = useOperationFeedback();
@@ -131,7 +134,7 @@ export function Sidebar({
       next.delete(activeAreaId);
       return next;
     });
-  }, [activeAreaId]);
+  }, [activeAreaId, activeTrackId]);
 
   /*
    * …and then brings it into view. Expanding the area is only half of "show me
@@ -149,10 +152,27 @@ export function Sidebar({
    * only just expanded the area the row lives in.
    */
   useEffect(() => {
-    if (activeTrackId === null) return;
+    if (collapsed || activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeTrackId, expandedOverride]);
+  }, [activeTrackId, collapsed, expandedOverride]);
+
+  /* A collapsed Area initial is an entrance into the expanded tree, not a
+     destination of its own. Restore focus to the disclosure it reveals and
+     bring that row into view; otherwise activating the unmounted initial drops
+     keyboard focus onto <body>, and a long rail may reveal no trace of the Area
+     the reader chose. This deliberately runs after the current-Track scroll
+     above, so a Track in another Area cannot steal the final scroll position
+     during the same collapsed → expanded commit. */
+  useEffect(() => {
+    if (collapsed) return;
+    const areaId = pendingAreaFocusRef.current;
+    if (areaId === null) return;
+    pendingAreaFocusRef.current = null;
+    const disclosure = areaDisclosureRefs.current.get(areaId);
+    disclosure?.focus({ preventScroll: true });
+    disclosure?.scrollIntoView?.({ block: 'nearest' });
+  }, [collapsed]);
 
   useEffect(() => { if (creatingArea) areaInputRef.current?.focus(); }, [creatingArea]);
 
@@ -241,11 +261,14 @@ export function Sidebar({
               key={area.id}
               type="button"
               data-nc-role="row"
-              className={`${styles.stripItem} ${routeParamFromPath(currentPath, '/area/') === area.id ? styles.stripItemActive : ''}`}
-              aria-label={area.name}
+              className={styles.stripItem}
+              aria-label={`Show area ${area.name}`}
               title={area.name}
-              aria-current={routeParamFromPath(currentPath, '/area/') === area.id ? 'page' : undefined}
-              onClick={() => onGo({ name: 'area', areaId: area.id })}
+              onClick={() => {
+                pendingAreaFocusRef.current = area.id;
+                setExpandedOverride((current) => new Map(current).set(area.id, true));
+                onToggleCollapsed();
+              }}
             >
               <span className={styles.stripInitial} aria-hidden="true">{initialsOf(area.name)[0]}</span>
             </button>
@@ -305,6 +328,16 @@ export function Sidebar({
                     areaTracks={visibleTracks(tracksByArea.get(area.id) ?? [])}
                     expanded={expandedOverride.get(area.id) ?? true}
                     onToggle={(next) => setExpandedOverride((current) => new Map(current).set(area.id, next))}
+                    disclosureRef={(element) => {
+                      if (element === null) areaDisclosureRefs.current.delete(area.id);
+                      else areaDisclosureRefs.current.set(area.id, element);
+                    }}
+                    onRename={(areaId, name) => {
+                      void writeFeedback.run(
+                        Promise.resolve(onRenameArea(areaId, name)),
+                        'Could not rename the area.',
+                      );
+                    }}
                     onRequestDelete={areaConfirm.request}
                     onNewTrack={onNewTrack}
                     {...rowProps}
@@ -362,9 +395,7 @@ export function Sidebar({
       <OperationFeedback feedback={trackConfirm.feedback} />
       <OperationFeedback feedback={areaConfirm.feedback} />
       {/* Deleting an area cascades to every track inside it: the one operation in
-          the product that earns a typed confirm (§4.3). The rail entry and the
-          area page header entry are two entry points to the same operation, so
-          they share this dialog's copy and its confirmation strength. */}
+          the product that earns a typed confirm (§4.3). */}
       <ConfirmDialog
         open={areaConfirm.open}
         title={areaCopy.title}
@@ -442,70 +473,107 @@ function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete
  * activation models — see the rule above. The cost is real and worth naming:
  * middle-click, open-in-new-tab and copy-link do not work on it.
  *
- * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only one of
- * them is hover-revealed. The `+` is permanent because starting a track is the
- * rail's one creative action and a control you have to discover by hovering is
- * a control most people never find; the `×` stays revealed because a
- * area-deleting button permanently on every row is a row of loaded guns.
+ * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only the
+ * actions menu is hover-revealed. The `+` is permanent because starting a Track
+ * is the rail's one creative action and a control you have to discover by
+ * hovering is a control most people never find.
  *
  * They do not share a slot, and neither ever moves: `+` sits at the trailing
- * edge, `×` one control-step inboard, and the row reserves both gutters at
+ * edge, the menu one control-step inboard, and the row reserves both gutters at
  * rest. The track row's status dot/delete pair *does* share one slot — that
  * works because the two marks are the same size and mean the same place. Two
  * live buttons cannot do that, so this row spends the second 20px instead.
  */
 function AreaGroup({
-  area, areaTracks, expanded, onToggle, onRequestDelete, onNewTrack,
+  area, areaTracks, expanded, onToggle, disclosureRef, onRename, onRequestDelete, onNewTrack,
   currentPath, onGo, nowMs, onSetPinned, onDelete,
 }: RowProps & {
   area: Area;
   areaTracks: readonly Track[];
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
+  disclosureRef: (element: HTMLButtonElement | null) => void;
+  onRename: (areaId: string, name: string) => void;
   onRequestDelete: (areaId: string) => void;
   onNewTrack: (areaId: string) => void;
 }) {
-  const active = routeParamFromPath(currentPath, '/area/') === area.id;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(area.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editing) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [editing]);
+
+  const beginRename = () => {
+    setDraft(area.name);
+    setEditing(true);
+  };
+  const commitRename = () => {
+    const name = draft.trim();
+    setEditing(false);
+    if (name !== '' && name !== area.name) onRename(area.id, name);
+  };
 
   return (
     <div className={styles.areaGroup}>
       <div className={styles.areaRowWrap}>
-        <button
-          type="button"
-          data-nc-role="row"
-          className={`${styles.areaRow} ${active ? styles.areaRowActive : ''}`}
-          aria-current={active ? 'page' : undefined}
-          onClick={() => onGo({ name: 'area', areaId: area.id })}
-        >
-          {/* Name only. The chevron is a sibling positioned over this row's
-              leading gutter (a button inside a button is invalid HTML and trips
-              axe's `nested-interactive`); there is no identity dot, no track
-              count, and — since the track row's status dot moved to the trailing
-              edge — no empty status cell either. */}
-          <span className={styles.areaName} title={area.name}>{area.name}</span>
-        </button>
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} area ${area.name}`}
-          onClick={() => onToggle(!expanded)}
-        >
-          {/* One stroked chevron that rotates, not a filled ▸/▾ pair. §2.6
-              already names "折叠箭头旋转" as a --motion-snappy case, and a solid
-              triangle is the heaviest mark in a rail meant to read as line work. */}
-          <Icon name="chevron-right" />
-        </button>
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={styles.areaDelete}
-          aria-label={`Delete area ${area.name}`}
-          onClick={() => onRequestDelete(area.id)}
-        >
-          <Icon name="close" size="sm" />
-        </button>
+        {editing ? (
+          <input
+            ref={inputRef}
+            className={styles.areaRenameInput}
+            aria-label={`Rename area ${area.name}`}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') { event.preventDefault(); commitRename(); }
+              else if (event.key === 'Escape') {
+                event.preventDefault();
+                setDraft(area.name);
+                setEditing(false);
+              }
+            }}
+          />
+        ) : (
+          <button
+            ref={disclosureRef}
+            type="button"
+            data-nc-role="row"
+            className={styles.areaRow}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} area ${area.name}`}
+            onClick={() => onToggle(!expanded)}
+          >
+            <span className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`} aria-hidden="true">
+              <Icon name="chevron-right" />
+            </span>
+            <span className={styles.areaName} title={area.name}>{area.name}</span>
+          </button>
+        )}
+        <Menu
+          items={[
+            { label: 'Rename area', onSelect: beginRename },
+            { label: 'Delete area', onSelect: () => onRequestDelete(area.id) },
+          ]}
+          wrapClassName={styles.areaMenuWrap}
+          menuClassName={styles.areaMenu}
+          itemClassName={styles.menuItem}
+          trigger={(triggerProps) => (
+            <button
+              {...triggerProps}
+              type="button"
+              data-nc-role="icon"
+              className={styles.areaMenuTrigger}
+              aria-label={`Area actions for ${area.name}`}
+              title="Area actions"
+            >
+              <Icon name="more-horizontal" size="sm" />
+            </button>
+          )}
+        />
         {/* The accessible name names the area, and it has to: the rail now
             carries one of these per area, and N controls all called "New track"
             is a list a screen-reader user cannot choose from. `title` is the

@@ -8,13 +8,9 @@ mutations, and hands `Sidebar` plain callbacks — the rail stays presentational
 so a jsdom test drives it without a `QueryClient`.
 
 It no longer owns a New track dialog (#1211): starting a track is the route
-`/area/{id}/new`, owned by `app/router`, and the two `+` surfaces — every area
-row's in the rail, and the area page's TRACKS module head — both just navigate.
-What the shell kept is the seam. The rail gets the opener as a prop
-(`onNewTrack`); the route gets it through `useRequestNewTrack()`, the one context
-this module publishes, because there is no prop path across `<Outlet />`. `onOpenSettings` /
-`onSignOut` are injected: the shell never signs out itself. `nowMs` exists so a
-test can pin the `pinned_at` stamp.
+`/area/{id}/new`, owned by `app/router`, and every Area group's permanent `+`
+navigates there. `onOpenSettings` / `onSignOut` are injected: the shell never
+signs out itself. `nowMs` exists so a test can pin the `pinned_at` stamp.
 
 ## The track-create body (#1131, #1147 S3, #1211)
 
@@ -59,12 +55,16 @@ because it is per-row data. The running pulse is a token-timed animation
 ## Accessibility contract
 
 - The rail is a `<nav aria-label="Workspace">`; each section has an `<h2>`.
-- Rows are `<button>` with `aria-current="page"` when their URL is open.
+- Track rows are `<button>` with `aria-current="page"` when their URL is open.
+- An Area is one disclosure button with `aria-expanded`; it has no page URL.
 - The area count badge is `aria-hidden`: the row's accessible name already
   carries the area name, and a bare number read after it is noise.
-- The chevron is a **sibling** of the area row, not a child — nesting
-  interactive elements is invalid HTML (`nested-interactive`). Same for the
-  per-area delete `×` and for the row's pin/delete (owned by `TrackRow`).
+- The disclosure chevron is decorative inside the Area button. The permanent
+  new-Track button and the Area actions-menu trigger are siblings, so no
+  interactive element is nested inside another.
+- On a no-hover primary pointer the Area actions trigger is permanently visible;
+  a wide viewport does not imply a mouse. Activating an Area initial in the
+  collapsed rail focuses and scrolls to the disclosure revealed by expansion.
 - **Intentionally not done:** no skip-to-main link (INV-A11Y-058). The rail is
   short and this has never been raised as a pain point; re-evaluate if a second
   long section lands. "There is no skip link" is a decision, not a defect.
@@ -103,9 +103,10 @@ line, watch the named test go red) before landing.
   whose accessible name is per-area (`New track in <area>`), plus a `title`; the
   rail has one per area, so a shared `"New track"` name would be N
   indistinguishable controls (§4.4 also forbids the tooltip standing in for the
-  name). It sits at the trailing edge with the hover-revealed `×` one
+  name). It sits at the trailing edge with the hover-revealed actions menu one
   control-step inboard, and `.areaRow` reserves both gutters at rest, so neither
-  control moves on hover. Both marks are stroked `ui/icon` glyphs, not literal
+  control moves on hover. The menu stays visible under `(hover: none)`. Both
+  marks are stroked `ui/icon` glyphs, not literal
   characters — an icon box with bare text is a source-contract violation. The
   collapsed strip gets no `+`: one glyph per area, and that glyph is the area.
   As with INV-SIDEBAR-012 the *visual* reveal is CSS and `browser`-tier; jsdom
@@ -116,7 +117,7 @@ line, watch the named test go red) before landing.
 
 ## Deliberate gaps
 
-- Area rename and drag-reorder are not in the rail; renaming lives on the area
-  page (`features/area/page`).
+- Area drag-reorder is not in the rail. Rename and delete live in each Area
+  group's actions menu.
 - The sidebar's new-area flow is the sole consumer of `AREA_PALETTE`; it picks
   a colour at random and sends it to the kernel (INV-DUP-006).

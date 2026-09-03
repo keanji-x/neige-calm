@@ -98,47 +98,6 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
 
-#[cfg(feature = "fixtures")]
-fn chat_track_ensure_barriers()
--> &'static StdMutex<HashMap<String, std::sync::Arc<tokio::sync::Barrier>>> {
-    static BARRIERS: OnceLock<StdMutex<HashMap<String, std::sync::Arc<tokio::sync::Barrier>>>> =
-        OnceLock::new();
-    BARRIERS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn install_chat_track_ensure_barrier_for_test(
-    area_id: &str,
-    barrier: std::sync::Arc<tokio::sync::Barrier>,
-) {
-    chat_track_ensure_barriers()
-        .lock()
-        .expect("chat-track ensure barrier lock poisoned")
-        .insert(area_id.to_string(), barrier);
-}
-
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn remove_chat_track_ensure_barrier_for_test(area_id: &str) {
-    chat_track_ensure_barriers()
-        .lock()
-        .expect("chat-track ensure barrier lock poisoned")
-        .remove(area_id);
-}
-
-#[cfg(feature = "fixtures")]
-async fn wait_at_chat_track_ensure_barrier(area_id: &str) {
-    let barrier = chat_track_ensure_barriers()
-        .lock()
-        .expect("chat-track ensure barrier lock poisoned")
-        .get(area_id)
-        .cloned();
-    if let Some(barrier) = barrier {
-        barrier.wait().await;
-    }
-}
-
 mod fork_guard;
 
 use fork_guard::guard_forked_blocks;
@@ -301,23 +260,6 @@ pub fn router() -> Router<AppState> {
         .route("/api/tracks/{id}/files/ls", get(list_track_files))
         .route("/api/tracks/{id}/files/cat", get(cat_track_file))
         .route("/api/areas/{area_id}/tracks", get(list_tracks_by_area))
-        .route(
-            "/api/areas/{area_id}/chat-track/ensure",
-            axum::routing::post(ensure_area_chat_track),
-        )
-}
-
-fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
-    let CalmError::Db(sqlx::Error::Database(error)) = error else {
-        return false;
-    };
-    error.is_unique_violation() && error.message().contains(constraint)
-}
-
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn is_unique_constraint_for_test(error: &CalmError, constraint: &str) -> bool {
-    is_unique_constraint(error, constraint)
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -430,7 +372,7 @@ pub(crate) async fn list_tracks_by_area(
     Ok(Json(tracks))
 }
 
-/// Public track lists hide the area conversation container and template tracks
+/// Public track lists hide retired Area-conversation containers and template tracks
 /// (#1110 S1). Keep this at the route boundary: repository readers such as
 /// area deletion and backlink resolution require the complete set.
 ///
@@ -1051,8 +993,7 @@ impl FolderConflictSlot {
 #[derive(Clone)]
 enum FolderClaim {
     /// Don't scan, don't insert. The system area is exempt from the claim
-    /// namespace entirely, and `ensure_area_chat_track_inner` derives its
-    /// cwd from claims that already exist.
+    /// namespace entirely.
     Skip,
     /// Scan inside the track tx (`BEGIN IMMEDIATE`, so scan and insert are
     /// atomic against a concurrent claim) and act on the result:
@@ -1241,167 +1182,11 @@ async fn create_track_with_planner_harness(
 ) -> Result<Response> {
     let as_template = options.as_template;
     let (track, _, planner_card_id, report_card_id) =
-        create_track_structure(s.clone(), actor.clone(), p, options, None).await?;
+        create_track_structure(s.clone(), actor.clone(), p, options).await?;
     if !as_template {
         start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     }
     Ok((StatusCode::CREATED, Json(track)).into_response())
-}
-
-/// Ensure the area's single chat track exists.
-///
-/// The workspace is selected only while creating the track. When the area has
-/// folder claims it is the claimed path with the fewest path components,
-/// breaking ties lexicographically (attached semantics: the user pointed at
-/// that directory). Area folder claims cannot be equal, ancestors, or
-/// descendants of one another, so "closest to the area root" is defined here as
-/// this deterministic shallow path ordering rather than containment.
-///
-/// #1147 D10 — an area with **no** claim gets a managed default instead of the
-/// 409 this used to return. Since #1109 made areas pure namespaces, "no claim"
-/// is the normal state of a new area, so that 409 made
-/// `POST /api/areas/{id}/conversations` fail by definition for every new area.
-///
-/// Once created, later folder claims or changes deliberately do not update the
-/// track's workspace, so an existing conversation cannot drift between working
-/// directories from one message to the next.
-#[utoipa::path(
-    post,
-    path = "/api/areas/{area_id}/chat-track/ensure",
-    tag = "tracks",
-    params(("area_id" = String, Path, description = "Area id")),
-    responses(
-        (status = 200, description = "Existing chat track", body = Track),
-        (status = 201, description = "Chat track created", body = Track),
-        // #1147 D10 removed the "area has no claimed folder" 409: a claimless
-        // area now gets a managed default. Do not re-add a 409 here without a
-        // branch that can actually produce one.
-
-        (status = 404, description = "Area not found", body = ErrorBody),
-    ),
-)]
-#[allow(deprecated)]
-pub(crate) async fn ensure_area_chat_track(
-    State(s): State<RouteState>,
-    actor: Actor,
-    Path(area_id): Path<String>,
-) -> Result<Response> {
-    let (track, created) = ensure_area_chat_track_inner(&s, actor, &area_id).await?;
-    let status = if created {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(track)).into_response())
-}
-
-/// The body of [`ensure_area_chat_track`], shared with
-/// `POST /api/areas/{area_id}/conversations` (#1098 slice 3). Returns the
-/// track and whether this call is the one that created it.
-///
-/// Both callers must agree byte-for-byte on the cwd rule and the concurrent
-/// ensure race resolution, so there is exactly one implementation of them.
-#[allow(deprecated)]
-pub(crate) async fn ensure_area_chat_track_inner(
-    s: &RouteState,
-    actor: Actor,
-    area_id: &str,
-) -> Result<(Track, bool)> {
-    let area_id = area_id.to_string();
-    if s.repo.area_get(&area_id).await?.is_none() {
-        return Err(CalmError::NotFound(format!("area {area_id}")));
-    }
-    // Preserve the existing track (and therefore its cwd) before consulting
-    // current folder claims. The partial unique index closes the concurrent
-    // ensure race; the loser reads and returns the winner below.
-    if let Some(track) = s
-        .repo
-        .tracks_by_area(&area_id)
-        .await?
-        .into_iter()
-        .find(|track| track.purpose.as_deref() == Some(AREA_CHAT_PURPOSE))
-    {
-        return Ok((track, false));
-    }
-
-    #[cfg(feature = "fixtures")]
-    wait_at_chat_track_ensure_barrier(&area_id).await;
-
-    // #1147 D10 — an area with a `area_folders` claim still gets that folder
-    // (attached semantics preserved: the user pointed at it, the server never
-    // touches it). An area *without* a claim used to 409 here, which since
-    // #1109 made areas pure namespaces means **every new area's conversation
-    // entry point fails by definition** — `POST /api/areas/{id}/conversations`
-    // calls this unconditionally. It now falls back to a managed default,
-    // which is what "the workspace is a default, not a question we ask the
-    // user" means (design §2.3).
-    let claimed_cwd = s
-        .repo
-        .area_folders_by_area(&area_id)
-        .await?
-        .into_iter()
-        .min_by(|left, right| {
-            std::path::Path::new(&left.path)
-                .components()
-                .count()
-                .cmp(&std::path::Path::new(&right.path).components().count())
-                .then_with(|| left.path.cmp(&right.path))
-        })
-        .map(|folder| folder.path);
-    let (cwd, workspace_plan) = match claimed_cwd {
-        Some(path) => (path, TrackWorkspacePlan::AttachedFromCwd),
-        None => (
-            // Ignored by `ManagedUnder`, which derives the path from the track
-            // id; kept non-empty so the row's pre-workspace shape is unchanged.
-            default_cwd(),
-            TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
-        ),
-    };
-    let p = NewTrack {
-        area_id: area_id.clone().into(),
-        title: "Area chat".into(),
-        sort: None,
-        cwd: cwd.clone(),
-        template_id: None,
-        plugin_scope: None,
-        template_input: None,
-        attach_folder: false,
-        theme: RequestTheme::default_dark(),
-    };
-    let attempt = create_track_structure(
-        s.clone(),
-        actor,
-        p,
-        CreateTrackOptions {
-            // The cwd was just picked from this area's own existing
-            // claims, so there is nothing to scan and nothing to mint.
-            folder_claim: FolderClaim::Skip,
-            body_area_id: area_id.clone(),
-            normalized_cwd: cwd,
-            init: TrackInit::Blank,
-            as_template: false,
-            workspace_plan,
-        },
-        Some(AREA_CHAT_PURPOSE),
-    )
-    .await;
-    let (track, created) = match attempt {
-        Ok((track, _, _, _)) => (track, true),
-        Err(error) if is_unique_constraint(&error, "tracks.area_id") => {
-            let track = s
-                .repo
-                .tracks_by_area(&area_id)
-                .await?
-                .into_iter()
-                .find(|track| track.purpose.as_deref() == Some(AREA_CHAT_PURPOSE))
-                .ok_or_else(|| {
-                    CalmError::Internal("chat track ensure race had no winner".into())
-                })?;
-            (track, false)
-        }
-        Err(error) => return Err(error),
-    };
-    Ok((track, created))
 }
 
 #[allow(deprecated)]
@@ -1410,7 +1195,6 @@ async fn create_track_structure(
     actor: Actor,
     p: NewTrack,
     options: CreateTrackOptions,
-    purpose: Option<&'static str>,
 ) -> Result<(Track, bool, String, String)> {
     let CreateTrackOptions {
         folder_claim,
@@ -1460,7 +1244,7 @@ async fn create_track_structure(
                 .await?;
 
                 let track =
-                    track_create_tx(tx, p, purpose, &workspace_plan, write_for_tx.area_cache())
+                    track_create_tx(tx, p, None, &workspace_plan, write_for_tx.area_cache())
                         .await?;
                 let track_id = track.id.clone();
                 let area_id = track.area_id.clone();

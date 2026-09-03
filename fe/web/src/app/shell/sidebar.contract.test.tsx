@@ -40,6 +40,7 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         currentPath={props.currentPath ?? '/'}
         onGo={props.onGo ?? vi.fn()}
         onCreateArea={props.onCreateArea ?? vi.fn()}
+        onRenameArea={props.onRenameArea ?? vi.fn()}
         onDeleteArea={props.onDeleteArea ?? vi.fn()}
         onNewTrack={props.onNewTrack ?? vi.fn()}
         onSetPinned={props.onSetPinned ?? vi.fn()}
@@ -121,18 +122,18 @@ describe('INV-SIDEBAR-013 every area row carries a permanent New track control',
   });
 
   /*
-   * Permanently visible, unlike the `×` beside it. jsdom applies no CSS Module,
+   * Permanently visible, unlike the actions menu beside it. jsdom applies no CSS Module,
    * so "visible" cannot be read off a computed style here; what this pins is
-   * the fact the reveal is *built* on — `.areaDelete` carries the opacity rule
+   * the fact the reveal is *built* on — `.areaMenuWrap` carries the opacity rule
    * and `.areaNew` does not, so the two controls cannot silently converge on
    * one behaviour. The `browser` tier owns the rendered opacity.
    */
   it('leaves the New track control out of the hover-revealed class the delete uses', () => {
     renderSidebar({ areas, tracksByArea });
     const create = screen.getByRole('button', { name: 'New track in Work' });
-    const remove = screen.getByRole('button', { name: 'Delete area Work' });
-    expect(create.className).not.toBe(remove.className);
-    expect(create.className.split(/\s+/).some((token) => remove.className.split(/\s+/).includes(token)))
+    const actions = screen.getByRole('button', { name: 'Area actions for Work' });
+    expect(create.className).not.toBe(actions.className);
+    expect(create.className.split(/\s+/).some((token) => actions.className.split(/\s+/).includes(token)))
       .toBe(false);
   });
 
@@ -179,24 +180,23 @@ describe('INV-A11Y-061 navigation shape', () => {
     for (const node of screen.getAllByRole('button')) expect(node.tagName).toBe('BUTTON');
   });
 
-  it('routes area and track rows through onGo with structured targets', async () => {
+  it('uses Area as a disclosure and routes only Track rows through onGo', async () => {
     const onGo = vi.fn();
     renderSidebar({ tracks: [track({ id: 'w9', title: 'Row' })], onGo });
-    await userEvent.click(screen.getByRole('button', { name: /^Work/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
+    expect(onGo).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Expand area Work' }));
     await userEvent.click(screen.getByRole('button', { name: /^Track Row/ }));
     const targets: unknown[] = onGo.mock.calls.map((call) => (call as unknown[])[0]);
-    expect(targets).toEqual([
-      { name: 'area', areaId: 'c1' },
-      { name: 'track', trackId: 'w9' },
-    ]);
+    expect(targets).toEqual([{ name: 'track', trackId: 'w9' }]);
   });
 });
 
 describe('active row', () => {
-  it('marks the open area and the open track with aria-current', () => {
+  it('marks only the open Track with aria-current', () => {
     renderSidebar({ tracks: [track({ id: 'w9', title: 'Row' })], currentPath: '/track/w9' });
     expect(screen.getByRole('button', { name: /^Track Row/ }).getAttribute('aria-current')).toBe('page');
-    expect(screen.getByRole('button', { name: /^Work/ }).getAttribute('aria-current')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Collapse area Work' }).getAttribute('aria-current')).toBeNull();
   });
 
   /*

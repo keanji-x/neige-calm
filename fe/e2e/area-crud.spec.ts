@@ -24,7 +24,7 @@ test('creates and deletes an area through the UI and persists both changes', asy
   await rail.getByRole('textbox', { name: 'Area name' }).fill(name);
   await rail.getByRole('textbox', { name: 'Area name' }).press('Enter');
 
-  const row = rail.getByRole('button', { name, exact: true });
+  const row = rail.getByRole('button', { name: `Collapse area ${name}` });
   await expect(row).toBeVisible();
   await expect.poll(async () => {
     const response = await request.get('/api/areas');
@@ -35,9 +35,8 @@ test('creates and deletes an area through the UI and persists both changes', asy
   expect(area).toBeTruthy();
   createdAreaIds.push(area!.id);
 
-  await row.click();
-  await expect(page).toHaveURL(new RegExp(`/area/${area!.id}$`));
-  await rail.getByRole('button', { name: `Delete area ${name}` }).click();
+  await rail.getByRole('button', { name: `Area actions for ${name}` }).click();
+  await rail.getByRole('menuitem', { name: 'Delete area' }).click();
   const dialog = page.getByRole('dialog', { name: `Delete ${name}?` });
   await dialog.getByLabel(`Type ${name} to confirm.`).fill(name);
   await dialog.getByRole('button', { name: 'Delete area', exact: true }).click();

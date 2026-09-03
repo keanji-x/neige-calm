@@ -3,9 +3,7 @@
  * confirmation ladder, and the product has exactly **one** operation on it:
  * deleting an area, which cascades to every track inside it.
  *
- * "One" means one *operation*, not one entry point: the rail's area row and the
- * area page header both open this, with the same copy and the same strength. An
- * operation with two confirmation strengths is the real hole.
+ * The Area group's actions menu opens this with the shared copy and strength.
  *
  * Used more widely it stops being a protection and becomes the new normal.
  */

@@ -2,8 +2,7 @@
 //!
 //! Owns the three gates the design assigns to this slice:
 //!
-//! * **G1** — the same `Idempotency-Key` retried lands on the same card, and the
-//!   track namespace is separate from the area one.
+//! * **G1** — the same `Idempotency-Key` retried lands on the same card.
 //! * **G2** — a `planner_card_id` the adapter did not derive itself is refused,
 //!   including one derived for a different track.
 //! * **G3** — the list returns assistant conversations and nothing else, on a
@@ -765,9 +764,8 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
     b.shutdown_harnesses().await;
 }
 
-/// The endpoint's own boundaries: an unknown track is 404, an area chat track is
-/// 403 (its conversations belong to the area endpoint), and the header is
-/// genuinely required rather than defaulted.
+/// The endpoint's own boundaries: an unknown track is 404, retired Area-chat
+/// scaffolding is 403, and the header is genuinely required rather than defaulted.
 #[tokio::test]
 async fn the_endpoint_refuses_unknown_tracks_chat_tracks_and_a_missing_key() {
     let b = boot().await;
@@ -802,19 +800,12 @@ async fn the_endpoint_refuses_unknown_tracks_chat_tracks_and_a_missing_key() {
         "a rejected first message must leave no card behind"
     );
 
-    // The area's hidden chat track.
-    let (status, chat_track) = b
-        .request(
-            "POST",
-            &format!("/api/areas/{}/chat-track/ensure", b.area_id),
-            None,
-            None,
-        )
-        .await;
-    assert!(matches!(status, StatusCode::OK | StatusCode::CREATED));
-    let chat_track_id = chat_track["id"].as_str().unwrap();
-    let (status, body) = b
-        .create_conversation(chat_track_id, "idem-chat", "hi")
-        .await;
+    // A row created by an older build, before Area conversations were retired.
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(&track_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    let (status, body) = b.create_conversation(&track_id, "idem-chat", "hi").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }

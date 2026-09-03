@@ -96,12 +96,12 @@ pub const EVENTS_PRUNE_WATERMARK_KEY: &str = "events_prune_watermark";
 /// Reverse anchor — read before adding a kind here. Some readers depend on a
 /// kind's row being *permanent*, not merely long-lived:
 ///
-///   * `harness.user_message.enqueued` is the only evidence that an area
-///     conversation's card has already had a user message ACCEPTED INTO THE
+///   * `harness.user_message.enqueued` is the only evidence that a lazily
+///     created conversation card has already had a user message ACCEPTED INTO THE
 ///     HARNESS QUEUE — `send_planner_input` writes it right after
 ///     `harness.observe(UserMessage)` returns, so it proves the observation
 ///     was enqueued, not that the agent has consumed it
-///     (`calm-server/src/routes/area_conversations.rs::user_message_already_enqueued`).
+///     (`calm-server/src/routes/conversations_shared.rs::user_message_already_enqueued`).
 ///     Adding it to this allowlist would, after the retention horizon,
 ///     silently make a retry under the same `Idempotency-Key` send the first
 ///     message to the agent a second time — a correctness regression with no
@@ -944,9 +944,9 @@ mod tests {
         }
     }
 
-    /// Fail-closed anchor for the area-conversation first-message dedup
-    /// (#1098 slice 3). `user_message_already_enqueued` in
-    /// `calm-server/src/routes/area_conversations.rs` answers "has this
+    /// Fail-closed anchor for conversation first-message dedup.
+    /// `user_message_already_enqueued` in
+    /// `calm-server/src/routes/conversations_shared.rs` answers "has this
     /// conversation's card ever had a user message enqueued into the harness?"
     /// purely from the presence of a `harness.user_message.enqueued` row
     /// (enqueued, not consumed by the agent). If that row can be
@@ -963,7 +963,7 @@ mod tests {
     async fn first_message_dedup_kind_is_never_prunable() {
         assert!(
             !EVENTS_PRUNE_KINDS.contains(&"harness.user_message.enqueued"),
-            "area_conversations' first-message dedup reads this kind as permanent evidence; \
+            "conversation first-message dedup reads this kind as permanent evidence; \
              pruning it re-opens double-send after the horizon"
         );
 

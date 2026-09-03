@@ -1,14 +1,14 @@
 // INV-DUP-009 — the one track row.
 //
-// Three surfaces render it: the sidebar rail, the area page list, and Today.
+// Two surfaces render it: the sidebar rail and Today.
 // They must agree on what a track *looks* like, so the row is declared once here
 // and consumed through this entry.
 //
 // It stays under `features/track` and not in `ui/`: `ui/` is deliberately
 // domain-free (it may import core *types* only), and this row reads lifecycle
-// predicates and display rules. The two surfaces outside this domain receive it
-// by injection instead — `app/router` composes the area page's list, and hands
-// Today a `renderTrackRow` callback. `app/**` may import features; siblings may not.
+// predicates and display rules. Today receives it by injection instead —
+// `app/router` hands it a `renderTrackRow` callback. `app/**` may import
+// features; siblings may not.
 //
 // §6.3 gives it four variants. They differ in height, in what the leading 6px
 // column carries, and in whether the second line exists at all — the compact,

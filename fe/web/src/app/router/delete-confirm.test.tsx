@@ -47,41 +47,6 @@ it('requires the shared confirmation before deleting a Today panel track', async
   expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
 });
 
-it('requires the shared confirmation before deleting from the AreaRoute panel', async () => {
-  const requests: ApiRequest[] = [];
-  const track = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
-  const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
-    requests.push(request);
-    if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
-      { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
-    ] });
-    if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
-    return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
-  } };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/area/c1'] }) });
-  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
-    <RouterProvider router={router} />
-  </ThemeProvider></QueryClientProvider>);
-  /*
-   * Scoped to the panel, like the Today case above, because the *page* holds two
-   * buttons by this name: the AreaRoute panel's row and the sidebar's listing of
-   * the same track. An unscoped `findByRole` resolves on the first poll at which
-   * exactly one exists and throws once both do, so what it was really asserting
-   * was that the two subtrees settle in different frames — measured on
-   * `origin/main` with a 200ms wait after the first match: two matches. Any
-   * change that lets them commit together turns this green test red without
-   * touching what it is about, which is what #1245 hit.
-   */
-  const panel = await screen.findByRole('complementary');
-  await userEvent.click(await within(panel).findByRole('button', { name: 'Delete Risky' }));
-  expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
-  expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
-});
-
 it('does not navigate on a delete success that arrives after cancellation', async () => {
   let resolveDelete!: (response: ApiTransportResponse) => void;
   const track = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
@@ -123,18 +88,19 @@ it('does not navigate on an area delete success that arrives after cancellation'
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/area/c1'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await within(await screen.findByRole('main')).findByRole('button', { name: 'Delete area Work' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Area actions for Work' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Delete area' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Type Work to confirm.' }), 'Work');
   await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
   await waitFor(() => expect(resolveDelete).toBeTypeOf('function'));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
   await new Promise((done) => { setTimeout(done, 10); });
-  expect(router.state.location.pathname).toBe('/area/c1');
+  expect(router.state.location.pathname).toBe('/');
 });
 
 it('round-trips an encoded track id through useGo, TanStack history, and useRouteParam', async () => {

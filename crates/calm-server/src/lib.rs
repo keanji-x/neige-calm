@@ -48,7 +48,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Kernel-owned purpose marker for the area's inert conversation track.
+/// Purpose marker on retired Area-conversation tracks. Kept so historical rows
+/// remain hidden from public Track lists and retain safe recovery behaviour.
 pub const AREA_CHAT_PURPOSE: &str = "area-chat";
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the

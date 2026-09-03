@@ -6,7 +6,6 @@ use crate::state::AppState;
 use axum::{Json, Router, routing::get};
 use utoipa::OpenApi;
 
-pub mod area_conversations;
 pub mod area_folders;
 pub mod areas;
 pub mod cards;
@@ -58,7 +57,6 @@ pub fn router() -> Router<AppState> {
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .merge(areas::router())
-        .merge(area_conversations::router())
         .merge(area_folders::router())
         .merge(tracks::router())
         .merge(track_conversations::router())

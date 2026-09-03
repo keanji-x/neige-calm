@@ -25,10 +25,9 @@ pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 // definitions live in calm-types; do NOT re-declare them here (shim-window
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
-    Area, AreaConversationSummary, AreaFolder, AreaKind, AreaResolve, Card, CardRole,
-    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, NewTrackRecipe, Overlay,
-    Track, TrackConversationSummary, TrackLifecycle, TrackRecipe, TrackWorkspace,
-    TrackWorkspaceKind, default_deletable,
+    Area, AreaFolder, AreaKind, AreaResolve, Card, CardRole, CardRuntimeView, FolderConflict,
+    FolderConflictKind, HarnessItem, NewTrackRecipe, Overlay, Track, TrackConversationSummary,
+    TrackLifecycle, TrackRecipe, TrackWorkspace, TrackWorkspaceKind, default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the

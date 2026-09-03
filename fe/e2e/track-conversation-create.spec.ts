@@ -67,7 +67,7 @@ function captureBrowserErrors(page: Page): string[] {
   return errors;
 }
 
-/** Every POST the page made to any track/area conversations endpoint. */
+/** Every POST the page made to a Track conversations endpoint. */
 function conversationCreates(requests: Request[]): Request[] {
   return requests.filter((request) => request.method() === 'POST'
     && /\/conversations$/.test(new URL(request.url()).pathname));

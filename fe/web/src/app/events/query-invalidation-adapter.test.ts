@@ -41,7 +41,6 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['planner-run', 'card-1'])).toEqual(queryKeys.plannerRun('card-1'));
     expect(mapPlannedQueryKey(['track-report', 'w1'])).toEqual(queryKeys.trackReport('w1'));
     expect(mapPlannedQueryKey(['track-report'])).toEqual(queryKeys.trackReportPrefix());
-    expect(mapPlannedQueryKey(['area-conversations'])).toEqual(queryKeys.areaConversationsPrefix());
     expect(mapPlannedQueryKey(['track-conversations'])).toEqual(queryKeys.trackConversationsPrefix());
     expect(mapPlannedQueryKey(['track-conversations', 'w1'])).toEqual(queryKeys.trackConversations('w1'));
     expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
@@ -214,7 +213,7 @@ describe('query invalidation adapter', () => {
       [
         { ...base, old_phase: 'idle', new_phase: 'turn_running' },
         'harness.phase.changed',
-        [queryKeys.plannerRun('card-1'), queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1')],
+        [queryKeys.plannerRun('card-1'), queryKeys.trackConversations('track-1')],
       ],
       [
         { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
@@ -225,7 +224,7 @@ describe('query invalidation adapter', () => {
         { ...base, char_count: 3 }, 'harness.user_message.enqueued',
         [
           queryKeys.harnessItems('card-1'), queryKeys.plannerRun('card-1'),
-          queryKeys.areaConversationsPrefix(), queryKeys.trackConversations('track-1'),
+          queryKeys.trackConversations('track-1'),
         ],
       ],
     ] as const;
@@ -243,11 +242,6 @@ describe('query invalidation adapter', () => {
    *
    * The two set assertions in `invalidation-plan.test.ts` close the planner
    * from both sides, and they were green while this key reached no query at
-   * all: `mapPlannedQueryKey` had no `area-conversations` arm, so
-   * `applyEventEffects` dropped the planned key at its `mapped !== null` guard
-   * and every area drawer's `state` dot sat still. A planner-only assertion
-   * cannot see that seam, so these assert on what the *client* was told.
-   *
    * Each case is asserted as an exact call list rather than a `toContainEqual`:
    * "the key is in there somewhere" is what let the seam open in the first
    * place.
@@ -267,7 +261,6 @@ describe('query invalidation adapter', () => {
       { op: 'invalidate', queryKey: queryKeys.trackDetail('track-1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
       { op: 'invalidate', queryKey: queryKeys.trackReport('track-1') },
-      { op: 'invalidate', queryKey: queryKeys.areaConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.trackConversations('track-1') },
     ]);
   });
@@ -289,7 +282,6 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
       { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
-      { op: 'invalidate', queryKey: queryKeys.areaConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.trackConversationsPrefix() },
     ]);
   });

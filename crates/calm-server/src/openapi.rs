@@ -13,10 +13,10 @@
 use crate::error::ErrorBody;
 use crate::harness::HarnessPhaseTag;
 use crate::model::{
-    Area, AreaConversationSummary, AreaFolder, AreaKind, AreaPatch, AreaResolve, Card, CardPatch,
-    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, NewArea, NewAreaFolder,
-    NewCard, NewOverlay, NewTrack, Overlay, Plugin, Terminal, Track, TrackConversationSummary,
-    TrackDetail, TrackPatch, TrackWorkspacePatch,
+    Area, AreaFolder, AreaKind, AreaPatch, AreaResolve, Card, CardPatch, CardRuntimeView,
+    FolderConflict, FolderConflictKind, HarnessItem, NewArea, NewAreaFolder, NewCard, NewOverlay,
+    NewTrack, Overlay, Plugin, Terminal, Track, TrackConversationSummary, TrackDetail, TrackPatch,
+    TrackWorkspacePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
@@ -71,9 +71,6 @@ use utoipa::OpenApi;
         crate::routes::areas::update_area,
         crate::routes::areas::delete_area,
         // ---- area_folders (#250 PR 1) ----
-        // ---- area conversations (#1098) ----
-        crate::routes::area_conversations::list_area_conversations,
-        crate::routes::area_conversations::create_area_conversation,
         crate::routes::area_folders::list_folders,
         crate::routes::area_folders::create_folder,
         crate::routes::area_folders::delete_folder,
@@ -92,7 +89,6 @@ use utoipa::OpenApi;
         crate::routes::tracks::list_tracks_window,
         crate::routes::tracks::get_track_detail,
         crate::routes::tracks::create_track,
-        crate::routes::tracks::ensure_area_chat_track,
         crate::routes::tracks::update_track,
         crate::routes::tracks::delete_track,
         crate::routes::tracks::get_track_backlinks,
@@ -216,8 +212,6 @@ use utoipa::OpenApi;
         HarnessItemsQuery,
         SendPlannerInputRequest,
         SendPlannerInputResponse,
-        AreaConversationSummary,
-        crate::routes::area_conversations::NewAreaConversationBody,
         TrackConversationSummary,
         crate::routes::track_conversations::NewTrackConversationBody,
         InterruptPlannerCardResponse,

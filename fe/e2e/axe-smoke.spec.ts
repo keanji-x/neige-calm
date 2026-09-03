@@ -21,7 +21,6 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
        instead. It is Today-only, so a green run here means axe really scanned
        Today. */
     { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
-    { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
     /* #1211 — the new-track page. Added here rather than left to the create
        planner: this is a real route with its own heading, a `contenteditable` and
        two chips, and none of that is exercised for contrast or naming by a planner

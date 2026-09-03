@@ -491,11 +491,9 @@
     padding-block: 0;
 
     /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
-       because the row carries `×` *and* a permanent `+` (4 + 20 + 4 + 20 + 4 =
-       52) — the same term the track row spends on its two-controls-one-side
-       case. Both are reserved at rest, so the name ellipsizes at the same
-       column whether or not the `×` has been revealed: nothing in this row is
-       allowed to move on hover. */
+       because the row carries an actions menu and a permanent `+` (4 + 20 + 4
+       + 20 + 4 = 52). Both are reserved at rest, so the name ellipsizes at the
+       same column whether or not the menu has been revealed. */
     padding-inline:
       calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
       calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
@@ -514,22 +512,9 @@
     outline-offset: -2px;
   }
 
-  /* Fill + weight only; see the same note in track-row's row.module.css. */
-  .areaRowActive {
-    background: var(--accent-soft);
-  }
-
-  .areaRowActive:hover {
-    background: var(--accent-soft);
-    background-image: linear-gradient(var(--overlay-hover-faint), var(--overlay-hover-faint));
-  }
-
-  /* A 20px control box holding a 16px glyph. 16 is the glyph size, not a fourth
-     control height.
-
-     It is a *sibling* of the row, absolutely positioned over the row's first
-     grid column: a button inside a button is invalid HTML and trips axe's
-     `nested-interactive`. */
+  /* The disclosure glyph is decoration inside the one disclosure button. The
+     Area name no longer navigates to a page, so splitting the chevron into a
+     second tab stop would give two controls the same expand/collapse job. */
   .chevron {
     position: absolute;
     inset-block-start: 50%;
@@ -546,18 +531,13 @@
     border-radius: var(--radius-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
-    cursor: pointer;
+    pointer-events: none;
     translate: 0 -50%;
     transition: rotate var(--motion-snappy) ease-out;
   }
 
   .chevronOpen {
     rotate: 90deg;
-  }
-
-  .chevron:hover,
-  .chevron:focus-visible {
-    color: var(--text);
   }
 
   /*
@@ -595,9 +575,8 @@
     text-overflow: ellipsis;
   }
 
-  /* Fill + tone: §5.1's two channels. Weight stays out of it — rest is 400
-     here and 400 on the tracks, so a weight step would be the row's third. */
-  .areaRowActive .areaName {
+  .areaRow:hover .areaName,
+  .areaRow:focus-visible .areaName {
     color: var(--text);
   }
 
@@ -613,10 +592,8 @@
    * the rail on one column. The same 4px is applied in
    * `features/track/row/row.module.css`; both derive it, neither hardcodes it.
    */
-  .areaDelete,
+  .areaMenuTrigger,
   .areaNew {
-    position: absolute;
-    inset-block-start: 50%;
     display: grid;
     place-items: center;
     inline-size: var(--control-h-sm);
@@ -625,7 +602,6 @@
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
-    translate: 0 -50%;
     transition: opacity var(--motion-quick) ease-out;
   }
 
@@ -633,39 +609,83 @@
    * Two trailing controls on one row, and the order is §4.5's: the one that
    * persists at rest goes outermost, so a resting row shows a single glyph
    * flush to the trailing gutter rather than one floating beside a gap. That is
-   * the `+`. The `×` takes the inboard slot — 4 + 20 + 4 — which is the same
+   * the `+`. The actions menu takes the inboard slot — 4 + 20 + 4 — which is the same
    * step `features/track/row/row.module.css` puts between its pin and its
    * delete, derived from the same two tokens.
    *
    * Both slots are reserved by `.areaRow`'s trailing padding, so revealing the
-   * `×` moves nothing.
+   * menu moves nothing.
    */
   .areaNew {
+    position: absolute;
+    inset-block-start: 50%;
     inset-inline-end: var(--space-2);
+    translate: 0 -50%;
   }
 
-  .areaDelete {
+  .areaMenuWrap {
+    position: absolute;
+    inset-block-start: 50%;
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+    z-index: var(--z-raised);
+    translate: 0 -50%;
 
-    /* Hover-revealed, unlike its neighbour. `opacity: 0` is the *visual* state
-       only — the button stays in the accessibility tree and stays reachable by
-       Tab, which is what `:focus-within` below restores it for. */
+    /* Hover-revealed visually; the trigger remains in the accessibility tree
+       and focus restores it. Delete moved into this menu with Rename. */
     opacity: 0;
     pointer-events: none;
   }
 
-  .areaDelete:hover,
-  .areaDelete:focus-visible {
-    opacity: 1;
-    pointer-events: auto;
+  .areaMenuTrigger:hover,
+  .areaMenuTrigger:focus-visible {
     background: var(--overlay-hover-strong);
-    color: var(--error-text);
+    color: var(--text);
   }
 
-  .areaRowWrap:hover .areaDelete,
-  .areaRowWrap:focus-within .areaDelete {
+  .areaRowWrap:hover .areaMenuWrap,
+  .areaRowWrap:focus-within .areaMenuWrap {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  /* A wide viewport is not proof of a hover-capable pointer: tablets and
+     touch displays can render the desktop rail too. Since the Area page is
+     gone, hiding this trigger there would make Rename and Delete unreachable. */
+  @media (hover: none) {
+    .areaMenuWrap {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  .areaMenu {
+    position: absolute;
+    inset-block-start: calc(100% + var(--space-2));
+    inset-inline-end: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    min-inline-size: var(--menu-w-min);
+    padding: var(--space-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+  }
+
+  .areaRenameInput {
+    min-block-size: var(--row-h-sm);
+    inline-size: 100%;
+    padding-block: 0;
+    padding-inline:
+      calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
+      calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    font-size: var(--text-base);
+    line-height: var(--leading-tight);
+    color: var(--text);
   }
 
   /* Permanent, so it gets the quiet tone at rest and only picks up a fill on
@@ -789,10 +809,6 @@
     background: var(--overlay-hover);
   }
 
-  .stripItemActive {
-    background: var(--accent-soft);
-  }
-
   .stripInitial {
     font-size: var(--text-xs);
     font-weight: var(--weight-medium);
@@ -800,7 +816,6 @@
     color: var(--text-3);
   }
 
-  .stripItemActive .stripInitial,
   .stripItem:hover .stripInitial {
     color: var(--text);
   }
@@ -820,7 +835,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .areaRow,
-    .areaDelete,
+    .areaMenuTrigger,
     .areaNew,
     .iconButton,
     .chevron {

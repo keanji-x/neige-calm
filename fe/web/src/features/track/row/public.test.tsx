@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // INV-DUP-009's one row, tested directly.
 //
-// Three surfaces render it and none of them can test it: the rail composes it
-// through `app/shell`, the area page and Today receive it by injection because
+// Two surfaces render it and neither should retest its internals: the rail
+// composes it through `app/shell`, and Today receives it by injection because
 // `features/**` may not import a sibling domain. Their suites therefore use
 // stand-ins, and a stand-in cannot prove the row is a button, carries a
 // composed accessible name, or keeps its pin reachable. This file is where

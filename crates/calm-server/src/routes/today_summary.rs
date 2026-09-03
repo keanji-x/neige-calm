@@ -513,8 +513,8 @@ pub(crate) async fn write_today_summary(
     // deduplicated by a permanent row in the ordinary case.
     //
     // **Under the per-card first-message claim, and that is not optional.**
-    // This is the same read-then-send `create_track_conversation` and
-    // `create_area_conversation` perform, and all three need the same claim for
+    // This is the same read-then-send `create_track_conversation` performs, and
+    // both paths need the same claim for
     // the same reason: two concurrent requests both read "no user message yet"
     // and both send, so the agent gets the same standing instruction twice.
     // Moving this step out of `create_track_conversation` and into here moved it

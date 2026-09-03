@@ -29,7 +29,12 @@ use utoipa::ToSchema;
 /// client holding the old contract gets a 404 with no field to correct — so
 /// leaving this at `"2"` would repeat exactly the contradiction the paragraph
 /// above records.
-pub const API_VERSION: &str = "3";
+///
+/// #1354 bumps `"3"` -> `"4"`: the Area conversations GET/POST endpoints and
+/// chat-track ensure endpoint are gone with the Area page. Cached clients that
+/// still call them must be rejected by the compatibility gate rather than
+/// discovering the break as a 404 after the reader starts an action.
+pub const API_VERSION: &str = "4";
 
 /// Monotonically increasing frontend compatibility floor.
 ///
@@ -54,6 +59,10 @@ pub const API_VERSION: &str = "3";
 /// and gates its event stream on `cove.updated` / `cove.deleted` discriminators
 /// that migration 0080 rewrote. Any one of those alone would justify the bump;
 /// together they would produce a bundle that renders an empty, silent shell.
+///
+/// #1354 bumps 20 -> 21 with API v4 so both cached bundles show the hard refresh
+/// curtain before they can navigate to the retired Area page or call its
+/// conversation endpoints.
 pub const WEB_COMPAT_VERSION: u32 = 21;
 
 /// Kernel compatibility values sourced from live constants.

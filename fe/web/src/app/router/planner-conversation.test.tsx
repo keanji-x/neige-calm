@@ -305,23 +305,6 @@ describe('planner conversation regressions', () => {
   });
 
   /*
-   * An area lists its *own* conversations, from the server (#1098) — never the
-   * planner conversations of the tracks inside it. Those hang off a track and are
-   * read on that track's page; listing them here would put rows in a panel whose
-   * drawer this route deliberately opens in place, on a card it has no scope
-   * for. Today is still where a remembered track conversation shows up.
-   */
-  it('does not list a track planner conversation on that track\'s area', async () => {
-    setup();
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    fireEvent.click(screen.getByRole('button', { name: 'Work' }));
-    await screen.findByText('No conversations yet.');
-    expect(screen.queryByRole('button', { name: /Conversation Planner chat/ })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByRole('button', { name: 'Conversation Planner chat, on Test track' });
-  });
-
-  /*
    * Three "after reset …" registry tests stood here. All three drove the same
    * machinery — `suppressRememberRef` / `suppressedRememberSnapshotRef` in
    * `useConversationStore`, which existed *only* to stop a stale pre-reset

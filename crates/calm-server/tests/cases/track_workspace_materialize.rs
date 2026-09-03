@@ -141,20 +141,18 @@ async fn workspace_row(repo: &SqlxRepo, track_id: &str) -> (String, String, Opti
     .unwrap()
 }
 
-/// Entry point 1 of 4: `POST /api/tracks` with no `cwd` — the #1131 title-only
+/// Entry point 1 of 3: `POST /api/tracks` with no `cwd` — the #1131 title-only
 /// create the new FE sends.
 ///
-/// The four track-create entry points design `docs/1147-workspace-design.md`
+/// The remaining track-create entry points are
 /// line 76 enumerates are, by name rather than by ordinal (an ordinal spread
 /// across three files is what drifted last time — `today.rs` and
 /// `child_track_adapter.rs` both called themselves "the fifth"):
 ///
 ///   1. `POST /api/tracks` — this case and the two below it;
-///   2. area chat (`ensure_area_chat_track_inner`), which shares
-///      `create_track_structure` with 1 and therefore its materialize call;
-///   3. Today/launchpad (`routes::today`), which raw-`INSERT`s and carries its
+///   2. Today/launchpad (`routes::today`), which raw-`INSERT`s and carries its
 ///      own materialize call;
-///   4. child track (`operation::child_track_adapter`), likewise, covered by
+///   3. child track (`operation::child_track_adapter`), likewise, covered by
 ///      `child_allocates_and_materializes_its_own_frozen_managed_workspace`.
 ///
 /// #1300 — this enumeration said "of 5" until template seeding was removed.

@@ -35,7 +35,6 @@ test('the application routes are reachable through the real kernel', async ({ pa
        is the calendar module's own control, it exists on no other route, and
        it is named the same way the new-track composer below is. */
     { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
-    { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
     /* #1211 — the new-track page is a route like the others, so it belongs in
        the reachability sweep: this is what would catch it failing to render at
        all behind the real kernel. Anchored on the composer because the page has
