@@ -13,7 +13,7 @@
 //! recorder_shadow)` quadruples is S1 step 2's job.
 
 use calm_server::error::CalmError;
-use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::wave_report_origin::{
     AgentOrigin, RecorderRequirement, TrustedInitiator, WriteAttribution, WriteOrigin, policy_for,
 };
@@ -55,6 +55,7 @@ fn agent(role: CardRole, provider: AgentProvider) -> WriteOrigin {
         provider,
         session_id: WorkerSessionId::from("sess_1".to_string()),
         wave_id: WaveId::from("w_1".to_string()),
+        cove_id: CoveId::from("cv_1".to_string()),
     })
 }
 

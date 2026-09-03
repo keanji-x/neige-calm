@@ -688,7 +688,11 @@ pub mod wave_report;
 pub mod wave_report_doc;
 mod wave_report_edit_guard;
 mod wave_report_guard;
-/// #1252 S1 step 1 — write-origin vocabulary. Not wired into production yet.
+/// #1252 S1 — write-origin vocabulary. Since step 2 it runs on all three
+/// production wave-report write paths: each builds a `WriteOrigin` and calls
+/// `verify_legacy_write_arguments`, which refuses the write on any
+/// disagreement with `policy_for` and supplies the recorder probe. Deleting
+/// the legacy parameters is step 3; see the module docs for what blocks it.
 pub mod wave_report_origin;
 pub mod wave_report_read;
 pub mod wave_vcs;

@@ -3502,24 +3502,37 @@ pub(crate) async fn update_wave_report(
     // recorded. PR5's spec system prompt will wake on
     // `WaveReportEdited { author: User }` specifically.
     //
-    // #1252 S1 step 2 — the quadruple is bound once and then both checked and
-    // passed. The fourth member is not an argument here: `persist_report`
-    // hardcodes `recorder_shadow: None` for its callers, so this site declares
-    // "no recorder probe" as a `false` literal with a name, and the origin is
-    // the fact that `require_rest_user_actor` above admitted only
-    // `X-Calm-Actor: user` — not a reading of the other three bindings.
-    let write_actor = ActorId::User;
-    let author = EditAuthor::User;
-    let auto_promote_draft = false;
-    let recorder_shadow_passed = false;
-    verify_legacy_write_arguments(
+    // #1252 S1 step 2 — the three legacy members are stated once, checked
+    // against the origin's declared policy, and then re-obtained from the
+    // check. The origin is the fact that `require_rest_user_actor` above
+    // admitted only `X-Calm-Actor: user` — not a reading of those bindings.
+    //
+    // This site cannot forward the fourth member: it goes through the
+    // `wave_report::persist_report` wrapper, which hardcodes
+    // `recorder_shadow: None` with no parameter to vary it. So it is the one
+    // place that receives a value it cannot pass on, and the only honest thing
+    // to do with a probe here is refuse — silently dropping one is exactly the
+    // failure this whole step is about. `WriteOrigin::RestUser` declares
+    // `NotGated`, so the refusal is unreachable today; it becomes reachable the
+    // moment someone routes a gated origin through this handler, and then it
+    // fires instead of writing ungated.
+    let legacy_actor = ActorId::User;
+    let legacy_author = EditAuthor::User;
+    let legacy_auto_promote_draft = false;
+    let (write_actor, author, auto_promote_draft, recorder_shadow) = verify_legacy_write_arguments(
         SITE_REST_REPORT_DOCUMENT,
         &WriteOrigin::RestUser,
-        &write_actor,
-        author,
-        auto_promote_draft,
-        recorder_shadow_passed,
-    )?;
+        &legacy_actor,
+        legacy_author,
+        legacy_auto_promote_draft,
+    )?
+    .into_parts();
+    if recorder_shadow.is_some() {
+        return Err(CalmError::Internal(format!(
+            "{SITE_REST_REPORT_DOCUMENT}: the declared policy requires a recorder probe, but \
+             wave_report::persist_report has no parameter to pass one through"
+        )));
+    }
     let updated = persist_report(
         s.repo.as_ref(),
         &s.events,

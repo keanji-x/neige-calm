@@ -450,43 +450,55 @@ impl CardDecisionSink {
         agent_message: Option<String>,
         lifecycle: Option<WaveLifecycle>,
     ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
-        let actor = identity.to_actor_id();
-        let principal = identity.to_principal();
-        let recorder_shadow: Option<Arc<dyn RecorderShadowProbe>> =
-            Some(Arc::new(CardDecisionSinkRecorderShadowProbe {
-                principal,
-                wave_id: wave.id.clone(),
-            }));
-        let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
-        // #1252 S1 step 2 — the same decisions, stated a second way and
-        // compared. The origin is built from the request context this funnel
-        // already holds (`identity`, plus the wave being written), never from
-        // the quadruple above, so the two sides are independent.
+        let legacy_actor = identity.to_actor_id();
+        let (legacy_author, legacy_auto_promote_draft) = report_op_attribution(identity.role)?;
+        // #1252 S1 step 2 — the same decisions, stated a second way. The origin
+        // is built from the request context this funnel already holds
+        // (`identity`, plus the wave being written), never from the values
+        // above, so the two derivations are independent.
         //
         // `wave.id` is the wave whose report this call resolved
         // (`mcp_server::tools::wave_report::resolve_report_for_caller` reads it
-        // off the caller's own card), which is also what the probe above gates
-        // on — not `identity.wave_id`, the wave identity resolution attached to
-        // the principal. `AgentOrigin`'s docs keep those two apart.
+        // off the caller's own card) — not `identity.wave_id`, the wave
+        // identity resolution attached to the principal. `AgentOrigin`'s docs
+        // keep those two apart, and since the recorder probe is now built out
+        // of `AgentOrigin::wave_id`, this line is what the gate checks the
+        // acting session's card against.
         //
-        // `recorder_shadow.is_some()` is read off the binding passed to
-        // `persist_report_with_shadow` below, so a future arm that drops the
-        // probe for one role fails this check instead of writing ungated.
+        // `AgentOrigin::wave_id` is required, and this funnel owes the refusal
+        // for an identity that cannot supply a wave — that is `AgentOrigin`'s
+        // documented division of labour. It used to be paid later and by
+        // accident: `to_principal()` answered `None` and
+        // `CardDecisionSinkRecorderShadowProbe::record` turned that `None` into
+        // this same `Forbidden`, inside the write transaction. Now the probe is
+        // built from the origin, whose `wave_id` is always present, so nothing
+        // downstream would notice. Hence the explicit refusal, with the message
+        // the probe used to produce.
+        if identity.wave_id.is_none() {
+            return Err(CalmError::Forbidden(
+                "recorder gate requires an agent principal".into(),
+            ));
+        }
         let origin = WriteOrigin::Agent(AgentOrigin {
             card_id: CardId::from(identity.card_id.clone()),
             role: identity.role,
             provider: identity.provider.clone(),
             session_id: WorkerSessionId::from(identity.session_id.clone()),
             wave_id: wave.id.clone(),
+            cove_id: CoveId::from(identity.cove_id.clone()),
         });
-        verify_legacy_write_arguments(
+        // Everything below writes with what the check *returned*. The recorder
+        // probe in particular is never assembled here, so there is no binding
+        // for a later arm to shadow with `None` for one role — the mutation
+        // that got the first cut of this step rejected.
+        let (actor, author, auto_promote_draft, recorder_shadow) = verify_legacy_write_arguments(
             SITE_MCP_DECISION_SINK,
             &origin,
-            &actor,
-            author,
-            auto_promote_draft,
-            recorder_shadow.is_some(),
-        )?;
+            &legacy_actor,
+            legacy_author,
+            legacy_auto_promote_draft,
+        )?
+        .into_parts();
         persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
@@ -527,6 +539,35 @@ fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError
                 "card role {role:?} may not write the wave report"
             )));
         }
+    })
+}
+
+/// #1252 S1 step 2 — the recorder probe for an agent-channel report write,
+/// built from the [`AgentOrigin`] and from nothing else.
+///
+/// Called only by `wave_report_origin::verify_legacy_write_arguments`, which
+/// hands the result to the call site through
+/// `LegacyWriteArguments::into_parts`. No production call site assembles a
+/// probe of its own any more, which is the whole point: the probe's target wave
+/// and the origin's wave cannot disagree, because there is one of them.
+///
+/// `principal.wave_id` is the target wave rather than
+/// `ToolCallIdentity::wave_id`, which is what production used to put there.
+/// The two are equal on every production input (both resolve to the acting
+/// card's `cards.wave_id`), and `decide_recorder` reads neither — it
+/// destructures `Principal::Agent { session_id, .. }` and takes the target wave
+/// as its own argument, which [`RecorderShadowProbe`] supplies from
+/// `wave_id` below. So this is a change of *provenance*, not of behaviour: the
+/// principal is now derived from the same origin as everything else the check
+/// hands out.
+pub(crate) fn recorder_probe_for_agent(agent: &AgentOrigin) -> Arc<dyn RecorderShadowProbe> {
+    Arc::new(CardDecisionSinkRecorderShadowProbe {
+        principal: Some(Principal::Agent {
+            session_id: agent.session_id.clone(),
+            wave_id: agent.wave_id.clone(),
+            cove_id: agent.cove_id.clone(),
+        }),
+        wave_id: agent.wave_id.clone(),
     })
 }
 
