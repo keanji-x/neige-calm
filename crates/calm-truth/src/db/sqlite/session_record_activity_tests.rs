@@ -57,6 +57,7 @@ async fn seed_session_with_thread(
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

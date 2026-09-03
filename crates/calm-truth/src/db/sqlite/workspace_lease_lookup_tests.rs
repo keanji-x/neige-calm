@@ -29,6 +29,7 @@ async fn seed_track(repo: &SqlxRepo) -> String {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

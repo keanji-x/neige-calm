@@ -6847,6 +6847,21 @@
             ],
             "description": "Server-owned structural marker. Public track creation cannot set this."
           },
+          "recipe_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user recipe ([`TrackRecipe`]) this track was instantiated from.\n\nDeliberately not `template_id`: that field is resolved against running\nplugins' manifests to recover a bound template descriptor, and a recipe\nhas no manifest to match, so a recipe id there would make every\nrecipe-created track report a resolution failure for an entirely normal\nsituation. It is recorded on the track rather than derived because\ninstantiation is a value copy — once the recipe is edited or deleted\nthere is nothing left to derive the origin from.\n\nMay name a recipe that no longer exists. That is not a broken link to\nrepair: it is the truthful answer to \"where did this come from\"."
+          },
+          "recipe_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The recipe's `revision` at the moment this track was created. Frozen:\nlater edits to the recipe bump the recipe's revision and leave this\nalone, which is what makes it identify a version rather than a row."
+          },
           "sort": {
             "type": "number",
             "format": "double"

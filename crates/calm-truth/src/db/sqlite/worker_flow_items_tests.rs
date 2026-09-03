@@ -43,6 +43,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await

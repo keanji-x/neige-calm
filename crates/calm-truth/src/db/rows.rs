@@ -85,15 +85,16 @@ impl From<AreaFolderRow> for AreaFolder {
 /// `tracks` replay of the `CardRow` incident. One const kills the class.
 /// Use [`TRACK_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
 pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
-     plugin_scope, purpose, template_input, terminal_at, workspace_kind, workspace_path, \
-     workspace_frozen_at, created_at, updated_at";
+     plugin_scope, purpose, template_input, terminal_at, recipe_id, recipe_revision, \
+     workspace_kind, workspace_path, workspace_frozen_at, created_at, updated_at";
 
 /// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
 /// `#[sqlx(flatten)]` / `FromRow` still resolve the *unqualified* names, so the
 /// two lists must stay in lockstep — `track_select_columns_lists_agree` pins that.
 pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
-     w.workspace_kind, w.workspace_path, w.workspace_frozen_at, w.created_at, w.updated_at";
+     w.recipe_id, w.recipe_revision, w.workspace_kind, w.workspace_path, \
+     w.workspace_frozen_at, w.created_at, w.updated_at";
 
 /// Row mirror of [`Track`].
 #[derive(Debug, sqlx::FromRow)]
@@ -117,6 +118,14 @@ pub struct TrackRow {
     #[sqlx(json(nullable))]
     pub template_input: Option<serde_json::Value>,
     pub terminal_at: Option<i64>,
+    /// #1292 S3 — migration 0085. The user recipe this track was instantiated
+    /// from, and the recipe revision that was current at that moment. Both
+    /// NULL for every other creation source; a DB CHECK refuses one-without-
+    /// the-other. `recipe_id` may name a recipe that has since been edited or
+    /// deleted — the track holds a copy, so the id is a record of origin, not
+    /// a live reference.
+    pub recipe_id: Option<String>,
+    pub recipe_revision: Option<i64>,
     /// #1147 S1 — migration 0077. The three columns behind [`TrackWorkspace`].
     /// `workspace_path` is the only stored copy of the path; the old `cwd`
     /// column was dropped by that same migration.
@@ -146,6 +155,8 @@ impl From<TrackRow> for Track {
             purpose: r.purpose,
             template_input: r.template_input,
             terminal_at: r.terminal_at,
+            recipe_id: r.recipe_id,
+            recipe_revision: r.recipe_revision,
             workspace: TrackWorkspace {
                 kind: r.workspace_kind,
                 path: r.workspace_path,
@@ -165,6 +176,31 @@ mod track_select_columns_tests {
     /// name — nothing added, nothing dropped, same order. Without this the two
     /// consts drift and the aliased `track_detail` SELECT silently loses a
     /// column at runtime, which is the exact failure the consts exist to stop.
+    ///
+    /// # Read this before trusting a green run here
+    ///
+    /// **This test defends the consistency of the two constants with each
+    /// other. It does not defend the consistency of either constant with
+    /// [`TrackRow`] or with the `tracks` table.**
+    ///
+    /// It never looks at `TrackRow`'s fields and never looks at the schema. So
+    /// the most natural mistake — adding a field to `TrackRow` and forgetting
+    /// *both* lists — leaves this test green, and the SELECTs then fail at
+    /// runtime with `no column found for name: …`, because `query_as` binds by
+    /// name when the query runs, not when it compiles. What it does catch is any
+    /// asymmetry between the two lists — it compares names *and* order after
+    /// stripping the `w.` prefix, so a one-sided drop, a one-sided addition, a
+    /// one-sided rename and a one-sided reorder all turn it red. What escapes it
+    /// is both lists missing the same column.
+    ///
+    /// The thing that catches a symmetric omission is a test that actually
+    /// executes a SELECT and reads the new column back. #1292 S3 added two,
+    /// one per constant, in
+    /// `calm-server/tests/cases/track_recipe_instantiate.rs`:
+    /// `a_recipe_created_track_records_which_recipe_and_which_revision` covers
+    /// [`TRACK_SELECT_COLUMNS`] and `the_track_detail_route_carries_the_provenance`
+    /// covers [`TRACK_SELECT_COLUMNS_W`]. If you add a column here, add a read
+    /// assertion there too — green here is not the same as safe.
     #[test]
     fn track_select_columns_lists_agree() {
         let plain: Vec<String> = TRACK_SELECT_COLUMNS

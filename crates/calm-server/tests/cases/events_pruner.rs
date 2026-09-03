@@ -151,6 +151,7 @@ async fn seed_track_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                     },
                     None,
                     &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
                     &track_area_cache,
                 )
                 .await?;

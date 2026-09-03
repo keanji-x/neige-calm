@@ -409,7 +409,7 @@ async fn today_launchpad_ensure_tx(
         (Track { id:id.into(), area_id:area_id.to_string().into(), title:"Today".into(), sort,
             archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd_wire_alias:String::new(),
             template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
-            terminal_at:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
+            terminal_at:None, recipe_id:None, recipe_revision:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };
 
     // #1147 — ONE workspace writer for all three branches, so the launchpad's

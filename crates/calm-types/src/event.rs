@@ -3023,6 +3023,8 @@ mod scope_tests {
             purpose: None,
             template_input: None,
             terminal_at: None,
+            recipe_id: None,
+            recipe_revision: None,
             workspace: Default::default(),
             created_at: 0,
             updated_at: 0,

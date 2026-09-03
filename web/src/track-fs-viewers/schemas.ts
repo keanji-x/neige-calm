@@ -196,6 +196,16 @@ const trackFsTrackObjectSchema = z.object({
   template_input: z.unknown().default(null),
   terminal_at: z.number().nullable(),
   /**
+   * #1292 S3 — server-owned recipe provenance (which user recipe, which
+   * revision of it). Defaulted to `null` like `template_id` above: this
+   * reader's input is `track.json` snapshots already on disk, and the ones
+   * written before #1292 carry neither key. The schema is `.strict()`, so
+   * post-#1292 snapshots would be rejected outright if the keys were not
+   * declared here at all.
+   */
+  recipe_id: z.string().nullable().default(null),
+  recipe_revision: z.number().nullable().default(null),
+  /**
    * Defaulted so `track.json` snapshots written before #1147 keep parsing —
    * mirrors `#[serde(default)]` on `Track.workspace` and the DB defaults in
    * migration 0077.

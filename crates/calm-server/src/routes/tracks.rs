@@ -32,11 +32,11 @@ use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, TrackWorkspacePlan, area_folder_create_tx,
-    area_folders_list_all_tx, card_create_with_id_tx, card_update_with_crdt_tx,
-    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx,
-    project_tasks_tx, terminal_delete_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
-    track_update_tx,
+    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, TrackRecipeOrigin, TrackWorkspacePlan,
+    area_folder_create_tx, area_folders_list_all_tx, card_create_with_id_tx,
+    card_update_with_crdt_tx, overlay_delete_by_entity_tx,
+    overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, project_tasks_tx,
+    terminal_delete_tx, track_create_tx, track_delete_tx, track_recipe_get_tx, track_update_tx,
 };
 use crate::db::{RepoRead, write_with_actor_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -1243,9 +1243,45 @@ async fn create_track_structure(
                 )
                 .await?;
 
-                let track =
-                    track_create_tx(tx, p, None, &workspace_plan, write_for_tx.area_cache())
-                        .await?;
+                // #1292 S2/S3 — the recipe is read here, *before* the track
+                // row, and read once.
+                //
+                // Inside this transaction, like `Fork` and unlike `Template`:
+                // the row can be edited or deleted concurrently, so the create
+                // must see one consistent version of it rather than one read
+                // before the tx and a different reality inside.
+                //
+                // Before the insert rather than alongside the report snapshot
+                // below, because S3 stamps the recipe's `revision` onto the
+                // track row itself and that value has to be in hand when the
+                // INSERT runs. Reading it twice — once for provenance, once for
+                // the report — would let a concurrent edit land between the two
+                // and produce a track whose recorded revision does not describe
+                // the report it actually got.
+                let recipe_source = match &init {
+                    TrackInit::Recipe { recipe_id } => {
+                        Some(track_recipe_get_tx(tx, recipe_id).await?.ok_or_else(|| {
+                            CalmError::BadRequest(format!(
+                                "track create: recipe `{recipe_id}` does not exist"
+                            ))
+                        })?)
+                    }
+                    _ => None,
+                };
+                let recipe_origin = recipe_source.as_ref().map(|recipe| TrackRecipeOrigin {
+                    recipe_id: recipe.id.clone(),
+                    revision: recipe.revision,
+                });
+
+                let track = track_create_tx(
+                    tx,
+                    p,
+                    None,
+                    &workspace_plan,
+                    recipe_origin.as_ref(),
+                    write_for_tx.area_cache(),
+                )
+                .await?;
                 let track_id = track.id.clone();
                 let area_id = track.area_id.clone();
 
@@ -1253,22 +1289,29 @@ async fn create_track_structure(
                 // mechanism. `Template` builds from a constant and needs no
                 // database read; `Fork` reads the source track inside this same
                 // transaction, exactly as before.
-                let init_snapshot = match &init {
-                    TrackInit::Blank => None,
-                    TrackInit::Template { key } => Some(prepare_template_report(key)?),
-                    TrackInit::Recipe { recipe_id } => {
-                        // Read inside this transaction, like `Fork` and unlike
-                        // `Template`: the row can be edited or deleted
-                        // concurrently, so the create must see one consistent
-                        // version of it rather than one read before the tx and
-                        // a different reality inside.
-                        let recipe = track_recipe_get_tx(tx, recipe_id)
-                            .await?
-                            .ok_or_else(|| {
-                                CalmError::BadRequest(format!(
-                                    "track create: recipe `{recipe_id}` does not exist"
-                                ))
-                            })?;
+                //
+                // Matched on `(&init, recipe_source)` as one value so the
+                // `Recipe` arm binds its recipe by pattern. The read has to
+                // happen above (its `revision` is needed before the INSERT, and
+                // reading twice would let a concurrent edit split the recorded
+                // revision from the report), which leaves two places that both
+                // depend on `init` being `Recipe`. Pairing them in the scrutinee
+                // is what keeps the dependency visible here instead of resting
+                // on an `expect` that reads as unconditional.
+                let init_snapshot = match (&init, recipe_source) {
+                    (TrackInit::Blank, _) => None,
+                    (TrackInit::Template { key }, _) => Some(prepare_template_report(key)?),
+                    (TrackInit::Recipe { recipe_id }, None) => {
+                        // The read above is driven by the same `init`, so this
+                        // arm needs the read to have been skipped on the very
+                        // value that selects it. Not a caller error, so not a
+                        // 400.
+                        return Err(CalmError::Internal(format!(
+                            "track create: recipe `{recipe_id}` was resolved to a Recipe init \
+                             without the recipe row the same `init` was supposed to read"
+                        )));
+                    }
+                    (TrackInit::Recipe { recipe_id }, Some(recipe)) => {
                         // The stored body is already normalized — the write
                         // boundary did it (`routes::track_recipes`). Nothing is
                         // re-normalized here, which is what makes "what the
@@ -1279,7 +1322,36 @@ async fn create_track_structure(
                             TrackReportPayload::new(recipe.title, recipe.body),
                         )?)
                     }
-                    TrackInit::Fork { source_track_id } => {
+                    (TrackInit::Fork { source_track_id }, _) => {
+                    // #1292 S3 — a fork records no recipe provenance, and that
+                    // holds even when the fork source was itself recipe-born or
+                    // when this very request also named a `recipe_id` (that
+                    // combination resolves to the fork, the same way
+                    // `template_id` + `fork_report_from` does — see
+                    // `explicit_fork_report_from_is_not_overwritten`), which is
+                    // why the `_` here is a decision rather than a leftover.
+                    //
+                    // `child_track_adapter` refuses to pass provenance down
+                    // because "a recipe id here would claim the child carries
+                    // content it never got". A fork of a recipe-born track *did*
+                    // get that content, so that argument does not carry over and
+                    // the reason has to be a different one: `recipe_id` /
+                    // `recipe_revision` name the recipe this track was
+                    // instantiated from, and a fork was instantiated from a
+                    // track. Copying the id here would assert a direct
+                    // instantiation that never happened, and would go on
+                    // asserting it after the fork's report is edited away from
+                    // the recipe's content.
+                    //
+                    // The cost is real and is not being hidden: the `tracks` row
+                    // this arm creates records neither the recipe nor the source
+                    // track — no column on it names either, and this arm writes
+                    // no fork edge anywhere else. Where a fork came from is a
+                    // gap in *fork* provenance; it is a different column than
+                    // this one, and stamping a recipe id the track was not
+                    // instantiated from would not close it.
+                    //
+                    // Pinned by `a_fork_of_a_recipe_born_track_has_no_provenance`.
                     let source_track_id = source_track_id.as_str();
                     let source_id = TrackId::from(source_track_id.to_string());
                     let source_track = track_get_tx(tx, &source_id).await.map_err(|error| {

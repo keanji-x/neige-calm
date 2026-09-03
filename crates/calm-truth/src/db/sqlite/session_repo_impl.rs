@@ -327,6 +327,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
             p,
             None,
             &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+            None,
             &self.track_area_cache,
         )
         .await?;

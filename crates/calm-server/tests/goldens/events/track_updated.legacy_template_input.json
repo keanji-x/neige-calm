@@ -34,7 +34,9 @@
         "kind": "attached",
         "path": "",
         "frozen_at": null
-      }
+      },
+      "recipe_id": null,
+      "recipe_revision": null
     }
   }
 }

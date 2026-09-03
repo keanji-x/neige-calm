@@ -130,11 +130,47 @@ impl AttachedInheritedPath {
     }
 }
 
+/// #1292 S3 — which user recipe, at which revision, a track is being built
+/// from.
+///
+/// One parameter carrying both halves, rather than two fields on [`NewTrack`],
+/// for two reasons.
+///
+/// It is server-owned. [`NewTrack`] is the caller-supplied shape; `purpose` and
+/// `workspace_plan` are already parameters for exactly this reason. Provenance
+/// is read out of the `track_recipes` row inside the creating transaction, never
+/// taken from a request body — a client that could name its own origin could
+/// claim any origin.
+///
+/// And it makes the pair indivisible for writers that go through
+/// [`track_create_tx`]'s parameter: two `Option` fields admit two states the
+/// system has no reading for, one `Option<Self>` admits neither.
+///
+/// That is strictly narrower than what migration 0085's cross-column CHECK
+/// does, and the two are not interchangeable. The CHECK binds every writer of
+/// the `tracks` row. This type binds only this parameter — [`TrackRow`] and
+/// [`Track`] each carry two independent `Option`s and copy them straight
+/// through, so a half-pair already in the database would flow out through
+/// `GET /api/tracks/{id}` unvalidated. The database is the layer that keeps
+/// one from getting there.
+///
+/// [`TrackRow`]: crate::db::rows::TrackRow
+/// [`Track`]: crate::model::Track
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackRecipeOrigin {
+    pub recipe_id: String,
+    /// The recipe's `revision` as read in this transaction. Frozen on the track
+    /// from here on: later edits bump the recipe's own revision and leave this
+    /// value alone, which is what makes it name a version rather than a row.
+    pub revision: i64,
+}
+
 pub async fn track_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewTrack,
     purpose: Option<&str>,
     workspace_plan: &TrackWorkspacePlan,
+    recipe_origin: Option<&TrackRecipeOrigin>,
     track_area_cache: &TrackAreaCache,
 ) -> Result<Track> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM areas WHERE id = ?1")
@@ -179,10 +215,17 @@ pub async fn track_create_tx(
     // child that inherited a budget of its own (which a DB DEFAULT would have
     // given it) would hand each sub-track a fresh tree budget and make the
     // whole-tree bound vacuous.
+    //
+    // #1292 S3 — `recipe_id` / `recipe_revision` are stamped from
+    // [`TrackRecipeOrigin`], which is `None` for every creation source other
+    // than "instantiate a user recipe". They are written here, in the same
+    // statement as the row they describe, because instantiation is a value
+    // copy: after this the recipe can be edited or deleted and nothing else
+    // remembers where the track came from.
     sqlx::query(
         r#"INSERT INTO tracks
-           (id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)"#,
+           (id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11, ?12, ?13)"#,
     )
     .bind(&id)
     .bind(p.area_id.as_str())
@@ -193,6 +236,8 @@ pub async fn track_create_tx(
     .bind(p.plugin_scope.as_deref())
     .bind(purpose)
     .bind(p.template_input.as_ref().map(|v| v.to_string()))
+    .bind(recipe_origin.map(|o| o.recipe_id.as_str()))
+    .bind(recipe_origin.map(|o| o.revision))
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -253,6 +298,8 @@ pub async fn track_create_tx(
         purpose: purpose.map(str::to_owned),
         template_input: p.template_input,
         terminal_at: None,
+        recipe_id: recipe_origin.map(|o| o.recipe_id.clone()),
+        recipe_revision: recipe_origin.map(|o| o.revision),
         workspace,
         created_at: now,
         updated_at: now,

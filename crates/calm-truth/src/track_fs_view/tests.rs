@@ -778,6 +778,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         },
         None,
         &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        None,
         repo.track_area_cache(),
     )
     .await
