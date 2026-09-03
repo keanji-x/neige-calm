@@ -281,6 +281,85 @@ run_marked_discarded_side_case() {
   echo "PASS merge history: discarding a marked side change did not require a merge marker"
 }
 
+run_default_branch_state_merge_case() {
+  local repo="$temp_root/default-branch-state-merge"
+  local base_sha
+
+  new_fixture_repo "$repo"
+  printf 'feature-only change\n' > "$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -qm 'unrelated feature change'
+  git -C "$repo" switch -q main
+  printf 'unmarked state already on default branch\n' \
+    > "$repo/crates/calm-server/tests/vectors/case.json"
+  git -C "$repo" commit -qam 'default-branch vector change already accepted upstream'
+  base_sha="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" update-ref refs/remotes/origin/main HEAD
+  git -C "$repo" switch -q feature
+  git -C "$repo" merge -q --no-ff main -m 'merge current main into feature'
+  git -C "$repo" switch -q main
+  git -C "$repo" merge -q --no-ff feature -m 'synthetic pull-request merge'
+
+  BASE_SHA="$base_sha" DEFAULT_BRANCH=main "$gate" "$repo" >/dev/null
+  echo "PASS merge provenance: trusted default-branch state did not require a duplicate marker"
+}
+
+run_unmarked_branch_merge_case() {
+  local repo="$temp_root/unmarked-branch-merge"
+  local base_sha
+  local merge_rc
+  local merge_sha
+  local output
+  local rc
+
+  new_fixture_repo "$repo"
+  printf 'marked feature state\n' > "$repo/crates/calm-server/tests/vectors/case.json"
+  git -C "$repo" commit -qam $'marked feature vector state\n\nFROZEN-VECTOR-CHANGE: fixture feature rationale'
+  git -C "$repo" switch -q main
+  printf 'unmarked state already on default branch\n' \
+    > "$repo/crates/calm-server/tests/vectors/case.json"
+  git -C "$repo" commit -qam 'default-branch vector change already accepted upstream'
+  base_sha="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" update-ref refs/remotes/origin/main HEAD
+  git -C "$repo" switch -q feature
+
+  set +e
+  git -C "$repo" merge -q --no-ff main -m 'start conflicting upstream merge' >/dev/null 2>&1
+  merge_rc=$?
+  set -e
+  if [ "$merge_rc" -eq 0 ]; then
+    echo "selftest failure: unmarked branch-merge fixture did not produce the intended conflict" >&2
+    exit 1
+  fi
+  printf 'third unmarked branch-merge state\n' \
+    > "$repo/crates/calm-server/tests/vectors/case.json"
+  git -C "$repo" add crates/calm-server/tests/vectors/case.json
+  git -C "$repo" commit -qm 'unmarked branch merge resolution'
+  merge_sha="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" switch -q main
+  git -C "$repo" merge -q --no-ff feature -m 'synthetic pull-request merge'
+
+  set +e
+  output="$(BASE_SHA="$base_sha" DEFAULT_BRANCH=main "$gate" "$repo" 2>&1)"
+  rc=$?
+  set -e
+
+  if [ "$rc" -ne 1 ]; then
+    printf '%s\n' "$output"
+    echo "selftest failure: unmarked branch merge exited $rc; expected 1" >&2
+    exit 1
+  fi
+  case "$output" in
+    *"commit $merge_sha touches crates/calm-server/tests/vectors/ without"*) ;;
+    *)
+      printf '%s\n' "$output"
+      echo "selftest failure: trusted base laundered unmarked branch merge $merge_sha" >&2
+      exit 1
+      ;;
+  esac
+  echo "PASS merge provenance: trusted base could not launder an unmarked third-state merge"
+}
+
 run_merge_resolution_violation_case() {
   local repo="$temp_root/merge-resolution-violation"
   local merge_rc
@@ -645,6 +724,8 @@ run_rewind_case
 run_merge_history_violation_case
 run_valid_merge_history_case
 run_marked_discarded_side_case
+run_default_branch_state_merge_case
+run_unmarked_branch_merge_case
 run_merge_resolution_violation_case
 run_stale_parent_merge_case
 run_reverse_parent_range_case
