@@ -478,11 +478,17 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
    * Owner call, 2026-09-03.
    */
   if (!written) {
-    // Body text, not a dashed box. The box drew a container around a sentence
-    // whose whole content is that there is no container yet — it framed an
-    // absence and made the empty day look like a broken widget.
+    /*
+     * The empty day is centred and set in the report's own face.
+     *
+     * Not a box and not a top-left line of hint text: this sentence stands
+     * where the document will stand, so it is the document's typography — serif,
+     * one rank up — placed in the middle of the space the document would fill.
+     * A dashed frame used to be here; it drew a container around a sentence
+     * whose entire content is that there is no container yet.
+     */
     return (
-      <div className={styles.document}>
+      <div className={`${styles.document} ${styles.documentVacant}`}>
         <p className={styles.documentEmpty}>{NO_PROGRESS_YET}</p>
         {trigger}
       </div>

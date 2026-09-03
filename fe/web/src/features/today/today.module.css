@@ -181,13 +181,28 @@
      module directly beside it in the same card — and the document's is
      `.documentEmpty` below. Neither is framed any more. */
 
-  /* The document's own empty line: body text, no frame. It is a sentence in the
-     document's place, not a widget reporting that it has nothing — so it takes
-     the document's size and only steps the colour back. */
+  /* The empty day: the document region with nothing in it yet, so the sentence
+     that says so sits in the middle of the space the document would have
+     filled. `flex: 1` is what claims that space — the main column stopped
+     having anything below this region when the terminal placeholder went, so
+     there is room to be in the middle of. */
+  .documentVacant {
+    flex: 1 1 auto;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    min-block-size: var(--slot-h);
+  }
+
+  /* The document's own empty line. It is a sentence standing where the document
+     will stand, not a widget reporting that it has nothing — so it is set in
+     the report's face (`.calm-prose` is serif at `--text-lg`) and one rank
+     larger, with only the colour stepped back. No frame. */
   .documentEmpty {
-    font-size: inherit;
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
     font-weight: var(--weight-normal);
-    line-height: inherit;
+    line-height: var(--leading-snug);
     color: var(--text-3);
   }
 
