@@ -502,8 +502,10 @@ jobs:
         run: |
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           # Persistent hosts can have /tmp fixtures owned by another user.
-          # RUNNER_TEMP is job-scoped, writable, and cleaned by the runner.
-          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          # Keep this path short: several tests create Unix sockets below it,
+          # and RUNNER_TEMP is long enough to exceed sockaddr_un.sun_path.
+          tmpdir=$(mktemp -d /tmp/ncr.XXXXXX)
+          echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
 
       # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
       # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
@@ -569,7 +571,16 @@ jobs:
         #   has 0 doctests — every doc fence carries a non-rust language tag
         #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
         #   are ever introduced, add a `cargo test --doc` step alongside.
-        run: cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci
+        run: |
+          set -euo pipefail
+          extra_args=()
+          # This is a shared 48-thread production host. Unbounded nextest
+          # concurrency starves the real PTY/supervisor liveness test and the
+          # repository's nextest config explicitly requires a local cap.
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            extra_args+=(--test-threads 4)
+          fi
+          cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci "${extra_args[@]}"
 
       # #679 PR0-D — migration-replay gate, made explicit so a failure is
       # attributable at a glance. Re-runs the snapshot replay harness: every
@@ -614,6 +625,14 @@ jobs:
           path: ${{ env.CARGO_TARGET_DIR }}/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: clean self-hosted Rust temp directory
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          case "${TMPDIR:-}" in
+            /tmp/ncr.??????) rm -rf -- "$TMPDIR" ;;
+            *) echo "::error::refusing to clean unexpected TMPDIR: ${TMPDIR:-<unset>}"; exit 1 ;;
+          esac
 
   # #903 — the `web (build + test + a11y)` job split into a parallel pair
   # (this `web-unit` + `a11y` below) to kill the serial bottleneck: vitest
