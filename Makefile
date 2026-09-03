@@ -212,7 +212,9 @@ $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(W
 $(NODE_MODULES_STAMP): $(WORKTREE)/web/package-lock.json
 	cd $(WORKTREE)/web && npm ci --legacy-peer-deps
 
-$(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html $(NODE_MODULES_STAMP)
+# The legacy persister imports the shared IDB name from fe/core. Keep this
+# narrow cross-bundle contract in the legacy dist dependency graph as well.
+$(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/fe/core/keys/storage.ts $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html $(NODE_MODULES_STAMP)
 	cd $(WORKTREE)/web && npm run build
 
 $(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json

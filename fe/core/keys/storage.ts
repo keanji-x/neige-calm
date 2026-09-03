@@ -9,6 +9,8 @@ declare const storageKeyBrand: unique symbol;
 
 export type StorageKey = string & { readonly [storageKeyBrand]: true };
 
+/** Shared with the legacy query persister until that persisted cache is retired. */
+export const IDB_DB_NAME = 'neige-calm';
 export const SYNC_CURSOR_KEY = 'calm:sync:cursor' as StorageKey;
 export const DB_INSTANCE_ID_KEY = 'calm:db_instance_id' as StorageKey;
 export const THEME_KEY = 'calm.theme' as StorageKey;

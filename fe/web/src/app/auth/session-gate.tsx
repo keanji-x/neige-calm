@@ -11,10 +11,27 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import { resolveSessionProbe, type SessionProbeState } from '../../../../core/api/session.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { useState } from '../../ui/state/public.ts';
+import type { ProviderRuntime } from '../providers/public.tsx';
 
-export function SessionGate({ children, transport, unauthorized, client, renderLogin, renderError }: Readonly<{
+type SessionCleanupRuntime = Pick<ProviderRuntime, 'deleteDatabase' | 'idbDatabaseName'>;
+type SessionCursorStore = Pick<SyncCursorPort, 'clear'>;
+
+/** Clears every artifact whose ownership ends with the current session. */
+export function clearSessionArtifacts(
+  client: QueryClient,
+  cursorStore: SessionCursorStore,
+  runtime: SessionCleanupRuntime,
+): void {
+  try { client.clear(); } catch { /* cleanup is best-effort */ }
+  try { cursorStore.clear(); } catch { /* storage may be unavailable */ }
+  try { runtime.deleteDatabase(runtime.idbDatabaseName); } catch { /* indexedDB may be unavailable */ }
+}
+
+export function SessionGate({ children, transport, unauthorized, client, runtime, cursorStore, renderLogin, renderError }: Readonly<{
   children: ReactNode; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; client: QueryClient;
+  runtime: SessionCleanupRuntime; cursorStore: SessionCursorStore;
   renderLogin: () => ReactNode; renderError: (retry: () => void) => ReactNode;
 }>) {
   const [state, setState] = useState<SessionProbeState<unknown>>({ status: 'unknown' });
@@ -29,10 +46,13 @@ export function SessionGate({ children, transport, unauthorized, client, renderL
     setState({ status: 'unknown' });
     // The probe's 401 is an expected session verdict, so it must not broadcast.
     void performApiRequest(transport, { ...whoamiOperation(), signal: controller.signal }, undefined).then((result) => {
-      if (mounted.current && epoch.current === probeEpoch) setState(resolveSessionProbe(result));
+      if (!mounted.current || epoch.current !== probeEpoch) return;
+      const verdict = resolveSessionProbe(result);
+      if (verdict.status === 'unauthed') clearSessionArtifacts(client, cursorStore, runtime);
+      setState(verdict);
     });
     return () => { controller.abort(); if (activeProbe.current === controller) activeProbe.current = null; };
-  }, [transport]);
+  }, [client, cursorStore, runtime, transport]);
   useEffect(() => {
     mounted.current = true;
     const cancel = probe();
@@ -42,9 +62,9 @@ export function SessionGate({ children, transport, unauthorized, client, renderL
     epoch.current += 1;
     activeProbe.current?.abort();
     activeProbe.current = null;
-    client.clear();
+    clearSessionArtifacts(client, cursorStore, runtime);
     setState({ status: 'unauthed' });
-  }), [client, unauthorized]);
+  }), [client, cursorStore, runtime, unauthorized]);
   if (state.status === 'unknown') return null;
   if (state.status === 'unauthed') return renderLogin();
   if (state.status === 'error') return renderError(probe);

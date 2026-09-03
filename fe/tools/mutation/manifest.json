@@ -1108,18 +1108,43 @@
   {
     "mutation_id": "session-gate-drop-query-cache-clear",
     "defends": [
-      "oracle:INV-APP-114"
+      "oracle:INV-APP-114",
+      "oracle:CAP-APP-064"
     ],
     "target": "web/src/app/auth/session-gate.tsx",
-    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\nindex e557edb4..283a6a26 100644\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -42,7 +42,6 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n     epoch.current += 1;\n     activeProbe.current?.abort();\n     activeProbe.current = null;\n-    client.clear();\n     setState({ status: 'unauthed' });\n   }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n",
+    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -24,7 +24,6 @@ export function clearSessionArtifacts(\n   cursorStore: SessionCursorStore,\n   runtime: SessionCleanupRuntime,\n ): void {\n-  try { client.clear(); } catch { /* cleanup is best-effort */ }\n   try { cursorStore.clear(); } catch { /* storage may be unavailable */ }\n   try { runtime.deleteDatabase(runtime.idbDatabaseName); } catch { /* indexedDB may be unavailable */ }\n }\n",
     "expected_red": [
-      "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
+      "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401",
+      "session gate contracts CAP-APP-064 clears query data, the sync cursor, and IndexedDB in order before rendering login",
+      "session gate contracts clears session artifacts before rendering login for an initial unauthenticated verdict",
+      "production app mount clears every session artifact after logout completion and then reloads the browser"
     ],
     "selection_paths": [
       "web/src/app/auth/session-gate.contract.test.tsx",
+      "web/src/app/auth/production-app.contract.test.tsx",
+      "web/src/app/auth/production-app.tsx",
       "web/src/app/router/test-card-runtime.ts"
     ],
-    "why_more_than_one": "Only the cache assertion should turn red; login rendering remains independently functional after the cache clear is removed."
+    "why_more_than_one": "The original global-401 assertion observes the missing cache clear directly; the CAP-APP-064 test, the initial unauthenticated verdict, and the successful sign-out path independently observe that their ordered cleanup lost its first step. Cursor clearing, IndexedDB deletion, and login or reload remain functional."
+  },
+  {
+    "mutation_id": "session-gate-drop-sync-cursor-clear",
+    "defends": [
+      "oracle:CAP-APP-064"
+    ],
+    "target": "web/src/app/auth/session-gate.tsx",
+    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -25,6 +25,5 @@ export function clearSessionArtifacts(\n   runtime: SessionCleanupRuntime,\n ): void {\n   try { client.clear(); } catch { /* cleanup is best-effort */ }\n-  try { cursorStore.clear(); } catch { /* storage may be unavailable */ }\n   try { runtime.deleteDatabase(runtime.idbDatabaseName); } catch { /* indexedDB may be unavailable */ }\n }\n",
+    "expected_red": [
+      "session gate contracts CAP-APP-064 clears query data, the sync cursor, and IndexedDB in order before rendering login",
+      "session gate contracts clears session artifacts before rendering login for an initial unauthenticated verdict",
+      "production app mount clears every session artifact after logout completion and then reloads the browser"
+    ],
+    "selection_paths": [
+      "web/src/app/auth/session-gate.contract.test.tsx",
+      "web/src/app/auth/production-app.contract.test.tsx",
+      "web/src/app/auth/production-app.tsx"
+    ],
+    "why_more_than_one": "The global unauthorized, initial unauthenticated, and successful sign-out paths independently require the shared cursor cleanup. Cache clearing, IndexedDB deletion, and login or reload remain functional after cursor cleanup is removed."
   },
   {
     "mutation_id": "cards-headless-filter-display-index",
