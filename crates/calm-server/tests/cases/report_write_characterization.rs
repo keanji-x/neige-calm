@@ -111,19 +111,18 @@
 //!   `mcp_report_write_consults_the_recorder_gate_before_it_commits` the
 //!   probe is *not* the only objection (see its doc comment), while
 //!   `mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objection`
-//!   is shaped so that it is — delete the probe and that write succeeds. The
-//!   claim stops at that leg. The *other* one — the `TrackLifecycle` probe
-//!   that fires only when an explicitly requested lifecycle transition
-//!   applies (the `TrackLifecycle` arm in `track_report/write.rs`) — is
-//!   reached by no call in this file:
-//!   `calm.report.write` takes an optional `lifecycle` argument and none of
-//!   the calls below passes it, and `calm.report.blocks.upsert` has no such
-//!   argument at all. Its verdict is not observed elsewhere either, and that
-//!   is an execution result rather than a caller audit: deleting the block
-//!   outright leaves the whole `calm-server` package green (gap 2, item 4).
-//!   The suites that do exercise that leg — `mcp_track_report.rs`'s
-//!   `write_lifecycle_legal_…` and `edit_lifecycle_legal_…` — run it against
-//!   an allowing gate, which is why they cannot notice;
+//!   is shaped so that it is — delete the probe and that write succeeds, and
+//!   that test's doc comment says which caller the "sole" is scoped to;
+//! * the `TrackLifecycle` leg — the probe call that fires only when an
+//!   explicitly requested lifecycle transition applies — is consulted, and
+//!   names its own decision kind when it refuses
+//!   (`mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_first`,
+//!   the only call in this file that passes `calm.report.write`'s optional
+//!   `lifecycle` argument; `calm.report.blocks.upsert` has no such argument).
+//!   Until #1252 nothing drove that leg: the suites that reach it —
+//!   `mcp_track_report.rs`'s `write_lifecycle_legal_…` and
+//!   `edit_lifecycle_legal_…` — run it against an allowing gate, so deleting
+//!   the block outright left the whole `calm-server` package green;
 //! * the decision *kind* is pinned, on the refusal path:
 //!   `mcp_report_write_consults_the_recorder_gate_before_it_commits`
 //!   asserts the refusal message contains `recorder gate denied
@@ -186,24 +185,24 @@
 //! a statement about the MCP door only. Note what the bullets
 //! above already pin, so that step 2 does not go rebuild it: at least one
 //! `ReportWrite` consultation on the MCP path, and that decision kind on
-//! the refusal path. What is unpinned is the *number*, and the
-//! `TrackLifecycle` leg entirely. Each of the following changes was applied
-//! and keeps this suite green — the list is what has been *observed*, not a
-//! claim that nothing else slips through:
+//! the refusal path. What is unpinned is the *number*. Each of the following
+//! changes was applied and keeps this suite green — the list is what has been
+//! *observed*, not a claim that nothing else slips through:
 //!
 //! 1. adding a `TrackLifecycle` `record` call to the auto-promotion branch;
 //! 2. moving the `ReportWrite` `record` call to before the auto-promotion
 //!    branch (a special case of gap 1);
-//! 3. turning the single `ReportWrite` `record` call into several;
-//! 4. **deleting the `TrackLifecycle` `record` block outright** (the
-//!    `RecorderShadowDecisionKind::TrackLifecycle` arm in
-//!    `track_report/write.rs`). This one is categorically worse than
-//!    1–3: those reorder or repeat a gate consultation, this removes one.
-//!    Confirmed by running it — the eight tests here stay green, and so does
-//!    the whole `calm-server` package under
-//!    `--features calm-server/codex-e2e`. What was observed is that run, not
-//!    an audit of callers: nothing in the package went red when the leg was
-//!    removed.
+//! 3. turning the single `ReportWrite` `record` call into several.
+//!
+//! The `TrackLifecycle` leg used to be listed here as a fourth, worse item:
+//! deleting the `RecorderShadowDecisionKind::TrackLifecycle` block from
+//! `track_report/write.rs` removed a gate consultation outright and left
+//! this file — and, on that run, the whole `calm-server` package — green.
+//! #1252 closed that one:
+//! `mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_first`
+//! drives the leg and is the only test that fails under the same deletion,
+//! re-run on this branch. Read that as covering the deletion, not the
+//! numbering: items 1 and 3 still move or multiply that call unnoticed.
 //!
 //! Closing the *count* half of gap 2 needs a counting double on the
 //! production assembly path, and there is no seam for one:
@@ -214,9 +213,8 @@
 //! control group for *whether* the `ReportWrite` leg consults the gate on
 //! the paths it drives, for the kind named in the refusal, and for what a
 //! denial does — and for nothing about how many times the probe is called,
-//! where in the transaction it sits, whether the `TrackLifecycle` leg is
-//! consulted at all, or whether some *other* caller still reaches the probe
-//! (gap 3).
+//! where in the transaction it sits, or whether some *other* caller still
+//! reaches the probe (gap 3).
 //!
 //! **Gap 3 — the probe can be dropped conditionally, per role or per entry
 //! point, and nothing here notices.** This is its own class: not position,
@@ -266,6 +264,7 @@ use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
+use calm_server::ids::TrackId;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_WRITE;
 use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::model::{NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch};
@@ -561,19 +560,21 @@ async fn mcp_report_write_consults_the_recorder_gate_before_it_commits() {
     );
 }
 
-/// Mint a **second** track in the fixture's area, with its own Planner card and
-/// its own live session bound to that card, and register the new card with
-/// the role cache the way production does at boot
+/// Mint a **second** track in the fixture's area, with its own card in
+/// `role` and its own live session bound to that card, and register the new
+/// card with the role cache the way production does at boot
 /// (`Repo::seed_card_role_cache`, the call `AppState::new` makes at
-/// `state.rs:996`).
+/// `state.rs:996`). Returns the foreign track's id, which
+/// `mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_track`
+/// needs to put in a `ToolCallIdentity`.
 ///
-/// The session it seeds is live, card-bound, and Planner-roled — the things the
-/// #770 session-authority resolution
+/// The session it seeds is live and card-bound — the things the #770
+/// session-authority resolution
 /// (`decision_gate::enforce_role_resolving_session`) resolves a session
 /// actor on — but its card lives on the *other* track, and `decide_recorder`
 /// additionally requires `card.track_id == track`
-/// (`crates/calm-truth/src/decision_gate.rs:324`).
-async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) {
+/// (`crates/calm-truth/src/decision_gate.rs:326`).
+async fn seed_foreign_track_session(boot: &Boot, session_id: &str, role: CardRole) -> TrackId {
     let track = boot
         .repo
         .track_create(NewTrack {
@@ -589,7 +590,7 @@ async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) {
         })
         .await
         .expect("mint the foreign track");
-    let planner_card = boot
+    let agent_card = boot
         .repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -599,17 +600,12 @@ async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) {
             payload: Value::Null,
         })
         .await
-        .expect("mint the foreign track's planner card");
-    set_persisted_card_role(
-        boot.repo.as_ref(),
-        planner_card.id.as_str(),
-        CardRole::Planner,
-    )
-    .await;
+        .expect("mint the foreign track's agent card");
+    set_persisted_card_role(boot.repo.as_ref(), agent_card.id.as_str(), role).await;
     seed_non_root_session_with_provider(
         boot.repo.as_ref(),
         &track.id,
-        &planner_card.id,
+        &agent_card.id,
         session_id,
         WorkerProviderKind::Codex,
     )
@@ -618,6 +614,14 @@ async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) {
         .seed_card_role_cache(&boot.card_role_cache)
         .await
         .expect("re-seed the role cache from the cards table");
+    track.id
+}
+
+/// [`seed_foreign_track_session`] for the planner role — the one
+/// `planner_identity` acts under, and the one the three recorder tests below
+/// need on the far track.
+async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) -> TrackId {
+    seed_foreign_track_session(boot, session_id, CardRole::Planner).await
 }
 
 /// The recorder probe as the **sole** reason a write is refused.
@@ -643,6 +647,35 @@ async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) {
 /// *succeed*. That is the whole point — the assertions below are about the
 /// write not happening, not about the wording of the refusal, and the error
 /// message is deliberately not inspected.
+///
+/// **Read "sole" as scoped to a planner-role caller, and do not widen it to
+/// "the MCP boundary".** What makes the probe the only objector here is the
+/// acting card's role, not the tool: `enforce_role_resolving_session`
+/// resolves a planner session to `ActorId::AiPlanner(card)`, and section (3) of
+/// `role_gate::enforce_role` — the only place an ordinary card-scoped event
+/// gets its scope cross-checked — matches on `AiCodex | AiClaude` and never
+/// on `AiPlanner`, so nothing re-checks the acting card's home track. An
+/// `Assistant` caller resolves to `AiCodex` / `AiClaude` instead and lands
+/// in `enforce_assistant_scope`, which *does* consult the acting card's home
+/// track — it admits that card and its home track's report card, and cross-
+/// checks `scope.track` / `scope.area` against that home. So removing the
+/// probe there swaps one denial for another rather than letting the write
+/// through.
+/// `mcp_assistant_block_write_from_a_foreign_track_is_refused_without_the_probe_too`
+/// is that contrast, and the evidence for this paragraph is the pair's
+/// behaviour under one mutation: making
+/// `CardDecisionSinkRecorderShadowProbe::record` return `Ok(())`
+/// unconditionally turns this test red (it receives
+/// `Object {"docRev": Number(1), ...}` where it expected an error) and
+/// leaves that one green.
+///
+/// The role split lines up with the tool split today, which is why "the
+/// `calm.report.write` arm" is a true but weaker way to say it:
+/// `calm.report.write` is `visible_to_roles: &[CardRole::Planner]` and calls
+/// `require_role(&identity, CardRole::Planner)`, so an Assistant cannot reach
+/// it. The block tools take `require_role_any(&[Planner, Assistant])`, so a
+/// *Planner* caller on `calm.report.blocks.upsert` is in the sole-objector case
+/// too. Role is the criterion; the tool is a consequence.
 #[tokio::test]
 async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objection() {
     let boot = boot().await;
@@ -675,6 +708,228 @@ async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objectio
     )
     .await
     .expect_err("the recorder gate refuses a session whose card is on another track");
+
+    assert!(
+        persisted_events(&pool, "track.report_edited")
+            .await
+            .is_empty(),
+        "a denied write persists no edit"
+    );
+    assert!(
+        persisted_events(&pool, "card.updated").await.is_empty(),
+        "a denied write persists no card update either"
+    );
+    assert_eq!(
+        mcp_doc_rev(&boot).await,
+        0,
+        "the document is untouched by a denied write"
+    );
+}
+
+/// The contrast that keeps the test above from being read as a statement
+/// about "the MCP boundary": the same foreign-track shape with an
+/// **Assistant** caller is refused with the probe *and* without it.
+///
+/// Same construction, one field different: the acting session is bound to an
+/// `Assistant` card on the foreign track, so `to_actor_id` produces
+/// `AiCodexSession` and the #770 resolution hands `enforce_role`
+/// `ActorId::AiCodex(foreign card)` — which section (3) of the role gate
+/// does match, sending it into `enforce_assistant_scope`, which allows the
+/// acting card itself plus the report card of the acting card's *home*
+/// track. This track's report card is neither.
+///
+/// This test is deliberately assertion-poor: it says the write does not
+/// land, and nothing about who said no, because on today's code the probe
+/// answers first and the interesting message only appears under a mutation.
+/// That is what makes it usable as a control — under the probe-removal
+/// mutation described on the test above it stays green, which is the whole
+/// of the evidence that the sole-objector claim is about a planner caller
+/// and not about this boundary. The denial that then surfaces was read off
+/// that run rather than off the gate's source: `calm.report.blocks.upsert:
+/// forbidden: assistant card <id> is out of scope scope.card mismatch:
+/// Card { … }` — `RoleViolation::AssistantOutOfScope`.
+#[tokio::test]
+async fn mcp_assistant_block_write_from_a_foreign_track_is_refused_without_the_probe_too() {
+    let boot = boot().await;
+    let pool = mcp_pool(&boot);
+    const FOREIGN_SESSION_ID: &str = "foreign-track-assistant-session";
+    seed_foreign_track_session(&boot, FOREIGN_SESSION_ID, CardRole::Assistant).await;
+
+    let identity = ToolCallIdentity {
+        // This track's assistant card — so the tool resolves this track's
+        // report, exactly as in the planner case.
+        card_id: boot.assistant_card_id.as_str().to_string(),
+        role: CardRole::Assistant,
+        provider: AgentProvider::Codex,
+        // …but the acting session is the foreign track's.
+        session_id: FOREIGN_SESSION_ID.to_string(),
+        track_id: Some(boot.track_id.as_str().to_string()),
+        area_id: boot.area_id.as_str().to_string(),
+        thread_id: "foreign-assistant-thread".to_string(),
+    };
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        identity,
+        json!({
+            "kind": "prose",
+            "markdown": "# Denied\n",
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("an assistant session on another track may not write this report");
+
+    assert!(
+        persisted_events(&pool, "track.report_edited")
+            .await
+            .is_empty(),
+        "a denied write persists no edit"
+    );
+    assert_eq!(
+        mcp_doc_rev(&boot).await,
+        0,
+        "the document is untouched by a denied write"
+    );
+}
+
+/// The probe's `TrackLifecycle` leg, which nothing in this package drove
+/// before: the module header's gap 2 records that deleting the
+/// `RecorderShadowDecisionKind::TrackLifecycle` block from
+/// `track_report/write.rs` left the whole `calm-server` package green.
+///
+/// One write, two probe consultations in `write::persist`: the requested
+/// transition fires first and is gated as `TrackLifecycle`, and only then
+/// does the report edit reach the `ReportWrite` consultation. The refusal
+/// message is the only thing that distinguishes them, so it is what this
+/// asserts — the same foreign-track session as the test above, plus a
+/// `lifecycle` argument, and the denial now names `track_lifecycle`.
+///
+/// The mutation that makes it red is the deletion in gap 2, run: with the
+/// `TrackLifecycle` block gone this is the only test in the file that fails,
+/// and it fails on the message assertion — `recorder gate denied
+/// report_write` where `track_lifecycle` was expected. Deleting a gate
+/// consultation is now visible; before this test the whole package stayed
+/// green.
+#[tokio::test]
+async fn mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_first() {
+    let boot = boot().await;
+    let pool = mcp_pool(&boot);
+    const FOREIGN_SESSION_ID: &str = "foreign-track-planner-session";
+    seed_foreign_track_planner_session(&boot, FOREIGN_SESSION_ID).await;
+    // The fixture track is already Planning, so `dispatching` is a real
+    // transition and `apply_requested_transition_in_tx` returns events —
+    // which is what puts the `TrackLifecycle` leg on this write's path.
+    assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
+
+    // The fixture's own planner identity, with only the acting session
+    // swapped for the far track's.
+    let identity = ToolCallIdentity {
+        session_id: FOREIGN_SESSION_ID.to_string(),
+        thread_id: "foreign-planner-lifecycle-thread".to_string(),
+        ..planner_identity(&boot)
+    };
+
+    let error = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        identity,
+        json!({
+            "body": "# Denied\n",
+            "summary": "denied",
+            "message": "characterization write",
+            "lifecycle": "dispatching",
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("the recorder gate refuses a session whose card is on another track");
+    // Literal message observed on this run; `RecorderShadowDecisionKind::
+    // as_str` is where the two legs' names come from.
+    assert!(
+        error
+            .message
+            .contains("recorder gate denied track_lifecycle"),
+        "the lifecycle leg must be the one that refused; got {error:?}"
+    );
+
+    assert_eq!(
+        lifecycle(&boot).await,
+        TrackLifecycle::Planning,
+        "the refused transition rolled back with the rest of the transaction"
+    );
+    assert!(
+        persisted_events(&pool, "track.lifecycle_changed")
+            .await
+            .is_empty(),
+        "a denied write persists no lifecycle transition"
+    );
+    assert!(
+        persisted_events(&pool, "track.report_edited")
+            .await
+            .is_empty(),
+        "a denied write persists no edit"
+    );
+    assert_eq!(mcp_doc_rev(&boot).await, 0);
+}
+
+/// The track the probe judges is the one being **written**, not the one the
+/// caller's identity claims.
+///
+/// `CardDecisionSink::commit_report_op` builds its
+/// `CardDecisionSinkRecorderShadowProbe` with `track_id: track.id`, from the
+/// `Track` the tool resolved for the write, while the `Principal` it builds
+/// alongside carries `identity.track_id` — the caller's own claim. Both are
+/// in scope at that one construction site, so which one goes into the probe
+/// is a live choice, and `decide_recorder` compares whichever it is handed
+/// against the session's card's home track.
+///
+/// The identity here is internally consistent in a way the test above's is
+/// not: session, card and claimed `track_id` are all the foreign track's.
+/// The only thing out of place is the report it targets, which the tool
+/// resolves from `identity.card_id` (`resolve_report_for_caller`) and which
+/// belongs to this track. So a probe built from the claimed track would
+/// compare the foreign track against the foreign card's home track, agree
+/// with itself, and allow.
+///
+/// The mutation, run: build the probe as `track_id:
+/// TrackId::from(identity.track_id.clone().expect("claimed track"))` instead
+/// of `track.id.clone()`. This test goes red because the write lands — the
+/// `expect_err` receives `Object {"docRev": Number(1), ...}` — and the other
+/// recorder tests in this file stay green, because their identity claims the
+/// track they write.
+#[tokio::test]
+async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_track() {
+    let boot = boot().await;
+    let pool = mcp_pool(&boot);
+    const FOREIGN_SESSION_ID: &str = "foreign-track-planner-session";
+    let foreign_track_id = seed_foreign_track_planner_session(&boot, FOREIGN_SESSION_ID).await;
+    assert_ne!(foreign_track_id, boot.track_id);
+
+    // The fixture's own planner identity — whose `card_id` resolves this
+    // track's report — with every self-description swapped for the far
+    // track's: the acting session, and the claimed `track_id`.
+    let identity = ToolCallIdentity {
+        session_id: FOREIGN_SESSION_ID.to_string(),
+        track_id: Some(foreign_track_id.as_str().to_string()),
+        thread_id: "foreign-planner-claimed-track-thread".to_string(),
+        ..planner_identity(&boot)
+    };
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        identity,
+        json!({
+            "body": "# Denied\n",
+            "summary": "denied",
+            "message": "characterization write",
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("a self-consistent foreign identity may still not write this track's report");
 
     assert!(
         persisted_events(&pool, "track.report_edited")
