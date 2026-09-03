@@ -16,6 +16,11 @@
 
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
+mod timed;
+pub(crate) use timed::{ChildFinishError, finish_within};
+#[cfg(test)]
+pub(crate) use timed::{TEST_DRAIN_STARTED, TEST_REAP_STARTED, TestPhaseObserver};
+
 /// Read `reader` into `buf` with `cap` enforced **before** buffering, then
 /// drain and DISCARD whatever else the child writes.
 ///

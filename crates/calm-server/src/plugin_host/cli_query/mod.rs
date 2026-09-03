@@ -42,7 +42,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::child_process::{SpawnTimedOut, read_capped, set_process_group_leader, spawn_within};
+use super::child_process::{
+    ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
+    spawn_within,
+};
 use super::manifest::{ArgvSlot, CliQueryTool, argv_slot};
 use super::mcp::{CallToolResult, ContentBlock, RpcError};
 
@@ -241,7 +244,7 @@ impl CliQueryRuntime {
             RpcError::internal(format!("cli-query `{}`: stderr not piped", self.plugin_id))
         })?;
 
-        // ---- Phase 2: drain BOTH pipes to EOF. Do NOT wait yet. ------------
+        // ---- Phases 2+3: drain BOTH pipes to EOF, then reap. ----------------
         //
         // Reading before waiting is the order that cannot deadlock: it is what
         // unblocks a child filling a 64 KiB pipe buffer. Waiting FIRST is the
@@ -256,19 +259,23 @@ impl CliQueryRuntime {
         let mut out_buf = Vec::new();
         let mut err_buf = Vec::new();
         let stdout_cap = self.max_output_bytes;
-        let drained = tokio::time::timeout_at(deadline, async {
-            let (r_out, r_err) = tokio::join!(
-                read_capped(&mut child_stdout, stdout_cap, &mut out_buf),
-                read_capped(&mut child_stderr, CLI_QUERY_MAX_STDERR_BYTES, &mut err_buf),
-            );
-            r_out?;
-            r_err?;
-            Ok::<(), std::io::Error>(())
-        })
+        let finished = finish_within(
+            deadline,
+            async {
+                let (r_out, r_err) = tokio::join!(
+                    read_capped(&mut child_stdout, stdout_cap, &mut out_buf),
+                    read_capped(&mut child_stderr, CLI_QUERY_MAX_STDERR_BYTES, &mut err_buf),
+                );
+                r_out?;
+                r_err?;
+                Ok::<(), std::io::Error>(())
+            },
+            child.wait_and_release_group(),
+        )
         .await;
-        match drained {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
+        let (status, released_pgid) = match finished {
+            Ok(value) => value,
+            Err(ChildFinishError::Drain(e)) => {
                 return Err(RpcError::internal(format!(
                     "cli-query `{}`: reading the child failed: {e}",
                     self.plugin_id
@@ -276,26 +283,12 @@ impl CliQueryRuntime {
             }
             // Dropping `child` on the way out sweeps the group, and does so
             // BEFORE any reap — the unambiguous half of the guarantee.
-            Err(_elapsed) => return Err(budget_expired()),
-        }
+            Err(ChildFinishError::TimedOut) => return Err(budget_expired()),
+        };
 
-        // ---- Phase 3: reap the leader and take ownership of the group. -----
-        //
-        // The reap comes FIRST so the exit status is the child's own. Sweeping
-        // before it would rewrite the answer for a tool of the shape
-        // `…; exec 1>&- 2>&-; sleep 1; exit 0`: its pipes reach EOF while it is
-        // still alive, so a pre-reap SIGKILL turns a successful call into
-        // `signal: 9` / `is_error: true` (r3 H2).
-        //
-        // Bounded by the SAME deadline as the drain, not by a grace period of
-        // its own. A separate grace would make worst-case latency
-        // `timeout_ms + grace` while the error text promises `timeout_ms`
-        // (r3 H3).
-        let (status, released_pgid) =
-            match tokio::time::timeout_at(deadline, child.wait_and_release_group()).await {
-                Ok(v) => v,
-                Err(_elapsed) => return Err(budget_expired()),
-            };
+        // `finish_within` drains before it starts the reap, preserving the
+        // child's own exit status, and gives both phases this call's one
+        // absolute deadline (r3 H2/H3).
 
         // ---- Phase 4: sweep the group. -------------------------------------
         //

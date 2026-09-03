@@ -10,7 +10,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use super::super::child_process::{
-    SpawnTimedOut, read_capped, set_process_group_leader, spawn_within,
+    ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
+    spawn_within,
 };
 use super::super::connector;
 use super::super::manifest::{ArgvSlot, CliQueryBlock, argv_slot};
@@ -567,22 +568,20 @@ async fn run_version_probe(
     // is the same memory amplifier `tools_call` had. One line is all this
     // reads, so the cap is small.
     let mut buf = Vec::new();
-    let drained = tokio::time::timeout_at(
+    let finished = finish_within(
         deadline,
-        read_capped(&mut stdout, PROBE_MAX_STDOUT_BYTES, &mut buf),
+        async { read_capped(&mut stdout, PROBE_MAX_STDOUT_BYTES, &mut buf).await },
+        child.wait_and_release_group(),
     )
     .await;
 
     // A `--version` that hung is the case `VERSION_PROBE_BUDGET` exists for: it
     // must cost the sub-budget and then fall back, never the whole bring-up.
     // Returning here drops `child`, which sweeps the group before any reap.
-    let Ok(Ok(())) = drained else { return Ok(None) };
-
-    let (status, released_pgid) =
-        match tokio::time::timeout_at(deadline, child.wait_and_release_group()).await {
-            Ok(v) => v,
-            Err(_elapsed) => return Ok(None),
-        };
+    let (status, released_pgid) = match finished {
+        Ok(value) => value,
+        Err(ChildFinishError::Drain(_) | ChildFinishError::TimedOut) => return Ok(None),
+    };
     // The sole sweep once the leader is reaped — see `GroupChild`.
     released_pgid.sweep();
     let Ok(status) = status else { return Ok(None) };
