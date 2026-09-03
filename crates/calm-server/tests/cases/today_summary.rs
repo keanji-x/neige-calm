@@ -321,8 +321,13 @@ impl Boot {
             .unwrap()
     }
 
-    /// How many times each `needle` was **actually delivered** to this card's
-    /// harness, counted by identity over the delivered bytes.
+    /// How many times each `needle` was **actually delivered**, counted by
+    /// identity over the delivered bytes.
+    ///
+    /// The two halves have different scopes, and the caller has to know it: the
+    /// turn half is server-wide — [`Boot::turn_texts`] reads
+    /// `started_turns_for_test()`, which has no card filter — while the queued
+    /// half is `card_id`'s newest `worker_sessions` row only.
     ///
     /// **Why not `char_count`, and why not row counts.** The audit event carries
     /// only a length, and a length cannot tell "the bootstrap was delivered"
@@ -358,8 +363,9 @@ impl Boot {
     /// nothing settles just as well. Measured while investigating #1309, one
     /// run of the concurrency case settled at `[1, 2]` with all three messages
     /// queued and zero turns issued — green having delivered nothing. Settling
-    /// means "the needles account for exactly `expected_total` messages
-    /// somewhere on this card"; for "the app-server really received one" use
+    /// means "the needles account for exactly `expected_total` messages across
+    /// this server's turns and this card's newest queue"; for "the app-server
+    /// really received one" use
     /// [`Boot::await_reached_appserver`].
     ///
     /// **The deadline failure prints the texts, not just the counts.** #1309 is
@@ -557,8 +563,9 @@ impl Boot {
     /// needed.
     ///
     /// **The shutdown fences the only writer still live at this point in this
-    /// fixture; it does not leave a final snapshot behind.** `SpecHarness::shutdown`
-    /// (`harness/run_loop.rs`) stores `shutting_down = true` as its *first*
+    /// fixture; it does not leave a final snapshot behind.**
+    /// `SpecHarness::shutdown` (`harness/run_loop.rs`) stores
+    /// `shutting_down = true` as its *first*
     /// action, and `persist_snapshot_inner` early-returns `Ok(())` whenever
     /// that flag is set — so every persist from that harness from then on is a
     /// permanent no-op, including `shutdown`'s own `persist_snapshot()` call,
@@ -568,14 +575,19 @@ impl Boot {
     /// snapshot does not exist.
     ///
     /// "Only writer" is a fact about this moment, not a property of the row:
-    /// `handle_state_json` has two other writers that the `shutting_down` flag
-    /// does not fence — the harness-start path
-    /// (`operation/spec_harness_start_adapter.rs`, reached only from a request)
-    /// and `harness::persist_recovered_snapshot`. Neither can run behind the
-    /// clear here: staging's two HTTP requests have already returned, and this
-    /// fixture assembles `AppState::from_parts` without arming deferred harness
+    /// `handle_state_json` has other writers that the `shutting_down` flag does
+    /// not fence. The ones that rewrite the whole snapshot reach
+    /// `session_set_handle_state_tx`, and today that is the harness-start path
+    /// (`operation/spec_harness_start_adapter.rs`, reached only from a
+    /// request), `harness::persist_recovered_snapshot`, and
+    /// `replay::force_spec_phase` (`src/replay.rs`, the dev hook behind
+    /// `POST /dev/force-spec-phase`) — a grep, not a closed set, so read it as
+    /// "these and whatever else that grep finds". None of them runs behind the
+    /// clear here: staging's HTTP requests have all returned; this fixture
+    /// assembles `AppState::from_parts` without arming deferred harness
     /// recovery and never calls `recover_harnesses_on_boot`, so no recovery
-    /// task exists to persist one.
+    /// task exists to persist one; and the dev hook's route is mounted only by
+    /// the separate `bin/replay.rs` binary, which this fixture never runs.
     ///
     /// **The abort is not a join, so the read-back polls.** `abort()` takes
     /// effect at the aborted task's next await, so a persist that passed the
@@ -584,21 +596,29 @@ impl Boot {
     /// is harmless; a COMMIT that lands after the clear would reinstate exactly
     /// the queue this staging removes, which is the original #1309 inheritance
     /// flake. So the read-back below is a short poll rather than a single read:
-    /// it fails here, by name, on any commit that lands inside its window
+    /// it fails here, by name, on a commit that lands up to its last poll
     /// *and puts an observation back into the queue*, instead of letting `b`
-    /// silently inherit the row. A late persist that commits an already-empty
-    /// queue lands inside the window and passes — correctly, since it leaves
-    /// nothing to inherit. What the poll does **not** prove is that no commit
-    /// ever lands after the window closes — only joining the aborted task
-    /// could, and the harness exposes no join. It bounds the window; the
-    /// evidence that the bound holds in practice is the *post-fix* starvation
-    /// runs recorded on this PR (the same repro: two cores, 12 parallel
-    /// copies, 2 × 144 runs, 0 failures). The `102 of 144` and `105 of 144`
-    /// figures elsewhere in this file are pre-fix run sets and predate this
-    /// poll, so they say nothing about it.
+    /// silently inherit the row. The covered window ends at that last poll,
+    /// not at the 200 ms mark: the loop checks at 20 ms granularity and
+    /// returns straight after the deadline check, so a commit between the
+    /// final check and the return is inside the wall-clock window yet unseen.
+    /// A late persist that commits an already-empty queue passes wherever it
+    /// lands — correctly, since it leaves nothing to inherit. What the poll
+    /// does **not** prove is that no commit ever lands after the window
+    /// closes — only joining the aborted task could, and the harness exposes
+    /// no join. It bounds the window; the evidence that the bound holds in
+    /// practice is two *post-fix* starvation run sets on this PR, each the
+    /// same repro (two cores, 12 parallel copies, 12 rounds = 144 runs): the
+    /// set from the round that landed this fix, and a second set re-measured
+    /// on this branch head. 0 failures in each. The `105 of 144` figure
+    /// elsewhere in this file is a genuine pre-fix set; the `102 of 144` one
+    /// is not — it was measured on the rejected drain-polling candidate fix
+    /// described above. Both predate this poll, so neither says anything
+    /// about it.
     ///
-    /// **The guard is taken over the observations the clear destroys.** The clear rewrites
-    /// `pending_queue` and `pending_envelope_ids` to `[]` on *every*
+    /// **The guard is taken over the observations the clear destroys.** The
+    /// clear rewrites `pending_queue` and `pending_envelope_ids` to `[]` on
+    /// *every*
     /// `worker_sessions` row for the card, which discards every `Observation`
     /// variant — `ReportEdited`, `TaskCompleted`, `WorkerHookStop`, … — not
     /// just the newest row's `user_message`s that [`Boot::queued_texts`] can
