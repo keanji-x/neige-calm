@@ -4,7 +4,7 @@
 // The kernel deliberately does no URL syntax work: its `input_schema` checks
 // field *shapes* (`repo` is a string, `issue_number` an integer) and nothing
 // else, so `repo` / `issue_number` must be structured at the entry surface.
-// This is that derivation, and it is the whole reason the New wave dialog asks
+// This is that derivation, and it is the whole reason the new-wave page asks
 // for one URL instead of three fields.
 //
 // A parallel parser exists in the legacy frontend. It is deliberately NOT

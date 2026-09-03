@@ -6,24 +6,11 @@
 // it without a QueryClient. Sign-out is not implemented here — whoever owns the
 // session passes it in.
 //
-// It also owns the **New wave dialog**, for the same reason it owns the
-// mutations: two surfaces open it — every cove row's `+` in the rail, and the
-// cove page's WAVES module head — and they must open one dialog with one set of
-// strings. The rail is a sibling of the outlet, so a dialog living inside the
-// cove route was unreachable from it; the shell is the nearest place that sees
-// both, and it already holds `useWorkspace` + `useWaveMutations`, which is
-// everything the dialog needs. `cove_id` is the opener's cove (hidden).
-//
-// The form's Folder field is optional (#1147 S3): no folder ⇒ the POST omits
-// `cwd` *and* `attach_folder` and the kernel mints its own managed workspace;
-// a folder ⇒ both go out, and the wave is attached to a directory the kernel
-// will never move or delete. The shell owns that translation because it also
-// owns the failure it can produce — the structured 409 below.
-//
-// #1209 added the template picker, so the shell also owns the
-// `GET /api/wave-templates` read — for the same reason it owns the mutations,
-// and because `features/**` may not import `app/**`. That read is
-// non-blocking by construction: the dialog opens, and creates, without it.
+// It no longer owns a New wave dialog (#1211). Starting a wave is a route now
+// (`/cove/{id}/new`, owned by `app/router`), so the two `+` surfaces — every
+// cove row's in the rail, and the cove page's WAVES module head — both just
+// navigate. What the shell kept is the *seam*: `RequestNewWaveContext`, because
+// the cove page renders inside `<Outlet />` and has no prop path to `go`.
 
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Outlet } from '@tanstack/react-router';
@@ -31,16 +18,9 @@ import { createContext, useContext, useEffect, useRef, type CSSProperties } from
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { folderConflictMessage } from '../../../../core/domain/cove.ts';
-import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
-import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { createDirectoryLister } from '../providers/directory.ts';
-import {
-  ApiError, folderConflictOf, useCoveMutations, useWaveMutations, useWaveTemplates, useWorkspace,
-} from '../providers/queries.ts';
+import { useCoveMutations, useWaveMutations, useWorkspace } from '../providers/queries.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useWavePanelNavigation } from '../router/navigation.ts';
-import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
 import { MobileCoves } from './mobile-coves.tsx';
@@ -62,12 +42,13 @@ export type AppShellProps = Readonly<{
 }>;
 
 /**
- * The one escape a route has into the shell's dialog.
+ * The one escape a route has into "start a wave here".
  *
  * A context and not a prop because the cove route renders inside `<Outlet />`:
- * there is no prop path from here to it, and the alternative — a second dialog
- * inside the route — is the thing this change removed. It carries a single
- * callback, so a consumer cannot come to depend on the shell's internals.
+ * there is no prop path from here to it. It carries a single callback, so a
+ * consumer cannot come to depend on the shell's internals — and since #1211
+ * that callback is a plain navigation, which is why the shell no longer holds
+ * any create state of its own.
  */
 const RequestNewWaveContext = createContext<((coveId: string) => void) | null>(null);
 
@@ -87,12 +68,12 @@ type OpenMobileSection = (section: MobileSection, coveId?: string | null) => voi
 
 const MobileSectionContext = createContext<OpenMobileSection | null>(null);
 
-/** Opens the shell's New wave dialog for `coveId` (hidden on the request). */
+/** Goes to the new-wave page for `coveId` (#1211). */
 export function useRequestNewWave(): (coveId: string) => void {
   const request = useContext(RequestNewWaveContext);
-  // Outside the shell there is no dialog to open. Routes always render inside
-  // it; a no-op keeps a stray consumer (a test rendering a page bare) from
-  // throwing on a control it is not exercising.
+  // Outside the shell there is nowhere to go. Routes always render inside it;
+  // a no-op keeps a stray consumer (a test rendering a page bare) from throwing
+  // on a control it is not exercising.
   return request ?? noRequestNewWave;
 }
 
@@ -129,10 +110,6 @@ export function AppShell({
   // The report's panel is a history *destination* (§1.1), so the shell leaves
   // it the same way the report does — see `clearReportPanel`.
   const { closePanel } = useWavePanelNavigation();
-  /* The picker's read, bound once here: `features/**` may not import
-     `app/**`, and `ui/directory-browser` may not know a transport exists, so
-     the port is created at the composition layer and passed down. */
-  const listDirectory = createDirectoryLister(transport, unauthorized);
   const readError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
@@ -202,43 +179,17 @@ export function AppShell({
     if (!narrowRail && mobileNavOpen) setMobileSection(null);
   }, [mobileNavOpen, narrowRail]);
 
-  /*
-   * One state, and `null` is closed. The cove is the opener's cove — the user
-   * does not pick one. The POST still requires `cove_id` this slice.
-   */
-  const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
-  /*
-   * Named explicitly rather than left to the dialog's first-focusable default,
-   * which is the Close button (#1161).
-   *
-   * It aims at the form's **Start from** trigger. It used to aim at the task
-   * `<input>`, and that field is gone (#1211 S2) — leaving the ref where it
-   * was would have handed the opening focus back to Close, i.e. reintroduced
-   * #1161 by deleting a field rather than by forgetting a prop.
-   */
-  const newWaveStartFromRef = useRef<HTMLButtonElement | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  /*
-   * #1209 — the dialog's template list. Read here rather than inside the form
-   * because `features/**` must not import `app/**`, and read unconditionally
-   * rather than on open so the picker is populated the moment the dialog
-   * appears instead of shifting a row into place after it.
-   *
-   * Nothing downstream of it is allowed to gate creation: `data ?? []` means a
-   * pending or failed read is Blank-only, which is exactly the pre-#1209
-   * dialog. The failure is passed along as a notice, not as an error.
-   */
-  const waveTemplates = useWaveTemplates(transport, unauthorized);
-
   // Both wave mutations need the cove id to invalidate the right list, and the
   // rail only knows wave ids; the workspace read already has the mapping.
   const coveIdOf = (waveId: string): string | undefined =>
     workspace.waves.find((wave) => wave.id === waveId)?.coveId;
 
+  /* #1211 — a navigation, and nothing else. It also closes any open mobile
+     sheet, for the same reason every other rail navigation does: the sheet is
+     an overlay on the surface being left. */
   const requestNewWave = (coveId: string) => {
-    setCreateError(null);
-    setNewWaveCoveId(coveId);
+    closeMobileSection();
+    go({ name: 'new-wave', coveId });
   };
 
   /*
@@ -292,67 +243,6 @@ export function AppShell({
   // The sheet's accessible name is the dock label that opens it — stated once,
   // in `DOCK_ITEMS`, so the two can never disagree.
   const mobileNavigationLabel = DOCK_ITEMS.find((item) => item.opensSection === mobileSection)?.label ?? 'Pages';
-
-  const submitNewWave = (draft: NewWaveDraft) => {
-    if (newWaveCoveId === null) return;
-    setCreating(true);
-    setCreateError(null);
-    void waveMutations.create({
-      cove_id: newWaveCoveId,
-      /*
-       * No `title`, and not an empty string either (#1211 S2). The kernel's
-       * `#[serde(default)]` branch is what stores the empty title that
-       * `calm.wave.rename` is allowed to fill in; a `title: ''` on the wire
-       * reaches the same stored value today, but it says this client decided
-       * the name — and the whole point is that it did not.
-       */
-      theme: readHostThemeRgb(),
-      // Spread, not two optional fields: Blank leaves both keys absent, and
-      // `template_id: undefined` is not the same request as no `template_id`
-      // for anything that inspects the object before it is serialized.
-      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
-      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
-      /*
-       * Both keys or neither. `cwd` without `attach_folder` means "this path is
-       * already claimed by some cove", which the kernel answers with a 409
-       * whenever it is not — so the omitted-flag default is a request that
-       * fails for every folder the user has not already bound. `true` is what
-       * "I picked this folder for this cove" means, and it is a no-op when this
-       * cove already covers the path (`waves.rs`'s same-cove arm), so a second
-       * wave in the same repository does not conflict with the first.
-       *
-       * The pre-flight `GET /api/coves/resolve` the legacy form ran is
-       * deliberately not ported: its only effect was choosing `false` when some
-       * cove already covered the path, and the kernel's in-transaction scan
-       * already reaches that same answer without the round trip — and reaches
-       * it atomically, which a client-side pre-check cannot.
-       */
-      ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
-    }).then((wave) => {
-      setNewWaveCoveId(null);
-      /*
-       * The wave is created unnamed and with nothing said in it (#1211 S2), so
-       * landing on a wave page with a shut drawer would be landing on a blank
-       * page with no visible way to begin. `openSpec` is a property of *this
-       * move*: it travels in the state of the history entry this navigation
-       * creates, and the wave route redeems it there (`useSpecOpenIntent`).
-       * It is not a request left lying in a provider — this callback also runs
-       * from the rail, with some other wave still on screen, and a global slot
-       * is readable and clearable by that wave's route body too.
-       */
-      go({ name: 'wave', waveId: wave.id, openSpec: true });
-    }).catch((error: unknown) => {
-      const conflict = folderConflictOf(error);
-      if (conflict !== null) {
-        // The 409 body names a cove by id and carries no `error` key, so the
-        // generic message here would be the bare word "Conflict".
-        const owner = workspace.coves.find((cove) => cove.id === conflict.cove_id);
-        setCreateError(folderConflictMessage(conflict, owner?.name ?? null));
-        return;
-      }
-      setCreateError(error instanceof ApiError ? error.message : 'Could not create the wave.');
-    }).finally(() => { setCreating(false); });
-  };
 
   return (
     <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded} ${shellSecondaryOpen ? styles.shellMobileSecondary : ''}`}>
@@ -415,7 +305,7 @@ export function AppShell({
             onGo={navigateFromRail}
             onCreateCove={async (name, color) => { await coveMutations.create({ name, color }); }}
             onDeleteCove={(coveId, signal) => coveMutations.remove(coveId, signal)}
-            onNewWave={(coveId) => { closeMobileSection(); requestNewWave(coveId); }}
+            onNewWave={requestNewWave}
             onSetPinned={async (waveId, pinned) => {
               const coveId = coveIdOf(waveId);
               if (coveId === undefined) return;
@@ -483,26 +373,11 @@ export function AppShell({
           </button>
         ))}
       </nav>
-      {/* Owned here for the same reason the New wave dialog is: it has to stay
-          mounted while the reader navigates *inside* it (General → Plugins is a
-          route change), and the shell is the nearest thing above `<Outlet />`
-          that survives one. See `settings-overlay.tsx`. */}
+      {/* Owned here because it has to stay mounted while the reader navigates
+          *inside* it (General → Plugins is a route change), and the shell is the
+          nearest thing above `<Outlet />` that survives one. See
+          `settings-overlay.tsx`. */}
       <SettingsOverlay transport={transport} unauthorized={unauthorized} />
-      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
-        initialFocusRef={newWaveStartFromRef}>
-        {newWaveCoveId !== null && (
-          <NewWaveForm
-            startFromRef={newWaveStartFromRef}
-            submitting={creating}
-            error={createError}
-            templates={waveTemplates.templates}
-            templatesError={waveTemplates.error}
-            listDirectory={listDirectory}
-            onCancel={() => setNewWaveCoveId(null)}
-            onSubmit={submitNewWave}
-          />
-        )}
-      </Dialog>
     </div>
   );
 }

@@ -1,17 +1,19 @@
 // @vitest-environment jsdom
 //
 // #1211 S2 — a wave that starts with no name and no words in it, driven
-// through the real router, the real shell dialog and the real transport port.
+// through the real router, the real composer route and the real transport port.
 //
 // Two things had to be built for that to be a usable product rather than a
 // blank page, and both are wiring that no single component can be asked about:
 //
 //   1. **Creating lands in the spec conversation, with the caret in it.** The
-//      shell cannot name the card to open — `POST /api/waves` answers with a
-//      `Wave` — so it marks the *navigation* it makes, and `WaveRouteBody`
-//      redeems that mark against its own cards. That hand-off spans three
-//      modules, which is exactly why it is asserted here and not in any of
-//      them.
+//      create site cannot name the card to open — `POST /api/waves` answers
+//      with a `Wave` — so it marks the *navigation* it makes, and
+//      `WaveRouteBody` redeems that mark against its own cards. That hand-off
+//      spans three modules, which is exactly why it is asserted here and not in
+//      any of them. Since #1211 S3 the create site is `/cove/{id}/new` rather
+//      than a dialog; the hand-off is the same one and this file drives it
+//      through the page.
 //   2. **Clearing the title is a request, not a cancel.** The wave header
 //      passes `emptyCommit="clear"` so the spec agent's `calm.wave.rename` can
 //      name the wave again; what proves it is the PATCH on the wire.
@@ -146,11 +148,22 @@ function messageField(): HTMLElement {
   return screen.getByRole('combobox', { name: 'Message' });
 }
 
+/* The composer page, with the one thing it does ask for typed into it.
+   Since #1211 S3 the `+` navigates to `/cove/{id}/new` instead of opening a
+   dialog, so a create waits for the page's own field rather than
+   `role="dialog"`, and Create stays disabled until that field says something.
+   What is typed is the wave's **intent**, not its name: no title is collected
+   (#1211 S2) and the sentence is not delivered from here yet (#1299) — which is
+   exactly why the landing below has to open the spec composer. */
+async function composerOnScreen() {
+  await userEvent.type(await screen.findByLabelText('What this wave should do'), 'Read it');
+}
+
 async function createAWave() {
   /* Exact: the rail's per-cove opener is `New wave in Work`, which a substring
      match would also find — the cove page's own `+` is the one this drives. */
   await userEvent.click(await screen.findByRole('button', { name: /^New wave$/ }));
-  await screen.findByRole('dialog', { name: 'New wave' });
+  await composerOnScreen();
   await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
 }
 
@@ -158,7 +171,7 @@ async function createAWave() {
  *  route, including a wave page. */
 async function createAWaveFromTheRail() {
   await userEvent.click(await screen.findByRole('button', { name: 'New wave in Work' }));
-  await screen.findByRole('dialog', { name: 'New wave' });
+  await composerOnScreen();
   await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
 }
 
@@ -168,7 +181,7 @@ async function goToWave(router: ReturnType<typeof setup>['router'], waveId: stri
 
 beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/cove/c1`);
-  /* The drawer, the dialog and `EditableTitle` all move focus inside a frame.
+  /* The drawer, the composer and `EditableTitle` all move focus inside a frame.
      Running frames synchronously is what makes "who ended up with the focus"
      a question this tier can answer at all. */
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
@@ -182,12 +195,12 @@ afterEach(() => {
 
 describe('creating a wave lands in its spec conversation', () => {
   /*
-   * The landing, end to end. Nothing is typed into the dialog — there is
-   * nothing to type into it any more — and what the reader gets is the spec
+   * The landing, end to end. Nothing is typed into the composer — the sentence
+   * is not delivered from it yet (#1299) — and what the reader gets is the spec
    * conversation open with the caret in the composer, because their first
    * sentence is the wave's intent.
    *
-   * Red when: the shell stops stating the intent, `WaveRouteBody` stops
+   * Red when: the create route stops stating the intent, `WaveRouteBody` stops
    * redeeming it, the panel drops the `focusComposer` flag on the way to the
    * composer, or `ChatComposer` stops honouring `focusOnMount`.
    */

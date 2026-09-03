@@ -37,29 +37,49 @@ sentence exists to prevent.
 - Rename goes through the shared `ui/editable-title` (INV-DUP-008), which trims
   and skips no-op commits; `CovePage` only wires `onRenameCove` into it.
 
-## Create: a task, and optionally a folder (#1131, #1147 S3)
+## Create: a sentence, and optionally a template and a folder (#1131, #1147 S3, #1211)
 
-Submit is enabled iff `title.trim()` is non-empty — the folder is never
-required. `cove_id` comes from the surface that opened the dialog (cove page `+`
-or the rail's per-cove `+`); it is not a form field.
+The surface is the route `/cove/{id}/new`, not a dialog (#1211). `cove_id` comes
+from the URL, not from a form field; the two `+` controls (cove page, rail row)
+navigate there.
 
-`NewWaveDraft` is `{ title, cwd? }`, and **the `cwd` key is absent, not empty,
-when no folder was chosen**. That distinction is the whole contract: the caller
-(`AppShell`) sends `POST /api/waves` as `{ cove_id, title, theme }` with no
-`cwd` / `attach_folder` on the default path — the kernel's *managed* branch,
-where it creates and owns a workspace under the workspace root — and adds
-`{ cwd, attach_folder: true }` once a folder is picked, which *attaches* the
-wave to a directory the kernel never creates, moves or deletes.
+Submit is enabled iff the composer is non-empty — template and folder are never
+required and both default to nothing.
+
+`NewWaveDraft` is `{ message, template_id?, template_input?, cwd? }`. **`message`
+is the wave's intent, not its title**: `NewWaveRoute` posts `POST /api/waves`
+with *no* `title` at all — the kernel stores the empty string and the spec agent
+names the wave later through `calm.wave.rename`.
+
+`message`'s destination is the new wave's spec card as its first message, and
+**that delivery is not implemented here** (#1299). Doing it from this page takes
+three writes and cannot be made sound from a component — an unmount mid-flight
+loses the sentence silently, and `/spec/input` has no idempotency key so any
+retry can double-send. It moves into the create request instead. Until then the
+page says so on screen and the route opens the wave's spec conversation on
+arrival, so saying it again is one keystroke. See `NewWaveRoute`'s doc comment.
+
+**The `cwd` key is absent, not empty, when no folder was chosen.** That
+distinction is the whole workspace contract: no `cwd` / `attach_folder` is the
+kernel's *managed* branch, where it creates and owns a workspace under the
+workspace root; `{ cwd, attach_folder: true }` *attaches* the wave to a directory
+the kernel never creates, moves or deletes.
 
 Create time is the only entry into that choice: the kernel offers no
 `managed → attached` conversion (`docs/1147-workspace-design.md` §更换与冻结),
-which is why the field is here and why clearing it back to the managed default
-is a control on this form.
+which is why the control is here and why clearing it back to the managed default
+is a control on this page.
 
-The folder control is the frozen `ui/schema-form` `DirectoryField`, which pushes
-`ui/directory-browser` into the *surrounding* dialog rather than opening a
-second one. It takes a `listDirectory` port as a prop; `features/**` never
-reaches a transport (see `app/providers/directory.ts`).
+The folder control is **not** `DirectoryField` here, and that is deliberate:
+`DirectoryField` renders `ui/directory-browser` inline when no dialog is above
+it, and on a route that fallback is what fires — the #1211 regression. This page
+owns its own `Dialog` around `DirectoryBrowser` instead
+(CAP-WAVEWORKSPACE-003); `features/wave/new-card`, which *is* inside a dialog,
+keeps `DirectoryField` and the child-view push (CAP-WAVEWORKSPACE-006). Both
+call sites are registered in `tools/architecture/directory-picker-hosts.mjs`,
+which fails closed on a new one. Either way the `listDirectory` port arrives as
+a prop; `features/**` never reaches a transport (see
+`app/providers/directory.ts`).
 
 Legacy `web/` `NewTaskForm` is unchanged and still sends a full body.
 

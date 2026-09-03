@@ -1,27 +1,87 @@
-// The new-wave form: what the wave starts from, and optionally the folder it
-// runs in. Nothing else — there is no text field.
-//
-// ## Why the task sentence is gone (#1211 S2)
-//
-// This form used to require one line of text and post it as the wave's
-// `title`, because the kernel seeded the spec agent's opening prompt from it.
-// S1 cut that: the title is no longer the intent, `CreateWaveRequest.title` is
-// `#[serde(default)]`, and the spec agent names the wave itself once it knows
-// what the wave is for (`calm.wave.rename`, which succeeds only while the
-// title is empty). A sentence collected here now lands nowhere and, worse,
-// gives the wave a non-empty title that makes every later `calm.wave.rename`
-// answer `already_named`.
-//
-// So the draft carries **no `title` key at all** — not an empty string — and
-// the first thing the reader says is said in the spec conversation the wave
-// page opens for them. The dialog is two optional choices and a button.
+// The new-wave page: one thing to say, and two optional chips under it saying
+// what it is carried out on.
 //
 // Presentational + local form state — it never calls an API. The caller owns
-// POST /api/waves, `submitting`, `error`, and the template list itself.
+// `POST /api/waves`, `submitting`, `error`, and the template list itself. It
+// does **not** yet own a first message: see "Where the sentence goes" below.
 //
-// `cove_id` is not a form field. The dialog opens from a cove page `+` (or the
-// rail's per-cove `+`); the caller already knows which cove and sends it on
-// the request.
+// `cove_id` is not a field. The page is `/cove/{id}/new`; the route already
+// knows which cove and sends it.
+//
+// ## Why this is a page and not a dialog (#1211)
+//
+// It used to be a modal over whatever you were looking at. A modal was the
+// wrong container for the *only* thing this surface does: it cannot be linked,
+// it does not survive a refresh, it has no Back, and it asks the reader to
+// finish or discard before they may look at anything else — which is exactly
+// backwards for a screen whose two settings are things you might want to go
+// check on. A route has all four properties for free.
+//
+// It also makes the composer the subject of a page rather than a control in a
+// box, which is what the shape is: one centred field, and the page is
+// otherwise empty on purpose.
+//
+// ## Why this is a composer and not a form (#1211)
+//
+// The field this replaced was the wave's `title`, and it was doing two jobs at
+// once: naming the wave, and being the one place the user ever said what they
+// wanted. #1211 split them — the kernel now accepts a create with no title at
+// all and the spec agent names the wave itself through `calm.wave.rename` — so
+// what is left to collect here is the *intent*, and intent is a sentence, not
+// a label.
+//
+// That changes the shape of the surface rather than just its wording. A form
+// asks you to fill in fields; you have to know what each one wants before you
+// can start. A composer asks you to say something, which is the only thing
+// this product ever asks anywhere else — the wave page's spec drawer is a
+// composer, the cove conversation is a composer. Creating a wave was the one
+// place with a different grammar, and there was no reason for it.
+//
+// So: `ChatComposer` from astryx, the same component the chat thread uses, with
+// the two settings as footer chips. There is no Cancel button — the way out of
+// a page is Back, and inventing a second one here would be a button that means
+// "Back" but does not update history. And there is no separate "Create wave"
+// step: the send button *is* the create, and Enter reaches it.
+//
+// ## Where the sentence goes — and where it does not, yet (#1299)
+//
+// **Not** into `title`: the draft carries it as `message`, and the caller
+// creates the wave with no title at all.
+//
+// Its destination is the new wave's spec card, as the first message. That
+// delivery is **not implemented yet** — two review rounds showed the three-write
+// sequence it needs cannot be made sound from a component (see `NewWaveRoute`),
+// and #1299 moves it into the create request where the kernel can do it
+// atomically. Until then the wave is created and the reader says it again in
+// the spec conversation, which the route opens for them on arrival.
+//
+// The form says so, on screen, above the send button. A field whose contents
+// are quietly dropped is worse than no field; a field that tells you what it
+// will and will not do is a smaller product than intended but an honest one.
+//
+// ## The folder picker needs a `Dialog` above it
+//
+// `DirectoryField` has two modes and picks between them by asking
+// `useDialogView()` whether a dialog is above it: inside one it *pushes a child
+// view* onto that dialog, and outside one it falls back to rendering
+// `DirectoryBrowser` **inline, in the page**. On a route there is no dialog, so
+// the fallback is what fires — and a file browser unrolling underneath a chip
+// is not a picker, it is the page growing a second screen's worth of list.
+//
+// The child-view route is not open to this page either: `DialogViewContext` is
+// private to `ui/dialog`, so a surface cannot host pushed views without being a
+// `Dialog`, and the chip has to render *outside* whatever modal the picker
+// lives in — it is one of the composer's footer controls.
+//
+// So this page does not use `DirectoryField` at all. It renders its own chip
+// and puts `DirectoryBrowser` — the same `ui/` primitive the field wraps —
+// inside its own `Dialog`. That is a real modal picker, and it also dissolves a
+// naming problem the field could not express: `DirectoryField` builds its
+// accessible name as `${placeholder}: ${path}`, so a chip whose empty text is
+// the *default* ("Neige workspace") would read "Neige workspace: /srv/app" once
+// a folder was picked — the default's name glued to the value that replaced it.
+// Owning the chip means the empty label and the purpose phrase can be two
+// different strings, which is what they are.
 //
 // ## The folder is optional and empty by default (#1147 S3)
 //
@@ -31,36 +91,24 @@
 // Filled in, the wave is *attached* to a repository the user already has, which
 // the kernel never creates, moves or deletes. Create time is the only entry
 // into that choice — `managed → attached` after the fact exists as an API and
-// has no UI — so an always-visible optional field is the whole feature, not a
-// shortcut for one. Without it, attached workspaces are unreachable from the
-// product.
-//
-// ## Built from `@astryxdesign/core`
-//
-// The first cut of this form hand-rolled native radios and a CSS module for
-// the row card. That was wrong: astryx is this repo's component library
-// (`fe/README.md`), the stylesheet cascade already reserves a layer for it
-// (`styles/README.md`), and it ships every control this form needs.
-//
-// The outer `Dialog` is deliberately NOT astryx's: `ui/dialog/public.tsx` is a
-// frozen primitive whose nine global classes are a closed list, so swapping it
-// is a spec change and its own slice. Only the form's insides are astryx.
+// has no UI — so an always-visible optional control is the whole feature, not a
+// shortcut for one.
 //
 // ## The template (#1209)
 //
 // "No template" is a first-class option and the default, and it is **not** a
 // row the server sent: it is the absence of a template, i.e. a create with no
-// `template_id` — precisely today's behaviour. Everything about this list is
-// arranged so that staying on it is free. In particular `templates` may be
-// empty because the read failed or has not landed, and the dialog is fully
-// usable in that state: this is the app's only wave-creation entry point, and
-// a failed list read must not be able to close it.
+// `template_id`. Everything about this list is arranged so that staying on it
+// is free. In particular `templates` may be empty because the read failed or
+// has not landed, and the composer is fully usable in that state: this is the
+// app's only wave-creation entry point, and a failed list read must not be able
+// to close it.
 //
-// The words on screen are the reader's, not the codebase's. The chip asks
-// ("Choose a template") until there is something to name, and the sentinel is
-// "No template" in the list — `Blank` was this file's own word for "no
-// `template_id` on the wire", and it had ended up on a control read by someone
-// who has not been told this app has templates.
+// The words on screen are the reader's, not the codebase's. Both chips name
+// their **default** rather than asking a question — "No template" and "Neige
+// workspace" — because neither has an undecided state: leave them alone and
+// those are the wave you get. See `NO_TEMPLATE` and `FOLDER_PLACEHOLDER` for
+// the long form.
 //
 // One concept, one word, one field: the list, the chip and the wire all say
 // *template* / `template_id`. (#1209 removed the vocabulary seam this comment
@@ -68,11 +116,6 @@
 // words for the same thing.)
 //
 // ### Collapsed, not spread out
-//
-// The first cut laid every template out as a permanent radio row. Three rows
-// today; the list is meant to grow, and a dialog that grows a row per template
-// does not scale. So the control collapses to one row that names the current
-// choice and opens a list on click.
 //
 // `DropdownMenu` and not `Selector`, `Popover` or `CommandPalette` — the
 // reason is where DOM focus goes, and it decides the hover card below:
@@ -82,35 +125,26 @@
 //     with `aria-activedescendant`: DOM focus never leaves the trigger button
 //     (`Selector.tsx` keeps `triggerRef` focused and only sets
 //     `aria-activedescendant`). An option therefore never receives `focusin`,
-//     so a per-option hover card would be mouse-only — the very defect this
-//     revision exists to fix. It also renders `role="combobox"`.
+//     so a per-option hover card would be mouse-only. It also renders
+//     `role="combobox"`.
 //   * `DropdownMenu` navigates by *moving focus*: `useListFocus.focusIndex`
 //     calls `target.focus()` on the `[role="menuitem"]` element. That is what
 //     makes a hover card attached to the option itself reachable by keyboard.
 //     Its items are `tabIndex={-1}`, so the whole control is one tab stop.
 //   * `Popover` is an empty surface — using it means hand-rolling the list,
 //     its roles and its keyboard model, which is what astryx is here to avoid.
-//   * `CommandPalette` is a modal search dialog. A second modal inside the New
-//     wave dialog, with a search box, for three options.
-//   * `Selector` **with `renderOption`** — the fifth shape, and the one the
-//     first write-up of this comparison missed. `Selector` takes
-//     `renderOption?: (option: SelectorOptionData) => ReactNode`
-//     (`Selector/Selector.tsx`), and `SelectorOption` takes
-//     `description?: ReactNode` (`Selector/SelectorOption.tsx`). Rendering the
-//     template's task keys as a one-line description therefore puts the same
-//     information *inside* `role="option"`, and it needs no hover card at all:
-//     no `focusTrigger` workaround, no top layer, and `aria-selected` says
-//     "one of N" outright — so neither of the two stand-ins below would exist.
-//     (`SelectorOptionData` itself has no `description` field; the review that
-//     raised this read the prop off the component. The route is real, the
-//     field is not — it goes through `renderOption`.)
-//     Not taken here, and not because it cannot be done: this form's shape is
-//     already accepted, the description would land inside the option's
-//     accessible name (an option would read "Small change inspect, implement,
-//     verify"), and the multi-line goal text the card shows does not fit a
-//     one-line description. Recorded so the next reader does not conclude that
-//     astryx has no listbox answer — it does, and it is the cheaper one if the
-//     content is ever cut down to keys.
+//   * `CommandPalette` is a modal search dialog. A second modal inside this
+//     one, with a search box, for three options.
+//   * `Selector` **with `renderOption`** — `Selector` takes
+//     `renderOption?: (option: SelectorOptionData) => ReactNode` and
+//     `SelectorOption` takes `description?: ReactNode`, so the template's task
+//     keys could be a one-line description inside `role="option"` with no hover
+//     card at all. Not taken here: the description would land inside the
+//     option's accessible name (an option would read "Small change inspect,
+//     implement, verify"), and the multi-line goal text the card shows does not
+//     fit one line. Recorded so the next reader does not conclude that astryx
+//     has no listbox answer — it does, and it is the cheaper one if the content
+//     is ever cut down to keys.
 //
 // The one thing `DropdownMenu` cannot express is *which* item is chosen:
 // `DropdownMenuItem` hard-codes `role="menuitem"` and offers no
@@ -130,31 +164,32 @@
 //     (`aria-label={button.label}`, `DropdownMenu.tsx`) and not from the
 //     trigger's computed name, so the `aria-label` that makes the trigger read
 //     "Template: Small change" does not reach the popup: a reader who opens it
-//     on a chosen template hears "Small change menu". Unset the two coincide,
-//     because the label is then "Choose a template" outright. The alternative
-//     is worse: dropping the choice out of the visible label would make the
-//     collapsed control silent about what is selected, which is the whole
-//     reason it carries it.
+//     on a chosen template hears "Small change menu". Unset the two coincide.
 //  2. **The hover card's `role="dialog"` is a DOM descendant of the
 //     `role="menu"`.** `HoverCard` renders its layer inline next to the
-//     trigger — deliberately, "no portal is needed" (`HoverCard.tsx`), because
-//     the Popover API's top layer plus CSS anchor positioning already escape
-//     clipping. The trigger here is a menu item, so the layer is emitted
-//     inside the menu, and a `menu`'s owned children are supposed to be
-//     `menuitem`s only. In Chromium the computed tree is very likely still
-//     correct — the intervening wrapper is `display: contents` with no role,
-//     and the popover is in the top layer — but that is astryx's rendering
-//     detail carrying the ARIA structure, not something this file guarantees.
+//     trigger — deliberately, "no portal is needed" (`HoverCard.tsx`). The
+//     trigger here is a menu item, so the layer is emitted inside the menu, and
+//     a `menu`'s owned children are supposed to be `menuitem`s only. In
+//     Chromium the computed tree is very likely still correct — the intervening
+//     wrapper is `display: contents` with no role, and the popover is in the top
+//     layer — but that is astryx's rendering detail carrying the ARIA
+//     structure, not something this file guarantees.
 
-import { useId, type RefObject } from 'react';
+import { useEffect, useRef, useId } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { ChatComposer, ChatComposerInput } from '@astryxdesign/core/Chat';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { FieldStatus } from '@astryxdesign/core/FieldStatus';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Icon } from '@astryxdesign/core/Icon';
+/* The app's own icon set, for the one glyph astryx does not ship: `folder`.
+   Aliased because both are called `Icon` and both are used here — astryx's for
+   the controls it also owns (check, close, the send arrow), this one for the
+   folder chip, which is the same glyph `DirectoryField` draws so the product's
+   two folder controls do not show different folders. */
+import { Icon as AppIcon } from '../../../ui/icon/public.tsx';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
@@ -163,17 +198,24 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
-import { DirectoryField } from '../../../ui/schema-form/fields/DirectoryField/public.tsx';
+import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
+import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './new-wave.module.css';
 
 export type NewWaveDraft = Readonly<{
-  /* No `title` key. The field that collected one is gone (#1211 S2) and the
-     key went with it, so the caller's POST omits it and the kernel takes its
-     `#[serde(default)]` branch — the empty title `calm.wave.rename` may fill
-     in. Absent rather than `''`: the two reach the same stored value but say
-     different things about who decided the name. */
-  /** Absent for Blank — never `null` or `''`, which the kernel 400s. */
+  /**
+   * What the user typed — the wave's intent, and **not** its title.
+   *
+   * The caller creates the wave with no `title` — the kernel stores the empty
+   * string and the spec agent names it later (#1211). This text's destination
+   * is the new wave's spec card as its first message, but **that delivery is
+   * not implemented yet** (#1299); today the caller creates the wave and the
+   * reader says it again in the conversation the wave page opens. Always
+   * non-empty and already trimmed: the composer will not submit otherwise.
+   */
+  message: string;
+  /** Absent for no template — never `null` or `''`, which the kernel 400s. */
   template_id?: string;
   template_input?: Readonly<Record<string, unknown>>;
   /**
@@ -190,12 +232,12 @@ export type NewWaveFormProps = Readonly<{
   error: string | null;
   /**
    * Templates the user may start from, from `GET /api/wave-templates`. An
-   * empty array is a legitimate, fully working state — Blank only.
+   * empty array is a legitimate, fully working state — no-template only.
    */
   templates: readonly WaveTemplate[];
   /**
    * Set when the template read failed. It is a *notice*, not an error: the
-   * form still submits. Told rather than hidden, so "where did my templates
+   * composer still submits. Told rather than hidden, so "where did my templates
    * go" has an answer on screen.
    */
   templatesError?: string | null;
@@ -207,25 +249,6 @@ export type NewWaveFormProps = Readonly<{
    * picker that silently lists nothing.
    */
   listDirectory: ListDirectory;
-  /*
-   * The dialog's opening focus target. Without one the dialog falls back to its
-   * first focusable, which is the header's Close button — so a reader who
-   * opened this and started typing put nothing in the field and closed the
-   * dialog on the first space. See #1161.
-   *
-   * Required rather than optional: the defect was a call site that simply did
-   * not think about opening focus, and an optional prop lets the next one make
-   * the same omission silently.
-   *
-   * It aims at the **Start from** trigger now, and the rename from `titleRef`
-   * is the point: the input it used to hold is gone (#1211 S2), and a ref left
-   * unattached would have put the dialog straight back on the Close button —
-   * the #1161 defect, restored by deletion rather than by a call site.
-   * `DropdownMenu` forwards `button.ref` to its trigger, so this is a real
-   * handle on the first control the reader can act on.
-   */
-  startFromRef: RefObject<HTMLButtonElement | null>;
-  onCancel: () => void;
   onSubmit: (draft: NewWaveDraft) => void;
 }>;
 
@@ -233,48 +256,109 @@ export type NewWaveFormProps = Readonly<{
 const ISSUE_DEVELOPMENT = 'issue-development';
 
 /**
- * Selection sentinel for Blank.
+ * Selection sentinel for "no template".
  *
- * `''` because Blank is the *absence* of a template id, which no server row
- * can ever collide with, and because that absence is what goes on the wire.
+ * `''` because it is the *absence* of a template id, which no server row can
+ * ever collide with, and because that absence is what goes on the wire.
  */
 const BLANK = '';
 
 /**
- * The two things the template chip can say, and neither of them is "Blank".
+ * What the template chip says when nothing has been picked.
  *
- * `Blank` was the codebase's word for "no `template_id` on the wire", and it
- * had leaked onto a chip a person reads before they know this app has
- * templates at all. What a reader needs from an unset control is what it is
- * *for*, in the words they would use themselves — so unset the chip asks, and
- * once a choice exists it names it. The absence itself keeps a plain name of
- * its own in the menu, because a list of alternatives has to be able to offer
- * "none" as one of them.
+ * It names the **default**, not a question. An earlier cut had it ask ("Choose
+ * a template") on the theory that an unset control should say what it is for.
+ * That is right for a control whose unset state is *undecided*, and wrong for
+ * this one: there is no undecided state here — no template is a real, working
+ * choice, it is the one this page opens on, and it is what gets created if the
+ * chip is never touched. A control that asks a question it has already answered
+ * makes a settled default look like an outstanding task.
+ *
+ * `No template` and not `Blank`: `Blank` was the codebase's word for "no
+ * `template_id` on the wire", and it had leaked onto a chip a person reads
+ * before they know this app has templates at all. The same string serves as the
+ * chip and as the menu's first row, which is now a plain identity rather than
+ * two strings that have to be kept in step.
  */
-const CHOOSE_TEMPLATE = 'Choose a template';
 const NO_TEMPLATE = 'No template';
 
 /**
- * What the folder chip says while there is no folder — its visible text, its
- * accessible name and its hover string at once.
+ * The greeting, by the reader's own clock.
  *
- * It is the same sentence shape as the template chip beside it on purpose: two
- * controls that do the same kind of thing should ask the same kind of
- * question, and "Choose a …" is the shortest form of the only thing a reader
- * needs from either — what tapping it is going to do.
- *
- * What used to sit under this row was a sentence about what Neige does when
- * the folder is left alone (it allocates a workspace and `git init`s it). That
- * is true, and it is the implementation talking: it explains a mechanism to
- * someone who has not yet been told there is a choice. The choice is what the
- * chip now says; the mechanism is not something the reader has to hold to make
- * it. The managed-vs-attached distinction is still exactly one click deep —
- * the picker is where a folder gets chosen — and it stays in
- * `DirectoryField`'s and the kernel's own documentation.
+ * Taken as an argument rather than read inside, so the boundaries are testable
+ * without freezing time globally. The cuts are the ordinary ones — morning
+ * until noon, afternoon until 18:00, evening after — and the local hour is the
+ * right clock precisely because this string is small talk: it is correct when
+ * it matches the light outside the reader's window, and no server time zone
+ * knows that.
  */
-const FOLDER_PLACEHOLDER = 'Choose a folder';
+export function greetingFor(now: Date): string {
+  const hour = now.getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+/**
+ * The composer field's accessible name, and the placeholder that says the same
+ * thing to everyone else.
+ *
+ * Not rendered as a label: the composer is the surface, and a label above it
+ * would spend a row saying what the placeholder already says. Hidden, not
+ * absent — an unnamed textbox is unusable by screen reader and by voice control
+ * alike.
+ */
+const TASK_LABEL = 'What this wave should do';
+
+/**
+ * What the composer says about where the sentence goes, until #1299 lands.
+ *
+ * It states the cost plainly, because the cost is real: this slice does not
+ * carry the sentence, so the reader will retype it in the conversation the wave
+ * page opens for them. Saying so *before* they type is the difference between a
+ * known limitation and a field that silently eats input — and it is why this
+ * string exists rather than the page quietly discarding the text. It goes when
+ * #1299 lands, along with the retyping.
+ */
+const PENDING_DELIVERY_NOTICE = "You'll say this again in the wave's chat";
+const TASK_PLACEHOLDER = 'What should this wave do?';
+
+/**
+ * What the folder chip says while no folder has been picked — its visible text,
+ * its accessible name and its hover string at once.
+ *
+ * Like the template chip, it names the default rather than asking: leaving this
+ * alone is not an omission, it is the *managed* branch — the kernel allocates a
+ * directory under the workspace root, `git init`s it and owns it — and that is
+ * the right answer for most waves. Picking a folder is the exception, so the
+ * chip states what will happen and stays out of the way.
+ *
+ * It is the chip's *text* only. The accessible name is built separately from
+ * `FOLDER_PURPOSE`, because a name read on its own has to say which kind of
+ * control it is — and once a folder is picked, "Neige workspace: /srv/app"
+ * would be the default's name glued to the value that replaced it.
+ */
+const FOLDER_PLACEHOLDER = 'Neige workspace';
+/**
+ * What the folder control *is*, for the accessible name — which the chip's own
+ * text cannot carry in either state: unset it is the default's name, and set it
+ * is a bare basename ("app"), which tells a reader nothing about which `app`.
+ * The full path rides in the name too, for the same reason.
+ */
+const FOLDER_PURPOSE = 'Folder';
 /** The way back to the managed default, which exists nowhere else. */
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
+
+/**
+ * The segment that identifies a path: its last one, or `/` for the root, which
+ * has none. A chip sits in a row of chips and cannot hold
+ * `/home/kenji/src/neige-calm` without becoming the row; the whole path is one
+ * hover or one screen reader away, in the name.
+ */
+function basenameOf(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  return trimmed === '' ? '/' : trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
 
 /** Mirrors the enum in the bound plugin's `input_schema`. */
 type MergePolicy = 'hold-for-ratify' | 'auto-merge';
@@ -291,21 +375,58 @@ function needsInput(template: WaveTemplate | undefined): boolean {
 }
 
 export function NewWaveForm({
-  submitting, error, templates, templatesError = null, listDirectory,
-  startFromRef, onCancel, onSubmit,
+  submitting, error, templates, templatesError = null, listDirectory, onSubmit,
 }: NewWaveFormProps) {
   const fieldId = useId();
+  const [message, setMessage] = useState('');
   const [selected, setSelected] = useState<string>(BLANK);
   const [issueUrl, setIssueUrl] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
   const [cwd, setCwd] = useState('');
+  const [browsing, setBrowsing] = useState(false);
+  const composerHostRef = useRef<HTMLDivElement | null>(null);
   const folderId = `${fieldId}-folder`;
+  const noticeId = `${fieldId}-pending-delivery`;
   const triggerId = `${fieldId}-start-from-trigger`;
-  const startFromStatusId = `${fieldId}-start-from-status`;
+
+  /*
+   * The caret starts in the field (#1161's rule, on a route instead of a
+   * dialog): this page exists to be typed into, and arriving with focus on the
+   * document means the first thing the reader types goes nowhere.
+   *
+   * Found by query rather than by ref because the element that takes focus is
+   * astryx's `contenteditable`, and `ChatComposerInput` forwards its DOM `ref`
+   * to the *wrapper* around it (`ChatComposerInput.tsx` — `ref` at the outer
+   * element, `editableRef` at the editable). A wrapper is not focusable, so a
+   * ref would silently focus nothing.
+   *
+   * Mount-only, and that is the point: a later render must not yank the caret
+   * back from a chip the reader has just opened.
+   */
+  useEffect(() => {
+    const field = composerHostRef.current?.querySelector<HTMLElement>('[contenteditable="true"]');
+    /*
+     * The notice is the field's accessible *description*, not a second label:
+     * it states what will happen to what you type, and a reader who cannot see
+     * it needs it more than one who can — this page puts the caret straight
+     * into the field, so there is no moment on the way in where unassociated
+     * text nearby would be read out.
+     *
+     * Set on the element imperatively because `ChatComposerInput` spreads its
+     * rest props onto the *wrapper* around the editable, not the editable
+     * itself (`ChatComposerInput.tsx` — `ref`/`mergeProps` at the outer node,
+     * a separate prop set on the `contenteditable`), so `aria-describedby`
+     * passed as a prop lands on a node with no role and describes nothing.
+     * Measured: the assertion in `public.test.tsx` read `null` off the field
+     * until this moved here.
+     */
+    field?.setAttribute('aria-describedby', noticeId);
+    field?.focus();
+  }, [noticeId]);
 
   // A template that vanished between renders (the list refetched without it)
-  // must not leave a selection pointing at nothing; falling back to Blank is
-  // the safe direction — it always submits.
+  // must not leave a selection pointing at nothing; falling back to no template
+  // is the safe direction — it always submits.
   const chosen = templates.find((template) => template.id === selected);
   const effectiveSelection = selected === BLANK || chosen ? selected : BLANK;
   const wantsInput = needsInput(chosen);
@@ -319,239 +440,329 @@ export function NewWaveForm({
   const issueUrlTouched = issueUrl.trim() !== '';
   const issueUrlBad = issueDev && issueUrlTouched && parsedIssue === null;
   const inputBlocker = unsupportedInput || (issueDev && parsedIssue === null);
-  /*
-   * Nothing is required any more. The half that read `title.trim() !== ''` is
-   * gone with the field (#1211 S2): a wave with no name is the normal way to
-   * start one, so opening this dialog and pressing Create is a complete
-   * gesture. What is left blocks only a template whose input this build cannot
-   * collect or has not been given — a request the kernel would refuse.
-   */
-  const valid = !inputBlocker;
+  const valid = message.trim() !== '' && !inputBlocker;
+  /* The folder control's accessible name *and* its hover string — one value,
+     because they answer the same question and must not drift apart. Neither is
+     the chip's text: unset that text is the default's name, and set it is a
+     bare basename, and neither survives being read on its own. */
+  const folderName = cwd === '' ? `${FOLDER_PURPOSE}: ${FOLDER_PLACEHOLDER}` : `${FOLDER_PURPOSE}: ${cwd}`;
 
   /*
-   * One status slot on the field, and the two things that can fill it never
-   * coexist: `templatesError` means the list is empty, and an empty list has
-   * no bound template to be unsupported. Error vs warning is the difference
-   * that matters to a reader — one blocks the submit, the other does not.
+   * One status slot on the composer, and the two things that can fill it never
+   * coexist: `templatesError` means the list is empty, and an empty list has no
+   * bound template to be unsupported. Error vs warning is the difference that
+   * matters to a reader — one blocks the submit, the other does not.
    */
-  const groupStatus = unsupportedInput
+  const status = unsupportedInput
     ? { type: 'error' as const, message: 'This template needs input this version cannot collect yet.' }
     : templatesError !== null
-      ? { type: 'warning' as const, message: `${templatesError} You can still create a blank wave.` }
+      ? { type: 'warning' as const, message: `${templatesError} You can still create a wave without one.` }
       : undefined;
 
-  function buildDraft(): NewWaveDraft {
+  function submit(text: string): void {
+    const trimmed = text.trim();
+    if (trimmed === '' || inputBlocker || submitting) return;
     /* Spread, not `cwd: folder || undefined`: the caller keys the whole
        managed-vs-attached decision on whether the key is *there*, and
        `cwd: undefined` is a different object from no `cwd` for anything that
        inspects the draft before it is serialized — including the tests. */
     const folder = cwd.trim();
-    const base = { ...(folder === '' ? {} : { cwd: folder }) };
-    if (effectiveSelection === BLANK) return base;
-    if (parsedIssue === null) return { ...base, template_id: effectiveSelection };
+    const base = { message: trimmed, ...(folder === '' ? {} : { cwd: folder }) };
+    if (effectiveSelection === BLANK) { onSubmit(base); return; }
+    if (parsedIssue === null) { onSubmit({ ...base, template_id: effectiveSelection }); return; }
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
-    return {
+    onSubmit({
       ...base,
       template_id: effectiveSelection,
       template_input: { ...parsedIssue, merge_policy: mergePolicy },
-    };
+    });
   }
 
   return (
-    /* `VStack as="form"`, not a hand-rolled flex column: the vertical rhythm
-       is astryx's `gap` step (2 = 8px, the `--space-4` this used to restate).
-       `styles.form` is what astryx does not own — the dialog's text colour and
-       font, which come from this app's tokens. */
-    <VStack
-      as="form"
-      gap={2}
-      className={styles.form}
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!valid || submitting) return;
-        onSubmit(buildDraft());
-      }}
-    >
-      {error !== null && (
-        <Banner status="error" title={error} data-nc-new-wave-error />
-      )}
+    <div className={styles.page}>
+      <VStack gap={2} className={styles.form}>
+        {error !== null && (
+          <Banner status="error" title={error} data-nc-new-wave-error />
+        )}
 
-      {/* ── The two settings, as one row of chips ────────────────────────────
-          What this wave starts from and where it runs are the same *kind* of
-          thing: one optional choice each, both defaulted, both changing only
-          what the wave's work is carried out on. They used to be two stacked
-          full-width rows — a label, a box the width of the dialog, and for the
-          folder a two-line paragraph under it — which gave two secondary
-          settings the whole width of the dialog. Same size, same variant, same
-          row.
+        {/* The mark, the greeting, and where you are — see `.masthead`. */}
+        <div className={styles.masthead}>
+          {/* Decorative: the greeting under it already names the page, and a
+              mark that repeats it would be a second announcement of the same
+              thing. The asset carries its own `<title>`, which is why it is a
+              CSS mask here rather than an inlined `<svg>`. */}
+          <span className={styles.mark} role="presentation" />
+          <h1 className={styles.greeting}>{greetingFor(new Date())}</h1>
+        </div>
 
-          They are the dialog's only content now that the task sentence is gone
-          (#1211 S2), and that is the shape the product wants: two settings
-          most readers leave alone, and a Create button that is never blocked
-          by anything they have not typed.
-
-          Each chip says what it is for and then what it holds — "Choose a
-          template" until one is chosen, then the template's title — so the row
-          needs no labels above it and no paragraph under it. That is also why
-          there is no `Field` around the trigger any more: a field exists to
-          put a name beside a control, and these controls carry their own.
-          What the `Field` did carry is the group's status message, and that is
-          `FieldStatus` on its own, below the row. */}
-      <HStack gap={1} align="center" className={styles.controls}>
-        <DropdownMenu
-          placement="below"
-          button={{
-            id: triggerId,
-            /* The dialog's opening focus (#1161, re-aimed by #1211 S2). This
-               is now the first control in the form, and `DropdownMenu`
-               forwards `button.ref` onto the trigger it renders. */
-            ref: startFromRef,
-            label: chosen?.title ?? CHOOSE_TEMPLATE,
-            /* The chip's text is the choice; its *name* has to survive being
-               read on its own, out of the row, with nothing beside it — so it
-               says which kind of choice it is. Unset the two coincide, because
-               "Choose a template" already is that sentence. */
-            'aria-label': chosen === undefined ? CHOOSE_TEMPLATE : `Template: ${chosen.title}`,
-            variant: 'secondary',
-            size: 'sm',
-            className: styles.trigger,
-            'aria-describedby': groupStatus !== undefined ? startFromStatusId : undefined,
+        <div
+          ref={composerHostRef}
+          className={styles.composer}
+          data-nc-new-wave-message
+          /*
+           * Enter is **ours**, and it has to be.
+           *
+           * astryx's `ChatComposer.handleSubmit` is `onSubmit(trimmed);
+           * updateValue('')` — it clears the controlled value unconditionally
+           * and synchronously *after* calling us, while our `submit` returns
+           * early whenever the draft is not submittable. Left to astryx, the
+           * refusal path was: the reader's sentence disappears, nothing is
+           * created, and nothing is said. Reproduced against a bound template
+           * with no issue URL, where the send button is visibly disabled and
+           * Enter therefore looks safe to press.
+           *
+           * Capturing here means astryx's handler never runs from the keyboard
+           * (and the send button is our own `sendButton` override, so its
+           * internal path is unused either) — so nothing clears the field
+           * behind our back. Nothing needs to: a successful submit navigates
+           * away and unmounts this component.
+           *
+           * **Only when the field itself is the target**, and `matches` rather
+           * than `closest` for a reason that is not pedantry. This handler sits
+           * on the wrapper, which contains the footer chips and — because
+           * astryx's popover does not portal — the open template menu; the
+           * first cut omitted the target check entirely and swallowed Enter for
+           * all of them, so arrowing to a template and pressing Enter created a
+           * wave with *no* template and navigated away from it.
+           *
+           * `closest` fixed that and left a subtler one: there are focusable
+           * controls *inside* the editable. `ChatComposerInput` turns any paste
+           * over 200 characters into a token (`useChatPasteAsToken`, on by
+           * default — this call site does not pass `pasteAsToken={false}`), and
+           * that token's hover card carries an `Expand` button which is a DOM
+           * descendant of the `contenteditable`. Under `closest`, tabbing to
+           * Expand and pressing Enter created a wave instead of expanding the
+           * token — and pasting a long instruction into this field is an
+           * entirely ordinary thing to do.
+           *
+           * The keydown target while typing in a `contenteditable` *is* the
+           * editable element (text nodes are not event targets), so comparing
+           * the target to the field loses nothing and separates every
+           * descendant control out. Enter means "activate this control"
+           * everywhere except in a text field.
+           *
+           * The IME guard is the second reason and predates the first: Enter
+           * while composing is *accepting a candidate*, not sending, so it must
+           * not create a wave mid-word. Same guard, same reason, as the chat
+           * thread's composer.
+           */
+          onKeyDownCapture={(event) => {
+            if (event.key !== 'Enter' || event.shiftKey) return;
+            const target = event.target as HTMLElement | null;
+            const field = target?.closest?.('[contenteditable="true"]') ?? null;
+            if (field === null) return;
+            if (target !== field) {
+              /* A control *inside* the editable — a paste token's `Expand`
+                 button and anything astryx adds later. Enter belongs to it, so
+                 this neither submits nor `preventDefault`s (the button still
+                 activates natively). It does stop propagation, because letting
+                 the event reach the editable hands it to astryx's own Enter
+                 handling, which submits — returning early here was the first
+                 fix and it left exactly that path open. */
+              event.stopPropagation();
+              return;
+            }
+            event.stopPropagation();
+            if (event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            submit(message);
           }}
         >
-          {/* The absence of a template is an alternative like any other, and
-              it is the one the dialog opens on. It carries no hover card
-              because it has no tasks to show — its whole content is its name. */}
-          <TemplateChoice
-            label={NO_TEMPLATE}
-            isSelected={effectiveSelection === BLANK}
-            onSelect={() => setSelected(BLANK)}
-          />
-          {templates.map((template) => (
-            <TemplateChoice
-              key={template.id}
-              label={template.title}
-              tasks={template.tasks}
-              isSelected={effectiveSelection === template.id}
-              onSelect={() => setSelected(template.id)}
-            />
-          ))}
-        </DropdownMenu>
+          <ChatComposer
+            density="spacious"
+            value={message}
+            onChange={setMessage}
+            placeholder={TASK_PLACEHOLDER}
+            isDisabled={submitting}
+            onSubmit={submit}
+            status={status}
+            input={<ChatComposerInput label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} />}
+            /* ── The two settings, as chips under the sentence ─────────────────
+               What this wave starts from and where it runs are the same *kind* of
+               thing: one optional choice each, both defaulted, both changing only
+               what the sentence above them is carried out on. In the footer and
+               not above the field because that is where a composer's controls
+               belong — the input is the surface, and these sit under it. Each
+               chip says what it is for and then what it holds, so the row needs
+               no labels above it and no paragraph under it. */
+            footerActions={(
+              <HStack gap={1} align="center" className={styles.controls}>
+                <DropdownMenu
+                  placement="above"
+                  button={{
+                    id: triggerId,
+                    label: chosen?.title ?? NO_TEMPLATE,
+                    /* The chip's text is the choice; its *name* has to survive
+                       being read on its own, out of the row, with nothing beside
+                       it — so it says which kind of choice it is. Unset the two
+                       coincide, because "Choose a template" already is that
+                       sentence. */
+                    'aria-label': `Template: ${chosen?.title ?? NO_TEMPLATE}`,
+                    variant: 'secondary',
+                    size: 'sm',
+                    className: styles.trigger,
+                  }}
+                >
+                  {/* The absence of a template is an alternative like any other,
+                      and it is the one the composer opens on. It carries no hover
+                      card because it has no tasks to show — its whole content is
+                      its name. */}
+                  <TemplateChoice
+                    label={NO_TEMPLATE}
+                    isSelected={effectiveSelection === BLANK}
+                    onSelect={() => setSelected(BLANK)}
+                  />
+                  {templates.map((template) => (
+                    <TemplateChoice
+                      key={template.id}
+                      label={template.title}
+                      tasks={template.tasks}
+                      isSelected={effectiveSelection === template.id}
+                      onSelect={() => setSelected(template.id)}
+                    />
+                  ))}
+                </DropdownMenu>
 
-        {/* The folder, #1147 S3, and no field around it: `DirectoryField` names
-          itself (`aria-label` — its visible text is a basename, and a reader
-          who hears only "app" learns nothing about which one), so a wrapping
-          `<label>` here would be a second name for one control. It is also the
-          frozen wrapper that pushes `DirectoryBrowser` into the *surrounding*
-          dialog rather than opening a second one, which is why this form does
-          not roll its own picker. */}
-        <DirectoryField
-          id={folderId}
-          value={cwd}
-          onChange={setCwd}
-          listDirectory={listDirectory}
-          placeholder={FOLDER_PLACEHOLDER}
-        />
+                {/* The folder, #1147 S3. The chip's text is the default's name
+                    until a folder is picked and the folder's basename after; the
+                    name says which control it is and carries the full path,
+                    because neither of those texts survives being read alone.
+                    `aria-haspopup="dialog"` because it opens one — see the
+                    `Dialog` at the end of this component. */}
+                <Button
+                  type="button"
+                  id={folderId}
+                  variant="secondary"
+                  size="sm"
+                  className={styles.trigger}
+                  aria-haspopup="dialog"
+                  aria-label={folderName}
+                  icon={<AppIcon name="folder" size="sm" />}
+                  label={cwd === '' ? FOLDER_PLACEHOLDER : basenameOf(cwd)}
+                  onClick={() => setBrowsing(true)}
+                  /* The one attribute astryx has no prop for, passed through as
+                     a rest prop: it is what makes a chip truncated to a
+                     basename one hover from readable. astryx drops `title` from
+                     `BaseProps` in favour of a `tooltip` prop, which would mount
+                     a floating layer on a control whose whole job is to open
+                     one. Same reasoning, and the same shape, as
+                     `DirectoryField`'s. */
+                  {...{ title: folderName }}
+                />
 
-        {/* Create time is the only entry into the attached choice, so the way
-            *back* to the managed default has to exist here too — there is no
-            later screen for it. It appears beside the folder it undoes and only
-            once there is one; icon-only, because a control that undoes a choice
-            should not be wider than the choice. */}
-        {cwd !== '' && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            icon={<Icon icon="close" size="sm" />}
-            label={FOLDER_CLEAR_LABEL}
-            onClick={() => setCwd('')}
-          />
-        )}
-      </HStack>
-
-      {/* The template group's one status slot, kept from the `Field` that used
-          to own it. `detached` is the variant for a message under a control
-          rather than overlapping an input's border, and the two things that
-          can fill it never coexist — a failed list read leaves no bound
-          template to be unsupported. */}
-      {groupStatus !== undefined && (
-        <FieldStatus
-          id={startFromStatusId}
-          type={groupStatus.type}
-          message={groupStatus.message}
-          variant="detached"
-        />
-      )}
-
-      {issueDev && (
-        /* Under the row that chose it, named by the template it belongs to.
-           It is no longer inside the `Field` — that field is now one chip in a
-           horizontal row and a panel cannot live in it — so the statement of
-           belonging is adjacency plus the group's own accessible name, which
-           is the template's title. The group needs a *name*, not a second
-           visible heading: the trigger above already reads that title, and
-           repeating it would be the same word twice in two rows. */
-        <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
-          <TextInput
-            label="Issue URL"
-            value={issueUrl}
-            width="100%"
-            placeholder="https://github.com/owner/repo/issues/123"
-            /* An unfinished field is not an error: until something has been
-               typed the guidance is a description, and only a value that
-               cannot be parsed turns into `status` (which is what sets
-               `aria-invalid` and the alert). */
-            description={issueUrlBad ? undefined : parsedIssue === null
-              ? 'Paste the GitHub issue this wave works on.'
-              : `Issue #${parsedIssue.issue_number} in ${parsedIssue.repo}.`}
-            status={issueUrlBad
-              ? {
-                type: 'error',
-                message: 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.',
-              }
-              : undefined}
-            onChange={(value) => setIssueUrl(value)}
-          />
-          <CheckboxInput
-            label="Merge automatically once the gates converge"
-            description="Off: the wave waits for you to approve the merge."
-            value={autoMerge}
-            onChange={(checked) => setAutoMerge(checked)}
+                {/* Create time is the only entry into the attached choice, so the
+                    way *back* to the managed default has to exist here too —
+                    there is no later screen for it. It appears beside the folder
+                    it undoes and only once there is one; icon-only, because a
+                    control that undoes a choice should not be wider than the
+                    choice. */}
+                {cwd !== '' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    isIconOnly
+                    icon={<Icon icon="close" size="sm" />}
+                    label={FOLDER_CLEAR_LABEL}
+                    onClick={() => setCwd('')}
+                  />
+                )}
+              </HStack>
+            )}
+            /* #1299 — said where it is read, not in a tooltip and not after the
+             fact: the sentence starts the wave off but is not delivered to the
+             agent yet, so the reader knows before they type that they will be
+             repeating it. Removed in the same change that lands delivery. */
+          headerContext={<span id={noticeId} className={styles.notice}>{PENDING_DELIVERY_NOTICE}</span>}
+          /* Astryx's own `ChatSendButton` is named "Send", which is true of
+               every other composer in the app and false of this one: pressing it
+               creates a wave. The name is the only thing overridden — the shape,
+               the icon and the position stay the composer's. */
+            sendButton={(
+              <Button
+                type="button"
+                variant="primary"
+                isIconOnly
+                icon={<Icon icon="arrowUp" size="sm" />}
+                label={submitting ? 'Creating…' : 'Create wave'}
+                isDisabled={submitting || !valid}
+                onClick={() => submit(message)}
+              />
+            )}
           />
         </div>
-      )}
 
-      {/* The action row is a plain horizontal stack, so it is astryx's:
-          `gap={1}` is 4px (the old `--space-2`) and `justify="end"` is the
-          main-axis alias for `justify-content: flex-end`. */}
-      <HStack gap={1} justify="end">
-        <Button type="button" label="Cancel" variant="ghost" onClick={onCancel} />
-        <Button
-          type="submit"
-          variant="primary"
-          label={submitting ? 'Creating…' : 'Create wave'}
-          isDisabled={submitting || !valid}
+        {issueDev && (
+          /* Under the chip that chose it, named by the template it belongs to.
+             The group needs a *name*, not a second visible heading: the trigger
+             already reads that title, and repeating it would be the same word
+             twice in two rows. */
+          <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
+            <TextInput
+              label="Issue URL"
+              value={issueUrl}
+              width="100%"
+              placeholder="https://github.com/owner/repo/issues/123"
+              /* An unfinished field is not an error: until something has been
+                 typed the guidance is a description, and only a value that
+                 cannot be parsed turns into `status` (which is what sets
+                 `aria-invalid` and the alert). */
+              description={issueUrlBad ? undefined : parsedIssue === null
+                ? 'Paste the GitHub issue this wave works on.'
+                : `Issue #${parsedIssue.issue_number} in ${parsedIssue.repo}.`}
+              status={issueUrlBad
+                ? {
+                  type: 'error',
+                  message: 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.',
+                }
+                : undefined}
+              onChange={(value) => setIssueUrl(value)}
+            />
+            <CheckboxInput
+              label="Merge automatically once the gates converge"
+              description="Off: the wave waits for you to approve the merge."
+              value={autoMerge}
+              onChange={(checked) => setAutoMerge(checked)}
+            />
+          </div>
+        )}
+      </VStack>
+
+      {/* The picker, as a real modal — see the header. `Dialog` renders `null`
+          while closed, so the unopened case costs nothing, and it owns the
+          focus trap, the Escape handling and the click-outside that a browser
+          unrolled into the page had none of. */}
+      <Dialog
+        open={browsing}
+        onClose={() => setBrowsing(false)}
+        title="Choose a directory"
+        wide
+      >
+        <DirectoryBrowser
+          listDirectory={listDirectory}
+          initialPath={cwd === '' ? null : cwd}
+          mode="directory"
+          onCancel={() => setBrowsing(false)}
+          onSelect={(path) => { setCwd(path); setBrowsing(false); }}
         />
-      </HStack>
-    </VStack>
+      </Dialog>
+    </div>
   );
 }
 
 /**
- * One alternative in the Start from menu, and — when it has tasks — the
+ * One alternative in the template menu, and — when it has tasks — the
  * "what will this give me" card behind it.
  *
  * ## The row is the trigger
  *
- * The previous cut hung the card off a separate "N tasks" label in the row's
+ * An earlier cut hung the card off a separate "N tasks" label in the row's
  * `endContent`. `HoverCard` renders a string child as a focusable
  * `<span tabIndex={0}>`, so that label was a *second* tab stop inside every
- * row — a composite control is supposed to be one stop, and a test had been
- * written that asserted the extra stop existed, fixing the defect in place.
+ * row — a composite control is supposed to be one stop.
  *
  * The card now hangs off the option itself. It costs no tab stop, because
  * `DropdownMenuItem` renders `tabIndex={-1}`: the menu is entered from its
@@ -579,9 +790,7 @@ export function NewWaveForm({
  *
  * The card itself always closes on Escape, and the menu always closes on Tab —
  * `DropdownMenu` handles Tab itself, per the APG menu-button pattern — so the
- * picker is not a keyboard trap. That is the property that matters and it is
- * the one pinned, in `new-wave.browser.test.tsx`, because none of it is
- * observable without a top layer.
+ * picker is not a keyboard trap.
  *
  * ## Why a HoverCard and not a Tooltip
  *

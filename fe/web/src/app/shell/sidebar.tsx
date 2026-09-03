@@ -34,9 +34,9 @@ export type SidebarProps = Readonly<{
   /** Colour is picked here, at random from `COVE_PALETTE` (INV-DUP-006). */
   onCreateCove: (name: string, color: string) => void | Promise<void>;
   onDeleteCove: (coveId: string, signal: AbortSignal) => void | Promise<void>;
-  /** Opens the shell's New wave dialog for this cove (hidden on the POST, not
-   *  a picker). The rail does not own the dialog — `AppShell` does, because
-   *  the cove page's `+` opens the same one. */
+  /** Goes to the new-wave page for this cove. The rail does not own that
+   *  page — it is the route `/cove/{id}/new` (#1211) — and it reaches it
+   *  through the shell, which is the nearest owner both `+` surfaces share. */
   onNewWave: (coveId: string) => void;
   onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
   onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;
@@ -436,8 +436,11 @@ function WaveSection({ title, waves, coves, onGo, nowMs, onSetPinned, onDelete }
 
 /**
  * INV-A11Y-061 — navigation is `<button>` + `onGo`, never a native `<a href>`.
- * That holds for the `+` too: it opens a dialog, so it is a button and a
- * callback, not a link to a "new wave" URL that does not exist.
+ * That holds for the `+` too, and since #1211 it is the *only* reason: the `+`
+ * now goes to `/cove/{id}/new`, so a real URL does exist and an `<a href>`
+ * would work. It stays a button because this rail does not mix the two
+ * activation models — see the rule above. The cost is real and worth naming:
+ * middle-click, open-in-new-tab and copy-link do not work on it.
  *
  * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only one of
  * them is hover-revealed. The `+` is permanent because starting a wave is the

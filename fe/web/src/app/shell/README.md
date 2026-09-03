@@ -7,23 +7,26 @@ route's outlet.
 mutations, and hands `Sidebar` plain callbacks — the rail stays presentational,
 so a jsdom test drives it without a `QueryClient`.
 
-It also owns the **New wave dialog**, for the same reason: two surfaces open it
-— every cove row's `+` in the rail, and the cove page's WAVES module head — and
-the rail is a sibling of the outlet, so a dialog owned by the cove route was
-reachable from exactly one of them. The rail gets the opener as a prop
+It no longer owns a New wave dialog (#1211): starting a wave is the route
+`/cove/{id}/new`, owned by `app/router`, and the two `+` surfaces — every cove
+row's in the rail, and the cove page's WAVES module head — both just navigate.
+What the shell kept is the seam. The rail gets the opener as a prop
 (`onNewWave`); the route gets it through `useRequestNewWave()`, the one context
-this module publishes, because there is no prop path across `<Outlet />`.
-`cove_id` is the opener's cove. `onOpenSettings` /
+this module publishes, because there is no prop path across `<Outlet />`. `onOpenSettings` /
 `onSignOut` are injected: the shell never signs out itself. `nowMs` exists so a
 test can pin the `pinned_at` stamp.
 
-## The wave-create body (#1131, #1147 S3)
+## The wave-create body (#1131, #1147 S3, #1211)
 
-The dialog's Folder field is optional and decides the request shape:
+The create moved to `app/router`'s `NewWaveRoute` with the page (#1211); this
+section stays because the rail is still one of the two `+` surfaces. The
+new-wave page's Folder chip is optional and decides the request shape — and the
+body carries **no `title`** since #1211: the kernel stores the empty string and
+the spec agent names the wave through `calm.wave.rename`.
 
 | Folder | `POST /api/waves` body | Kernel branch |
 | --- | --- | --- |
-| not chosen | `{ cove_id, title, theme }` | *managed* — the kernel derives, creates and owns a workspace under the workspace root |
+| not chosen | `{ cove_id, theme }` | *managed* — the kernel derives, creates and owns a workspace under the workspace root |
 | chosen | `… + { cwd, attach_folder: true }` | *attached* — the user's own directory, never created, moved or deleted by the kernel |
 
 Both keys travel together, and absence is the signal — `cwd: null` or
