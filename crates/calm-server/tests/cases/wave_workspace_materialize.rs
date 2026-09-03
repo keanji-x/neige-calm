@@ -136,6 +136,7 @@ async fn workspace_row(repo: &SqlxRepo, wave_id: &str) -> (String, String, Optio
 }
 
 /// Entry point 1 of 4: `POST /api/waves` with no `cwd` — the #1131 title-only
+/// create the new FE sends.
 ///
 /// #1300 — this enumeration said "of 5" until template seeding was removed.
 /// Entry point 2 was `seed_template_wave`, and the case that covered it
@@ -144,8 +145,6 @@ async fn workspace_row(repo: &SqlxRepo, wave_id: &str) -> (String, String, Optio
 /// wave the caller asked for and there is no second workspace to materialize.
 /// The count is corrected rather than left at 5, because an enumeration that
 /// claims more coverage than it has is worse than none.
-///
-/// create the new FE sends.
 #[tokio::test]
 async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     let b = boot().await;

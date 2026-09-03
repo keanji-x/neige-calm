@@ -204,7 +204,8 @@ fn create_body(cove_id: &str, title: &str, extra: Value) -> Value {
 /// digest is stable. Deliberately **not** a hand-maintained list of tables or
 /// of overlay entity kinds: the failure mode these tests exist to catch is "a
 /// read quietly wrote something", and a snapshot that enumerates what it looks
-/// at silently stops covering whatever is added next. `seeded_templates` below
+/// at silently stops covering whatever is added next. `template_key_overlays`
+/// below
 /// is the opposite shape — it only sees `kind == "template"` overlays — which
 /// is why these tests do not reuse it.
 ///
@@ -1377,110 +1378,6 @@ async fn both_spellings_together_are_an_unknown_field() {
     .await;
 }
 
-/// #1300 S1 — the picker still answers from the **seeded report**, not from the
-/// constants.
-///
-/// ## Why this test exists at all, given S2 deletes what it pins
-///
-/// S1's whole slicing argument is that the read authority must not move in the
-/// same change as the write side. Collapsing `current_definition` onto the
-/// constants here would leave a releasable state where the picker answers from
-/// one source and `POST /api/waves` forks from another — the picker showing a
-/// plan create does not produce, both sides internally consistent, no test red.
-///
-/// That argument was, until this case, **unasserted**. #1230's coverage of the
-/// seeded-report read lived in the editor tests, and S1 deleted those with the
-/// editor: afterwards `current_definition` could have been collapsed to the
-/// constants and the entire suite would have stayed green. A slicing decision
-/// nothing can falsify is a comment, not a constraint.
-///
-/// So the property is pinned through a path S1 does not touch: the ordinary
-/// wave-report write endpoint, aimed at the seeded template wave. If the read
-/// authority moves, this goes red.
-///
-/// **S2 deletes this case on purpose**, together with the seeded wave it reads.
-/// That is the visible, reviewable moment the authority changes — which is the
-/// opposite of it changing silently between two slices.
-#[tokio::test]
-async fn the_picker_answers_from_the_seeded_report_not_the_constants() {
-    const EDITED_TITLE: &str = "Edited seeded title";
-    let boot = boot().await;
-
-    // Seed by creating from the template — the only remaining way in.
-    let (status, created) = post(
-        boot.app.clone(),
-        "/api/waves",
-        create_body(
-            &boot.cove_id,
-            "seed-it",
-            json!({ "template_id": SMALL_CHANGE }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={created}");
-    let template_wave_id = seeded_templates(&boot.repo)
-        .await
-        .into_iter()
-        .find(|(key, _)| key == SMALL_CHANGE)
-        .map(|(_, wave_id)| wave_id)
-        .expect("small-change must be seeded by a matching create");
-
-    // A recognizable edit, stamped onto the seeded report.
-    //
-    // The **summary** and not a task goal, for a contract reason rather than
-    // convenience: the prose write path refuses to modify a non-prose block
-    // (`guard_non_prose_stomp`), which is exactly why #1230's editor had to use
-    // `WriteMarkdown`. The summary is enough to falsify the property — the
-    // picker's `title` is the seeded report's summary, and a
-    // `current_definition` that answered from the constants would say
-    // "Small change" here.
-    //
-    // Written through `persist_report` rather than the REST report route: this
-    // file's `post` helper is unauthenticated and that route 401s. Whoever
-    // writes it is not the point; that the *read* comes back from it is.
-    let (wave, report_card, current) =
-        resolve_report_for_wave(boot.repo.as_ref(), &template_wave_id)
-            .await
-            .expect("seeded report");
-    let if_doc_rev = current.doc_rev;
-    let body = current.body.clone();
-    assert_ne!(
-        current.summary, EDITED_TITLE,
-        "the fixture must change the summary"
-    );
-    persist_report(
-        boot.repo.as_ref(),
-        &boot.state.events,
-        boot.state.write(),
-        ActorId::User,
-        EditAuthor::User,
-        wave,
-        report_card,
-        current,
-        WaveReportPayload::new(EDITED_TITLE, body),
-        if_doc_rev,
-        None,
-        None,
-        false,
-    )
-    .await
-    .expect("stamp the edited seeded report");
-
-    // The picker must show the edit. The constants would say "Small change".
-    let (status, listed) = get(boot.app.clone(), "/api/wave-templates").await;
-    assert_eq!(status, StatusCode::OK, "body={listed}");
-    let row = listed_template(&listed, SMALL_CHANGE);
-    assert_eq!(
-        row["title"], EDITED_TITLE,
-        "the picker fell back to the constant title, so the read authority moved; row={row}"
-    );
-
-    // The task list is deliberately NOT part of this assertion. It could only
-    // be made to differ from the constants by editing a task fence, and the
-    // write path available here may not touch one (see above). Pinning the
-    // title is enough: both facts come from the same `current_definition`
-    // branch, so a collapse to the constants cannot take one and leave the
-    // other.
 // ---------------------------------------------------------------------------
 // #1300 S2 — what "create a wave from a template" produces, derived not
 // transcribed.
