@@ -25,16 +25,18 @@ commit_has_rationale() {
   esac
 }
 
-# Return success only when COMMIT's state for one literal PATH was established
-# by a marker-bearing transition outside the event base. Following the actual
-# equal-state parent chain prevents a discarded marked change elsewhere in the
-# DAG from laundering an unrelated stale state.
-path_state_has_rationale() {
+# Return success when COMMIT's state for one literal PATH either matches the
+# trusted event-base state or was established by a marker-bearing transition
+# outside the event base. Following the actual equal-state parent chain
+# prevents a discarded marked change elsewhere in the DAG from laundering an
+# unrelated stale state.
+path_state_has_accepted_provenance() {
   local commit="$1"
   local path="$2"
   local key="${commit}"$'\034'"${path}"
   local cached="${path_state_cache[$key]-}"
   local reachable_rc
+  local base_diff_rc
   local parents
   local first_parent
   local diff_rc
@@ -56,8 +58,28 @@ path_state_has_rationale() {
   set -e
   case "$reachable_rc" in
     0)
-      path_state_cache[$key]=no
-      return 1
+      # Pull-request checks use the current default-branch commit as their
+      # event base, while push checks use the previously accepted main tip.
+      # A nested branch merge may therefore adopt an unmarked path state that
+      # is already present at the trusted base (for example after merging main
+      # into the branch). Trust only that exact per-path state; an ancestor
+      # carrying any other state still cannot provide provenance.
+      set +e
+      git -C "$repo_root" --literal-pathspecs diff --quiet --ignore-submodules=none \
+        "$commit" "$base_sha" -- "$path"
+      base_diff_rc=$?
+      set -e
+      case "$base_diff_rc" in
+        0)
+          path_state_cache[$key]=yes
+          return 0
+          ;;
+        1)
+          path_state_cache[$key]=no
+          return 1
+          ;;
+        *) error "failed to compare provenance commit $commit with event base $base_sha for '$path'" ;;
+      esac
       ;;
     1) ;;
     *) error "failed to compare provenance commit $commit with event base $base_sha" ;;
@@ -94,7 +116,7 @@ path_state_has_rationale() {
   set -e
   case "$diff_rc" in
     0)
-      if path_state_has_rationale "$first_parent" "$path"; then
+      if path_state_has_accepted_provenance "$first_parent" "$path"; then
         path_state_cache[$key]=yes
         return 0
       fi
@@ -113,7 +135,7 @@ path_state_has_rationale() {
         set -e
         case "$parent_diff_rc" in
           0)
-            if path_state_has_rationale "$parent" "$path"; then
+            if path_state_has_accepted_provenance "$parent" "$path"; then
               path_state_cache[$key]=yes
               return 0
             fi
@@ -238,9 +260,10 @@ while IFS= read -r sha; do
     # A merge may adopt vector changes already justified on another parent;
     # that ordinary composition does not need a duplicate marker. For every
     # path changed from parent 1, require both (a) a non-first parent with the
-    # same resulting path state and (b) a marker-bearing change to that literal
-    # path in the parent's history outside the event base. Without both, the
-    # merge itself is introducing or restoring the path state.
+    # same resulting path state and (b) provenance from either the trusted
+    # event-base state or a marker-bearing change to that literal path outside
+    # the event base. Without both, the merge itself is introducing or
+    # restoring the path state.
     if ! commit_has_rationale "$sha"; then
       merge_has_provenance=1
       while IFS= read -r -d '' path; do
@@ -258,7 +281,7 @@ while IFS= read -r sha; do
             *) error "failed to compare merge commit $sha with parent $parent for '$path' (git diff exit $parent_diff_rc)" ;;
           esac
 
-          if path_state_has_rationale "$parent" "$path"; then
+          if path_state_has_accepted_provenance "$parent" "$path"; then
             path_has_provenance=1
           fi
         done
@@ -284,4 +307,4 @@ done <<< "$range_commits"
 [ "$bad" -eq 0 ] || exit 1
 [ "$vector_commit_count" -ne 0 ] \
   || { echo "OK: frozen vectors untouched in $base_sha..$head_sha"; exit 0; }
-echo "OK: all vector-touching commits carry FROZEN-VECTOR-CHANGE:"
+echo "OK: all vector-touching commits are justified or match the trusted event-base state"
