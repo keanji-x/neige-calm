@@ -8,6 +8,40 @@ export interface MutationEntry {
   why_more_than_one: string;
 }
 
+/**
+ * `full` preserves the original evidence semantics: every mutation is judged against every Vitest
+ * project, so an unexpected red anywhere is visible. `witness` runs the test files from an entry's
+ * `selection_paths` plus the explicit extra-witness catalog; CI uses it for pre-merge feedback,
+ * while the scheduled full sweep keeps the
+ * wider over-red oracle. The narrower mode is therefore an explicit latency/coverage trade, never a
+ * silent default change.
+ */
+export type MutationTestScope = 'full' | 'witness';
+export type MutationWitnessCatalog = Readonly<Record<string, readonly string[]>>;
+
+const vitestTestPathPattern = /(?:^|\/)[^/]+\.test\.[cm]?[jt]sx?$/;
+const browserVitestTestPathPattern = /\.browser\.test\.[cm]?[jt]sx?$/;
+
+export function parseMutationTestScope(value: string): MutationTestScope {
+  if (value === 'full' || value === 'witness') return value;
+  throw new Error(`invalid mutation test scope: ${value}`);
+}
+
+export function mutationWitnessTestPaths(
+  entry: MutationEntry, catalog: MutationWitnessCatalog = {},
+): string[] {
+  return [...new Set([
+    ...entry.selection_paths.filter((path) => vitestTestPathPattern.test(path)),
+    ...(catalog[entry.mutation_id] ?? []),
+  ])];
+}
+
+export function mutationWitnessNeedsBrowser(
+  entry: MutationEntry, catalog: MutationWitnessCatalog = {},
+): boolean {
+  return mutationWitnessTestPaths(entry, catalog).some((path) => browserVitestTestPathPattern.test(path));
+}
+
 export interface MutationRunResult {
   failed_test_ids: readonly string[];
   apply_check_exit_code: number;
@@ -494,6 +528,39 @@ export function validateManifest(
   }
 }
 
+/**
+ * Extra witness paths live outside `fe/` so the temporary duplication of retiring domain words in
+ * test filenames does not raise #1316's source-vocabulary ratchet. This validator keeps that small
+ * exception catalog honest: only known entries, only tracked Vitest tests, and no path that was
+ * already available through `selection_paths`.
+ */
+export function validateWitnessCatalog(
+  entries: MutationEntry[], catalog: Readonly<Record<string, unknown>>, trackedPaths: ReadonlySet<string>,
+): void {
+  const byId = new Map(entries.map((entry) => [entry.mutation_id, entry]));
+  for (const [mutationId, value] of Object.entries(catalog)) {
+    const entry = byId.get(mutationId);
+    if (entry === undefined) throw new Error(`witness catalog names unknown mutation_id: ${mutationId}`);
+    if (!Array.isArray(value) || value.length === 0 || duplicates(value).length > 0) {
+      throw new Error(`${mutationId}: witness catalog paths must be a non-empty unique array`);
+    }
+    for (const path of value) {
+      if (typeof path !== 'string' || !vitestTestPathPattern.test(path)) {
+        throw new Error(`${mutationId}: witness catalog contains a non-test path`);
+      }
+      if (entry.selection_paths.includes(path)) {
+        throw new Error(`${mutationId}: witness catalog redundantly repeats selection path ${path}`);
+      }
+      if (!trackedPaths.has(path)) throw new Error(`${mutationId}: witness path is not tracked: ${path}`);
+    }
+  }
+  for (const entry of entries) {
+    if (mutationWitnessTestPaths(entry, catalog as MutationWitnessCatalog).length === 0) {
+      throw new Error(`${entry.mutation_id}: mutation has no Vitest witness path`);
+    }
+  }
+}
+
 /** fe-relative path of the mutation manifest; it is DATA, not runner infrastructure. */
 export const manifestRelativePath = 'tools/mutation/manifest.json';
 
@@ -544,7 +611,9 @@ const evidenceInvalidatingFiles = Object.freeze([
  * Sibling workflows (`.github/workflows/other.yml`) and `.github/dependabot.yml` are deliberately
  * NOT in the set — they do not run vitest, so they cannot invalidate a recorded verdict.
  */
-export const evidenceInvalidatingRepoPaths = Object.freeze(['.github/workflows/ci.yml'] as const);
+export const evidenceInvalidatingRepoPaths = Object.freeze([
+  '.github/workflows/ci.yml', 'scripts/ci/mutation-witness-extra-paths.json',
+] as const);
 
 /** @see evidenceInvalidatingRepoPaths — matched against repo-root-relative paths, before any `fe/` stripping. */
 export function evidenceInvalidatingRepoPathChanged(changedPaths: readonly string[]): boolean {
@@ -617,6 +686,7 @@ export function entryIdsDriftedFromBase(
 
 export function selectedEntries(
   entries: MutationEntry[], changedPaths: readonly string[], baseManifest: readonly MutationEntry[] | null,
+  witnessCatalog: MutationWitnessCatalog = {},
 ): MutationEntry[] {
   // Repo-root paths FIRST: the `fe/` filter below discards them, so a workflow-only PR would
   // otherwise select nothing at all.
@@ -634,10 +704,14 @@ export function selectedEntries(
   }
   // Filtering over `entries` preserves manifest order, which shardEntries relies on for a deterministic split.
   return entries.filter((entry) => drifted.has(entry.mutation_id)
-    || [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
+    || [entry.target, ...entry.selection_paths, ...mutationWitnessTestPaths(entry, witnessCatalog)]
+      .some((path) => changed.has(path)));
 }
 
+/** Full-suite mutations are expensive, so keep the historical four entries per shard. */
 export const entriesPerShard = 4;
+/** Witness runs execute named files only; larger shards cut matrix fan-out without becoming critical-path jobs. */
+export const witnessEntriesPerShard = 12;
 export const maxShards = 32;
 
 /**
@@ -645,10 +719,37 @@ export const maxShards = 32;
  * point the per-shard wall clock stops being flat and drifts towards the shard job timeout, so the
  * plan step surfaces it as a warning instead of letting it show up as a mystery timeout.
  */
-export function shardPlan(selectedCount: number): { total: number; shards: number[]; clamped: boolean } {
-  const wanted = Math.max(1, Math.ceil(selectedCount / entriesPerShard));
+export function shardPlan(
+  selectedCount: number, scope: MutationTestScope = 'full',
+): { total: number; shards: number[]; clamped: boolean } {
+  const perShard = scope === 'witness' ? witnessEntriesPerShard : entriesPerShard;
+  const wanted = Math.max(1, Math.ceil(selectedCount / perShard));
   const total = Math.min(maxShards, wanted);
   return { total, shards: Array.from({ length: total }, (_value, index) => index + 1), clamped: wanted > maxShards };
+}
+
+export interface MutationShardMatrixEntry {
+  shard: number;
+  browser: boolean;
+}
+
+/**
+ * Browser installation is a per-runner cost. Full scope needs it in every shard because every shard
+ * runs every Vitest project; witness scope needs it only where a declared witness is browser-owned.
+ */
+export function mutationShardMatrix(
+  entries: MutationEntry[], plan: { total: number; shards: number[] }, scope: MutationTestScope,
+  witnessCatalog: MutationWitnessCatalog = {},
+): MutationShardMatrixEntry[] {
+  const browserShards = new Set<number>();
+  if (scope === 'full') {
+    for (const shard of plan.shards) browserShards.add(shard);
+  } else {
+    entries.forEach((entry, index) => {
+      if (mutationWitnessNeedsBrowser(entry, witnessCatalog)) browserShards.add((index % plan.total) + 1);
+    });
+  }
+  return plan.shards.map((shard) => ({ shard, browser: browserShards.has(shard) }));
 }
 
 export function parseShard(value: string): { index: number; total: number } {

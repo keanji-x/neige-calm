@@ -11,7 +11,7 @@
  * Do not "fix" this file. It is the negative control; if it ever passes plan-purity.mjs, the pin is
  * dead. It cleans up after itself so the worktree stays clean even when the harness stops early.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -25,4 +25,11 @@ try {
   rmSync(scratch, { force: true });
   rmSync(temporary, { recursive: true, force: true });
 }
-console.log(JSON.stringify({ selected: 0, total: 1, shards: [1], clamped: false }));
+writeSync(process.stdout.fd, `${JSON.stringify({
+  selected: 0,
+  total: 1,
+  shards: [1],
+  clamped: false,
+  matrix: [{ shard: 1, browser: false }],
+  test_scope: 'full',
+})}\n`);
