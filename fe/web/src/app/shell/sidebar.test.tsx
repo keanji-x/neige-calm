@@ -203,15 +203,25 @@ describe('new area', () => {
 });
 
 describe('rename area', () => {
-  it('renames inline from the Area actions menu', async () => {
+  it('renames inline on double-click without navigating', async () => {
     const onRenameArea = vi.fn();
-    renderSidebar({ onRenameArea });
-    await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Rename area' }));
+    const onGo = vi.fn();
+    renderSidebar({ onRenameArea, onGo });
+    await userEvent.dblClick(screen.getByRole('button', { name: 'Collapse area Work' }));
     const input = screen.getByRole('textbox', { name: 'Rename area Work' });
     await userEvent.clear(input);
     await userEvent.type(input, 'Studio{Enter}');
     expect(onRenameArea).toHaveBeenCalledWith('c1', 'Studio');
+    expect(onGo).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
+  });
+
+  it('uses F2 as the keyboard equivalent for rename', async () => {
+    renderSidebar();
+    const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
+    disclosure.focus();
+    await userEvent.keyboard('{F2}');
+    expect(screen.getByRole('textbox', { name: 'Rename area Work' })).toBeTruthy();
   });
 });
 
@@ -235,8 +245,7 @@ describe('destructive confirms', () => {
     const onDeleteArea = vi.fn();
     renderSidebar({ onDeleteArea });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete area' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     // §6.13 / CR-5a — the title names the area, and Confirm stays blocked until
     // the name is reproduced. Deleting an area cascades to every track inside it;
     // it is the one operation in the product that earns a typed confirm, and
@@ -252,16 +261,14 @@ describe('destructive confirms', () => {
 
   it('states that the cascade count is unknown when the area track query has no data', async () => {
     renderSidebar({ tracksByArea: new Map() });
-    await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete area' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     expect(screen.getByRole('dialog').textContent).toContain('The number of tracks is not available.');
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 tracks');
   });
 
   it('describes deletion of a genuinely empty area without claiming it deletes zero tracks', async () => {
     renderSidebar({ tracksByArea: new Map([['c1', []]]) });
-    await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete area' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     expect(screen.getByRole('dialog').textContent).toContain('This deletes the area.');
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 tracks');
   });

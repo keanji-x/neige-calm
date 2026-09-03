@@ -546,6 +546,10 @@ function AreaGroup({
             aria-expanded={expanded}
             aria-label={`${expanded ? 'Collapse' : 'Expand'} area ${area.name}`}
             onClick={() => onToggle(!expanded)}
+            onDoubleClick={beginRename}
+            onKeyDown={(event) => {
+              if (event.key === 'F2') { event.preventDefault(); beginRename(); }
+            }}
           >
             <span className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`} aria-hidden="true">
               <Icon name="chevron-right" />
@@ -553,27 +557,16 @@ function AreaGroup({
             <span className={styles.areaName} title={area.name}>{area.name}</span>
           </button>
         )}
-        <Menu
-          items={[
-            { label: 'Rename area', onSelect: beginRename },
-            { label: 'Delete area', onSelect: () => onRequestDelete(area.id) },
-          ]}
-          wrapClassName={styles.areaMenuWrap}
-          menuClassName={styles.areaMenu}
-          itemClassName={styles.menuItem}
-          trigger={(triggerProps) => (
-            <button
-              {...triggerProps}
-              type="button"
-              data-nc-role="icon"
-              className={styles.areaMenuTrigger}
-              aria-label={`Area actions for ${area.name}`}
-              title="Area actions"
-            >
-              <Icon name="more-horizontal" size="sm" />
-            </button>
-          )}
-        />
+        <button
+          type="button"
+          data-nc-role="icon"
+          className={styles.areaDelete}
+          aria-label={`Delete area ${area.name}`}
+          title="Delete area"
+          onClick={() => onRequestDelete(area.id)}
+        >
+          <Icon name="close" size="sm" />
+        </button>
         {/* The accessible name names the area, and it has to: the rail now
             carries one of these per area, and N controls all called "New track"
             is a list a screen-reader user cannot choose from. `title` is the

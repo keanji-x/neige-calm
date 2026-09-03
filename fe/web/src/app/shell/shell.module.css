@@ -491,9 +491,9 @@
     padding-block: 0;
 
     /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
-       because the row carries an actions menu and a permanent `+` (4 + 20 + 4
+       because the row carries a hover delete and a permanent `+` (4 + 20 + 4
        + 20 + 4 = 52). Both are reserved at rest, so the name ellipsizes at the
-       same column whether or not the menu has been revealed. */
+       same column whether or not delete has been revealed. */
     padding-inline:
       calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
       calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
@@ -592,7 +592,7 @@
    * the rail on one column. The same 4px is applied in
    * `features/track/row/row.module.css`; both derive it, neither hardcodes it.
    */
-  .areaMenuTrigger,
+  .areaDelete,
   .areaNew {
     display: grid;
     place-items: center;
@@ -609,12 +609,12 @@
    * Two trailing controls on one row, and the order is §4.5's: the one that
    * persists at rest goes outermost, so a resting row shows a single glyph
    * flush to the trailing gutter rather than one floating beside a gap. That is
-   * the `+`. The actions menu takes the inboard slot — 4 + 20 + 4 — which is the same
+   * the `+`. Delete takes the inboard slot — 4 + 20 + 4 — which is the same
    * step `features/track/row/row.module.css` puts between its pin and its
    * delete, derived from the same two tokens.
    *
    * Both slots are reserved by `.areaRow`'s trailing padding, so revealing the
-   * menu moves nothing.
+   * delete control moves nothing.
    */
   .areaNew {
     position: absolute;
@@ -623,54 +623,40 @@
     translate: 0 -50%;
   }
 
-  .areaMenuWrap {
+  .areaDelete {
     position: absolute;
     inset-block-start: 50%;
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
-    z-index: var(--z-raised);
     translate: 0 -50%;
 
-    /* Hover-revealed visually; the trigger remains in the accessibility tree
-       and focus restores it. Delete moved into this menu with Rename. */
+    /* Hover-revealed visually; the button remains in the focus order, and
+       keyboard focus restores it. Rename is the Area row's double-click/F2. */
     opacity: 0;
     pointer-events: none;
   }
 
-  .areaMenuTrigger:hover,
-  .areaMenuTrigger:focus-visible {
+  .areaDelete:hover,
+  .areaDelete:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
     background: var(--overlay-hover-strong);
-    color: var(--text);
+    color: var(--error-text);
   }
 
-  .areaRowWrap:hover .areaMenuWrap,
-  .areaRowWrap:focus-within .areaMenuWrap {
+  .areaRowWrap:hover .areaDelete,
+  .areaRowWrap:focus-within .areaDelete {
     opacity: 1;
     pointer-events: auto;
   }
 
   /* A wide viewport is not proof of a hover-capable pointer: tablets and
      touch displays can render the desktop rail too. Since the Area page is
-     gone, hiding this trigger there would make Rename and Delete unreachable. */
+     gone, hiding delete there would make it unreachable. */
   @media (hover: none) {
-    .areaMenuWrap {
+    .areaDelete {
       opacity: 1;
       pointer-events: auto;
     }
-  }
-
-  .areaMenu {
-    position: absolute;
-    inset-block-start: calc(100% + var(--space-2));
-    inset-inline-end: 0;
-    z-index: var(--z-overlay);
-    display: flex;
-    flex-direction: column;
-    min-inline-size: var(--menu-w-min);
-    padding: var(--space-2);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--paper);
-    box-shadow: var(--shadow-float);
   }
 
   .areaRenameInput {
@@ -835,7 +821,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .areaRow,
-    .areaMenuTrigger,
+    .areaDelete,
     .areaNew,
     .iconButton,
     .chevron {

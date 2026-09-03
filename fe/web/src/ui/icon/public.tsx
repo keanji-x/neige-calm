@@ -2,7 +2,7 @@ import styles from './icon.module.css';
 
 export type IconName =
   | 'chevron-left' | 'chevron-right' | 'arrow-left' | 'arrow-up'
-  | 'plus' | 'close' | 'chat' | 'folder' | 'file' | 'more-horizontal';
+  | 'plus' | 'close' | 'chat' | 'folder' | 'file';
 
 const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'chevron-right': Object.freeze(['M6 3.5 10.5 8 6 12.5']),
@@ -12,7 +12,6 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   plus: Object.freeze(['M8 3.5v9', 'M3.5 8h9']),
   close: Object.freeze(['M4 4l8 8', 'M12 4l-8 8']),
   chat: Object.freeze(['M3 3.5h10v7H7l-3.5 2v-2H3z']),
-  'more-horizontal': Object.freeze(['M3.5 8h0', 'M8 8h0', 'M12.5 8h0']),
   /* The two filesystem marks (§6.7's set, added for the directory browser).
      They are closed outlines rather than filled shapes because every other
      icon here is line work and a filled folder would read as the heaviest

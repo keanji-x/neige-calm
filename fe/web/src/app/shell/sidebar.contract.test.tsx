@@ -122,18 +122,18 @@ describe('INV-SIDEBAR-013 every area row carries a permanent New track control',
   });
 
   /*
-   * Permanently visible, unlike the actions menu beside it. jsdom applies no CSS Module,
+   * Permanently visible, unlike the delete beside it. jsdom applies no CSS Module,
    * so "visible" cannot be read off a computed style here; what this pins is
-   * the fact the reveal is *built* on — `.areaMenuWrap` carries the opacity rule
+   * the fact the reveal is *built* on — `.areaDelete` carries the opacity rule
    * and `.areaNew` does not, so the two controls cannot silently converge on
    * one behaviour. The `browser` tier owns the rendered opacity.
    */
   it('leaves the New track control out of the hover-revealed class the delete uses', () => {
     renderSidebar({ areas, tracksByArea });
     const create = screen.getByRole('button', { name: 'New track in Work' });
-    const actions = screen.getByRole('button', { name: 'Area actions for Work' });
-    expect(create.className).not.toBe(actions.className);
-    expect(create.className.split(/\s+/).some((token) => actions.className.split(/\s+/).includes(token)))
+    const remove = screen.getByRole('button', { name: 'Delete area Work' });
+    expect(create.className).not.toBe(remove.className);
+    expect(create.className.split(/\s+/).some((token) => remove.className.split(/\s+/).includes(token)))
       .toBe(false);
   });
 

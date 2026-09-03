@@ -1,4 +1,5 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
+import { page } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
@@ -8,9 +9,10 @@ import { Sidebar } from './sidebar.tsx';
 
 afterEach(cleanup);
 
-it('keeps Area delete reachable on a wide no-hover touch display', () => {
+it('reveals Area delete only while the row is hovered on a desktop pointer', async () => {
+  await page.viewport(1400, 900);
   expect(matchMedia('(width >= 60rem)').matches).toBe(true);
-  expect(matchMedia('(hover: none)').matches).toBe(true);
+  expect(matchMedia('(hover: hover)').matches).toBe(true);
 
   const area: Area = {
     id: 'a1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
@@ -39,9 +41,12 @@ it('keeps Area delete reachable on a wide no-hover touch display', () => {
     </ThemeProvider>,
   );
 
-  const remove = document.querySelector<HTMLElement>('[aria-label="Delete area Work"]');
-  expect(remove).not.toBeNull();
-  const style = getComputedStyle(remove!);
-  expect(style.opacity).toBe('1');
-  expect(style.pointerEvents).toBe('auto');
+  const remove = document.querySelector<HTMLElement>('[aria-label="Delete area Work"]')!;
+  await page.getByRole('button', { name: 'New area' }).hover();
+  expect(getComputedStyle(remove).opacity).toBe('0');
+  expect(getComputedStyle(remove).pointerEvents).toBe('none');
+
+  await page.getByRole('button', { name: 'Collapse area Work' }).hover();
+  await waitFor(() => expect(getComputedStyle(remove).opacity).toBe('1'));
+  expect(getComputedStyle(remove).pointerEvents).toBe('auto');
 });
