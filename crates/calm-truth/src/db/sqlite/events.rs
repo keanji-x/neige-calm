@@ -31,8 +31,14 @@ use crate::track_vcs;
 ///
 /// ## What the compiler guarantees, exactly
 ///
-/// **No path can reach this appender without a gate decision on the very
-/// triple it inserts.** Three properties combine to give that:
+/// **In safe code, no path can reach this appender without a gate decision on
+/// the very triple it inserts.** The "in safe code" is not boilerplate:
+/// `calm-truth` has no `#![forbid(unsafe_code)]` (it cannot — `events_prune.rs`
+/// and `track_vcs/tests.rs` need `unsafe` for `std::env::set_var`), and
+/// `std::mem::transmute::<(&ActorId, &EventScope, &Event), gated::Authorized>`
+/// does compile. Everything below is a privacy/borrow argument, and privacy is
+/// not a safety boundary against `unsafe`. Three properties combine to give
+/// the guarantee:
 ///
 ///   * every field of `Authorized` is private to `gated`, so no module outside
 ///     it — including this file's parent module — can literally construct one
@@ -45,6 +51,24 @@ use crate::track_vcs;
 ///     another before the insert. This is the load-bearing half: the
 ///     *borrows* alone only stop a triple whose values have been dropped
 ///     (E0716); they do nothing about swapping in another live value.
+///
+/// ## What the capability does *not* bind: the transaction
+///
+/// `Authorized` borrows `actor` / `scope` / `event` and nothing else — there
+/// is no `tx` field — so the type says "the gate allowed this triple", not
+/// "the gate allowed this triple *on this transaction*". Nothing here would
+/// reject `authorize(gate_tx, ..)` followed by
+/// `event_append_in_tx(write_tx, &authorized, ..)`.
+///
+/// That matters because `hydrate_role_caches_from_tx`'s safety argument
+/// (`decision_gate.rs`) is precisely that the verdict and the `events` insert
+/// share one transaction. Today they do, at every call site, and by
+/// construction rather than by convention: each mint and its append name the
+/// same local `tx` a few lines apart — `append_decision_event_in_tx` (`tx` to
+/// `gated::authorize`, then `tx` to `event_append_in_tx`), its batch form, and
+/// the four `RepoEventWrite` wrappers (`&mut tx` in both loops). Splitting a
+/// mint from its append across two transactions is the next shape of the bug
+/// this seam closes; it would have to be written deliberately.
 ///
 /// ## Residual gap: this is not "the events table cannot be written"
 ///
@@ -376,7 +400,6 @@ pub async fn append_decision_events_in_tx(
     for authorized in &authorized_batch {
         event_ids.push(SqlxRepo::event_append_in_tx(tx, authorized, correlation).await?);
     }
-    drop(authorized_batch);
     if let (Some(track_id), Some(event_id)) = (scope.track_id(), event_ids.last()) {
         track_vcs::commit_events_in_tx(
             tx,
@@ -543,7 +566,6 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        drop(authorized_batch);
         let mut track_events = HashMap::<TrackId, (i64, Vec<Event>)>::new();
         for ((scope, event), event_id) in events.iter().zip(event_ids.iter()) {
             if let Some(track_id) = scope.track_id() {
@@ -637,7 +659,6 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        drop(authorized_batch);
         let mut track_events = HashMap::<TrackId, (i64, Option<ActorId>, Vec<Event>)>::new();
         for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
             if let Some(track_id) = scope.track_id() {

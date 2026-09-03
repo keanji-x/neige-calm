@@ -235,23 +235,54 @@ fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
 /// A row that is absent from the transaction is left absent from the cache,
 /// and `enforce_role` denies on that miss for AI worker actors.
 ///
-/// ## One known divergence from the write-through caches, and its direction
+/// ## Why reading the transaction is safe: **the verdict and the event share
+/// one transaction**
 ///
-/// "Absent from the DB ⇒ absent from the cache" is *not* true of the
-/// write-through caches, so this substrate is not equivalent to them on every
-/// possible state. `card_create_with_id_tx` inserts into `CardRoleCache`
-/// inside the caller's transaction and documents that a rollback leaves the
-/// entry behind (see `db/sqlite/card.rs`). After such a rollback the cached
-/// gate can admit an AI actor for a card that no longer exists, while this
-/// hydrator finds no row and `enforce_role` returns `UnknownCard`. The
-/// `events` table carries no entity foreign key (`0004_events.sql`), so
-/// neither verdict is contradicted by the schema.
+/// Every row this function reads comes out of the caller's `tx` — the three
+/// reads below are `tx.read_card_role`, `tx.read_card_track` and
+/// `tx.read_track_area`. On the production entrance that is the *same*
+/// transaction the event is inserted into: `append_decision_event_in_tx` and
+/// its batch form (`db/sqlite/events.rs`) pass one `&mut Transaction` first to
+/// `gated::authorize` — which calls
+/// [`enforce_role_resolving_session_from_tx`], hence this hydrator — and then
+/// to `SqlxRepo::event_append_in_tx`.
 ///
-/// The divergence is one-directional: **the transaction read is the stricter
-/// side**, denying where the stale cache would allow. That is the fail-closed
-/// direction, which is why substituting it here is safe. The equivalence
-/// matrix in this file's tests cannot see this case at all — both of its
-/// substrates are projected from one consistent `World` — so it is recorded
+/// So the verdict is computed from the same view of `cards` / `tracks` that
+/// the `events` row is written into: the committed tables as amended by this
+/// transaction's own pending writes. If that transaction commits, the rows the
+/// gate decided on and the event it authorized become true together; if it
+/// rolls back, both are discarded together. There is no state in which the
+/// event survives a row state the gate never saw, because there is only one
+/// transaction. **That is the entire safety argument, and it does not appeal
+/// to any direction of disagreement with the write-through caches.**
+///
+/// ## Evidence that the caches lack this property: they diverge **both** ways
+///
+/// "Absent from the DB ⇒ absent from the cache" is *not* true of
+/// `CardRoleCache` / `TrackAreaCache`, so this substrate is not equivalent to
+/// them on every possible state — and the disagreement is not one-directional:
+///
+///   * **Rolled-back create ⇒ the cache is the more permissive side.**
+///     `card_create_with_id_tx` (`db/sqlite/card.rs`) inserts into
+///     `CardRoleCache` before commit, and its comment records that "a txn
+///     rollback leaves a stale entry". The cached gate then admits an AI actor
+///     for a card that has no row, while this hydrator finds no row, leaves
+///     the card out, and `enforce_role`'s `AiCodex` / `AiClaude` arm
+///     (`role_gate.rs`) returns `UnknownCard`.
+///   * **Rolled-back delete ⇒ the cache is the more restrictive side.**
+///     `card_delete_tx` (`db/sqlite/card.rs`) calls `card_role_cache.remove`
+///     before commit, and its comment records that "a txn rollback would leave
+///     the cache temporarily missing an entry"; `track_delete_tx`
+///     (`db/sqlite/track.rs`) mirrors it for `TrackAreaCache`. In that state
+///     the cached gate denies with `UnknownCard` for a card whose row is still
+///     present, while this hydrator reads that row and the gate allows.
+///
+/// These two are recorded as *evidence*, not as the argument: because the
+/// caches can drift either way, "the transaction read is always the stricter
+/// side" would be false, which is exactly why the safety argument above is
+/// stated against the transaction's own view of the tables instead. The
+/// equivalence matrix in this file's tests can see neither case — both of its
+/// substrates are projected from one consistent `World` — so they are recorded
 /// here rather than asserted there.
 async fn hydrate_role_caches_from_tx<T: WriteTx + ?Sized + Send>(
     tx: &mut T,
@@ -1437,12 +1468,15 @@ mod tests {
     // red.
     //
     // What it therefore does *not* cover: states where the cache and the DB
-    // disagree. One such state is documented and reachable — a rolled-back
-    // `card_create_with_id_tx` leaves a stale `CardRoleCache` entry — and on
-    // it the two gates genuinely differ, with the transaction read the
-    // stricter (fail-closed) side. See `hydrate_role_caches_from_tx`'s doc
-    // comment. A single consistent `World` cannot express that, so the
-    // divergence lives there as prose, not here as a row.
+    // disagree. Two such states are documented and reachable — a rolled-back
+    // `card_create_with_id_tx` leaves a stale `CardRoleCache` entry, and a
+    // rolled-back `card_delete_tx` / `track_delete_tx` leaves the cache
+    // missing one — and the two gates genuinely differ on both, in opposite
+    // directions. Neither direction is what makes the swap legitimate: the
+    // transaction read is safe because the verdict and the `events` insert
+    // share one transaction. See `hydrate_role_caches_from_tx`'s doc comment
+    // for both halves. A single consistent `World` cannot express either
+    // state, so the divergences live there as prose, not here as rows.
     // -----------------------------------------------------------------
 
     /// The rows both substrates are built from.

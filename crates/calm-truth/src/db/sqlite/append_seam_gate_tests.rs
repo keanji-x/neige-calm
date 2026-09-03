@@ -287,7 +287,13 @@ async fn batch_append_seam_gates_each_event_and_writes_none_on_refusal() {
     // caller is entitled to commit whatever else it did in this transaction;
     // "writes none on refusal" has to survive that.
     tx.commit().await.expect("commit the refused batch's tx");
-    assert_eq!(events_row_count(&repo).await, before);
+    assert_eq!(
+        events_row_count(&repo).await,
+        before,
+        "committing the refused batch's transaction published an events row; \
+         the in-tx assertion above pins that no INSERT was issued, this one \
+         pins that the caller's commit cannot publish one either"
+    );
 }
 
 /// The three non-degenerate actor shapes the fifteen production call sites
