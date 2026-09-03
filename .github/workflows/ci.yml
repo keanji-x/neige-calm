@@ -39,10 +39,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Workspace is edition = "2024" → needs Rust >= 1.85.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # #1289 — the toolchain version lives in rust-toolchain.toml (single
+      # source of truth shared with local gates); rustup honors it as a
+      # directory override, so no version is named here. The zero-argument
+      # form needs rustup >= 1.28 (where it was introduced); hosted runner
+      # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
+      - name: install pinned Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
 
       # #903 — mold via ld takeover; see the rust job's step for rationale.
       # clippy is check-mode and links nothing, so mold is idle here — kept
@@ -389,8 +392,13 @@ jobs:
       # with ~89G free (145G disk, run 29140215747), and post-#913 (test bins 153→35)
       # + #918 (debuginfo) target/ peaks ~5G, rust-cache ~321MB — the 2m47s was waste.
 
-      # Workspace is edition = "2024" → needs Rust >= 1.85.
-      - uses: dtolnay/rust-toolchain@stable
+      # #1289 — the toolchain version lives in rust-toolchain.toml (single
+      # source of truth shared with local gates); rustup honors it as a
+      # directory override, so no version is named here. The zero-argument
+      # form needs rustup >= 1.28 (where it was introduced); hosted runner
+      # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
+      - name: install pinned Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
 
       # #903 — link with mold. Default takeover mode: the action installs mold
       # and symlinks /usr/local/bin/ld to it, so cc/rustc pick it up via PATH.
@@ -818,7 +826,9 @@ jobs:
       CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #1289 — version comes from rust-toolchain.toml; none is named here.
+      - name: install pinned Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
@@ -914,7 +924,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # #1289 — version comes from rust-toolchain.toml; none is named here.
+      - name: install pinned Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
 
       # #903 — mold via ld takeover; see the rust job's step for rationale.
       # Same ubuntu-22.04 / release-link notes as the chromium e2e job.
@@ -986,7 +998,9 @@ jobs:
       # + #918 (debuginfo) target/ peaks ~5G, rust-cache ~321MB — the 2m47s was waste.
       # The `df -h` step below stays as a zero-cost headroom sentinel.
 
-      - uses: dtolnay/rust-toolchain@stable
+      # #1289 — version comes from rust-toolchain.toml; none is named here.
+      - name: install pinned Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
 
       # #903 — mold via ld takeover; see the rust job's step for rationale.
       - uses: rui314/setup-mold@v1
