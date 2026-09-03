@@ -4,6 +4,7 @@ use calm_server::mcp_server::tools::report_links::{TOOL_AREA_OUTLINE, TOOL_REPOR
 use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
+use calm_types::report_blocks::render_fence;
 use serde_json::{Value, json};
 
 use crate::mcp_track_report::{boot, call_tool, planner_identity, worker_identity};
@@ -13,6 +14,16 @@ async fn add_track(
     area_id: &str,
     title: &str,
     body: String,
+) -> calm_server::model::Track {
+    add_track_as(boot, area_id, title, body, EditAuthor::Kernel).await
+}
+
+async fn add_track_as(
+    boot: &crate::mcp_track_report::Boot,
+    area_id: &str,
+    title: &str,
+    body: String,
+    author: EditAuthor,
 ) -> calm_server::model::Track {
     let track = boot
         .repo
@@ -46,7 +57,7 @@ async fn add_track(
         &boot.ctx.events,
         &boot.ctx.write,
         ActorId::Kernel,
-        EditAuthor::Kernel,
+        author,
         track.clone(),
         report,
         initial,
@@ -138,6 +149,63 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
         .unwrap();
     assert_eq!(track["blocks"][0]["heading"], "Legacy heading");
     assert!(track["blocks"][0]["id"].as_str().unwrap().starts_with("b_"));
+}
+
+#[tokio::test]
+async fn outline_labels_live_and_tombstone_tasks_at_the_mcp_boundary() {
+    let boot = boot().await;
+    let live = json!({
+        "key": "ship-heading",
+        "kind": "codex",
+        "goal": "[Ship task headings](https://example.com/raw-task-goal)",
+        "ready": true,
+        "declared_by": "user"
+    });
+    let tombstone = json!({
+        "key": "retired-heading",
+        "tombstone": { "reason": "Not needed" },
+        "declared_by": "user",
+        "tombstoned_by": "user"
+    });
+    let chart = json!({
+        "symbol": "KEEP.US",
+        "candles": [
+            [1719800000000_i64, 10, 12, 9, 11, 100],
+            [1719886400000_i64, 11, 13, 10, 12, 120]
+        ]
+    });
+    let body = format!(
+        "# Tasks\n\n{}{}{}",
+        render_fence("task", &live),
+        render_fence("task", &tombstone),
+        render_fence("chart.candles", &chart),
+    );
+    let task_track = add_track_as(
+        &boot,
+        boot.area_id.as_str(),
+        "Tasks",
+        body,
+        EditAuthor::User,
+    )
+    .await;
+
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let blocks = value["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|track| track["id"] == task_track.id.as_str())
+        .unwrap()["blocks"]
+        .as_array()
+        .unwrap();
+
+    assert_eq!(blocks.len(), 4);
+    assert_eq!(blocks[0]["heading"], "Tasks");
+    assert_eq!(blocks[1]["heading"], "task: goal=Ship task headings");
+    assert_eq!(blocks[2]["heading"], "task: key=retired-heading");
+    assert_eq!(blocks[3]["heading"], "chart.candles: symbol=KEEP.US");
 }
 
 /// The real skeleton every track is born with — the kernel's own bytes, not a

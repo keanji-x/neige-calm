@@ -194,6 +194,26 @@ fn outline_response(
 
 fn block_heading(block: &calm_types::track_report::ReportBlock) -> String {
     if block.kind != calm_types::report_blocks::KIND_PROSE {
+        if block.kind == calm_types::report_blocks::KIND_TASK {
+            if let Some(goal) = block.payload.get("goal").and_then(Value::as_str) {
+                let rendered_goal = calm_types::report_links::scan_links(goal).plain;
+                let rendered_goal = rendered_goal.trim();
+                if !rendered_goal.is_empty() {
+                    return truncate_chars(&format!("{}: goal={rendered_goal}", block.kind), 60);
+                }
+            }
+            return truncate_chars(
+                &block
+                    .payload
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .map_or_else(
+                        || block.kind.clone(),
+                        |key| format!("{}: key={key}", block.kind),
+                    ),
+                60,
+            );
+        }
         let identifying = ["symbol", "src", "caption", "title"]
             .into_iter()
             .find_map(|key| {
@@ -295,13 +315,20 @@ mod tests {
     use calm_types::track_report::ReportBlock;
     use serde_json::json;
 
-    fn prose(markdown: &str) -> ReportBlock {
+    fn block(kind: &str, payload: serde_json::Value) -> ReportBlock {
         ReportBlock {
             id: "b_0000".into(),
-            kind: calm_types::report_blocks::KIND_PROSE.into(),
+            kind: kind.into(),
             rev: 1,
-            payload: json!({ "markdown": markdown }),
+            payload,
         }
+    }
+
+    fn prose(markdown: &str) -> ReportBlock {
+        block(
+            calm_types::report_blocks::KIND_PROSE,
+            json!({ "markdown": markdown }),
+        )
     }
 
     /// The multi-line shape matters: a CommonMark HTML block of type 2 is *not*
@@ -313,6 +340,48 @@ mod tests {
         \n\
         写作方式：散文正文控制在 1000 字以内。\n\
         -->\n\n";
+
+    #[test]
+    fn task_headings_render_markdown_goal_then_use_key_and_kind_fallbacks() {
+        assert_eq!(
+            block_heading(&block(
+                calm_types::report_blocks::KIND_TASK,
+                json!({
+                    "goal": "[Ship task headings](https://example.com/raw-task-goal)",
+                    "key": "ship-heading"
+                }),
+            )),
+            "task: goal=Ship task headings"
+        );
+        assert_eq!(
+            block_heading(&block(
+                calm_types::report_blocks::KIND_TASK,
+                json!({
+                    "goal": "[](https://example.com/hidden-empty-goal)",
+                    "key": "empty-goal-fallback"
+                }),
+            )),
+            "task: key=empty-goal-fallback"
+        );
+        assert_eq!(
+            block_heading(&block(
+                calm_types::report_blocks::KIND_TASK,
+                json!({ "key": "retired-heading", "tombstone": {} }),
+            )),
+            "task: key=retired-heading"
+        );
+        assert_eq!(
+            block_heading(&block(calm_types::report_blocks::KIND_TASK, json!({}))),
+            "task"
+        );
+        assert_eq!(
+            block_heading(&block(
+                "extension",
+                json!({ "goal": "Not a task goal", "key": "not-a-task-key" }),
+            )),
+            "extension"
+        );
+    }
 
     #[test]
     fn a_comment_only_prose_block_has_an_empty_heading() {
