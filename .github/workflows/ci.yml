@@ -97,6 +97,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: local Rust gate safety selftest
+        run: scripts/ci/local-rust-gates-selftest.sh
+
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
       # source of truth shared with local gates); rustup honors it as a
       # directory override, so no version is named here. The zero-argument
@@ -555,7 +558,7 @@ jobs:
         #   has 0 doctests — every doc fence carries a non-rust language tag
         #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
         #   are ever introduced, add a `cargo test --doc` step alongside.
-        run: cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci
+        run: scripts/run-ci-rust-nextest.sh "${{ runner.environment }}"
 
       # #679 PR0-D — migration-replay gate, made explicit so a failure is
       # attributable at a glance. Re-runs the snapshot replay harness: every

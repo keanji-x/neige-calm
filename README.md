@@ -159,6 +159,16 @@ Tier 2 uses real Codex credentials and may incur model usage:
 ./e2e/run.sh --tier 2
 ```
 
+Run that direct tier only on a dedicated host; there is no shared-host-safe entry
+point for Tier 2 stack E2E. The shared production host can run the separate
+isolated `codex_forge_e2e` suite:
+
+```bash
+make e2e-codex-isolated
+```
+
+That target does not replace Tier 2 stack coverage.
+
 ## Repository layout
 
 ```text

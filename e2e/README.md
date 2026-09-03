@@ -15,7 +15,11 @@ e2e/run.sh --all
 
 The default run selects tier 1 only. Tier 2 cases burn real Codex tokens, so
 they require an explicit `--tier 2` or `--all`. `--case <substring>` filters by
-file name or case name.
+file name or case name. Run direct tier 2 selections only on a dedicated host.
+Tier 2 stack E2E has no shared-host-safe entry point; do not pass `--tier 2` or
+`--all` to this runner on the shared production host. The separate
+`make e2e-codex-isolated` target runs `codex_forge_e2e` safely there, but it does
+not execute or replace this runner's Tier 2 cases.
 
 ## Case Anatomy
 
