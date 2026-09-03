@@ -271,6 +271,42 @@ pub(crate) struct InitialReportTarget<'a> {
     pub diagnostics: &'a [Vec<calm_types::report_blocks::tasks::Diagnostic>],
 }
 
+/// #1252 R3/A — the pinned spellings of the structural door, resolved.
+///
+/// `tests/cases/fork_guard_exemption_invariant.rs` pins the door's signature as
+/// it is *written*, and a review channel walked past that by defining
+/// `pub(crate) struct TrackReportPayload { inner: …, by: EditAuthor }` here: the
+/// rendered text of `&'a TrackReportPayload` was byte-identical, the field table
+/// stayed green, and the door's body could read `target.payload.by`. Shadowing
+/// what `use super::*` brings in needs a binding at this file's top level, and
+/// each line below makes one such binding a compile error instead: it forces the
+/// spelling as this file resolves it to be the canonical path it names. The same
+/// test requires these lines to be here and to cover every spelling in its
+/// tables, so removing one is red there.
+const _: fn() = || {
+    fn identical<T>(value: T) -> T {
+        value
+    }
+
+    let _: fn(
+        ::sqlx::Transaction<'static, ::sqlx::Sqlite>,
+    ) -> sqlx::Transaction<'static, sqlx::Sqlite> = identical;
+    let _: fn(::core::result::Result<u8, u8>) -> Result<u8, u8> = identical;
+    let _: fn(crate::model::Card) -> Card = identical;
+    let _: fn(crate::db::sqlite::TaskProjectionOutcome) -> TaskProjectionOutcome = identical;
+    let _: fn(crate::error::CalmError) -> CalmError = identical;
+    let _: fn(&'static ::core::primitive::str) -> &'static str = identical;
+    let _: fn(::calm_types::track_report::TrackReportPayload) -> TrackReportPayload = identical;
+    let _: fn(crate::track_report_doc::ReportDoc) -> ReportDoc = identical;
+    let _: fn(::std::vec::Vec<u8>) -> Vec<u8> = identical;
+    let _: fn(
+        ::calm_types::report_blocks::tasks::TaskDeclaration,
+    ) -> calm_types::report_blocks::tasks::TaskDeclaration = identical;
+    let _: fn(
+        ::calm_types::report_blocks::tasks::Diagnostic,
+    ) -> calm_types::report_blocks::tasks::Diagnostic = identical;
+};
+
 /// `POST /api/tracks/{id}/report` — the user's wholesale report replace.
 ///
 /// Attribution is not a parameter. `routes::tracks::update_track_report` gates
@@ -417,10 +453,17 @@ pub(crate) async fn agent_report_op(
 ///   Hanging it here would give `TrackInit::Template` a guard it has never had
 ///   and separate the belt from what it belts. An `Option<EditAuthor>` is the
 ///   same hole with a nullable type; see `track_report_origin`'s header.
-/// * **No `&EventBus`.** Q12. Nothing here can publish: there is no bus in
-///   this function, so a fork or a template instantiation produces no
-///   `track.report_edited` and no `card.updated` — those are [`persist`]'s
-///   pair and they are emitted from inside it.
+/// * **No `&EventBus`.** Q12. This is a statement about the signature and
+///   nothing more: no argument of this door is a bus, so it cannot publish the
+///   way [`persist`] publishes its `track.report_edited` + `card.updated` pair,
+///   which is through the bus [`persist`] is handed. It is not a statement
+///   about what the body can reach — the `tx` here is the raw transaction, and
+///   a body that INSERTed an event row through it would be doing something no
+///   signature can refuse. The check that a fork, a template instantiation and
+///   a recipe instantiation emit no `track.report_edited` is behavioural and
+///   lives in `tests/cases/track_report_fork.rs::
+///   every_creation_source_emits_no_report_edited`, which drives all three
+///   creation sources through the router and reads the events that came out.
 ///
 ///   Be exact about what this does *not* say, because an earlier version of
 ///   this paragraph said it and it was false. This door's return type is not
@@ -428,8 +471,7 @@ pub(crate) async fn agent_report_op(
 ///   `kernel_events`, and the create closure in
 ///   `routes::tracks::create_track_structure` turns the first into a
 ///   `plan.updated` and appends the second verbatim to the transaction's event
-///   list. A fork that copies task blocks **does** produce a `plan.updated`
-///   that way. What is closed by construction is the second half, and by a
+///   list. What is closed by construction is the second half, and by a
 ///   guard in the body rather than by the signature: `kernel_events` non-empty
 ///   is an `Internal` error here. It is empty today for a structural reason
 ///   (`project_tasks_tx` only produces them for tasks already `dispatched` /
@@ -467,8 +509,13 @@ pub(crate) async fn agent_report_op(
 /// None of the six appears in this signature, and none can be added to it
 /// quietly: `tests/cases/fork_guard_exemption_invariant.rs` pins both
 /// parameters, all six fields of [`InitialReportTarget`] and the return type
-/// **by name and by written type**, so acquiring any of them is a decision
-/// somebody has to record in that file. That is a gate against drift, not a
+/// **by name and by written type**, and the `const _` block above resolves each
+/// of those written types against its canonical path, so a spelling here that
+/// has come to mean something else stops the build instead of rendering
+/// unchanged. Adding one of the six to this argument set — as a new argument, a
+/// retyped one, or a same-named type carrying it — ends in somebody editing that
+/// gate file, because the anchor lines are pinned there too. That is a gate
+/// against drift, not a
 /// proof about the language — the earlier wording here ("none of the six is
 /// expressible by a caller") claimed the latter, and a review channel broke it
 /// twice with newtypes that kept every pinned name. What is true without

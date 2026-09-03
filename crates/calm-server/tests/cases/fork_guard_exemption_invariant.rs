@@ -108,6 +108,45 @@ const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
     "probe",
 ];
 
+/// For every spelling the three tables above use, the canonical path it is
+/// supposed to mean: `(canonical path, spelling as write.rs writes it)`.
+///
+/// `write.rs` carries one `const _: fn() = || { … };` block holding a
+/// `let _: fn(canonical) -> spelling = identical;` line per row, and `identical`
+/// is `fn identical<T>(T) -> T`, so each line compiles only while the two sides
+/// are the same type. That is what turns the text comparison the tables do into
+/// a statement about types: a `struct TrackReportPayload` defined in `write.rs`
+/// (the R3 bypass — same rendered text, a `by: EditAuthor` field inside) is a
+/// compile error at that line rather than a green table.
+const RESOLUTION_ANCHORS: &[(&str, &str)] = &[
+    (
+        "::sqlx::Transaction<'static, ::sqlx::Sqlite>",
+        "sqlx::Transaction<'static, sqlx::Sqlite>",
+    ),
+    ("::core::result::Result<u8, u8>", "Result<u8, u8>"),
+    ("crate::model::Card", "Card"),
+    (
+        "crate::db::sqlite::TaskProjectionOutcome",
+        "TaskProjectionOutcome",
+    ),
+    ("crate::error::CalmError", "CalmError"),
+    ("&'static ::core::primitive::str", "&'static str"),
+    (
+        "::calm_types::track_report::TrackReportPayload",
+        "TrackReportPayload",
+    ),
+    ("crate::track_report_doc::ReportDoc", "ReportDoc"),
+    ("::std::vec::Vec<u8>", "Vec<u8>"),
+    (
+        "::calm_types::report_blocks::tasks::TaskDeclaration",
+        "calm_types::report_blocks::tasks::TaskDeclaration",
+    ),
+    (
+        "::calm_types::report_blocks::tasks::Diagnostic",
+        "calm_types::report_blocks::tasks::Diagnostic",
+    ),
+];
+
 /// Every identifier appearing anywhere under a piece of syntax.
 ///
 /// Used for the name checks, which are the ones that have to reach *inside* a
@@ -121,6 +160,78 @@ impl<'ast> Visit<'ast> for Idents {
     fn visit_ident(&mut self, ident: &'ast syn::Ident) {
         self.0.insert(ident.to_string());
     }
+}
+
+/// Every identifier under a *type*, lifetimes excluded.
+///
+/// Separate from [`Idents`] because the pinned types carry `'a` and `'_`, and a
+/// lifetime name is not a name anything can be bound to at a file's top level.
+#[derive(Default)]
+struct TypeIdents(BTreeSet<String>);
+
+impl<'ast> Visit<'ast> for TypeIdents {
+    fn visit_lifetime(&mut self, _: &'ast syn::Lifetime) {}
+
+    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+        self.0.insert(ident.to_string());
+    }
+}
+
+/// Every name a file's top-level items bind: what they declare, plus what their
+/// `use` statements bring into scope under either its own name or a rename.
+///
+/// This is the set that can shadow a glob import, which is why the shadowing
+/// check reads it rather than the declarations alone.
+fn top_level_bindings(items: &[Item]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in items {
+        match item {
+            Item::Struct(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Enum(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Union(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Type(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Trait(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::TraitAlias(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Fn(declared) => {
+                names.insert(declared.sig.ident.to_string());
+            }
+            Item::Const(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Static(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Mod(declared) => {
+                names.insert(declared.ident.to_string());
+            }
+            Item::Macro(declared) => {
+                if let Some(ident) = &declared.ident {
+                    names.insert(ident.to_string());
+                }
+            }
+            Item::Use(item_use) => {
+                let mut paths = Vec::new();
+                collect_use_paths(&item_use.tree, &mut Vec::new(), &mut paths);
+                for (_, bound) in paths {
+                    names.insert(bound);
+                }
+            }
+            _ => {}
+        }
+    }
+    names
 }
 
 /// Every free function *called* under a piece of syntax, by its last path
@@ -143,53 +254,71 @@ impl<'ast> Visit<'ast> for Calls {
     }
 }
 
-/// The functions called by an **unconditional statement of `body` itself** —
-/// not nested in any `if`, `match`, loop or closure.
+/// The functions `body` calls in the shape `f(args)?;` — an unconditional
+/// statement of `body` itself, the `?` applied, at least one argument, and no
+/// argument that is an empty literal slice.
 ///
-/// This is stricter than "is called somewhere in the body" on purpose. #1252
-/// R1/F6: a review channel hollowed out the previous assertion two ways that
-/// both left it green while taking the belt off the execution path —
-/// `let _ = guard_forked_blocks;` (an ident, no call) and
-/// `if false { guard_forked_blocks(&blocks)?; }` (a call, unreachable). A
-/// statement-level rule refuses both: the first is not a call, the second is an
-/// `if` and not a call.
+/// Each clause is here because a review channel wrote the version without it
+/// and stayed green while the belt was off the execution path. In order:
 ///
-/// The cost is that legitimately moving the belt under a condition is red here
-/// too. That is the intended trade — the belt is unconditional today, and
-/// making it conditional is precisely the change that should stop a reviewer.
-fn unconditional_statement_calls(body: &syn::Block) -> BTreeSet<String> {
+/// * *a call, not a mention* — `let _ = guard_forked_blocks;` (#1252 R1/F6);
+/// * *a statement of this body* — `if false { guard_forked_blocks(&blocks)?; }`
+///   and `match 0 { _ => { guard_forked_blocks(&blocks)?; } }` (#1252 R1/F6,
+///   R2);
+/// * *in expression position with `?`* — `let _ = guard_forked_blocks(&[]);`
+///   is an unconditional `let` whose initializer is a call, and it discards the
+///   `Err` the belt exists to produce (#1252 R3/C);
+/// * *not fed an empty literal* — `guard_forked_blocks(&[])?;` keeps the shape
+///   and hands the belt nothing to inspect (#1252 R3/C).
+///
+/// This is a list of refused shapes, not a proof that the belt runs: a call
+/// fed a variable this function never checks the provenance of is still green
+/// here, and so is one whose argument was emptied upstream. The behavioural
+/// half is stated on the test below, along with the measurement showing there
+/// is no behavioural detector for the call site itself.
+///
+/// The cost of the statement clause is that legitimately moving the belt under
+/// a condition, or binding its result, is red here too. That is the intended
+/// trade — the belt is an unconditional `?` today, and changing that is
+/// precisely the edit that should stop a reviewer.
+fn unconditional_checked_calls(body: &syn::Block) -> BTreeSet<String> {
     fn peel(expr: &syn::Expr) -> &syn::Expr {
         match expr {
-            syn::Expr::Try(inner) => peel(&inner.expr),
-            syn::Expr::Await(inner) => peel(&inner.base),
             syn::Expr::Paren(inner) => peel(&inner.expr),
             syn::Expr::Group(inner) => peel(&inner.expr),
             other => other,
         }
     }
 
+    fn is_empty_literal_slice(expr: &syn::Expr) -> bool {
+        match peel(expr) {
+            syn::Expr::Reference(reference) => is_empty_literal_slice(&reference.expr),
+            syn::Expr::Array(array) => array.elems.is_empty(),
+            _ => false,
+        }
+    }
+
     let mut called = BTreeSet::new();
-    let mut record = |expr: &syn::Expr| {
-        if let syn::Expr::Call(call) = peel(expr)
-            && let syn::Expr::Path(path) = &*call.func
-            && let Some(last) = path.path.segments.last()
-        {
-            called.insert(last.ident.to_string());
-        }
-    };
     for statement in &body.stmts {
-        match statement {
-            syn::Stmt::Expr(expr, _) => record(expr),
-            // `let x = f(..)?;` is as unconditional as `f(..)?;`.
-            syn::Stmt::Local(local) => {
-                if let Some(init) = &local.init
-                    && init.diverge.is_none()
-                {
-                    record(&init.expr);
-                }
-            }
-            _ => {}
+        let syn::Stmt::Expr(expr, Some(_)) = statement else {
+            continue;
+        };
+        let syn::Expr::Try(tried) = peel(expr) else {
+            continue;
+        };
+        let syn::Expr::Call(call) = peel(&tried.expr) else {
+            continue;
+        };
+        let syn::Expr::Path(path) = &*call.func else {
+            continue;
+        };
+        let Some(last) = path.path.segments.last() else {
+            continue;
+        };
+        if call.args.is_empty() || call.args.iter().any(is_empty_literal_slice) {
+            continue;
         }
+        called.insert(last.ident.to_string());
     }
     called
 }
@@ -376,6 +505,106 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
     );
 }
 
+/// #1252 R3/A — the two ways the sibling test's text comparison can be walked
+/// past inside `write.rs`, closed.
+///
+/// The sibling test compares rendered token text. A review channel kept every
+/// pinned name *and* every pinned rendered type and still gave the door an
+/// author, by defining in `write.rs`
+///
+/// ```ignore
+/// pub(crate) struct TrackReportPayload {
+///     pub inner: calm_types::track_report::TrackReportPayload,
+///     pub by: EditAuthor,
+/// }
+/// ```
+///
+/// which shadows what `use super::*` brings in. `&'a TrackReportPayload`
+/// renders byte-for-byte the same, so the field table was green, and the door's
+/// body could call `guard_task_declarations(.., target.payload.by, ..)`.
+///
+/// Shadowing a glob import requires a binding at the shadowing file's top
+/// level, so this test takes both halves of that:
+///
+/// 1. no top-level item of `write.rs`, and no name it binds with a `use`, is
+///    spelled like a type the tables pin (`InitialReportTarget` excepted — the
+///    table for its fields is what pins that one);
+/// 2. the resolution anchors are present and cover every spelling in the
+///    tables, so the pinned spellings are checked by the compiler and not only
+///    by string comparison.
+///
+/// The second is the load-bearing one and the first is a faster failure
+/// message. Neither says anything about what a pinned type may grow inside its
+/// own definition, which stays what the sibling test's doc says it is.
+#[test]
+fn the_pinned_spellings_resolve_to_the_types_they_name() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/track_report/write.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let syntax = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+
+    let mut pinned = TypeIdents::default();
+    for (_, written) in DOOR_PARAMETERS.iter().chain(DOOR_TARGET_FIELDS) {
+        pinned.visit_type(&syn::parse_str::<syn::Type>(written).unwrap());
+    }
+    pinned.visit_type(&syn::parse_str::<syn::Type>(DOOR_RETURN).unwrap());
+    pinned.0.remove(STRUCTURAL_TARGET);
+
+    let shadows: Vec<String> = top_level_bindings(&syntax.items)
+        .into_iter()
+        .filter(|name| pinned.0.contains(name))
+        .collect();
+    assert!(
+        shadows.is_empty(),
+        "`{}` binds {shadows:?} at its top level, and every one of those spellings appears in a \
+         pinned signature. A same-named item defined or imported here shadows what `use super::*` \
+         provides, which leaves the pinned text identical while the door's argument set becomes \
+         something else.",
+        path.display()
+    );
+
+    // rustfmt wraps the longer anchors, and a wrapped `fn(A,) -> B` renders with
+    // a trailing comma the expected spelling below does not have. Dropping `,)`
+    // is the whole normalization needed; it is not a token the pinned types use
+    // for anything else.
+    let anchors: String = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Const(constant) if constant.ident == "_" => {
+                Some(rendered(constant).replace(",)", ")"))
+            }
+            _ => None,
+        })
+        .collect();
+    for (canonical, spelling) in RESOLUTION_ANCHORS {
+        let line = rendered(
+            &syn::parse_str::<syn::Type>(&format!("fn({canonical}) -> {spelling}")).unwrap(),
+        )
+        .replace(",)", ")");
+        assert!(
+            anchors.contains(&line),
+            "`{}` must anchor `{spelling}` to `{canonical}`: a `let _: fn({canonical}) -> \
+             {spelling} = identical;` line in its `const _` block. Without it that spelling is \
+             pinned as text only, and a shadowing item in this file satisfies the text.",
+            path.display()
+        );
+    }
+
+    let mut anchored = TypeIdents::default();
+    for (_, spelling) in RESOLUTION_ANCHORS {
+        anchored.visit_type(&syn::parse_str::<syn::Type>(spelling).unwrap());
+    }
+    let unanchored: Vec<&String> = pinned.0.difference(&anchored.0).collect();
+    assert!(
+        unanchored.is_empty(),
+        "the pinned signature names {unanchored:?}, which no row of RESOLUTION_ANCHORS covers. \
+         Every spelling the tables pin has to be anchored to a canonical path, or it is pinned as \
+         text only."
+    );
+}
+
 #[test]
 fn fork_rule_one_exemption_has_one_structural_entry() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routes/tracks/fork_guard.rs");
@@ -481,17 +710,17 @@ fn the_release_belt_stays_next_to_the_normalization_it_belts() {
             _ => None,
         })
         .expect("`prepare_fork_report` vanished from routes/tracks.rs");
-    // The belt: an unconditional statement of the function body. Not "the name
-    // appears somewhere in the body", which is what this asserted before
-    // #1252 R1/F6 and which `let _ = guard_forked_blocks;` and
-    // `if false { guard_forked_blocks(&blocks)?; }` both satisfied while
-    // taking the belt out of the program.
+    // The belt: `guard_forked_blocks(<something not an empty literal>)?;` as an
+    // unconditional statement of the function body. See
+    // `unconditional_checked_calls` for the four hollowed-out shapes that were
+    // each green against an earlier, weaker version of this line.
     assert!(
-        unconditional_statement_calls(&prepare.block).contains(EXPORTED_ENTRY),
-        "`prepare_fork_report` must call `{EXPORTED_ENTRY}` from an unconditional statement of \
-         its own body: the belt and the normalization it belts are only meaningful adjacent to \
-         each other, and a call that is merely *mentioned*, or nested under a condition, is not \
-         on the path a fork takes"
+        unconditional_checked_calls(&prepare.block).contains(EXPORTED_ENTRY),
+        "`prepare_fork_report` must call `{EXPORTED_ENTRY}(…)?` from an unconditional statement \
+         of its own body, on arguments that are not an empty literal slice: the belt and the \
+         normalization it belts are only meaningful adjacent to each other, and a call that is \
+         merely mentioned, nested under a condition, has its `Err` discarded, or is handed an \
+         empty slice is not the belt a fork passes through"
     );
 
     // The normalization it belts runs per block, so its call is inside the
