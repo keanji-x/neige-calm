@@ -14,7 +14,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
-use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
+use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
@@ -77,6 +77,7 @@ pub(super) struct Inner {
     last_turn_id: Mutex<Option<String>>,
     issued_turn_id: Mutex<Option<String>>,
     issued_turn_head: Mutex<Option<track_vcs::CommitHash>>,
+    issued_input_segments: Mutex<Option<IssuedInputSegments>>,
     last_report_body_sha256: Mutex<Option<String>>,
     last_seen_head: Mutex<Option<track_vcs::CommitHash>>,
     /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
@@ -359,6 +360,7 @@ impl PlannerHarness {
         // emit an unexpected phase event. `issued_turn_id` likewise belongs
         // to the superseded state.
         *self.inner.issued_turn_id.lock().await = None;
+        *self.inner.issued_input_segments.lock().await = None;
         *self.inner.interrupt_deadline.lock().await = None;
         persist_snapshot(&self.inner).await?;
         Ok((old_phase, tag))
@@ -446,6 +448,7 @@ fn inner_from_params(
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         issued_turn_id: Mutex::new(None),
         issued_turn_head: Mutex::new(snapshot.issued_turn_head),
+        issued_input_segments: Mutex::new(snapshot.issued_input_segments),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
         // Round-trips through the snapshot so the reading survives a reboot
@@ -943,7 +946,20 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
             let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
+            let input_segments_json =
+                if matches!(item_type.as_deref(), Some("userMessage" | "user_message")) {
+                    let issued = inner.issued_input_segments.lock().await;
+                    issued
+                        .as_ref()
+                        .filter(|issued| turn_id.as_deref() == Some(issued.turn_id.as_str()))
+                        .map(|issued| serde_json::to_string(&issued.segments))
+                        .transpose()?
+                } else {
+                    None
+                };
             let params_json = serde_json::to_string(&params)?;
+            let consumes_input_segments =
+                method == "item/completed" && input_segments_json.is_some();
             let item_db_id = inner
                 .repo
                 .harness_item_insert(
@@ -956,6 +972,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     item_type.as_deref(),
                     &method,
                     &params_json,
+                    input_segments_json.as_deref(),
                 )
                 .await?;
             let scope = harness_event_scope(inner, "harness.item.added");
@@ -980,6 +997,9 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     },
                 )
                 .await?;
+            if consumes_input_segments {
+                *inner.issued_input_segments.lock().await = None;
+            }
         }
         // `turn/plan/updated` — codex's own TODO checklist for the running
         // turn (`{ threadId, turnId, explanation, plan: [{ step, status }] }`,
@@ -1040,6 +1060,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     None,
                     &method,
                     &params_json,
+                    None,
                 )
                 .await?;
             // Deliberately NO `Event::HarnessItemAdded` for a plan row (#1255),
@@ -1447,6 +1468,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issued_turn_id.lock().await = None;
     *inner.issued_turn_head.lock().await = None;
+    *inner.issued_input_segments.lock().await = None;
     persist_snapshot(inner).await?;
 
     let (drained, drained_envelope_ids) = {
@@ -1465,10 +1487,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
     *inner.debounce.lock().await = DebounceState::default();
+    let input_segments = Observation::input_segments_for(&drained);
 
-    let joined_observation_text = drained
+    let joined_observation_text = input_segments
         .iter()
-        .map(Observation::to_turn_text)
+        .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
@@ -1505,8 +1528,12 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 "daemon.turn_start ok"
             );
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
-            *inner.issued_turn_id.lock().await = Some(turn_id);
+            *inner.issued_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
+            *inner.issued_input_segments.lock().await = Some(IssuedInputSegments {
+                turn_id,
+                segments: input_segments,
+            });
             persist_snapshot(inner).await?;
         }
         Err(e) => {
@@ -1879,6 +1906,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
     let issued_turn_head = inner.issued_turn_head.lock().await.clone();
+    let issued_input_segments = inner.issued_input_segments.lock().await.clone();
     let last_report_body_sha256 = inner.last_report_body_sha256.lock().await.clone();
     let last_seen_head = inner.last_seen_head.lock().await.clone();
     let token_usage = inner.token_usage.lock().await.clone();
@@ -1893,6 +1921,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     );
     snapshot.last_seen_head = last_seen_head;
     snapshot.issued_turn_head = issued_turn_head;
+    snapshot.issued_input_segments = issued_input_segments;
     snapshot.token_usage = token_usage;
     snapshot
 }

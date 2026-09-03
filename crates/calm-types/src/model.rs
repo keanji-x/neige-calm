@@ -536,6 +536,36 @@ pub fn default_deletable() -> bool {
 
 // ---------------- HarnessItem ----------------
 
+/// How one segment of a harness `userMessage` should be presented to a human.
+///
+/// Codex calls every turn input a `userMessage`, including observations the
+/// kernel injected on the user's behalf. The rendered English in that item is
+/// not a protocol: wording changes must not turn a system update into something
+/// the UI attributes to the user. The harness derives one value per structured
+/// [`crate::observation::Observation`] before the batch is flattened for
+/// `turn/start`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum HarnessInputPresentation {
+    User,
+    System,
+    SystemWorkerTurnFinished,
+    SystemReportEdited,
+    SystemTaskCompleted,
+    SystemTaskFailed,
+}
+
+/// One observation in the exact order and wording sent to `turn/start`.
+/// Keeping the rendered text beside its typed presentation makes a mixed batch
+/// reversible without teaching a reader how Rust joined or phrased it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct HarnessInputSegment {
+    pub presentation: HarnessInputPresentation,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessItem {
@@ -551,6 +581,9 @@ pub struct HarnessItem {
     pub item_type: Option<String>,
     pub method: String,
     pub params: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input_segments: Option<Vec<HarnessInputSegment>>,
     pub created_at_ms: i64,
 }
 

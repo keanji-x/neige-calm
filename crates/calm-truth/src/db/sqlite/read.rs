@@ -51,7 +51,8 @@ impl SqlxRepo {
         method_predicate: &str,
     ) -> Result<Vec<HarnessItem>> {
         const COLUMNS: &str = "id, runtime_id, card_id, track_id, thread_id, turn_id, \
-                               item_uuid, item_type, method, params, created_at_ms";
+                               item_uuid, item_type, method, params, input_segments, \
+                               created_at_ms";
         let (comparison, order, cursor) = if descending {
             ("<", "DESC", if after_id == 0 { i64::MAX } else { after_id })
         } else {
@@ -71,7 +72,12 @@ impl SqlxRepo {
         if descending {
             rows.reverse();
         }
-        Ok(rows.into_iter().map(HarnessItem::from).collect())
+        rows.into_iter()
+            .map(HarnessItem::try_from)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| {
+                CalmError::Internal(format!("transcript input_segments decode: {error}"))
+            })
     }
 }
 

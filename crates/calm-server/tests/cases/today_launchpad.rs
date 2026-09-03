@@ -242,6 +242,7 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
             Some("agent_message"),
             "item/completed",
             "{}",
+            None,
         )
         .await
         .unwrap();
@@ -282,6 +283,7 @@ async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal(
             Some("agent_message"),
             "item/completed",
             "{}",
+            None,
         )
         .await
         .unwrap();

@@ -1591,12 +1591,34 @@ export interface components {
             files: components["schemas"]["GitChangedFile"][];
             repo_root: string;
         };
+        /**
+         * @description How one segment of a harness `userMessage` should be presented to a human.
+         *
+         *     Codex calls every turn input a `userMessage`, including observations the
+         *     kernel injected on the user's behalf. The rendered English in that item is
+         *     not a protocol: wording changes must not turn a system update into something
+         *     the UI attributes to the user. The harness derives one value per structured
+         *     [`crate::observation::Observation`] before the batch is flattened for
+         *     `turn/start`.
+         * @enum {string}
+         */
+        HarnessInputPresentation: "user" | "system" | "system_worker_turn_finished" | "system_report_edited" | "system_task_completed" | "system_task_failed";
+        /**
+         * @description One observation in the exact order and wording sent to `turn/start`.
+         *     Keeping the rendered text beside its typed presentation makes a mixed batch
+         *     reversible without teaching a reader how Rust joined or phrased it.
+         */
+        HarnessInputSegment: {
+            presentation: components["schemas"]["HarnessInputPresentation"];
+            text: string;
+        };
         HarnessItem: {
             card_id: string;
             /** Format: int64 */
             created_at_ms: number;
             /** Format: int64 */
             id: number;
+            input_segments?: components["schemas"]["HarnessInputSegment"][] | null;
             item_type?: string | null;
             item_uuid?: string | null;
             method: string;

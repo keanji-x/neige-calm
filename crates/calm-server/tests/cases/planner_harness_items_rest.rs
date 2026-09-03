@@ -7,7 +7,10 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, HarnessItem, NewArea, NewCard, NewTrack, new_id};
+use calm_server::model::{
+    Card, CardRole, HarnessInputPresentation, HarnessInputSegment, HarnessItem, NewArea, NewCard,
+    NewTrack, new_id,
+};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -135,7 +138,7 @@ async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
-async fn harness_items_route_returns_rows_in_order_and_paginates() {
+async fn transcript_route_returns_rows_in_order_and_paginates() {
     let boot = boot().await;
     let mut inserted = Vec::new();
     for (uuid, text) in [
@@ -156,6 +159,7 @@ async fn harness_items_route_returns_rows_in_order_and_paginates() {
                 "item/completed",
                 &json!({ "item": { "id": uuid, "type": "agent_message", "text": text } })
                     .to_string(),
+                None,
             )
             .await
             .unwrap();
@@ -219,7 +223,85 @@ async fn harness_items_route_returns_rows_in_order_and_paginates() {
 }
 
 #[tokio::test]
-async fn harness_items_desc_cursor_uses_less_than_after_id() {
+async fn transcript_route_returns_strict_structured_input_segments() {
+    let boot = boot().await;
+    let segments = vec![
+        HarnessInputSegment {
+            presentation: HarnessInputPresentation::SystemReportEdited,
+            text: "wording is not the protocol".into(),
+        },
+        HarnessInputSegment {
+            presentation: HarnessInputPresentation::User,
+            text: "User says:\nhello".into(),
+        },
+    ];
+    let segments_json = serde_json::to_string(&segments).unwrap();
+    let row_id = boot
+        .repo
+        .harness_item_insert(
+            "runtime-presentation",
+            boot.planner_card.id.as_str(),
+            boot.planner_card.track_id.as_str(),
+            "thread-presentation",
+            Some("turn-presentation"),
+            Some("user-presentation"),
+            Some("userMessage"),
+            "item/completed",
+            &json!({
+                "item": {
+                    "id": "user-presentation",
+                    "type": "userMessage",
+                    "content": [{"type": "text", "text": "wording is not the protocol"}]
+                }
+            })
+            .to_string(),
+            Some(&segments_json),
+        )
+        .await
+        .unwrap();
+
+    let error = sqlx::query("UPDATE harness_items SET input_segments = '{}' WHERE id = ?1")
+        .bind(row_id)
+        .execute(boot.repo.pool())
+        .await
+        .expect_err("the migration must reject a non-array segment envelope");
+    assert!(
+        error.to_string().contains("CHECK constraint failed"),
+        "unexpected sqlite error: {error}"
+    );
+
+    let (status, body) = get(
+        boot.app,
+        format!("/api/cards/{}/harness/items", boot.planner_card.id.as_str()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].input_segments, Some(segments));
+
+    sqlx::query(
+        r#"UPDATE harness_items
+           SET input_segments = '[{"presentation":"future_value","text":"x"}]'
+           WHERE id = ?1"#,
+    )
+    .bind(rows[0].id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    let error = boot
+        .repo
+        .harness_item_list_by_card(boot.planner_card.id.as_str(), 0, 100, false)
+        .await
+        .expect_err("the typed reader must reject an unknown presentation value");
+    assert!(
+        error.to_string().contains("unknown variant `future_value`"),
+        "unexpected decode error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn transcript_desc_cursor_uses_less_than_after_id() {
     let boot = boot().await;
     let mut inserted = Vec::new();
     for index in 1..=5 {
@@ -236,6 +318,7 @@ async fn harness_items_desc_cursor_uses_less_than_after_id() {
                 Some("agent_message"),
                 "item/completed",
                 &json!({ "item": { "id": uuid, "type": "agent_message" } }).to_string(),
+                None,
             )
             .await
             .unwrap();
@@ -261,7 +344,7 @@ async fn harness_items_desc_cursor_uses_less_than_after_id() {
 }
 
 #[tokio::test]
-async fn harness_items_route_rejects_non_planner_card() {
+async fn transcript_route_rejects_non_planner_card() {
     let boot = boot().await;
     let (status, body) = get(
         boot.app,
@@ -272,7 +355,7 @@ async fn harness_items_route_rejects_non_planner_card() {
 }
 
 #[tokio::test]
-async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
+async fn transcript_route_preserves_mcp_tool_call_camelcase() {
     let boot = boot().await;
     let started_id = boot
         .repo
@@ -295,6 +378,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
                 }
             })
             .to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -320,6 +404,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
                 }
             })
             .to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -355,7 +440,7 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
 /// *stored* either way — that is the point of the capture — so this pins the
 /// read, using a small `limit` as a stand-in for the 300-row one.
 #[tokio::test]
-async fn harness_items_route_page_budget_skips_plan_rows() {
+async fn transcript_route_page_budget_skips_plan_rows() {
     let boot = boot().await;
     let mut item_ids = Vec::new();
     let mut plan_ids = Vec::new();
@@ -380,6 +465,7 @@ async fn harness_items_route_page_budget_skips_plan_rows() {
                         "plan": [{ "step": format!("step {index}"), "status": "pending" }]
                     })
                     .to_string(),
+                    None,
                 )
                 .await
                 .unwrap(),
@@ -398,6 +484,7 @@ async fn harness_items_route_page_budget_skips_plan_rows() {
                     "item/completed",
                     &json!({ "item": { "id": uuid, "type": "agent_message", "text": "x" } })
                         .to_string(),
+                    None,
                 )
                 .await
                 .unwrap(),

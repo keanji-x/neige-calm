@@ -168,6 +168,7 @@ async fn reset_planner_card_clears_persisted_harness_items() {
                 Some("agent_message"),
                 "item/completed",
                 &params,
+                None,
             )
             .await
             .unwrap();

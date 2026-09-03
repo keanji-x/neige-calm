@@ -397,13 +397,14 @@ impl RepoOutOfDomain for SqlxRepo {
         item_type: Option<&str>,
         method: &str,
         params: &str,
+        input_segments: Option<&str>,
     ) -> Result<i64> {
         let row = sqlx::query(
             r#"INSERT INTO harness_items (
                    runtime_id, card_id, track_id, thread_id, turn_id,
-                   item_uuid, item_type, method, params, created_at_ms
+                   item_uuid, item_type, method, params, input_segments, created_at_ms
                )
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                RETURNING id"#,
         )
         .bind(runtime_id)
@@ -415,6 +416,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(item_type)
         .bind(method)
         .bind(params)
+        .bind(input_segments)
         .bind(now_ms())
         .fetch_one(&self.pool)
         .await?;

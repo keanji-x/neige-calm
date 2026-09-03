@@ -39,7 +39,7 @@ import '../../../styles/entry.css';
 
 import { ChatComposer, ChatThread } from './public.tsx';
 import type {
-  Conversation, ConversationActivity, ConversationTurn, TranscriptEntry,
+  Conversation, ConversationActivity, ConversationSystemEntry, ConversationTurn, TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
@@ -756,6 +756,29 @@ async function frame() {
     await new Promise((resolve) => { requestAnimationFrame(() => { resolve(null); }); });
   });
 }
+
+describe('the structured system disclosure in a real engine', () => {
+  it('has a full control-height target and toggles from the keyboard', async () => {
+    const system: ConversationSystemEntry = {
+      id: 'system-1', author: 'system', label: 'Report edited',
+      text: 'The report changed in the kernel.', atMs: 0,
+    };
+    render(<RailPane turns={[system]} />);
+    await frame();
+
+    const details = document.querySelector<HTMLDetailsElement>('[data-nc-turn="system"]')!;
+    const summary = details.querySelector<HTMLElement>('summary')!;
+    const disclosure = summary.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+    expect(summary.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
+    expect(getComputedStyle(summary).justifyContent).toBe('flex-start');
+    expect(disclosure.textContent).toBe('›');
+
+    summary.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(details.open).toBe(true);
+    expect(getComputedStyle(disclosure).transform).not.toBe('none');
+  });
+});
 
 /** Two frames: one for the scroll handler's own rAF, one for the render it
  *  schedules. */

@@ -710,6 +710,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         item_type: Option<&str>,
         method: &str,
         params: &str,
+        input_segments: Option<&str>,
     ) -> Result<i64>;
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
@@ -806,10 +807,20 @@ where
         item_type: Option<&str>,
         method: &str,
         params: &str,
+        input_segments: Option<&str>,
     ) -> Result<i64> {
         calm_truth::db::RepoOutOfDomain::harness_item_insert(
-            self, runtime_id, card_id, track_id, thread_id, turn_id, item_uuid, item_type, method,
+            self,
+            runtime_id,
+            card_id,
+            track_id,
+            thread_id,
+            turn_id,
+            item_uuid,
+            item_type,
+            method,
             params,
+            input_segments,
         )
         .await
         .map_err(Into::into)

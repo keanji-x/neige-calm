@@ -253,7 +253,26 @@ export type FolderConflictKind = "equal" | "ancestor" | "descendant";
  */
 export type ForgeMergeSubject = { phase: string, slice_id: string, pr_number: number, };
 
-export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, created_at_ms: number, };
+/**
+ * How one segment of a harness `userMessage` should be presented to a human.
+ *
+ * Codex calls every turn input a `userMessage`, including observations the
+ * kernel injected on the user's behalf. The rendered English in that item is
+ * not a protocol: wording changes must not turn a system update into something
+ * the UI attributes to the user. The harness derives one value per structured
+ * [`crate::observation::Observation`] before the batch is flattened for
+ * `turn/start`.
+ */
+export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_finished" | "system_report_edited" | "system_task_completed" | "system_task_failed";
+
+/**
+ * One observation in the exact order and wording sent to `turn/start`.
+ * Keeping the rendered text beside its typed presentation makes a mixed batch
+ * reversible without teaching a reader how Rust joined or phrased it.
+ */
+export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, };
+
+export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, };
 
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 

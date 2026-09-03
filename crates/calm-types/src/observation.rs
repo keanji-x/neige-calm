@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::event::{EditAuthor, RatifyDecision};
 use crate::ids::{CardId, TrackId};
+use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -156,6 +157,46 @@ pub enum HookKind {
 }
 
 impl Observation {
+    /// Preserve an issued batch as independently attributable segments before
+    /// Codex flattens it into one `userMessage`. The same rendered strings feed
+    /// `turn/start`, so the persisted structure and model input cannot drift.
+    pub fn input_segments_for(observations: &[Self]) -> Vec<HarnessInputSegment> {
+        observations
+            .iter()
+            .map(|observation| HarnessInputSegment {
+                presentation: observation.input_presentation(),
+                text: observation.to_turn_text(),
+            })
+            .collect()
+    }
+
+    fn input_presentation(&self) -> HarnessInputPresentation {
+        match self {
+            Observation::TrackGoal { .. } | Observation::UserMessage { .. } => {
+                HarnessInputPresentation::User
+            }
+            Observation::ReportEdited { .. } => HarnessInputPresentation::SystemReportEdited,
+            Observation::TaskCompleted { .. } => HarnessInputPresentation::SystemTaskCompleted,
+            Observation::TaskFailed { .. } => HarnessInputPresentation::SystemTaskFailed,
+            Observation::WorkerHookStop { .. } => {
+                HarnessInputPresentation::SystemWorkerTurnFinished
+            }
+            Observation::TaskGateResult { .. }
+            | Observation::WorkspaceLeased { .. }
+            | Observation::WorkspaceReleased { .. }
+            | Observation::ForgePrMerged { .. }
+            | Observation::ForgeScanCompleted { .. }
+            | Observation::ForgePrOpened { .. }
+            | Observation::ForgePrChecks { .. }
+            | Observation::ForgeIssueClosed { .. }
+            | Observation::WorktreeProvisioned { .. }
+            | Observation::WorktreeCommitted { .. }
+            | Observation::ReviewRound { .. }
+            | Observation::RatifyRequested { .. }
+            | Observation::RatifyResolved { .. } => HarnessInputPresentation::System,
+        }
+    }
+
     pub fn is_hard_fire(&self) -> bool {
         match self {
             Observation::TaskCompleted { .. }
@@ -347,6 +388,96 @@ mod tests {
             text.contains("Did you check Korean refiners?"),
             "raw text missing: {text}"
         );
+    }
+
+    #[test]
+    fn input_segments_are_derived_from_observation_types_not_english() {
+        let human_with_system_words = Observation::UserMessage {
+            text: "A dispatched task completed, according to me".into(),
+        };
+        assert_eq!(
+            Observation::input_segments_for(&[human_with_system_words])[0].presentation,
+            HarnessInputPresentation::User,
+            "human text must not be classified by its English prefix"
+        );
+
+        assert_eq!(
+            Observation::input_segments_for(&[Observation::TaskCompleted {
+                idempotency_key: "task-1".into(),
+                result: serde_json::json!({"ok": true}),
+            }])[0]
+                .presentation,
+            HarnessInputPresentation::SystemTaskCompleted
+        );
+        assert_eq!(
+            Observation::input_segments_for(&[Observation::TaskFailed {
+                idempotency_key: "task-1".into(),
+                error: "boom".into(),
+            }])[0]
+                .presentation,
+            HarnessInputPresentation::SystemTaskFailed
+        );
+        assert_eq!(
+            Observation::input_segments_for(&[Observation::WorkerHookStop {
+                track_id: TrackId::from("track-1"),
+                card_id: CardId::from("card-1"),
+                kind: HookKind::CodexStop,
+                idempotency_key: "hook-1".into(),
+            }])[0]
+                .presentation,
+            HarnessInputPresentation::SystemWorkerTurnFinished
+        );
+        assert_eq!(
+            Observation::input_segments_for(&[report_edited(Some(EditAuthor::Plugin))])[0]
+                .presentation,
+            HarnessInputPresentation::SystemReportEdited
+        );
+
+        let generic = Observation::RatifyRequested {
+            track_id: TrackId::from("track-1"),
+            reason: "review cap".into(),
+        };
+        assert_eq!(
+            Observation::input_segments_for(&[generic])[0].presentation,
+            HarnessInputPresentation::System
+        );
+    }
+
+    #[test]
+    fn mixed_batch_keeps_each_source_and_rendered_text_in_order() {
+        let report = report_edited(Some(EditAuthor::Plugin));
+        let human = Observation::UserMessage {
+            text: "what happened?".into(),
+        };
+        let completed = Observation::TaskCompleted {
+            idempotency_key: "task-1".into(),
+            result: serde_json::Value::Null,
+        };
+        let expected_text = [
+            report.to_turn_text(),
+            human.to_turn_text(),
+            completed.to_turn_text(),
+        ];
+        let segments = Observation::input_segments_for(&[report, human, completed]);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.presentation)
+                .collect::<Vec<_>>(),
+            vec![
+                HarnessInputPresentation::SystemReportEdited,
+                HarnessInputPresentation::User,
+                HarnessInputPresentation::SystemTaskCompleted,
+            ]
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>(),
+            expected_text.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert!(Observation::input_segments_for(&[]).is_empty());
     }
 
     fn report_edited(author: Option<EditAuthor>) -> Observation {
