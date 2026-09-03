@@ -269,8 +269,8 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
     /* Scoped to the status bar, because a waiting track whose lifespan overlaps
        the selected day also shows on the calendar agenda — so an unscoped
        `queryByText` would be answered by the panel and prove nothing about the
-       cap. RUNNING and RECENT both exclude anything already counted as
-       waiting, so this control is the status bar's only route to the rest. */
+       cap. RUNNING excludes anything already counted as waiting, so this
+       control is the status bar's only route to the rest. */
     const waiting = () => within(container).getByText('Waiting on you').closest('section');
     const rows = () => [...(waiting()?.querySelectorAll('[data-nc-role="row"]') ?? [])]
       .map((row) => row.textContent);
