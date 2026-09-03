@@ -36,11 +36,10 @@ import {
 } from '../../../../core/domain/today.ts';
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
-  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, putWaveTemplateOperation, toWave,
+  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
   updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
   type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
-  type WaveTemplateGoalEdit,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
@@ -639,14 +638,17 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
-    // #1230 — the Settings editor reads this list too, and there `[]` must not
-    // be readable as "loaded and empty": rendering an empty form for a template
-    // whose read has not landed is INV-SETTINGS-002's defect in another place.
+    // `[]` must not be readable as "loaded and empty" — the New wave picker
+    // renders a different affordance for "no templates" than for "not yet".
     //
     // A **failed** read is not loaded either. The first cut wrote
     // `!query.isPending`, which is true once a read has errored — so a dead
-    // server produced `loaded: true` with `templates: []`, and the editor said
-    // "No template named small-change" instead of reporting the failure.
+    // server produced `loaded: true` with `templates: []`, i.e. a picker
+    // claiming the server has no templates instead of reporting the failure.
+    //
+    // #1300 S1 removed the Settings editor, which was this field's other
+    // consumer. It stays because the picker is a consumer in its own right —
+    // `new-wave/public.tsx` branches on it — not as a leftover.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
@@ -885,37 +887,6 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
       patchWave(waveId, coveId, { pinned_at: pinned ? nowMs : null }),
     remove: async (waveId, coveId, signal) => { await remove.mutateAsync({ waveId, coveId, signal }); },
   };
-}
-
-/**
- * Saving a template invalidates the template list, which since #1230 is the
- * single read for both the New wave picker and the Settings editor. One
- * authority, one invalidation.
- */
-export function useWaveTemplateMutation(
-  transport: ApiTransportPort,
-  unauthorized: UnauthorizedChannel,
-): (save: {
-  id: string;
-  title: string;
-  edits: readonly WaveTemplateGoalEdit[];
-  appends: readonly WaveTemplateGoalEdit[];
-}) => Promise<WaveTemplate> {
-  const client = useQueryClient();
-  const mutation = useMutation({
-    mutationFn: (save: {
-      id: string;
-      title: string;
-      edits: readonly WaveTemplateGoalEdit[];
-      appends: readonly WaveTemplateGoalEdit[];
-    }) => runOperation(
-      transport,
-      putWaveTemplateOperation(save.id, { title: save.title, edits: save.edits, appends: save.appends }),
-      unauthorized,
-    ),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.waveTemplates() }); },
-  });
-  return (save) => mutation.mutateAsync(save);
 }
 
 /**

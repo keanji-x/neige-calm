@@ -79,8 +79,12 @@ describe('settingsSectionForPath', () => {
     expect(settingsSectionForPath('/settings/appearance')).toBe('appearance');
     expect(settingsSectionForPath('/settings/plugins')).toBe('plugins');
     expect(settingsSectionForPath('/settings/about')).toBe('about');
-    expect(settingsSectionForPath('/settings/templates')).toBe('templates');
-    expect(settingsSectionForPath('/settings/templates/issue-development')).toBe('templates');
+    // #1300 S1 — the two template routes are gone with the editor. This is the
+    // negative half of that removal: a stale bookmark to either one must leave
+    // the dialog shut, not open it on some fallback pane. Deleting a route
+    // without asserting it is gone is how a removal quietly comes back.
+    expect(settingsSectionForPath('/settings/templates')).toBeNull();
+    expect(settingsSectionForPath('/settings/templates/issue-development')).toBeNull();
     // The dialog stays shut everywhere else — including on a path that merely
     // starts with the same letters.
     expect(settingsSectionForPath('/')).toBeNull();
@@ -101,8 +105,8 @@ describe('Settings overlay', () => {
     // animation, which is the flash this move removed.
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBe(dialog);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Templates' }));
-    await screen.findByRole('heading', { name: 'Templates' });
+    await userEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+    await screen.findByRole('heading', { name: 'Appearance' });
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBe(dialog);
     expect(document.querySelectorAll('[role="dialog"][data-nc-test-marked]')).toHaveLength(1);
   });

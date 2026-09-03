@@ -848,8 +848,8 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   /*
    * Every settings route renders nothing, deliberately.
    *
-   * The URL is the state — which section is open, which template is being
-   * edited, what a deep link means, what Back does — and `app/shell`'s
+   * The URL is the state — which section is open, what a deep link means,
+   * what Back does — and `app/shell`'s
    * `SettingsOverlay` is the view of it. The dialog cannot live here: a route
    * component is remounted on every navigation, so moving between the
    * overlay's own sections rebuilt the panel and replayed its entrance
@@ -858,18 +858,6 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: renderNothing,
-  });
-
-  const templateListRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/settings/templates',
-    component: renderNothing,
-  });
-
-  const templateEditorRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/settings/templates/$templateId',
     component: renderNothing,
   });
 
@@ -892,7 +880,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
+    indexRoute, coveRoute, waveRoute, settingsRoute,
     pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }

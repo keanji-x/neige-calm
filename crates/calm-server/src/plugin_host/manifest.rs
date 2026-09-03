@@ -7,10 +7,25 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::mcp_server::tools::plan::key_is_valid;
+use crate::validation::KERNEL_OVERLAY_PLUGIN_ID;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+/// The wire key [`Manifest::config_schema`] serializes to.
+///
+/// It is the **error root path** every `config_schema` violation is reported
+/// under (`config_schema.properties.theme.default: …`), which is a string an
+/// operator reads next to their own `manifest.json`. Pinned to the real serde
+/// output by `config_schema_key_matches_the_serialized_manifest`, so renaming
+/// the field can not leave the diagnostics pointing at a key that no longer
+/// exists on the wire.
+///
+/// (S1 review: nothing reads the schema out of the persisted blob any more —
+/// `has_config` and the PATCH validator both go through the registry's typed
+/// [`Manifest`]. See `routes::plugins::registry_manifest` for why.)
+pub const CONFIG_SCHEMA_KEY: &str = "config_schema";
 
 /// Top-level manifest blob loaded from `<install_path>/manifest.json`.
 ///
@@ -26,6 +41,17 @@ pub struct Manifest {
     ///   about such a file changed in #1268 and it reads identically on either
     ///   kernel.
     /// * `2` — the array is spelled `templates` (#1268).
+    /// * `3` — the manifest may declare a [`Self::config_schema`] with a
+    ///   non-empty `required` (#1284). Same rollback argument as `2`, one
+    ///   layer up: a pre-#1284 kernel ignores `config_schema` entirely, so a
+    ///   plugin whose configuration is *mandatory* would come up on that
+    ///   kernel with none of it — silently. Declaring `3` makes that old
+    ///   kernel refuse the file by version instead (it accepts only `1..=2`),
+    ///   which under `registry::load_from_dir` means the plugin **disappears
+    ///   from the list** rather than running mis-configured. A
+    ///   `config_schema` whose keys are all optional loses nothing on that
+    ///   kernel — it degrades to "no configuration", which is precisely what
+    ///   every default already means — so it stays at `2` and keeps loading.
     ///
     /// Any other value is rejected by [`Manifest::validate`].
     ///
@@ -124,6 +150,31 @@ pub struct Manifest {
     /// Absent: the plugin does not accept `template_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
+
+    /// #1284 §2.1 — the plugin's **user-configuration** contract: what an
+    /// operator may set in Settings › Plugins, in the same JSON-Schema subset
+    /// as [`Self::input_schema`] (`plugin_host::template_input`, error paths
+    /// rooted at `config_schema…`).
+    ///
+    /// Unlike `input_schema` this is **not** app-only: all three kinds
+    /// (`app` / `mcp-http` / `cli-query`) grow a consumer in S2/S3a/S3b, so
+    /// [`Manifest::reject_app_only_surfaces`] deliberately leaves it alone.
+    ///
+    /// Absent ⇒ the plugin has **no** configurable surface, and
+    /// `PATCH /api/plugins/{id}/config` refuses the write with a 400. "No
+    /// config schema" and "config UI not built yet" must be two different
+    /// things on screen; `PluginListItem::has_config` is the list-side
+    /// projection of exactly this field's presence.
+    ///
+    /// Values declared here are **not** persisted at their defaults — see
+    /// [`super::effective_config`]: `default` is applied on read, so changing
+    /// a default in a later manifest version still reaches plugins whose
+    /// operator never touched that key.
+    ///
+    /// Declaring a schema with a non-empty `required` forces
+    /// `manifest_version >= 3`; see [`Manifest::manifest_version`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<Value>,
 
     /// Trusted forge plugins may claim **kernel wave-template ids**. Wave
     /// create binds `template_id` to one of these so the kernel can copy the
@@ -738,11 +789,11 @@ impl Manifest {
     /// Validate an already-deserialized manifest. Exposed publicly so callers
     /// holding a `Manifest` (e.g. after editing in-memory) can re-check it.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if !(1..=2).contains(&self.manifest_version) {
+        if !(1..=3).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
                 "manifest_version",
                 format!(
-                    "only manifest_version 1 or 2 is accepted, got {}",
+                    "only manifest_version 1, 2 or 3 is accepted, got {}",
                     self.manifest_version
                 ),
             ));
@@ -781,6 +832,24 @@ impl Manifest {
                 "id",
                 "must match ^[a-z0-9][a-z0-9.-]{1,63}$ (reverse-DNS or slug, \
                  lowercase, 2–64 chars, alphanumerics plus '.' and '-')",
+            ));
+        }
+
+        // #1297: `kernel` is a reserved writer identity, not merely a naming
+        // convention. `card_fsm` stamps it on the overlay rows the scheduler
+        // and spec-harness admission read back as fact, and the callback path
+        // writes `ctx.plugin_id` verbatim — so a plugin that simply *named
+        // itself* `kernel` would forge that authorship without touching any
+        // of the guards on the REST side. The regex above admits it, so the
+        // refusal has to be explicit and it has to be here, at the only place
+        // a plugin id enters the system.
+        if self.id == KERNEL_OVERLAY_PLUGIN_ID {
+            return Err(ManifestError::invalid(
+                "id",
+                format!(
+                    "`{KERNEL_OVERLAY_PLUGIN_ID}` is reserved for kernel-authored rows \
+                     and cannot be claimed by a plugin",
+                ),
             ));
         }
 
@@ -849,6 +918,38 @@ impl Manifest {
         if let Some(schema) = self.input_schema.as_ref() {
             crate::plugin_host::template_input::validate_input_schema(schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
+        }
+
+        // #1284 §2.1 — same subset, different Manifest field, and therefore a
+        // different error root: a `config_schema` violation must say
+        // `config_schema…`, never `input_schema…`. That is the whole reason
+        // `validate_object_schema` takes a root path.
+        if let Some(schema) = self.config_schema.as_ref() {
+            crate::plugin_host::template_input::validate_object_schema(CONFIG_SCHEMA_KEY, schema)
+                .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
+
+            // …and the conditional version bump. Scoped to schemas that carry
+            // a non-empty `required` for the reason spelled out on
+            // `manifest_version`: only those lose something real when a
+            // pre-#1284 kernel ignores the key. `required` is already known to
+            // be a non-empty array of declared property names at this point —
+            // the subset validator above ran first.
+            let has_required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|r| !r.is_empty());
+            if has_required && self.manifest_version < 3 {
+                return Err(ManifestError::invalid(
+                    "manifest_version",
+                    format!(
+                        "must be 3 to declare a `config_schema` with `required` \
+                         (#1284: a pre-#1284 kernel ignores `config_schema`, so the \
+                         plugin would run with none of its mandatory configuration \
+                         and no error), got {}",
+                        self.manifest_version
+                    ),
+                ));
+            }
         }
 
         for (i, template) in self.templates.iter().enumerate() {
@@ -1994,6 +2095,200 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // #1284 S1 — `config_schema`
+    // -----------------------------------------------------------------------
+
+    /// All-optional config schema: nothing is lost on a pre-#1284 kernel, so
+    /// it stays legal at `manifest_version: 2`.
+    fn optional_config_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "theme": {
+                    "type": "string",
+                    "enum": ["dark", "light"],
+                    "default": "dark",
+                    "description": "Card chrome"
+                },
+                "retries": { "type": "integer", "default": 3 }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    #[test]
+    fn manifest_accepts_subset_config_schema_and_defaults_to_none() {
+        let manifest = parse_manifest_value(template_manifest_value()).expect("valid manifest");
+        assert!(manifest.config_schema.is_none(), "absent ⇒ None");
+
+        let mut v = template_manifest_value();
+        v["config_schema"] = optional_config_schema();
+        let manifest = parse_manifest_value(v).expect("subset config_schema accepted");
+        assert_eq!(
+            manifest.config_schema.as_ref(),
+            Some(&optional_config_schema())
+        );
+    }
+
+    /// The reason `validate_object_schema` had to take a root path (#1284 §2.1
+    /// / F8): every one of these violations used to be reportable only as
+    /// `input_schema…`, i.e. against a field this manifest does not have.
+    ///
+    /// Paired with `manifest_rejects_out_of_subset_input_schema` above, which
+    /// keeps proving the *other* root still says `input_schema`.
+    #[test]
+    fn manifest_rejects_out_of_subset_config_schema_under_its_own_root() {
+        let cases: [(&str, Value, &str); 6] = [
+            (
+                "hostile $ref keyword",
+                json!({
+                    "type": "object",
+                    "$ref": "#/defs/x",
+                    "additionalProperties": false
+                }),
+                "config_schema.$ref",
+            ),
+            (
+                "hostile property keyword (pattern)",
+                json!({
+                    "type": "object",
+                    "properties": { "u": { "type": "string", "pattern": ".*" } },
+                    "additionalProperties": false
+                }),
+                "config_schema.properties.u.pattern",
+            ),
+            (
+                "missing additionalProperties: false",
+                json!({ "type": "object", "properties": {} }),
+                "config_schema.additionalProperties",
+            ),
+            (
+                "required key not declared",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": ["ghost"],
+                    "additionalProperties": false
+                }),
+                "config_schema.required[0]",
+            ),
+            (
+                "enum riding a non-string type",
+                json!({
+                    "type": "object",
+                    "properties": { "n": { "type": "integer", "enum": [1] } },
+                    "additionalProperties": false
+                }),
+                "config_schema.properties.n.enum",
+            ),
+            (
+                "default outside its own enum",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "theme": { "type": "string", "enum": ["dark"], "default": "neon" }
+                    },
+                    "additionalProperties": false
+                }),
+                "config_schema.properties.theme.default",
+            ),
+        ];
+        for (label, schema, expected_field) in cases {
+            let mut v = template_manifest_value();
+            v["manifest_version"] = json!(3);
+            v["config_schema"] = schema;
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(&err, ManifestError::Invalid { field, .. } if field == expected_field),
+                "{label}: got {err:?}"
+            );
+        }
+    }
+
+    /// #1284 §2.1 — the conditional bump, in all three cells that decide it.
+    ///
+    /// A pre-#1284 kernel ignores `config_schema` outright. For an all-optional
+    /// schema that is a faithful degradation (every key falls back to what its
+    /// default already meant), so `2` keeps working. For a schema with
+    /// `required` it is not: the plugin would run with none of its mandatory
+    /// configuration and say nothing, so `3` is demanded — and on the old
+    /// kernel the file is refused by version and the plugin disappears loudly.
+    #[test]
+    fn config_schema_with_required_demands_manifest_version_3() {
+        let mut required_schema = optional_config_schema();
+        required_schema["required"] = json!(["theme"]);
+
+        // (a) required + version 2 ⇒ rejected, and it is the VERSION that is
+        // named, not the schema.
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(2);
+        v["config_schema"] = required_schema.clone();
+        let err = parse_manifest_value(v).expect_err("required config at v2 must be refused");
+        match &err {
+            ManifestError::Invalid { field, reason } => {
+                assert_eq!(field, "manifest_version");
+                assert!(reason.contains("config_schema"), "got {reason}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // (b) required + version 3 ⇒ accepted.
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(3);
+        v["config_schema"] = required_schema;
+        let m = parse_manifest_value(v).expect("required config at v3 is accepted");
+        assert_eq!(m.manifest_version, 3);
+
+        // (c) all-optional + version 2 ⇒ accepted, i.e. the rule really is
+        // conditional and not "config_schema ⇒ 3".
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(2);
+        v["config_schema"] = optional_config_schema();
+        let m = parse_manifest_value(v).expect("optional-only config at v2 is accepted");
+        assert_eq!(m.manifest_version, 2);
+    }
+
+    /// An empty `required: []` is not a required key. Pinned separately
+    /// because "declares `required`" and "has required keys" are the kind of
+    /// pair that quietly becomes the same predicate.
+    #[test]
+    fn an_empty_required_array_does_not_demand_version_3() {
+        let mut schema = optional_config_schema();
+        schema["required"] = json!([]);
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(2);
+        v["config_schema"] = schema;
+        parse_manifest_value(v).expect("`required: []` has nothing to lose on an old kernel");
+    }
+
+    /// [`CONFIG_SCHEMA_KEY`] is the root every `config_schema` diagnostic is
+    /// reported under, so it has to name a key that really exists on the wire:
+    /// renaming the serde field without renaming the constant would leave
+    /// operators reading error paths for a field their manifest does not have.
+    /// Pinned to what a real `Manifest` actually serializes to — in both
+    /// directions, because `skip_serializing_if` means absence is also
+    /// observable (that is the shape `PluginDetail.manifest` publishes).
+    #[test]
+    fn config_schema_key_matches_the_serialized_manifest() {
+        let mut v = template_manifest_value();
+        v["config_schema"] = optional_config_schema();
+        let blob = parse_manifest_value(v).expect("valid").to_json();
+        assert_eq!(
+            blob.get(CONFIG_SCHEMA_KEY),
+            Some(&optional_config_schema()),
+            "blob keys: {:?}",
+            blob.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+
+        // …and absence really is absence (skip_serializing_if), which is what
+        // `has_config: false` reads.
+        let blob = parse_manifest_value(template_manifest_value())
+            .expect("valid")
+            .to_json();
+        assert!(blob.get(CONFIG_SCHEMA_KEY).is_none());
+    }
+
     #[test]
     fn missing_required_field_fails() {
         // `display_name` missing entirely — still an unconditionally required
@@ -2036,10 +2331,13 @@ mod tests {
 
     #[test]
     fn bad_manifest_version_fails() {
-        // #1268 widened the accepted set to {1, 2}, so the "unknown epoch"
-        // case has to be probed on both sides of it — a single sample above
-        // the range would stay green if the check were rewritten as `>= 1`.
-        for version in ["0", "3", "99"] {
+        // #1268 widened the accepted set to {1, 2} and #1284 to {1, 2, 3}, so
+        // the "unknown epoch" case has to be probed on both sides of it — a
+        // single sample above the range would stay green if the check were
+        // rewritten as `>= 1`. (`3` moved from this list to
+        // `config_schema_with_required_demands_manifest_version_3` when #1284
+        // made it a real version.)
+        for version in ["0", "4", "99"] {
             let json = format!(
                 r#"{{
             "manifest_version": {version},
@@ -2083,6 +2381,30 @@ mod tests {
         let json = hello_world().replace("dev.neige.hello-world", "dev_neige");
         let err = Manifest::parse(&json).unwrap_err();
         assert!(matches!(err, ManifestError::Invalid { field, .. } if field == "id"));
+    }
+
+    /// #1297: `kernel` satisfies the id regex, so without an explicit refusal
+    /// a plugin could register under it and — since the callback path writes
+    /// `ctx.plugin_id` verbatim — mint rows indistinguishable from the ones
+    /// `card_fsm` authors. The REST gate cannot see this route at all.
+    #[test]
+    fn reserved_kernel_id_rejected() {
+        let json = hello_world().replace("dev.neige.hello-world", KERNEL_OVERLAY_PLUGIN_ID);
+        let err = Manifest::parse(&json).unwrap_err();
+        match err {
+            ManifestError::Invalid { field, reason } => {
+                assert_eq!(field, "id");
+                assert!(reason.contains("reserved"), "reason={reason}");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The neighbouring id is fine — the refusal is exact, not a prefix ban.
+    #[test]
+    fn kernel_prefixed_id_still_allowed() {
+        let json = hello_world().replace("dev.neige.hello-world", "kernel-helper");
+        Manifest::parse(&json).expect("`kernel-helper` is not the reserved id");
     }
 
     #[test]
@@ -2452,6 +2774,48 @@ mod connector_kind_tests {
                 "args": ["quote", "{{symbol}}"]
             }]
         })
+    }
+
+    /// #1284 — `config_schema` is deliberately **not** on the app-only list:
+    /// S2/S3a/S3b give all three kinds a consumer, and the connector kinds are
+    /// where operator-supplied configuration is most obviously needed
+    /// (endpoints, argv values, env). Paired with the `input_schema` half,
+    /// which stays app-only — without that half this test would still pass if
+    /// `reject_app_only_surfaces` were deleted outright.
+    #[test]
+    fn connectors_may_declare_config_schema_but_still_not_input_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "endpoint": { "type": "string", "default": "https://a.example" } },
+            "additionalProperties": false
+        });
+
+        Manifest::parse(&base(json!({
+            "kind": "cli-query",
+            "cli_query": cli_query_block(),
+            "config_schema": schema,
+        })))
+        .expect("a connector may declare config_schema");
+
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "config_schema": schema,
+        })))
+        .expect("an mcp-http connector may declare config_schema");
+
+        let err = expect_reject(
+            Manifest::parse(&base(json!({
+                "kind": "cli-query",
+                "cli_query": cli_query_block(),
+                "input_schema": schema,
+            }))),
+            "input_schema on a connector",
+        );
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, .. } if field == "input_schema"),
+            "got {err:?}"
+        );
     }
 
     // ---- kind defaulting -------------------------------------------------

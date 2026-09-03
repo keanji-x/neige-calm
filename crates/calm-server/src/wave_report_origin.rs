@@ -1,11 +1,10 @@
 //! #1252 S1 step 1 — the write-origin vocabulary for wave-report writes.
 //!
 //! Today `wave_report::persist_report_with_shadow` takes a hand-assembled
-//! quadruple — `(actor, author, auto_promote_draft, recorder_shadow)` — and six
-//! production sites assemble it, in two layers. Three call it directly and pass
-//! all four: `decision_sink::CardDecisionSink::commit_report_op`,
-//! `routes::wave_report_blocks::commit`, and
-//! `routes::wave_templates::update_wave_template`. Three go through the
+//! quadruple — `(actor, author, auto_promote_draft, recorder_shadow)` — and
+//! **five** production sites assemble it, in two layers. Two call it directly
+//! and pass all four: `decision_sink::CardDecisionSink::commit_report_op` and
+//! `routes::wave_report_blocks::commit`. Three go through the
 //! `wave_report::persist_report` wrapper and pass the first three, with the
 //! wrapper's hardcoded `recorder_shadow: None` supplied on their behalf:
 //! `routes::waves::update_wave_report`, `seed_template_wave`, and
@@ -14,6 +13,12 @@
 //! caller. This module
 //! introduces the type that names *who is writing* ([`WriteOrigin`]) and the
 //! total function that turns it into the quadruple ([`policy_for`]).
+//!
+//! **#1300 S1 changed this count from six to five.** The sixth was
+//! `routes::wave_templates::update_wave_template`, a direct caller, deleted
+//! with the template editor. S2 removes the two seeding sites and the count
+//! becomes three — all of which have an honest origin, which is the
+//! precondition S1 step 2 was blocked on.
 //!
 //! # Status: not wired into production
 //!

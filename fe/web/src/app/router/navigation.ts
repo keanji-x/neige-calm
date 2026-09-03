@@ -57,13 +57,11 @@ export type NavTarget =
   | Readonly<{ name: 'settings' }>
   /**
    * #1230 — Settings drills in rather than stacking every group on one page.
-   * `settings-templates` is the template list; `settings-template` is one
-   * template's editor. Both are real routes and not page-local state, so Back
-   * leaves the editor instead of leaving Settings, and a template's editor can
-   * be linked to.
+   * Each group is a real route, so Back leaves the group instead of leaving
+   * Settings and a group can be linked to. (#1230's own two entries,
+   * `settings-templates` and `settings-template`, are gone with the template
+   * editor — #1300 S1.)
    */
-  | Readonly<{ name: 'settings-templates' }>
-  | Readonly<{ name: 'settings-template'; templateId: string }>
   /** Settings › Plugins — the installed list and its enable/disable switch. */
   | Readonly<{ name: 'settings-plugins' }>
   /**
@@ -85,8 +83,6 @@ export function pathFor(target: NavTarget): string {
     case 'cove': return `/cove/${encodeURIComponent(target.coveId)}`;
     case 'wave': return `/wave/${encodeURIComponent(target.waveId)}`;
     case 'settings': return '/settings';
-    case 'settings-templates': return '/settings/templates';
-    case 'settings-template': return `/settings/templates/${encodeURIComponent(target.templateId)}`;
     case 'settings-plugins': return '/settings/plugins';
     case 'settings-appearance': return '/settings/appearance';
     case 'settings-about': return '/settings/about';
@@ -416,12 +412,12 @@ export function useCurrentPath(): string {
  * a `string` and keeps the prefix table next to `pathFor`, so the two cannot
  * drift apart.
  */
-export function useRouteParam(prefix: '/cove/' | '/wave/' | '/settings/templates/'): string | undefined {
+export function useRouteParam(prefix: '/cove/' | '/wave/'): string | undefined {
   const path = useCurrentPath();
   return routeParamFromPath(path, prefix);
 }
 
-export function routeParamFromPath(path: string, prefix: '/cove/' | '/wave/' | '/settings/templates/'): string | undefined {
+export function routeParamFromPath(path: string, prefix: '/cove/' | '/wave/'): string | undefined {
   if (!path.startsWith(prefix)) return undefined;
   const segment = path.slice(prefix.length).split('/', 1)[0];
   if (segment === '') return undefined;

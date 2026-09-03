@@ -101,8 +101,19 @@ pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_TEMPLATE_SCHEMA_VERSION: u32 = 1;
 /// Overlay `kind` for the kernel view marker that a wave is a template.
 pub const OVERLAY_TEMPLATE_KIND: &str = "template";
+/// The reserved `plugin_id` namespace the kernel stamps on overlay rows it
+/// authors itself (`card_fsm`'s status / `any_card_needs_input` aggregates,
+/// the `view` layout and template markers).
+///
+/// Rows under this namespace are read as kernel-authored fact by scheduler
+/// admission, spec-harness start and wave-list visibility, so nothing outside
+/// the process may write it: the plugin RPC path forces `plugin_id` to the
+/// calling plugin's own id, and the public REST endpoints reject it outright
+/// (issue #1297). Kept here as the single definition so those call sites and
+/// [`OVERLAY_TEMPLATE_PLUGIN_ID`] cannot drift apart.
+pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
 /// `plugin_id` for the kernel view/template overlay.
-pub const OVERLAY_TEMPLATE_PLUGIN_ID: &str = "kernel";
+pub const OVERLAY_TEMPLATE_PLUGIN_ID: &str = KERNEL_OVERLAY_PLUGIN_ID;
 /// `entity_kind` for the kernel view/template overlay (`entity_id` = wave id).
 pub const OVERLAY_TEMPLATE_ENTITY_KIND: &str = "view";
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
@@ -355,7 +366,18 @@ pub type OverlayRouteScopeFn = for<'a> fn(&'a dyn RepoRead, &'a str) -> OverlayS
 pub struct OverlayEntityScopeEntry {
     pub kind: &'static str,
     pub route_scope_fn: OverlayRouteScopeFn,
-    pub plugin_writable: bool,
+    /// May a writer outside the kernel process (a plugin over RPC, a client
+    /// over `POST /api/overlays`) attach overlays to this entity kind?
+    ///
+    /// `false` marks a kernel-reserved namespace: `view` and `system` carry
+    /// projections the kernel itself reads back as fact (the `template`
+    /// marker gates scheduler dispatch and spec-harness start; `layout` is
+    /// rebuilt by the kernel's own wave structure code), so both entry
+    /// points must refuse them. Renamed from `plugin_writable` in #1297 —
+    /// the plugin RPC path had been asking this column since it was
+    /// introduced, the REST path had not, and the name made the second
+    /// caller look out of place.
+    pub externally_writable: bool,
 }
 
 pub struct OverlayEntityScopeRegistry {
@@ -383,16 +405,18 @@ impl OverlayEntityScopeRegistry {
         }
     }
 
-    pub fn plugin_writable(&self, kind: &str) -> bool {
+    /// Unknown kinds fall through to `false` — an entity kind nobody
+    /// registered is not one an outside writer gets to invent.
+    pub fn externally_writable(&self, kind: &str) -> bool {
         self.lookup(kind)
-            .map(|entry| entry.plugin_writable)
+            .map(|entry| entry.externally_writable)
             .unwrap_or(false)
     }
 
-    pub fn plugin_writable_kinds(&self) -> Vec<&'static str> {
+    pub fn externally_writable_kinds(&self) -> Vec<&'static str> {
         self.entries
             .iter()
-            .filter(|entry| entry.plugin_writable)
+            .filter(|entry| entry.externally_writable)
             .map(|entry| entry.kind)
             .collect()
     }
@@ -438,22 +462,22 @@ pub static OVERLAY_ENTITY_SCOPE_REGISTRY: OverlayEntityScopeRegistry =
         OverlayEntityScopeEntry {
             kind: "card",
             route_scope_fn: card_overlay_scope,
-            plugin_writable: true,
+            externally_writable: true,
         },
         OverlayEntityScopeEntry {
             kind: "wave",
             route_scope_fn: wave_overlay_scope,
-            plugin_writable: true,
+            externally_writable: true,
         },
         OverlayEntityScopeEntry {
             kind: "view",
             route_scope_fn: system_overlay_scope,
-            plugin_writable: false,
+            externally_writable: false,
         },
         OverlayEntityScopeEntry {
             kind: "system",
             route_scope_fn: system_overlay_scope,
-            plugin_writable: false,
+            externally_writable: false,
         },
     ]);
 
@@ -718,14 +742,36 @@ mod tests {
             .map(|entry| entry.kind)
             .collect();
         assert_eq!(kinds, vec!["card", "wave", "view", "system"]);
-        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("card"));
-        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("wave"));
-        assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("view"));
-        assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("system"));
+        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("card"));
+        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("wave"));
+        assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("view"));
+        assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable("system"));
         assert_eq!(
-            OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable_kinds(),
+            OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable_kinds(),
             vec!["card", "wave"]
         );
+    }
+
+    /// `view` and `system` scope to `EventScope::System`. This used to be
+    /// covered through `POST /api/overlays`; since #1297 that route refuses
+    /// both kinds, so the mapping is asserted here against the registry the
+    /// kernel-internal writers still route through.
+    #[tokio::test]
+    async fn overlay_entity_scope_registry_reserved_kinds_scope_to_system() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo");
+        for kind in ["view", "system"] {
+            let scope = OVERLAY_ENTITY_SCOPE_REGISTRY
+                .route_scope(&repo, kind, "any-id")
+                .await
+                .unwrap();
+            assert_eq!(scope, EventScope::System, "kind={kind}");
+            assert!(
+                !OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable(kind),
+                "kind={kind} must stay kernel-reserved"
+            );
+        }
     }
 
     #[tokio::test]
